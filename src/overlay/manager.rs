@@ -38,11 +38,25 @@ impl<W: Window + 'static> OverlayManager<W> {
     }
 
     /// Update all widgets with elapsed time `dt` in seconds.
+    ///
+    /// Additionally this performs light housekeeping such as removing expired notification
+    /// widgets so callers don't need to manually prune them.
     pub fn update(&mut self, dt: Duration) {
         let secs = dt.as_secs_f32();
         for w in &mut self.widgets {
             w.update(secs);
         }
+
+        // Remove expired notifications automatically to keep the widget list small.
+        // This requires downcasting to the concrete notification type.
+        use crate::overlay::widgets::notification::NotificationWidget;
+        self.widgets.retain(|w| {
+            if let Some(n) = w.as_any().downcast_ref::<NotificationWidget>() {
+                !n.expired()
+            } else {
+                true
+            }
+        });
     }
 
     /// Produce rendering operations for all widgets targeting the manager's window.
