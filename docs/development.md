@@ -21,6 +21,7 @@ Public modules (crate::debug):
 - diff: Frame difference and motion masks
 - hp: HP bar detection helpers for MapleStory-style UI frames
 - vision: generic UI marker detection for HP, MP, EXP, character name, class, and level
+- ocr: Tesseract-backed OCR helpers for text regions and value parsing
 - timing: ScopedTimer, FrameTimer, MovingAverage, FPSCounter
 - logging: tracing initializer (init_tracing)
 - config: DebugConfig and global accessors
@@ -83,6 +84,10 @@ Timing utilities
 - ScopedTimer: RAII timer that logs on drop. Useful to measure small scopes.
 - FrameTimer: call mark() once per frame to get per-frame duration.
 - FPSCounter: moving average based FPS estimate.
+
+OCR-backed HUD reading
+----------------------
+The vision helpers can optionally use the free Tesseract OCR engine to read text from detected HUD regions. Detector authors should call `ms::hud::detect_hud_snapshot` when they need HP/MP/EXP percentages plus OCR-backed text for name, class, or level. The OCR path is isolated in `src/debug/ocr.rs`, and the public prototype entrypoints live in `src/hud.rs` and `src/ocr.rs`.
 
 Logging
 -------

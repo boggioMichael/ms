@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use image::{ImageError, Rgba, RgbaImage};
 
 use crate::debug::crop::draw_rect;
-use crate::debug::hp::{HpBar, find_hp_bar};
+use crate::debug::ocr;
 use crate::debug::pixel::hsv_from_rgb;
 
 /// A generic rectangle in image coordinates.
@@ -36,6 +36,27 @@ impl Rect {
     pub fn area(&self) -> u32 {
         self.w.saturating_mul(self.h)
     }
+}
+
+/// A parsed HUD metric from OCR.
+#[derive(Debug, Clone)]
+pub struct HudMetric {
+    pub label: String,
+    pub percent: Option<f32>,
+    pub value: Option<u64>,
+    pub raw_text: Option<String>,
+}
+
+/// Full HUD snapshot with markers and OCR-derived values.
+#[derive(Debug, Clone)]
+pub struct HudSnapshot {
+    pub markers: UiMarkers,
+    pub hp: Option<HudMetric>,
+    pub mp: Option<HudMetric>,
+    pub exp: Option<HudMetric>,
+    pub player_name: Option<String>,
+    pub character_class: Option<String>,
+    pub level: Option<String>,
 }
 
 /// Detected user interface markers and inferred values.
@@ -276,8 +297,14 @@ fn find_text_block(image: &RgbaImage, region: Rect) -> Option<Rect> {
     Some(Rect {
         x: min_x.saturating_sub(padding),
         y: min_y.saturating_sub(padding),
-        w: max_x.saturating_sub(min_x).saturating_add(1).saturating_add(padding.saturating_mul(2)),
-        h: max_y.saturating_sub(min_y).saturating_add(1).saturating_add(padding.saturating_mul(2)),
+        w: max_x
+            .saturating_sub(min_x)
+            .saturating_add(1)
+            .saturating_add(padding.saturating_mul(2)),
+        h: max_y
+            .saturating_sub(min_y)
+            .saturating_add(1)
+            .saturating_add(padding.saturating_mul(2)),
     })
 }
 
@@ -304,12 +331,335 @@ fn find_color_bar(
     })
 }
 
-fn hp_rect_from_bar(bar: HpBar) -> Rect {
-    Rect {
-        x: bar.x,
-        y: bar.y,
-        w: bar.w,
-        h: bar.h,
+fn find_color_regions(
+    image: &RgbaImage,
+    region: Rect,
+    hue_range: (f32, f32),
+    min_saturation: f32,
+    min_value: f32,
+) -> Vec<Rect> {
+    let mut rows = Vec::new();
+    for y in region.y..region.y.saturating_add(region.h).min(image.height()) {
+        for (x0, x1) in segment_row(
+            image,
+            y,
+            region.x,
+            region.x.saturating_add(region.w).saturating_sub(1),
+            20,
+            |pixel| is_color_pixel(pixel, hue_range, min_saturation, min_value),
+        ) {
+            rows.push((y, x0, x1));
+        }
+    }
+    group_segments(rows, 4, 2)
+        .into_iter()
+        .filter(|rect| rect.w >= 20 && rect.h >= 4)
+        .collect()
+}
+
+fn read_metric_from_ocr(text: Option<&str>, label: &str) -> Option<HudMetric> {
+    let text = text?.trim().to_string();
+    let percent = parse_percentage_after_label(&text, label);
+    let value = parse_value_after_label(&text, label);
+
+    Some(HudMetric {
+        label: label.to_string(),
+        percent,
+        value,
+        raw_text: (!text.is_empty()).then_some(text),
+    })
+}
+
+fn read_labeled_text(text: Option<&str>, label: &str) -> Option<String> {
+    let text = text?.trim();
+    let lowered = text.to_lowercase();
+    let start = lowered.find(&label.to_lowercase())? + label.len();
+    let mut end = text.len();
+    for next_label in ["name", "job", "class", "level", "lv"] {
+        if next_label.eq_ignore_ascii_case(label) {
+            continue;
+        }
+        if let Some(offset) = lowered[start..].find(next_label) {
+            end = end.min(start + offset);
+        }
+    }
+    let value = text[start..end]
+        .trim_start_matches(|character: char| {
+            character.is_whitespace() || matches!(character, ':' | '-' | '=')
+        })
+        .split_whitespace()
+        .take(4)
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!value.is_empty()).then_some(value)
+}
+
+fn ocr_label_rect(words: &[ocr::OcrWord], labels: &[&str]) -> Option<Rect> {
+    let label_index = words.iter().position(|word| {
+        let normalized = word
+            .text
+            .trim_matches(|character: char| !character.is_ascii_alphanumeric())
+            .to_ascii_lowercase();
+        labels.iter().any(|label| normalized == *label)
+    })?;
+    let label = &words[label_index];
+    let value = words
+        .iter()
+        .skip(label_index + 1)
+        .find(|word| {
+            let vertically_aligned = word.y.abs_diff(label.y) <= label.h.saturating_mul(2);
+            vertically_aligned && word.x >= label.x.saturating_add(label.w)
+        })
+        .or_else(|| words.get(label_index + 1))?;
+    let x = label.x.min(value.x);
+    let y = label.y.min(value.y);
+    let right = label
+        .x
+        .saturating_add(label.w)
+        .max(value.x.saturating_add(value.w));
+    let bottom = label
+        .y
+        .saturating_add(label.h)
+        .max(value.y.saturating_add(value.h));
+    Some(Rect {
+        x,
+        y,
+        w: right.saturating_sub(x),
+        h: bottom.saturating_sub(y),
+    })
+}
+
+fn metric_candidate_regions(
+    image: &RgbaImage,
+    rect: Option<Rect>,
+    label: &str,
+) -> Vec<(u32, u32, u32, u32)> {
+    let mut regions = Vec::new();
+    let width = image.width();
+    let height = image.height();
+
+    if let Some(rect) = rect {
+        let padding = 40u32;
+        regions.push((
+            rect.x.saturating_sub(padding),
+            rect.y.saturating_sub(padding),
+            rect.w.saturating_add(padding.saturating_mul(2)),
+            rect.h.saturating_add(padding.saturating_mul(2)),
+        ));
+    }
+
+    let third_h = height / 3;
+
+    if label.eq_ignore_ascii_case("exp") {
+        regions.push((
+            width / 5,
+            height.saturating_sub(third_h),
+            width * 3 / 5,
+            third_h,
+        ));
+        regions.push((
+            width / 6,
+            height.saturating_sub(third_h),
+            width * 2 / 3,
+            third_h,
+        ));
+        regions.push((0, height.saturating_sub(third_h), width, third_h));
+    } else {
+        regions.push((0, height.saturating_sub(third_h), width / 2, third_h));
+        regions.push((0, height.saturating_sub(height / 2), width / 2, height / 2));
+        regions.push((0, height / 2, width / 2, height / 2));
+    }
+
+    regions.push((0, 0, width, third_h));
+    regions.push((0, third_h, width / 2, third_h));
+
+    regions
+        .into_iter()
+        .map(|(x, y, w, h)| (x, y, w.max(1), h.max(1)))
+        .collect()
+}
+
+fn score_metric_text(text: &str, label: &str) -> i32 {
+    let lowered = text.to_lowercase();
+    let label_lower = label.to_lowercase();
+    let mut score = 0;
+
+    if lowered.contains(&label_lower) {
+        score += 100;
+    }
+    if label.eq_ignore_ascii_case("exp") && lowered.contains("xp") {
+        score += 70;
+    }
+    if lowered.contains('%') {
+        score += 30;
+    }
+    if lowered.chars().any(|c| c.is_ascii_digit()) {
+        score += 20;
+    }
+    score += lowered.chars().filter(|c| c.is_ascii_alphabetic()).count() as i32;
+    score -= lowered.matches("estimating resolution").count() as i32 * 100;
+    score
+}
+
+fn metric_ocr_text(image: &RgbaImage, rect: Option<Rect>, label: &str) -> Option<String> {
+    let mut best_text = None;
+    let mut best_score = i32::MIN;
+
+    for (x, y, w, h) in metric_candidate_regions(image, rect, label) {
+        if let Some(ocr) = ocr::ocr_region(image, x, y, w, h) {
+            let text = ocr.text.trim().to_string();
+            let score = score_metric_text(&text, label);
+            if score > best_score {
+                best_score = score;
+                best_text = Some(text);
+            }
+        }
+    }
+
+    best_text.filter(|text| !text.trim().is_empty())
+}
+
+fn text_ocr_text(image: &RgbaImage, rect: Option<Rect>) -> Option<String> {
+    let mut regions = Vec::new();
+    if let Some(rect) = rect {
+        let padding = 18u32;
+        regions.push((
+            rect.x.saturating_sub(padding),
+            rect.y.saturating_sub(padding),
+            rect.w.saturating_add(padding.saturating_mul(2)),
+            rect.h.saturating_add(padding.saturating_mul(2)),
+        ));
+        regions.push((
+            rect.x.saturating_sub(48),
+            rect.y.saturating_sub(48),
+            rect.w.saturating_add(96),
+            rect.h.saturating_add(96),
+        ));
+    } else {
+        let width = image.width();
+        let height = image.height();
+        regions.push((0, 0, width / 2, height / 3));
+        regions.push((0, height / 6, width / 2, height / 3));
+        regions.push((0, height / 4, width / 2, height / 3));
+        regions.push((width / 2, 0, width / 2, height / 3));
+        regions.push((0, height / 2, width / 2, height / 2));
+    }
+
+    let mut best_text = None;
+    let mut best_score = i32::MIN;
+
+    for (x, y, w, h) in regions {
+        if let Some(ocr) = ocr::ocr_region(image, x, y, w.max(1), h.max(1)) {
+            let text = ocr.text.trim().to_string();
+            let score = score_text_region(&text);
+            if score > best_score {
+                best_score = score;
+                best_text = Some(text);
+            }
+        }
+    }
+
+    best_text.filter(|text| !text.trim().is_empty())
+}
+
+fn score_text_region(text: &str) -> i32 {
+    let lowered = text.to_lowercase();
+    let alpha_count = lowered.chars().filter(|c| c.is_ascii_alphabetic()).count() as i32;
+    let digit_count = lowered.chars().filter(|c| c.is_ascii_digit()).count() as i32;
+    let mut score = alpha_count * 2 + digit_count;
+    if lowered.contains("level") {
+        score += 40;
+    }
+    if lowered.contains("job") {
+        score += 30;
+    }
+    if lowered.contains("name") {
+        score += 20;
+    }
+    if lowered.contains("estimating resolution") {
+        score -= 100;
+    }
+    score
+}
+
+fn parse_number_token(token: &str) -> Option<u64> {
+    let cleaned = token.replace(',', "").replace('.', "");
+    cleaned.parse::<u64>().ok()
+}
+
+fn parse_percentage_after_label(text: &str, label: &str) -> Option<f32> {
+    let lowered = text.to_lowercase();
+    let label_pos = lowered.find(&label.to_lowercase());
+    let mut search = if let Some(pos) = label_pos {
+        &text[pos + label.len().min(text.len().saturating_sub(pos))..]
+    } else {
+        text
+    };
+
+    while let Some(start) = search.find(|c: char| c.is_ascii_digit()) {
+        search = &search[start..];
+        let end = search
+            .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == ','))
+            .unwrap_or(search.len());
+        let token = &search[..end];
+        let mut tail = &search[end..];
+        while let Some(ch) = tail.chars().next() {
+            if ch.is_whitespace() {
+                tail = &tail[ch.len_utf8()..];
+            } else {
+                break;
+            }
+        }
+        if tail.starts_with('%') {
+            let normalized = token.replace(',', ".");
+            if let Ok(value) = normalized.parse::<f32>() {
+                return Some(value);
+            }
+        }
+        search = &search[end..];
+    }
+
+    None
+}
+
+fn parse_value_after_label(text: &str, label: &str) -> Option<u64> {
+    let lowered = text.to_lowercase();
+    let mut search = if let Some(pos) = lowered.find(&label.to_lowercase()) {
+        &text[pos + label.len().min(text.len().saturating_sub(pos))..]
+    } else {
+        text
+    };
+
+    while let Some(start) = search.find(|c: char| c.is_ascii_digit()) {
+        search = &search[start..];
+        let end = search
+            .find(|c: char| !(c.is_ascii_digit() || c == ',' || c == '.'))
+            .unwrap_or(search.len());
+        let token = &search[..end];
+        if let Some(value) = parse_number_token(token) {
+            return Some(value);
+        }
+        search = &search[end..];
+    }
+
+    None
+}
+
+/// Build a full HUD snapshot from a single frame.
+pub fn detect_hud_snapshot(image: &RgbaImage) -> HudSnapshot {
+    let markers = detect_ui_markers(image);
+    let ocr_result = ocr::ocr_region(image, 0, 0, image.width(), image.height());
+    let ocr_text = ocr_result.map(|result| result.text);
+
+    HudSnapshot {
+        markers: markers.clone(),
+        hp: read_metric_from_ocr(ocr_text.as_deref(), "HP"),
+        mp: read_metric_from_ocr(ocr_text.as_deref(), "MP"),
+        exp: read_metric_from_ocr(ocr_text.as_deref(), "EXP"),
+        player_name: read_labeled_text(ocr_text.as_deref(), "name"),
+        character_class: read_labeled_text(ocr_text.as_deref(), "job"),
+        level: read_labeled_text(ocr_text.as_deref(), "level")
+            .or_else(|| read_labeled_text(ocr_text.as_deref(), "lv")),
     }
 }
 
@@ -320,121 +670,19 @@ fn hp_rect_from_bar(bar: HpBar) -> Rect {
 pub fn detect_ui_markers(image: &RgbaImage) -> UiMarkers {
     let width = image.width();
     let height = image.height();
+    // MapleStory places the HP, MP, and EXP fills together in the lower HUD.
+    // Searching the entire frame mistakes timers and action buttons for status bars.
+    let status_band = Rect {
+        x: 0,
+        y: height.saturating_mul(9) / 10,
+        w: width.saturating_mul(3) / 4,
+        h: height.saturating_sub(height.saturating_mul(9) / 10),
+    };
+    let hp_bar = find_color_bar(image, status_band, (340.0, 30.0), 0.35, 0.30);
+    let mp_bar = find_color_bar(image, status_band, (190.0, 250.0), 0.30, 0.30);
+    let exp_bar = find_color_bar(image, status_band, (40.0, 80.0), 0.25, 0.25);
 
-    let hp_bar = find_hp_bar(image)
-        .map(hp_rect_from_bar)
-        .or_else(|| {
-            find_color_bar(
-                image,
-                Rect {
-                    x: 0,
-                    y: 0,
-                    w: width,
-                    h: height / 3,
-                },
-                (300.0, 90.0),
-                0.05,
-                0.05,
-            )
-        })
-        .or_else(|| {
-            find_color_bar(
-                image,
-                Rect {
-                    x: 0,
-                    y: 0,
-                    w: width / 2,
-                    h: height / 2,
-                },
-                (300.0, 90.0),
-                0.04,
-                0.04,
-            )
-        })
-        .or_else(|| {
-            find_color_bar(
-                image,
-                Rect {
-                    x: 0,
-                    y: 0,
-                    w: width,
-                    h: height,
-                },
-                (300.0, 90.0),
-                0.04,
-                0.04,
-            )
-        });
-
-    let mp_bar = find_color_bar(
-        image,
-        Rect {
-            x: 0,
-            y: 0,
-            w: width,
-            h: height / 3,
-        },
-        (170.0, 280.0),
-        0.16,
-        0.12,
-    )
-    .or_else(|| {
-        find_color_bar(
-            image,
-            Rect {
-                x: 0,
-                y: 0,
-                w: width,
-                h: height / 2,
-            },
-            (100.0, 170.0),
-            0.12,
-            0.10,
-        )
-    });
-
-    let exp_bar = find_color_bar(
-        image,
-        Rect {
-            x: 0,
-            y: height.saturating_sub(height / 3),
-            w: width,
-            h: height / 3,
-        },
-        (220.0, 360.0),
-        0.12,
-        0.08,
-    )
-    .or_else(|| {
-        find_color_bar(
-            image,
-            Rect {
-                x: 0,
-                y: height.saturating_sub(height / 2),
-                w: width,
-                h: height / 2,
-            },
-            (220.0, 360.0),
-            0.10,
-            0.07,
-        )
-    })
-    .or_else(|| {
-        find_color_bar(
-            image,
-            Rect {
-                x: 0,
-                y: 0,
-                w: width,
-                h: height,
-            },
-            (220.0, 360.0),
-            0.08,
-            0.06,
-        )
-    });
-
-    let name_plate = find_text_block_in_regions(
+    let _name_plate = find_text_block_in_regions(
         image,
         &[
             Rect {
@@ -458,7 +706,7 @@ pub fn detect_ui_markers(image: &RgbaImage) -> UiMarkers {
         ],
     );
 
-    let class_plate = find_text_block_in_regions(
+    let _class_plate = find_text_block_in_regions(
         image,
         &[
             Rect {
@@ -482,7 +730,7 @@ pub fn detect_ui_markers(image: &RgbaImage) -> UiMarkers {
         ],
     );
 
-    let level_plate = find_text_block_in_regions(
+    let _level_plate = find_text_block_in_regions(
         image,
         &[
             Rect {
@@ -505,6 +753,32 @@ pub fn detect_ui_markers(image: &RgbaImage) -> UiMarkers {
             },
         ],
     );
+
+    // Character-stat panels use a vertical stack of pink field labels. Extending
+    // each label across its row boxes the actual name, job, and level values
+    // without confusing quest text elsewhere in the frame for player data.
+    let mut stat_rows = find_color_regions(
+        image,
+        Rect {
+            x: 0,
+            y: height / 8,
+            w: width / 2,
+            h: height * 2 / 3,
+        },
+        (320.0, 350.0),
+        0.25,
+        0.35,
+    );
+    stat_rows.sort_by_key(|rect| rect.y);
+    let stat_value_row = |rect: Rect| Rect {
+        x: rect.x,
+        y: rect.y,
+        w: (width.saturating_mul(3) / 10).min(width.saturating_sub(rect.x)),
+        h: rect.h,
+    };
+    let name_plate = stat_rows.first().copied().map(stat_value_row);
+    let class_plate = stat_rows.get(1).copied().map(stat_value_row);
+    let level_plate = stat_rows.get(2).copied().map(stat_value_row);
 
     UiMarkers {
         hp_bar,
@@ -620,19 +894,19 @@ mod tests {
 
     fn synthetic_ui_frame() -> RgbaImage {
         let mut image = RgbaImage::from_pixel(640, 360, Rgba([16, 20, 24, 255]));
-        for y in 24..38 {
-            for x in 24..364 {
+        for y in 326..340 {
+            for x in 24..224 {
                 image.put_pixel(x, y, Rgba([216, 40, 40, 255]));
             }
         }
-        for y in 54..68 {
-            for x in 24..204 {
+        for y in 326..340 {
+            for x in 240..420 {
                 image.put_pixel(x, y, Rgba([32, 120, 220, 255]));
             }
         }
-        for y in 312..330 {
-            for x in 32..616 {
-                image.put_pixel(x, y, Rgba([144, 48, 200, 255]));
+        for y in 326..340 {
+            for x in 436..600 {
+                image.put_pixel(x, y, Rgba([220, 210, 60, 255]));
             }
         }
         image
@@ -650,19 +924,11 @@ mod tests {
     #[test]
     fn detect_synthetic_name_job_level_blocks() {
         let mut image = synthetic_ui_frame();
-        for y in 8..18 {
-            for x in 28..116 {
-                image.put_pixel(x, y, Rgba([240, 240, 240, 255]));
-            }
-        }
-        for y in 20..30 {
-            for x in 28..108 {
-                image.put_pixel(x, y, Rgba([232, 232, 232, 255]));
-            }
-        }
-        for y in 12..20 {
-            for x in 520..560 {
-                image.put_pixel(x, y, Rgba([248, 248, 248, 255]));
+        for y in [60, 82, 104] {
+            for yy in y..y + 12 {
+                for x in 24..104 {
+                    image.put_pixel(x, yy, Rgba([220, 70, 130, 255]));
+                }
             }
         }
 
@@ -670,5 +936,33 @@ mod tests {
         assert!(markers.name_plate.is_some(), "expected name block");
         assert!(markers.class_plate.is_some(), "expected job block");
         assert!(markers.level_plate.is_some(), "expected level block");
+    }
+
+    #[test]
+    fn parses_percentages_and_exp_values() {
+        assert_eq!(parse_percentage_after_label("HP 37.51%", "HP"), Some(37.51));
+        assert_eq!(parse_percentage_after_label("MP 100 %", "MP"), Some(100.0));
+        assert_eq!(
+            parse_value_after_label("EXP 35900 37.51%", "EXP"),
+            Some(35900)
+        );
+        assert_eq!(parse_value_after_label("HP 1500 / 2000", "HP"), Some(1500));
+    }
+
+    #[test]
+    fn reads_labeled_player_text_without_consuming_the_next_label() {
+        let text = "Name: MapleHero Job: Arch Mage Level: 275";
+        assert_eq!(
+            read_labeled_text(Some(text), "name"),
+            Some("MapleHero".to_string())
+        );
+        assert_eq!(
+            read_labeled_text(Some(text), "job"),
+            Some("Arch Mage".to_string())
+        );
+        assert_eq!(
+            read_labeled_text(Some(text), "level"),
+            Some("275".to_string())
+        );
     }
 }

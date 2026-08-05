@@ -1,60 +1,67 @@
 use image::io::Reader as ImageReader;
-use ms::debug::{
-    capture_window_by_title, crop::save_crop, detect_ui_markers, save_ui_debug_overlay,
-};
+use ms::debug::{capture_game_window_info, crop::save_crop};
+use ms::hud::{detect_hud_snapshot, save_ui_debug_overlay};
 use std::io::{self, Write};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-fn print_rect(name: &str, rect: Option<ms::debug::Rect>) {
-    match rect {
-        Some(rect) => println!(
-            "{}: x={}, y={}, w={}, h={}",
-            name, rect.x, rect.y, rect.w, rect.h
-        ),
-        None => println!("{}: unknown", name),
+fn format_metric(metric: &Option<ms::hud::HudMetric>) -> String {
+    match metric {
+        Some(metric) => {
+            let percent = metric
+                .percent
+                .map(|p| format!("{p:.1}%"))
+                .unwrap_or_else(|| "unknown".into());
+            let value = metric
+                .value
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "unknown".into());
+            let raw = metric.raw_text.as_deref().unwrap_or("no OCR text");
+            format!("{value} / {percent} (OCR: {raw})")
+        }
+        None => "unknown".into(),
     }
 }
 
-fn print_percent(name: &str, value: Option<f32>) {
-    match value {
-        Some(p) => println!("{}: {:.1}%", name, p),
-        None => println!("{}: unknown", name),
-    }
+fn format_text(value: &Option<String>) -> String {
+    value.as_deref().unwrap_or("unknown").to_string()
 }
 
-fn print_presence(name: &str, rect: Option<ms::debug::Rect>) {
-    match rect {
-        Some(_) => println!("{}: detected", name),
-        None => println!("{}: unknown", name),
-    }
-}
-
-fn format_percent(value: Option<f32>) -> String {
-    value.map(|p| format!("{p:.1}%")).unwrap_or_else(|| "unknown".into())
-}
-
-fn format_presence(rect: Option<ms::debug::Rect>) -> &'static str {
-    if rect.is_some() { "detected" } else { "unknown" }
-}
-
-fn print_hud_summary(frame_index: usize, markers: &ms::debug::UiMarkers) {
-    let hp = format_percent(markers.hp_percent);
-    let mp = format_percent(markers.mp_percent);
-    let xp = format_percent(markers.exp_percent);
-    let name = format_presence(markers.name_plate);
-    let job = format_presence(markers.class_plate);
-    let level = format_presence(markers.level_plate);
+fn print_hud_summary(frame_index: usize, snapshot: &ms::hud::HudSnapshot) {
+    let hp = format_metric(&snapshot.hp);
+    let mp = format_metric(&snapshot.mp);
+    let xp = format_metric(&snapshot.exp);
+    let name = format_text(&snapshot.player_name);
+    let job = format_text(&snapshot.character_class);
+    let level = format_text(&snapshot.level);
 
     println!(
         "[frame {frame_index}] HP: {hp} | MP: {mp} | XP: {xp} | Name: {name} | Job: {job} | Level: {level}"
     );
+    println!(
+        "[frame {frame_index}] rectangles: HP={:?} MP={:?} EXP={:?} Name={:?} Job={:?} Level={:?}",
+        snapshot.markers.hp_bar,
+        snapshot.markers.mp_bar,
+        snapshot.markers.exp_bar,
+        snapshot.markers.name_plate,
+        snapshot.markers.class_plate,
+        snapshot.markers.level_plate,
+    );
 }
 
-fn load_image() -> Option<image::RgbaImage> {
-    if let Some(image) = capture_window_by_title("maplestory") {
-        return Some(image);
+fn load_image() -> Option<(String, image::RgbaImage)> {
+    if let Some((title, image)) = capture_game_window_info() {
+        return Some((title, image));
+    }
+
+    if Path::new("resources/last.png").exists() {
+        let image = ImageReader::open("resources/last.png")
+            .ok()?
+            .decode()
+            .ok()?
+            .to_rgba8();
+        return Some(("resources/last.png".to_string(), image));
     }
 
     if Path::new("resources/maplestory_hp_frame.png").exists() {
@@ -63,7 +70,7 @@ fn load_image() -> Option<image::RgbaImage> {
             .decode()
             .ok()?
             .to_rgba8();
-        return Some(image);
+        return Some(("resources/maplestory_hp_frame.png".to_string(), image));
     }
 
     None
@@ -74,10 +81,12 @@ fn main() {
     let mut first_frame = true;
 
     loop {
-        let image = match load_image() {
-            Some(image) => image,
+        let (source, image) = match load_image() {
+            Some(item) => item,
             None => {
-                println!("No live Maplestory window capture was available and no fallback screenshot was found.");
+                println!(
+                    "No live Maplestory window capture was available and no fallback screenshot was found."
+                );
                 println!(
                     "Open the Maplestory Chrome window or place a frame at resources/maplestory_hp_frame.png and rerun."
                 );
@@ -85,11 +94,21 @@ fn main() {
             }
         };
 
-        let markers = detect_ui_markers(&image);
+        if first_frame {
+            println!(
+                "Inspecting window/source: {} ({}x{}); OCR values and detection rectangles follow.",
+                source,
+                image.width(),
+                image.height()
+            );
+        }
+
+        let snapshot = detect_hud_snapshot(&image);
+        let markers = snapshot.markers.clone();
         println!("===============================");
-        print_hud_summary(frame_index, &markers);
+        print_hud_summary(frame_index, &snapshot);
         println!("===============================");
- 
+
         if first_frame {
             let debug_path = save_ui_debug_overlay("maplestory_ui", &image, &markers, "debug_out")
                 .expect("failed to write debug overlay");
@@ -106,23 +125,15 @@ fn main() {
 
             for (name, rect) in crops {
                 if let Some(rect) = rect {
-                    if let Ok(path) = save_crop(name, &image, rect.x, rect.y, rect.w, rect.h, "debug_out") {
+                    if let Ok(path) =
+                        save_crop(name, &image, rect.x, rect.y, rect.w, rect.h, "debug_out")
+                    {
                         println!("Saved {} crop to {}", name, path.display());
                     }
                 }
             }
             first_frame = false;
         }
-
-        print_rect("HP bar", markers.hp_bar);
-        print_percent("HP %", markers.hp_percent);
-        print_rect("MP bar", markers.mp_bar);
-        print_percent("MP %", markers.mp_percent);
-        print_rect("XP bar", markers.exp_bar);
-        print_percent("XP %", markers.exp_percent);
-        print_presence("Name plate", markers.name_plate);
-        print_presence("Job plate", markers.class_plate);
-        print_presence("Level plate", markers.level_plate);
 
         frame_index += 1;
         io::stdout().flush().unwrap();

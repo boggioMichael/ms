@@ -23,6 +23,7 @@ mod windows_capture {
     struct WindowSearchState {
         query: String,
         found: HWND,
+        title: String,
     }
 
     unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -47,6 +48,7 @@ mod windows_capture {
             .to_lowercase();
         if text.contains(&state.query) {
             state.found = hwnd;
+            state.title = text;
             return BOOL(0);
         }
 
@@ -54,10 +56,15 @@ mod windows_capture {
     }
 
     pub fn capture_window_by_title(search_title: &str) -> Option<RgbaImage> {
+        capture_window_by_title_info(search_title).map(|(_, image)| image)
+    }
+
+    pub fn capture_window_by_title_info(search_title: &str) -> Option<(String, RgbaImage)> {
         let query = search_title.to_lowercase();
         let mut state = WindowSearchState {
             query,
             found: HWND(ptr::null_mut()),
+            title: String::new(),
         };
 
         unsafe {
@@ -147,14 +154,39 @@ mod windows_capture {
             }
 
             RgbaImage::from_raw(width as u32, height as u32, buffer)
+                .map(|image| (state.title.clone(), image))
         }
+    }
+
+    /// Capture the first visible game client window using common MapleStory
+    /// title fragments. This supports standalone, launcher, and browser clients
+    /// without relying on one exact title.
+    pub fn capture_game_window_info() -> Option<(String, RgbaImage)> {
+        for title in ["maplestory", "maple", "nexon"] {
+            if let Some(capture) = capture_window_by_title_info(title) {
+                return Some(capture);
+            }
+        }
+        None
     }
 }
 
 #[cfg(target_os = "windows")]
-pub use windows_capture::capture_window_by_title;
+pub use windows_capture::{
+    capture_game_window_info, capture_window_by_title, capture_window_by_title_info,
+};
 
 #[cfg(not(target_os = "windows"))]
 pub fn capture_window_by_title(_: &str) -> Option<RgbaImage> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn capture_game_window_info() -> Option<(String, RgbaImage)> {
+    None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn capture_window_by_title_info(_: &str) -> Option<(String, RgbaImage)> {
     None
 }

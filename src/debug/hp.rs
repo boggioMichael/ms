@@ -90,10 +90,7 @@ fn hp_pixel_score(pixel: &Rgba<u8>) -> f32 {
         1.0
     };
 
-    (red_dominance * 0.75
-        + orange_dominance * 0.45
-        + redness * 0.50
-        + hue_score * 0.35)
+    (red_dominance * 0.75 + orange_dominance * 0.45 + redness * 0.50 + hue_score * 0.35)
         * (0.35 + saturation_score * 0.95)
         * (0.35 + value_score * 0.9)
         * contrast_bonus
