@@ -50,7 +50,12 @@ mod windows_capture {
         let title = OsString::from_wide(&buffer[..written as usize])
             .to_string_lossy()
             .into_owned();
-        if title.to_lowercase().contains(&state.query) {
+        let matches_query = title.to_ascii_lowercase().contains(&state.query);
+        eprintln!(
+            "[window-search] candidate {:?}; matches {:?}: {}",
+            title, state.query, matches_query
+        );
+        if matches_query {
             state.found = hwnd;
             state.title = title;
             return BOOL(0);
@@ -104,12 +109,12 @@ mod windows_capture {
         };
 
         unsafe {
-            if EnumWindows(
+            let enumeration = EnumWindows(
                 Some(enum_windows_proc),
                 LPARAM(&mut state as *mut _ as isize),
-            )
-            .is_err()
-            {
+            );
+            if enumeration.is_err() && state.found.0.is_null() {
+                eprintln!("[window-search] EnumWindows failed");
                 return None;
             }
             if state.found.0.is_null() {
@@ -119,17 +124,26 @@ mod windows_capture {
             let hwnd = state.found;
             let mut rect = RECT::default();
             if GetClientRect(hwnd, &mut rect).is_err() {
+                eprintln!("[window-search] GetClientRect failed for {:?}", state.title);
                 return None;
             }
 
             let mut origin = POINT::default();
             if !windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut origin).as_bool() {
+                eprintln!(
+                    "[window-search] ClientToScreen failed for {:?}",
+                    state.title
+                );
                 return None;
             }
 
             let width = (rect.right - rect.left) as i32;
             let height = (rect.bottom - rect.top) as i32;
             if width <= 0 || height <= 0 {
+                eprintln!(
+                    "[window-search] rejected {:?}: invalid client size {}x{}",
+                    state.title, width, height
+                );
                 return None;
             }
 
@@ -150,6 +164,7 @@ mod windows_capture {
             )
             .is_err()
             {
+                eprintln!("[window-search] BitBlt failed for {:?}", state.title);
                 let _ = SelectObject(hdc_mem, old_obj);
                 let _ = DeleteObject(hbitmap.into());
                 let _ = DeleteDC(hdc_mem);
@@ -181,6 +196,7 @@ mod windows_capture {
             let _ = ReleaseDC(None, hdc_screen);
 
             if result == 0 {
+                eprintln!("[window-search] GetDIBits failed for {:?}", state.title);
                 return None;
             }
 
