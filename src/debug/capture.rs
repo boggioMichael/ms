@@ -26,6 +26,10 @@ mod windows_capture {
         title: String,
     }
 
+    struct WindowListState {
+        titles: Vec<String>,
+    }
+
     unsafe extern "system" fn enum_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let state = unsafe { &mut *(lparam.0 as *mut WindowSearchState) };
         if unsafe { !IsWindowVisible(hwnd).as_bool() } {
@@ -43,16 +47,48 @@ mod windows_capture {
             return BOOL(1);
         }
 
-        let text = OsString::from_wide(&buffer[..written as usize])
+        let title = OsString::from_wide(&buffer[..written as usize])
             .to_string_lossy()
-            .to_lowercase();
-        if text.contains(&state.query) {
+            .into_owned();
+        if title.to_lowercase().contains(&state.query) {
             state.found = hwnd;
-            state.title = text;
+            state.title = title;
             return BOOL(0);
         }
 
         BOOL(1)
+    }
+
+    unsafe extern "system" fn list_windows_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let state = unsafe { &mut *(lparam.0 as *mut WindowListState) };
+        if unsafe { !IsWindowVisible(hwnd).as_bool() } {
+            return BOOL(1);
+        }
+        let len = unsafe { GetWindowTextLengthW(hwnd) };
+        if len <= 0 {
+            return BOOL(1);
+        }
+        let mut buffer = vec![0u16; (len + 1) as usize];
+        let written = unsafe { GetWindowTextW(hwnd, &mut buffer) };
+        if written > 0 {
+            state.titles.push(
+                OsString::from_wide(&buffer[..written as usize])
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+        BOOL(1)
+    }
+
+    fn visible_window_titles() -> Vec<String> {
+        let mut state = WindowListState { titles: Vec::new() };
+        unsafe {
+            let _ = EnumWindows(
+                Some(list_windows_proc),
+                LPARAM(&mut state as *mut _ as isize),
+            );
+        }
+        state.titles
     }
 
     pub fn capture_window_by_title(search_title: &str) -> Option<RgbaImage> {
@@ -162,11 +198,40 @@ mod windows_capture {
     /// title fragments. This supports standalone, launcher, and browser clients
     /// without relying on one exact title.
     pub fn capture_game_window_info() -> Option<(String, RgbaImage)> {
-        for title in ["maplestory", "maple", "nexon"] {
-            if let Some(capture) = capture_window_by_title_info(title) {
+        let mut titles = Vec::new();
+        if let Ok(title) = std::env::var("MS_WINDOW_TITLE") {
+            if !title.trim().is_empty() {
+                titles.push(title);
+            }
+        }
+        titles.extend(
+            ["maplestory", "maple", "nexon", "maplestory worlds"]
+                .into_iter()
+                .map(str::to_string),
+        );
+
+        eprintln!("[window-search] searching {} title patterns", titles.len());
+        for title in titles {
+            eprintln!("[window-search] trying title pattern: {title:?}");
+            if let Some(capture) = capture_window_by_title_info(&title) {
+                eprintln!(
+                    "[window-search] selected window {:?} ({}x{})",
+                    capture.0,
+                    capture.1.width(),
+                    capture.1.height()
+                );
                 return Some(capture);
             }
         }
+        let candidates = visible_window_titles();
+        eprintln!(
+            "[window-search] no matching window found; visible titled windows: {}",
+            if candidates.is_empty() {
+                "<none>".to_string()
+            } else {
+                candidates.join(" | ")
+            }
+        );
         None
     }
 }
