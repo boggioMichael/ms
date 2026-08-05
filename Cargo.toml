@@ -1,6 +1,31 @@
 [package]
-name = "ms"
+name = "maplesyrup"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+image = "0.24"
+log = "0.4"
+env_logger = "0.10"
+thiserror = "1.0"
+winapi = { version = "0.3", features = ["winuser", "wingdi", "windef", "winnt", "errhandlingapi"] }
+chrono = "0.4"
+anyhow = "1.0"
+windows = { version = "0.48", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
+    "Graphics_DirectX"
+]}
+
+[profile.release]
+opt-level = 3
