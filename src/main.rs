@@ -45,22 +45,11 @@ fn load_image() -> Option<(String, image::RgbaImage)> {
         return Some((title, image));
     }
 
-    if Path::new("resources/last.png").exists() {
-        let image = ImageReader::open("resources/last.png")
-            .ok()?
-            .decode()
-            .ok()?
-            .to_rgba8();
-        return Some(("resources/last.png".to_string(), image));
-    }
-
-    if Path::new("resources/maplestory_hp_frame.png").exists() {
-        let image = ImageReader::open("resources/maplestory_hp_frame.png")
-            .ok()?
-            .decode()
-            .ok()?
-            .to_rgba8();
-        return Some(("resources/maplestory_hp_frame.png".to_string(), image));
+    let path = std::env::args().nth(1)?;
+    let path = Path::new(&path);
+    if path.exists() {
+        let image = ImageReader::open(path).ok()?.decode().ok()?.to_rgba8();
+        return Some((path.display().to_string(), image));
     }
 
     None
@@ -74,11 +63,9 @@ fn main() {
         let (source, image) = match load_image() {
             Some(item) => item,
             None => {
+                println!("No live MapleStory window capture was available.");
                 println!(
-                    "No live Maplestory window capture was available and no fallback screenshot was found."
-                );
-                println!(
-                    "Open the Maplestory Chrome window or place a frame at resources/maplestory_hp_frame.png and rerun."
+                    "Open the game window, or pass a screenshot path explicitly: cargo run -- resources/last.png"
                 );
                 return;
             }
