@@ -357,8 +357,18 @@ fn find_color_regions(
         .collect()
 }
 
-fn read_metric_from_ocr(text: Option<&str>, label: &str) -> Option<HudMetric> {
-    let text = text?.trim().to_string();
+fn read_metric_from_ocr(image: &RgbaImage, rect: Option<Rect>, label: &str) -> Option<HudMetric> {
+    let rect = rect?;
+    let text = ocr::ocr_region(image, rect.x, rect.y, rect.w, rect.h)?
+        .text
+        .trim()
+        .to_string();
+    if !text
+        .to_ascii_lowercase()
+        .contains(&label.to_ascii_lowercase())
+    {
+        return None;
+    }
     let percent = parse_percentage_after_label(&text, label);
     let value = parse_value_after_label(&text, label);
 
@@ -589,12 +599,8 @@ fn parse_number_token(token: &str) -> Option<u64> {
 
 fn parse_percentage_after_label(text: &str, label: &str) -> Option<f32> {
     let lowered = text.to_lowercase();
-    let label_pos = lowered.find(&label.to_lowercase());
-    let mut search = if let Some(pos) = label_pos {
-        &text[pos + label.len().min(text.len().saturating_sub(pos))..]
-    } else {
-        text
-    };
+    let label_pos = lowered.find(&label.to_lowercase())?;
+    let mut search = &text[label_pos + label.len().min(text.len().saturating_sub(label_pos))..];
 
     while let Some(start) = search.find(|c: char| c.is_ascii_digit()) {
         search = &search[start..];
@@ -624,11 +630,8 @@ fn parse_percentage_after_label(text: &str, label: &str) -> Option<f32> {
 
 fn parse_value_after_label(text: &str, label: &str) -> Option<u64> {
     let lowered = text.to_lowercase();
-    let mut search = if let Some(pos) = lowered.find(&label.to_lowercase()) {
-        &text[pos + label.len().min(text.len().saturating_sub(pos))..]
-    } else {
-        text
-    };
+    let pos = lowered.find(&label.to_lowercase())?;
+    let mut search = &text[pos + label.len().min(text.len().saturating_sub(pos))..];
 
     while let Some(start) = search.find(|c: char| c.is_ascii_digit()) {
         search = &search[start..];
@@ -648,18 +651,15 @@ fn parse_value_after_label(text: &str, label: &str) -> Option<u64> {
 /// Build a full HUD snapshot from a single frame.
 pub fn detect_hud_snapshot(image: &RgbaImage) -> HudSnapshot {
     let markers = detect_ui_markers(image);
-    let ocr_result = ocr::ocr_region(image, 0, 0, image.width(), image.height());
-    let ocr_text = ocr_result.map(|result| result.text);
 
     HudSnapshot {
         markers: markers.clone(),
-        hp: read_metric_from_ocr(ocr_text.as_deref(), "HP"),
-        mp: read_metric_from_ocr(ocr_text.as_deref(), "MP"),
-        exp: read_metric_from_ocr(ocr_text.as_deref(), "EXP"),
-        player_name: read_labeled_text(ocr_text.as_deref(), "name"),
-        character_class: read_labeled_text(ocr_text.as_deref(), "job"),
-        level: read_labeled_text(ocr_text.as_deref(), "level")
-            .or_else(|| read_labeled_text(ocr_text.as_deref(), "lv")),
+        hp: read_metric_from_ocr(image, markers.hp_bar, "HP"),
+        mp: read_metric_from_ocr(image, markers.mp_bar, "MP"),
+        exp: read_metric_from_ocr(image, markers.exp_bar, "EXP"),
+        player_name: None,
+        character_class: None,
+        level: None,
     }
 }
 
@@ -678,9 +678,18 @@ pub fn detect_ui_markers(image: &RgbaImage) -> UiMarkers {
         w: width.saturating_mul(3) / 4,
         h: height.saturating_sub(height.saturating_mul(9) / 10),
     };
-    let hp_bar = find_color_bar(image, status_band, (340.0, 30.0), 0.35, 0.30);
-    let mp_bar = find_color_bar(image, status_band, (190.0, 250.0), 0.30, 0.30);
-    let exp_bar = find_color_bar(image, status_band, (40.0, 80.0), 0.25, 0.25);
+    let metric_region = |fill: Rect, min_width: u32| Rect {
+        x: fill.x.saturating_sub(6),
+        y: fill.y.saturating_sub(16),
+        w: fill.w.saturating_add(12).max(min_width),
+        h: fill.h.saturating_add(24),
+    };
+    let hp_bar = find_color_bar(image, status_band, (340.0, 30.0), 0.35, 0.30)
+        .map(|fill| metric_region(fill, 140));
+    let mp_bar = find_color_bar(image, status_band, (190.0, 250.0), 0.30, 0.30)
+        .map(|fill| metric_region(fill, 140));
+    let exp_bar = find_color_bar(image, status_band, (40.0, 80.0), 0.25, 0.25)
+        .map(|fill| metric_region(fill, width / 8));
 
     let _name_plate = find_text_block_in_regions(
         image,

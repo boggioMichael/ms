@@ -1,6 +1,6 @@
 use image::io::Reader as ImageReader;
-use ms::debug::{capture_game_window_info, crop::save_crop};
-use ms::hud::{detect_hud_snapshot, save_ui_debug_overlay};
+use ms::debug::capture_game_window_info;
+use ms::hud::{annotate_ui_markers, detect_hud_snapshot};
 use std::io::{self, Write};
 use std::path::Path;
 use std::thread;
@@ -17,8 +17,7 @@ fn format_metric(metric: &Option<ms::hud::HudMetric>) -> String {
                 .value
                 .map(|v| v.to_string())
                 .unwrap_or_else(|| "unknown".into());
-            let raw = metric.raw_text.as_deref().unwrap_or("no OCR text");
-            format!("{value} / {percent} (OCR: {raw})")
+            format!("{value} / {percent}")
         }
         None => "unknown".into(),
     }
@@ -37,16 +36,7 @@ fn print_hud_summary(frame_index: usize, snapshot: &ms::hud::HudSnapshot) {
     let level = format_text(&snapshot.level);
 
     println!(
-        "[frame {frame_index}] HP: {hp} | MP: {mp} | XP: {xp} | Name: {name} | Job: {job} | Level: {level}"
-    );
-    println!(
-        "[frame {frame_index}] rectangles: HP={:?} MP={:?} EXP={:?} Name={:?} Job={:?} Level={:?}",
-        snapshot.markers.hp_bar,
-        snapshot.markers.mp_bar,
-        snapshot.markers.exp_bar,
-        snapshot.markers.name_plate,
-        snapshot.markers.class_plate,
-        snapshot.markers.level_plate,
+        "[{frame_index}] HP {hp} | MP {mp} | EXP {xp} | Name {name} | Job {job} | Level {level}"
     );
 }
 
@@ -109,31 +99,11 @@ fn main() {
         print_hud_summary(frame_index, &snapshot);
         println!("===============================");
 
-        if first_frame {
-            let debug_path = save_ui_debug_overlay("maplestory_ui", &image, &markers, "debug_out")
-                .expect("failed to write debug overlay");
-            println!("Saved UI debug overlay to {}", debug_path.display());
-
-            let crops = [
-                ("hp_bar", markers.hp_bar),
-                ("mp_bar", markers.mp_bar),
-                ("xp_bar", markers.exp_bar),
-                ("name_plate", markers.name_plate),
-                ("job_plate", markers.class_plate),
-                ("level_plate", markers.level_plate),
-            ];
-
-            for (name, rect) in crops {
-                if let Some(rect) = rect {
-                    if let Ok(path) =
-                        save_crop(name, &image, rect.x, rect.y, rect.w, rect.h, "debug_out")
-                    {
-                        println!("Saved {} crop to {}", name, path.display());
-                    }
-                }
-            }
-            first_frame = false;
-        }
+        std::fs::create_dir_all("debug_out").expect("failed to create debug output directory");
+        annotate_ui_markers(&image, &markers)
+            .save("debug_out/last-frame.png")
+            .expect("failed to write last-frame overlay");
+        first_frame = false;
 
         frame_index += 1;
         io::stdout().flush().unwrap();
