@@ -195,33 +195,20 @@ mod windows_capture {
     }
 
     /// Capture the first visible game client window using common MapleStory
-    /// title fragments. This supports standalone, launcher, and browser clients
-    /// without relying on one exact title.
+    /// title substring without requiring an exact title.
     pub fn capture_game_window_info() -> Option<(String, RgbaImage)> {
-        let mut titles = Vec::new();
-        if let Ok(title) = std::env::var("MS_WINDOW_TITLE") {
-            if !title.trim().is_empty() {
-                titles.push(title);
-            }
-        }
-        titles.extend(
-            ["maplestory", "maple", "nexon", "maplestory worlds"]
-                .into_iter()
-                .map(str::to_string),
+        const GAME_TITLE_SUBSTRING: &str = "maplestory";
+        eprintln!(
+            "[window-search] searching visible titles for case-insensitive substring: {GAME_TITLE_SUBSTRING:?}"
         );
-
-        eprintln!("[window-search] searching {} title patterns", titles.len());
-        for title in titles {
-            eprintln!("[window-search] trying title pattern: {title:?}");
-            if let Some(capture) = capture_window_by_title_info(&title) {
-                eprintln!(
-                    "[window-search] selected window {:?} ({}x{})",
-                    capture.0,
-                    capture.1.width(),
-                    capture.1.height()
-                );
-                return Some(capture);
-            }
+        if let Some(capture) = capture_window_by_title_info(GAME_TITLE_SUBSTRING) {
+            eprintln!(
+                "[window-search] selected window {:?} ({}x{})",
+                capture.0,
+                capture.1.width(),
+                capture.1.height()
+            );
+            return Some(capture);
         }
         let candidates = visible_window_titles();
         eprintln!(
