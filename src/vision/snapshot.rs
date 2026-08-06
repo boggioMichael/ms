@@ -77,7 +77,7 @@ impl PerceptionPipeline {
         let footholds = self.footholds.detect(image);
 
         let motion_count = motion.value.as_deref().map(|v| v.len()).unwrap_or(0);
-        let diff_magnitude = 0.1; // TODO: expose actual diff magnitude from MotionDetector
+        let diff_magnitude = self.motion.last_diff_magnitude();
         let combat_intensity = self.combat.observe(motion_count, diff_magnitude);
 
         WorldState {

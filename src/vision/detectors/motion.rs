@@ -71,6 +71,7 @@ pub struct MotionDetector {
     config: MotionConfig,
     previous_frame: Option<RgbaImage>,
     tracker: ObjectTracker,
+    last_diff_magnitude: f32,
 }
 
 impl MotionDetector {
@@ -79,6 +80,7 @@ impl MotionDetector {
             tracker: ObjectTracker::new(config.track_match_distance, config.track_grace_frames),
             config,
             previous_frame: None,
+            last_diff_magnitude: 0.0,
         }
     }
 
@@ -90,16 +92,21 @@ impl MotionDetector {
     pub fn detect(&mut self, image: &RgbaImage) -> Detection<Vec<MovingEntity>> {
         let Some(previous) = self.previous_frame.as_ref() else {
             self.previous_frame = Some(image.clone());
+            self.last_diff_magnitude = 0.0;
             return Detection::missing(Source::Motion, "warming up: no previous frame to diff against yet");
         };
 
         let blobs = match motion_mask(previous, image, self.config.diff_threshold) {
-            Some(mask) => extract_blobs(&mask, &self.config),
+            Some(mask) => {
+                self.last_diff_magnitude = compute_diff_magnitude(&mask, image);
+                extract_blobs(&mask, &self.config)
+            }
             None => {
                 // Capture resolution changed between frames (e.g. window
                 // resize); restart the baseline rather than reporting stale
                 // motion computed against mismatched dimensions.
                 self.previous_frame = Some(image.clone());
+                self.last_diff_magnitude = 0.0;
                 return Detection::missing(Source::Motion, "frame size changed since previous frame");
             }
         };
@@ -133,6 +140,10 @@ impl MotionDetector {
         }
     }
 
+    pub fn last_diff_magnitude(&self) -> f32 {
+        self.last_diff_magnitude
+    }
+
     pub fn tracked_entity_count(&self) -> usize {
         self.tracker.tracks().len()
     }
@@ -159,6 +170,16 @@ fn average_confidence(tracks: &[Track]) -> Confidence {
     }
     let total: f32 = tracks.iter().map(|t| t.confidence.value()).sum();
     Confidence::new(total / tracks.len() as f32)
+}
+
+fn compute_diff_magnitude(mask: &image::GrayImage, _reference: &RgbaImage) -> f32 {
+    let (width, height) = mask.dimensions();
+    if width == 0 || height == 0 {
+        return 0.0;
+    }
+    let total_pixels = width as f32 * height as f32;
+    let moved_pixels: u32 = mask.iter().map(|&v| if v > 0 { 1 } else { 0 }).sum();
+    moved_pixels as f32 / total_pixels
 }
 
 fn extract_blobs(mask: &image::GrayImage, config: &MotionConfig) -> Vec<Rect> {
