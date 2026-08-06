@@ -97,6 +97,3 @@ out/
 !.vscode/extensions.json
 !.vscode/tasks.json
 !.vscode/launch.json
-# Debug output artifacts (generated at runtime)
-debug_out/
-
