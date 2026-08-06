@@ -102,6 +102,12 @@ impl FPSCounter {
         let avg = self.ma.average();
         if avg <= 0.0 { 0.0 } else { 1.0 / avg }
     }
+
+    /// Get current FPS estimate
+    pub fn fps(&self) -> f64 {
+        let avg = self.ma.average();
+        if avg <= 0.0 { 0.0 } else { 1.0 / avg }
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,21 @@
+REAL-TIME CAPABILITY ANALYSIS
+==============================
+
+Test Duration: 100 iterations
+Frame Format: 1366x767
+Source: resources/last.png
+
+LATENCY STATISTICS:
+- Min:         76.277 ms
+- Max:         557.898 ms
+- Mean:        136.284 ms
+- Median:      86.508 ms
+- P90:         247.235 ms
+- P95:         300.284 ms
+- P99:         502.461 ms
+- Std Dev:     98.085 ms
+
+REAL-TIME CAPABILITY:
+- 30 FPS achievable: 0/100 frames (0.0%)
+- 50 FPS achievable: 0/100 frames (0.0%)
+- 60 FPS achievable: 0/100 frames (0.0%)
