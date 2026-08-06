@@ -53,6 +53,7 @@ impl FrameTimer {
 }
 
 /// Fixed-size moving average. Small, stack-allocated buffer; zero allocs.
+#[derive(Debug)]
 pub struct MovingAverage {
     window: Vec<f64>,
     pos: usize,

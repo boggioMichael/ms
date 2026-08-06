@@ -16,7 +16,7 @@ fn finds_hp_bar_in_resource_photo() {
 
     let snapshot = detect_hud_snapshot(&image);
     let markers = snapshot.markers;
-    let debug_path = save_ui_debug_overlay("maplestory_ui", &image, &markers, "debug_out")
+    let debug_path = save_ui_debug_overlay("maplestory_ui", &image, &markers, "out")
         .expect("failed to save UI debug overlay");
 
     assert!(
