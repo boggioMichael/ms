@@ -40,6 +40,21 @@ fn print_hud_summary(frame_index: usize, snapshot: &ms::hud::HudSnapshot) {
     );
 }
 
+fn write_debug_overlay(image: &image::RgbaImage, markers: &ms::hud::UiMarkers, frame_index: usize) {
+    let annotated = annotate_ui_markers(image, markers);
+    let frame_path = format!("debug_out/last-frame-{frame_index:06}.png");
+
+    if let Err(err) = annotated.save(&frame_path) {
+        eprintln!("warning: failed to write frame overlay {frame_path}: {err}");
+        return;
+    }
+
+    // Best-effort stable filename for tools/scripts that read a fixed path.
+    if let Err(err) = annotated.save("debug_out/last-frame.png") {
+        eprintln!("warning: failed to refresh debug_out/last-frame.png: {err}");
+    }
+}
+
 fn load_image() -> Option<(String, image::RgbaImage)> {
     if let Some((title, image)) = capture_game_window_info() {
         return Some((title, image));
@@ -87,9 +102,7 @@ fn main() {
         println!("===============================");
 
         std::fs::create_dir_all("debug_out").expect("failed to create debug output directory");
-        annotate_ui_markers(&image, &markers)
-            .save("debug_out/last-frame.png")
-            .expect("failed to write last-frame overlay");
+        write_debug_overlay(&image, &markers, frame_index);
         first_frame = false;
 
         frame_index += 1;

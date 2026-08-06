@@ -357,6 +357,7 @@ fn find_color_regions(
         .collect()
 }
 
+#[allow(dead_code)]
 fn read_metric_from_ocr(image: &RgbaImage, rect: Option<Rect>, label: &str) -> Option<HudMetric> {
     let rect = rect?;
     let text = ocr::ocr_region(image, rect.x, rect.y, rect.w, rect.h)?
@@ -380,6 +381,25 @@ fn read_metric_from_ocr(image: &RgbaImage, rect: Option<Rect>, label: &str) -> O
     })
 }
 
+#[allow(dead_code)]
+fn read_metric_with_fallback(image: &RgbaImage, rect: Option<Rect>, label: &str) -> Option<HudMetric> {
+    if let Some(metric) = read_metric_from_ocr(image, rect, label) {
+        return Some(metric);
+    }
+
+    let text = metric_ocr_text(image, rect, label)?;
+    let percent = parse_percentage_after_label(&text, label);
+    let value = parse_value_after_label(&text, label);
+
+    Some(HudMetric {
+        label: label.to_string(),
+        percent,
+        value,
+        raw_text: (!text.is_empty()).then_some(text),
+    })
+}
+
+#[allow(dead_code)]
 fn read_labeled_text(text: Option<&str>, label: &str) -> Option<String> {
     let text = text?.trim();
     let lowered = text.to_lowercase();
@@ -404,41 +424,7 @@ fn read_labeled_text(text: Option<&str>, label: &str) -> Option<String> {
     (!value.is_empty()).then_some(value)
 }
 
-fn ocr_label_rect(words: &[ocr::OcrWord], labels: &[&str]) -> Option<Rect> {
-    let label_index = words.iter().position(|word| {
-        let normalized = word
-            .text
-            .trim_matches(|character: char| !character.is_ascii_alphanumeric())
-            .to_ascii_lowercase();
-        labels.iter().any(|label| normalized == *label)
-    })?;
-    let label = &words[label_index];
-    let value = words
-        .iter()
-        .skip(label_index + 1)
-        .find(|word| {
-            let vertically_aligned = word.y.abs_diff(label.y) <= label.h.saturating_mul(2);
-            vertically_aligned && word.x >= label.x.saturating_add(label.w)
-        })
-        .or_else(|| words.get(label_index + 1))?;
-    let x = label.x.min(value.x);
-    let y = label.y.min(value.y);
-    let right = label
-        .x
-        .saturating_add(label.w)
-        .max(value.x.saturating_add(value.w));
-    let bottom = label
-        .y
-        .saturating_add(label.h)
-        .max(value.y.saturating_add(value.h));
-    Some(Rect {
-        x,
-        y,
-        w: right.saturating_sub(x),
-        h: bottom.saturating_sub(y),
-    })
-}
-
+#[allow(dead_code)]
 fn metric_candidate_regions(
     image: &RgbaImage,
     rect: Option<Rect>,
@@ -489,6 +475,7 @@ fn metric_candidate_regions(
         .collect()
 }
 
+#[allow(dead_code)]
 fn score_metric_text(text: &str, label: &str) -> i32 {
     let lowered = text.to_lowercase();
     let label_lower = label.to_lowercase();
@@ -511,6 +498,7 @@ fn score_metric_text(text: &str, label: &str) -> i32 {
     score
 }
 
+#[allow(dead_code)]
 fn metric_ocr_text(image: &RgbaImage, rect: Option<Rect>, label: &str) -> Option<String> {
     let mut best_text = None;
     let mut best_score = i32::MIN;
@@ -529,6 +517,7 @@ fn metric_ocr_text(image: &RgbaImage, rect: Option<Rect>, label: &str) -> Option
     best_text.filter(|text| !text.trim().is_empty())
 }
 
+#[allow(dead_code)]
 fn text_ocr_text(image: &RgbaImage, rect: Option<Rect>) -> Option<String> {
     let mut regions = Vec::new();
     if let Some(rect) = rect {
@@ -572,6 +561,7 @@ fn text_ocr_text(image: &RgbaImage, rect: Option<Rect>) -> Option<String> {
     best_text.filter(|text| !text.trim().is_empty())
 }
 
+#[allow(dead_code)]
 fn score_text_region(text: &str) -> i32 {
     let lowered = text.to_lowercase();
     let alpha_count = lowered.chars().filter(|c| c.is_ascii_alphabetic()).count() as i32;
@@ -651,12 +641,20 @@ fn parse_value_after_label(text: &str, label: &str) -> Option<u64> {
 /// Build a full HUD snapshot from a single frame.
 pub fn detect_hud_snapshot(image: &RgbaImage) -> HudSnapshot {
     let markers = detect_ui_markers(image);
+    let metric_from_percent = |label: &str, percent: Option<f32>| {
+        percent.map(|percent| HudMetric {
+            label: label.to_string(),
+            percent: Some(percent),
+            value: None,
+            raw_text: None,
+        })
+    };
 
     HudSnapshot {
         markers: markers.clone(),
-        hp: read_metric_from_ocr(image, markers.hp_bar, "HP"),
-        mp: read_metric_from_ocr(image, markers.mp_bar, "MP"),
-        exp: read_metric_from_ocr(image, markers.exp_bar, "EXP"),
+        hp: metric_from_percent("HP", markers.hp_percent),
+        mp: metric_from_percent("MP", markers.mp_percent),
+        exp: metric_from_percent("EXP", markers.exp_percent),
         player_name: None,
         character_class: None,
         level: None,
