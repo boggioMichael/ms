@@ -5,6 +5,7 @@ MapleSyrup is a real-time AI gaming companion that observes MapleStory entirely 
 It is non-invasive by design: no game-memory reads, code injection, or input automation. The current MVP captures a game window or uses a real image fixture, runs a confidence-scored vision pipeline, and produces inspectable world and game-state output.
 
 ## Narrated MVP demo
+<img width="1672" height="941" alt="image" src="https://github.com/user-attachments/assets/a7a5e232-508a-41d5-85ba-4ae9ee255405" />
 
 [![Watch MapleStory and MapleSyrup running together](https://img.youtube.com/vi/yXIR59gGKhE/maxresdefault.jpg)](https://youtu.be/yXIR59gGKhE)
 
