@@ -4,6 +4,8 @@
 
 The vision subsystem is a professional, production-grade perception pipeline for MapleStory screen analysis. It replaces the earlier "debug toolkit" framing with a rigorous, confidence-aware, temporally-consistent architecture designed to support a scalable AI decision-making layer.
 
+A detailed redesign proposal for the perception strategy is documented in [perception-redesign.md](perception-redesign.md). That document is the authoritative design reference for the shift from generic OCR toward deterministic rendering-based perception.
+
 Every detector in this system returns a [`Detection<T>`] struct that carries:
 - **value**: The detected information (or `None` if detection failed)
 - **confidence**: A `Confidence` score (`f32` in `[0.0, 1.0]`)
@@ -273,7 +275,7 @@ The pipeline is designed to be called once per captured frame.
 ## Testing
 
 - **Unit tests**: Every detector module has unit tests validating core logic.
-- **Integration test**: `tests/hp_bar_integration.rs` exercises HUD detection on a real captured screenshot (`resources/last.png`).
+- **Integration test**: `tests/hp_bar_integration.rs` exercises HUD detection on a real captured screenshot (`resources/maplestory.png`).
 - **All tests pass**: `cargo test` runs 36 unit tests + 1 integration test.
 
 ## Extending Documentation

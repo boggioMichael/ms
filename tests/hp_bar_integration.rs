@@ -3,9 +3,9 @@ use ms::hud::{detect_hud_snapshot, save_ui_debug_overlay};
 
 #[test]
 fn finds_hp_bar_in_resource_photo() {
-    let path = std::path::Path::new("resources/last.png");
+    let path = std::path::Path::new("resources/maplestory.png");
     if !path.exists() {
-        panic!("resources/last.png is missing");
+        panic!("resources/maplestory.png is missing");
     }
 
     let image = ImageReader::open(path)

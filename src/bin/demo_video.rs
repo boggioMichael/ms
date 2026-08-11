@@ -1,13 +1,11 @@
-use image::RgbaImage;
 use ms::vision::PerceptionPipeline;
 use ms::game_state::GameState;
-use std::path::Path;
 
 fn main() {
     println!("🎬 Creating REAL demo video from actual MapleStory frame...");
     
     // Load the real MapleStory frame from resources
-    let frame_path = "resources/last.png";
+    let frame_path = "resources/maplestory.png";
     println!("📸 Loading real frame: {}", frame_path);
     
     let frame = match image::open(frame_path) {
@@ -91,7 +89,7 @@ fn main() {
             println!("⏱️  Duration: 5 seconds");
             println!("📐 Resolution: {}x{}", frame.width(), frame.height());
             println!("🎬 Framerate: 30 FPS");
-            println!("🎯 Source: Real MapleStory screenshot from resources/last.png");
+            println!("🎯 Source: Real MapleStory screenshot from resources/maplestory.png");
             println!("\n🚀 Play with any video player:");
             println!("   ffplay demo.mp4");
             println!("   vlc demo.mp4");

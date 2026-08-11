@@ -80,7 +80,7 @@ fn main() {
             None => {
                 println!("No live MapleStory window capture was available.");
                 println!(
-                    "Open the game window, or pass a screenshot path explicitly: cargo run -- resources/last.png"
+                    "Open the game window, or pass a screenshot path explicitly: cargo run -- resources/maplestory.png"
                 );
                 return;
             }

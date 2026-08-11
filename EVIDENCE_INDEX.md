@@ -214,7 +214,7 @@ Each evidence file has:
 **Evidence Chain:**
 1. **Generation:** `cargo run --release --bin measure_evidence`
 2. **Source Code:** `src/bin/measure_evidence.rs` (lines 57-72)
-3. **Input:** `resources/last.png` (real MapleStory frame)
+3. **Input:** `resources/maplestory.png` (real MapleStory frame)
 4. **Process:** 100 frame measurements using `Instant::now()`
 5. **Output:** CSV file with 100 timings
 6. **Analysis:** Calculate mean = sum / count

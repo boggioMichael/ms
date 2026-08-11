@@ -8,6 +8,7 @@
 //! "very confident the HP is 50%" and "found a red bar, could be HP or
 //! something else".
 
+pub mod bar_geometry;
 pub mod detectors;
 pub mod diff;
 pub mod geometry;

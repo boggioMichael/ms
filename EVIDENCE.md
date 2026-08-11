@@ -4,7 +4,7 @@
 
 **Measurement Environment:**
 - **Hardware:** Windows 10 x86_64
-- **Test Data:** `resources/last.png` (real MapleStory screenshot)
+- **Test Data:** `resources/maplestory.png` (real MapleStory screenshot)
 - **Iterations:** 100 frames
 - **Build:** Release profile (optimized, no debug symbols)
 - **Evidence Location:** `docs/demo_evidence/`
@@ -33,7 +33,7 @@ Each claim is labeled with one of:
 
 **Evidence:**
 ```
-✅ [MEASURED] Frame loaded successfully from resources/last.png
+✅ [MEASURED] Frame loaded successfully from resources/maplestory.png
 ✅ [MEASURED] Frame resolution: 1366x767 pixels
 ✅ [MEASURED] Frame memory: 4190888 bytes (4.1 MB)
 ```

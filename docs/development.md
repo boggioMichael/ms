@@ -6,7 +6,7 @@ This crate provides a professional, production-grade perception pipeline for ana
 
 **Key concept**: Every detector returns a [`Detection<T>`] wrapping confidence, reliability, timestamp, and failure reasons. Downstream AI can distinguish "very confident the HP is 50%" from "found a red bar, might be HP" instead of getting binary "found/not found" signals.
 
-See [vision-architecture.md](vision-architecture.md) for the complete system design, detector responsibilities, known limitations, and extension guide.
+See [vision-architecture.md](vision-architecture.md) for the existing detector-oriented design and [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md) for the revised evidence-first architecture that addresses the MARB review findings.
 
 ## Module Layout
 

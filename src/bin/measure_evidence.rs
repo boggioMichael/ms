@@ -1,8 +1,6 @@
-use image::RgbaImage;
 use ms::vision::PerceptionPipeline;
 use ms::game_state::GameState;
 use std::fs;
-use std::path::Path;
 use std::time::Instant;
 
 /// Collect comprehensive evidence for every claim
@@ -14,7 +12,7 @@ fn main() {
     
     // ========== CLAIM 1: Real Frame Loading ==========
     println!("📸 [CLAIM 1] Loading actual MapleStory frame...");
-    let frame_path = "resources/last.png";
+    let frame_path = "resources/maplestory.png";
     let frame = match image::open(frame_path) {
         Ok(img) => {
             println!("✅ [MEASURED] Frame loaded successfully from {}", frame_path);
@@ -196,7 +194,7 @@ fn main() {
          \n\
          Test Duration: {} iterations\n\
          Frame Format: {}x{}\n\
-         Source: resources/last.png\n\
+         Source: resources/maplestory.png\n\
          \n\
          LATENCY STATISTICS:\n\
          - Min:         {:.3} ms\n\
