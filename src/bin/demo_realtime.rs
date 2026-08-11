@@ -14,7 +14,7 @@
 use ms::capture::capture_game_window_info;
 use ms::game_state::*;
 use ms::logging::init_tracing;
-use ms::util::timing::{FrameTimer, FPSCounter};
+use ms::util::timing::{FPSCounter, FrameTimer};
 use ms::vision::snapshot::PerceptionPipeline;
 use std::time::Instant;
 
@@ -33,7 +33,12 @@ fn main() {
 
     loop {
         if let Some((window_title, image)) = capture_game_window_info() {
-            println!("\n✅ Captured: {} ({}x{})", window_title, image.width(), image.height());
+            println!(
+                "\n✅ Captured: {} ({}x{})",
+                window_title,
+                image.width(),
+                image.height()
+            );
             println!("\n🚀 Starting perception pipeline...\n");
 
             run_perception_loop(&image);
@@ -69,14 +74,14 @@ fn run_perception_loop(initial_image: &image::RgbaImage) {
         match capture_game_window_info() {
             Some((window_title, image)) => {
                 // Update title every 30 frames to reduce console spam
-                if frame_count_since_title_update == 0 {
-                    if window_title != last_window_title {
-                        println!(
-                            "📍 Window: {} ({}x{})",
-                            window_title, image.width(), image.height()
-                        );
-                        last_window_title = window_title;
-                    }
+                if frame_count_since_title_update == 0 && window_title != last_window_title {
+                    println!(
+                        "📍 Window: {} ({}x{})",
+                        window_title,
+                        image.width(),
+                        image.height()
+                    );
+                    last_window_title = window_title;
                 }
                 frame_count_since_title_update = (frame_count_since_title_update + 1) % 30;
 
@@ -144,7 +149,12 @@ fn process_and_display_frame(
             character: SerializedCharacter {
                 name: world_state.hud.player_name.value.clone(),
                 job: world_state.hud.character_class.value.clone(),
-                level: world_state.hud.level.value.as_ref().and_then(|l| l.parse::<u32>().ok()),
+                level: world_state
+                    .hud
+                    .level
+                    .value
+                    .as_ref()
+                    .and_then(|l| l.parse::<u32>().ok()),
                 name_confidence: world_state.hud.player_name.confidence.value(),
                 job_confidence: world_state.hud.character_class.confidence.value(),
                 level_confidence: world_state.hud.level.confidence.value(),
@@ -183,32 +193,20 @@ fn process_and_display_frame(
         },
         dialog: SerializedDialogState {
             present: world_state.dialog.is_present(),
-            x: world_state
-                .dialog
-                .value
-                .as_ref()
-                .map(|d| d.bounds.x),
-            y: world_state
-                .dialog
-                .value
-                .as_ref()
-                .map(|d| d.bounds.y),
-            width: world_state
-                .dialog
-                .value
-                .as_ref()
-                .map(|d| d.bounds.w),
-            height: world_state
-                .dialog
-                .value
-                .as_ref()
-                .map(|d| d.bounds.h),
+            x: world_state.dialog.value.as_ref().map(|d| d.bounds.x),
+            y: world_state.dialog.value.as_ref().map(|d| d.bounds.y),
+            width: world_state.dialog.value.as_ref().map(|d| d.bounds.w),
+            height: world_state.dialog.value.as_ref().map(|d| d.bounds.h),
             dialog_kind: world_state
                 .dialog
                 .value
                 .as_ref()
                 .map(|d| format!("{:?}", d.kind)),
-            text: world_state.dialog.value.as_ref().and_then(|d| d.text.clone()),
+            text: world_state
+                .dialog
+                .value
+                .as_ref()
+                .and_then(|d| d.text.clone()),
             confidence: world_state.dialog.confidence.value(),
         },
         panels: SerializedPanelState {
@@ -296,13 +294,21 @@ fn process_and_display_frame(
     fps_counter.add_frame_seconds(frame_timer.mark().as_secs_f64());
     let current_fps = fps_counter.fps();
 
-    println!("📊 Performance: FPS={:.1} | Pipeline={:.2}ms",
+    println!(
+        "📊 Performance: FPS={:.1} | Pipeline={:.2}ms",
         current_fps, game_state.processing_time_ms
     );
-    println!("\n📋 Compact JSON State:\n{}\n", game_state.to_json_compact());
+    println!(
+        "\n📋 Compact JSON State:\n{}\n",
+        game_state.to_json_compact()
+    );
 
     // Periodically show full pretty JSON
-    if *frame_number % 10 == 0 {
-        println!("📄 Full Structured State (Frame {}):\n{}\n", frame_number, game_state.to_json_pretty());
+    if (*frame_number).is_multiple_of(10) {
+        println!(
+            "📄 Full Structured State (Frame {}):\n{}\n",
+            frame_number,
+            game_state.to_json_pretty()
+        );
     }
 }

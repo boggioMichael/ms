@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use image::{ImageBuffer, Rgba};
 use ms::vision::PerceptionPipeline;
 
@@ -6,84 +6,78 @@ use ms::vision::PerceptionPipeline;
 fn create_test_frame() -> ImageBuffer<Rgba<u8>, Vec<u8>> {
     const WIDTH: u32 = 1366;
     const HEIGHT: u32 = 767;
-    
+
     let mut img = ImageBuffer::new(WIDTH, HEIGHT);
-    
+
     // Fill with game-like background (dark tones)
     for pixel in img.pixels_mut() {
         *pixel = Rgba([30, 30, 35, 255]);
     }
-    
+
     // Add HUD elements (light text regions)
     for x in 10..150 {
         for y in 10..50 {
             img.put_pixel(x, y, Rgba([200, 200, 200, 255]));
         }
     }
-    
+
     // Add HP bar area
     for x in 10..200 {
         for y in 55..75 {
             img.put_pixel(x, y, Rgba([220, 50, 50, 255]));
         }
     }
-    
+
     img
 }
 
 fn benchmark_full_pipeline(c: &mut Criterion) {
     let frame = black_box(create_test_frame());
     let mut pipeline = PerceptionPipeline::new();
-    
+
     c.bench_function("full_pipeline_single_frame", |b| {
-        b.iter(|| {
-            pipeline.detect(&frame)
-        })
+        b.iter(|| pipeline.detect(&frame))
     });
 }
 
 fn benchmark_frame_dimensions(c: &mut Criterion) {
     let mut group = c.benchmark_group("frame_sizes");
     group.sample_size(30);
-    
+
     // Test different frame dimensions
     let dimensions = vec![
         (1366, 767, "1366x767 (typical)"),
         (1920, 1080, "1920x1080 (fullhd)"),
         (2560, 1440, "2560x1440 (2k)"),
     ];
-    
+
     for (width, height, label) in dimensions {
         let mut frame = ImageBuffer::new(width, height);
         for pixel in frame.pixels_mut() {
             *pixel = Rgba([30, 30, 35, 255]);
         }
-        
+
         let frame = black_box(frame);
         let mut pipeline = PerceptionPipeline::new();
-        
+
         group.bench_with_input(
             BenchmarkId::from_parameter(label),
             &(width, height),
-            |b, _| {
-                b.iter(|| {
-                    pipeline.detect(&frame)
-                })
-            }
+            |b, _| b.iter(|| pipeline.detect(&frame)),
         );
     }
-    
+
     group.finish();
 }
 
 fn benchmark_successive_frames(c: &mut Criterion) {
     let mut group = c.benchmark_group("temporal");
     group.sample_size(30);
-    
+
     let mut pipeline = PerceptionPipeline::new();
     let frame1 = black_box(create_test_frame());
     let mut frame2 = create_test_frame();
-    
+
     // Simulate motion in frame 2
     for x in 100..120 {
         for y in 100..120 {
@@ -91,19 +85,15 @@ fn benchmark_successive_frames(c: &mut Criterion) {
         }
     }
     let frame2 = black_box(frame2);
-    
+
     group.bench_function("first_frame_cold_start", |b| {
-        b.iter(|| {
-            pipeline.detect(&frame1)
-        })
+        b.iter(|| pipeline.detect(&frame1))
     });
-    
+
     group.bench_function("second_frame_warm_state", |b| {
-        b.iter(|| {
-            pipeline.detect(&frame2)
-        })
+        b.iter(|| pipeline.detect(&frame2))
     });
-    
+
     group.finish();
 }
 

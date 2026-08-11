@@ -19,7 +19,7 @@
 use image::RgbaImage;
 
 use crate::vision::diff::motion_mask;
-use crate::vision::geometry::{group_segments, Rect};
+use crate::vision::geometry::{Rect, group_segments};
 use crate::vision::temporal::{ObjectTracker, Track};
 use crate::vision::types::{Confidence, Detection, Reliability, Source};
 
@@ -93,7 +93,10 @@ impl MotionDetector {
         let Some(previous) = self.previous_frame.as_ref() else {
             self.previous_frame = Some(image.clone());
             self.last_diff_magnitude = 0.0;
-            return Detection::missing(Source::Motion, "warming up: no previous frame to diff against yet");
+            return Detection::missing(
+                Source::Motion,
+                "warming up: no previous frame to diff against yet",
+            );
         };
 
         let blobs = match motion_mask(previous, image, self.config.diff_threshold) {
@@ -107,7 +110,10 @@ impl MotionDetector {
                 // motion computed against mismatched dimensions.
                 self.previous_frame = Some(image.clone());
                 self.last_diff_magnitude = 0.0;
-                return Detection::missing(Source::Motion, "frame size changed since previous frame");
+                return Detection::missing(
+                    Source::Motion,
+                    "frame size changed since previous frame",
+                );
             }
         };
 
@@ -126,7 +132,12 @@ impl MotionDetector {
         if entities.is_empty() {
             // A real "no motion this frame" result: previous frame existed,
             // diffed successfully, but nothing crossed the threshold.
-            let mut detection = Detection::found(Vec::new(), Confidence::new(0.6), Source::Motion, Reliability::Heuristic);
+            let mut detection = Detection::found(
+                Vec::new(),
+                Confidence::new(0.6),
+                Source::Motion,
+                Reliability::Heuristic,
+            );
             detection.failure_reason = Some("no motion above threshold".to_string());
             detection
         } else {
@@ -200,10 +211,10 @@ fn extract_blobs(mask: &image::GrayImage, config: &MotionConfig) -> Vec<Rect> {
                 start = None;
             }
         }
-        if let Some(begin) = start {
-            if width - begin >= config.min_run_width {
-                rows.push((y, begin, width - 1));
-            }
+        if let Some(begin) = start
+            && width - begin >= config.min_run_width
+        {
+            rows.push((y, begin, width - 1));
         }
     }
 

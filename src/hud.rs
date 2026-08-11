@@ -15,4 +15,4 @@ pub use crate::vision::ocr::{OcrConfig, OcrResult, is_ocr_available, ocr_region}
 
 // Re-export confidence-aware detector API.
 pub use crate::vision::detectors::hud::{HudDetector, HudReading};
-pub use crate::vision::{Detection, Confidence};
+pub use crate::vision::{Confidence, Detection};

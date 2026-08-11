@@ -11,7 +11,9 @@
 
 use image::RgbaImage;
 
-use crate::vision::hud_geometry::{self, HudMetric as RawHudMetric, HudSnapshot as RawHudSnapshot, UiMarkers};
+use crate::vision::hud_geometry::{
+    self, HudMetric as RawHudMetric, HudSnapshot as RawHudSnapshot, UiMarkers,
+};
 use crate::vision::types::{Confidence, Detection, Reliability, Source};
 
 /// A HUD metric (HP/MP/EXP) with confidence-scored percent and absolute value.
@@ -54,7 +56,11 @@ fn metric_detection(metric: Option<RawHudMetric>) -> Detection<HudMetric> {
     match metric {
         None => Detection::missing(Source::Hud, "no matching color bar found in the HUD band"),
         Some(raw) => {
-            let has_ocr_value = raw.value.is_some() || raw.raw_text.as_deref().is_some_and(|t| t.chars().any(|c| c.is_ascii_digit()));
+            let has_ocr_value = raw.value.is_some()
+                || raw
+                    .raw_text
+                    .as_deref()
+                    .is_some_and(|t| t.chars().any(|c| c.is_ascii_digit()));
             let (confidence, reliability) = if has_ocr_value {
                 (Confidence::new(0.9), Reliability::Corroborated)
             } else if raw.percent.is_some() {
@@ -69,9 +75,15 @@ fn metric_detection(metric: Option<RawHudMetric>) -> Detection<HudMetric> {
 
 fn text_detection(value: Option<String>, plate_found: bool) -> Detection<String> {
     match value {
-        Some(text) => Detection::found(text, Confidence::new(0.8), Source::Hud, Reliability::Corroborated),
+        Some(text) => Detection::found(
+            text,
+            Confidence::new(0.8),
+            Source::Hud,
+            Reliability::Corroborated,
+        ),
         None if plate_found => {
-            let mut detection = Detection::missing(Source::Hud, "plate located but OCR text could not be read");
+            let mut detection =
+                Detection::missing(Source::Hud, "plate located but OCR text could not be read");
             detection.reliability = Reliability::Heuristic;
             detection
         }

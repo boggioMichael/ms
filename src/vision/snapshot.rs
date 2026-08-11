@@ -10,8 +10,12 @@
 use image::RgbaImage;
 
 use crate::vision::detectors::{
-    combat::CombatIntensityDetector, dialog::DialogDetector, environment::FootholdDetector,
-    hud::HudDetector, motion::MotionDetector, panels::{ChatLogDetector, IconRowDetector, MinimapDetector},
+    combat::CombatIntensityDetector,
+    dialog::DialogDetector,
+    environment::FootholdDetector,
+    hud::HudDetector,
+    motion::MotionDetector,
+    panels::{ChatLogDetector, IconRowDetector, MinimapDetector},
 };
 use crate::vision::types::Detection;
 

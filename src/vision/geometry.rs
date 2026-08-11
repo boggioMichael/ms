@@ -64,12 +64,16 @@ pub fn is_color_pixel(
 ) -> bool {
     let (h, s, v) = crate::util::pixel::hsv_from_rgb(pixel[0], pixel[1], pixel[2]);
     let alpha = pixel[3] as f32 / 255.0;
-    alpha >= 0.5 && hue_in_range(h, hue_range.0, hue_range.1) && s >= min_saturation && v >= min_value
+    alpha >= 0.5
+        && hue_in_range(h, hue_range.0, hue_range.1)
+        && s >= min_saturation
+        && v >= min_value
 }
 
 pub fn is_text_pixel(pixel: &Rgba<u8>) -> bool {
     let (_, s, v) = crate::util::pixel::hsv_from_rgb(pixel[0], pixel[1], pixel[2]);
-    let brightness = 0.299 * (pixel[0] as f32) + 0.587 * (pixel[1] as f32) + 0.114 * (pixel[2] as f32);
+    let brightness =
+        0.299 * (pixel[0] as f32) + 0.587 * (pixel[1] as f32) + 0.114 * (pixel[2] as f32);
     let is_bright = brightness >= 90.0;
     let is_desaturated = s <= 0.55;
     let is_light = v >= 0.45;
@@ -82,7 +86,14 @@ pub fn alpha_is_high(pixel: &Rgba<u8>) -> bool {
 
 /// Find runs of `min_width`-or-longer consecutive pixels along row `y` in
 /// `[x0, x1]` matching `predicate`. Returns inclusive `(start_x, end_x)` pairs.
-pub fn segment_row<F>(image: &RgbaImage, y: u32, x0: u32, x1: u32, min_width: u32, predicate: F) -> Vec<(u32, u32)>
+pub fn segment_row<F>(
+    image: &RgbaImage,
+    y: u32,
+    x0: u32,
+    x1: u32,
+    min_width: u32,
+    predicate: F,
+) -> Vec<(u32, u32)>
 where
     F: Fn(&Rgba<u8>) -> bool,
 {
@@ -91,7 +102,7 @@ where
     let x1 = x1.min(image.width().saturating_sub(1));
 
     for x in x0..=x1 {
-        let is_target = predicate(&image.get_pixel(x, y));
+        let is_target = predicate(image.get_pixel(x, y));
         if is_target {
             if start.is_none() {
                 start = Some(x);
@@ -133,10 +144,10 @@ pub fn group_segments(rows: Vec<(u32, u32, u32)>, min_height: u32, max_gap: u32)
     let mut prev_y: Option<u32> = None;
 
     for (y, x0, x1) in rows {
-        if let Some(prev_y) = prev_y {
-            if y > prev_y.saturating_add(max_gap).saturating_add(1) {
-                completed.extend(active.drain(..).filter(|rect| rect.h >= min_height));
-            }
+        if let Some(prev_y) = prev_y
+            && y > prev_y.saturating_add(max_gap).saturating_add(1)
+        {
+            completed.extend(active.drain(..).filter(|rect| rect.h >= min_height));
         }
         prev_y = Some(y);
 
@@ -152,16 +163,20 @@ pub fn group_segments(rows: Vec<(u32, u32, u32)>, min_height: u32, max_gap: u32)
                     best_match = Some(idx);
                 }
             }
-            if let Some(idx) = best_match {
-                if best_overlap * 3 >= (segment_x1 - segment_x0 + 1).max(active[idx].w) {
-                    let mut rect = active[idx];
-                    rect.x = rect.x.min(segment_x0);
-                    rect.w = rect.x2().max(segment_x1).saturating_sub(rect.x).saturating_add(1);
-                    rect.h = y.saturating_sub(rect.y).saturating_add(1);
-                    matched[idx] = true;
-                    next_active.push(rect);
-                    continue;
-                }
+            if let Some(idx) = best_match
+                && best_overlap * 3 >= (segment_x1 - segment_x0 + 1).max(active[idx].w)
+            {
+                let mut rect = active[idx];
+                rect.x = rect.x.min(segment_x0);
+                rect.w = rect
+                    .x2()
+                    .max(segment_x1)
+                    .saturating_sub(rect.x)
+                    .saturating_add(1);
+                rect.h = y.saturating_sub(rect.y).saturating_add(1);
+                matched[idx] = true;
+                next_active.push(rect);
+                continue;
             }
             next_active.push(Rect {
                 x: segment_x0,
@@ -223,7 +238,7 @@ pub fn find_text_block(image: &RgbaImage, region: Rect) -> Option<Rect> {
 
     for y in region.y..y_end {
         for x in region.x..x_end {
-            if is_text_pixel(&image.get_pixel(x, y)) {
+            if is_text_pixel(image.get_pixel(x, y)) {
                 count += 1;
                 min_x = Some(min_x.unwrap_or(x).min(x));
                 max_x = Some(max_x.unwrap_or(x).max(x));
@@ -246,13 +261,22 @@ pub fn find_text_block(image: &RgbaImage, region: Rect) -> Option<Rect> {
     Some(Rect {
         x: min_x.saturating_sub(padding),
         y: min_y.saturating_sub(padding),
-        w: max_x.saturating_sub(min_x).saturating_add(1).saturating_add(padding.saturating_mul(2)),
-        h: max_y.saturating_sub(min_y).saturating_add(1).saturating_add(padding.saturating_mul(2)),
+        w: max_x
+            .saturating_sub(min_x)
+            .saturating_add(1)
+            .saturating_add(padding.saturating_mul(2)),
+        h: max_y
+            .saturating_sub(min_y)
+            .saturating_add(1)
+            .saturating_add(padding.saturating_mul(2)),
     })
 }
 
 pub fn find_text_block_in_regions(image: &RgbaImage, regions: &[Rect]) -> Option<Rect> {
-    regions.iter().filter_map(|region| find_text_block(image, *region)).next()
+    regions
+        .iter()
+        .filter_map(|region| find_text_block(image, *region))
+        .next()
 }
 
 pub fn bar_percent(rect: Option<Rect>, max_width: u32) -> Option<f32> {
@@ -319,13 +343,21 @@ pub fn dominant_color_bucket(image: &RgbaImage, region: Rect, step: u8) -> Optio
         }
     }
 
-    counts.into_iter().max_by_key(|(_, count)| *count).map(|(bucket, _)| bucket)
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(bucket, _)| bucket)
 }
 
 /// Find the largest rectangle within `region` whose pixels quantize to
 /// `bucket` (see [`dominant_color_bucket`]). Used to locate a solid-color
 /// UI panel without hardcoding any specific skin's exact color.
-pub fn find_uniform_color_panel(image: &RgbaImage, region: Rect, bucket: (u8, u8, u8), step: u8) -> Option<Rect> {
+pub fn find_uniform_color_panel(
+    image: &RgbaImage,
+    region: Rect,
+    bucket: (u8, u8, u8),
+    step: u8,
+) -> Option<Rect> {
     let matches = |pixel: &Rgba<u8>| {
         pixel[3] >= 200
             && pixel[0] / step == bucket.0
@@ -342,7 +374,9 @@ pub fn find_uniform_color_panel(image: &RgbaImage, region: Rect, bucket: (u8, u8
         }
     }
 
-    group_segments(rows, 12, 2).into_iter().max_by_key(|rect| rect.area())
+    group_segments(rows, 12, 2)
+        .into_iter()
+        .max_by_key(|rect| rect.area())
 }
 
 #[cfg(test)]
@@ -368,7 +402,12 @@ mod tests {
                 image.put_pixel(x, y, Rgba([220, 20, 20, 255]));
             }
         }
-        let region = Rect { x: 0, y: 0, w: 200, h: 40 };
+        let region = Rect {
+            x: 0,
+            y: 0,
+            w: 200,
+            h: 40,
+        };
         let bar = find_color_bar(&image, region, (340.0, 30.0), 0.35, 0.30).expect("bar found");
         assert!(bar.w >= 100);
     }

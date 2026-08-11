@@ -20,7 +20,7 @@ pub mod dialogs;
 pub mod mechanics;
 pub mod monsters;
 
-pub use dialogs::{DialogKeywords, DIALOG_KEYWORDS};
+pub use dialogs::{DIALOG_KEYWORDS, DialogKeywords};
 pub use mechanics::{FARMING_HEURISTICS, GameplayHeuristic, PORTAL_MECHANICS, RUNE_MECHANICS};
 pub use monsters::{MONSTER_BEHAVIORS, MonsterBehavior};
 

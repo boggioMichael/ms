@@ -208,10 +208,7 @@ impl ObjectTracker {
                 track.missed_frames = 0;
                 track.age_frames = track.age_frames.saturating_add(1);
                 // Stable, repeatedly redetected tracks become more trustworthy.
-                track.confidence = track
-                    .confidence
-                    .combine(Confidence::new(0.35))
-                    .decay(0.995);
+                track.confidence = track.confidence.combine(Confidence::new(0.35)).decay(0.995);
             } else {
                 self.tracks.push(Track {
                     id: self.next_id,

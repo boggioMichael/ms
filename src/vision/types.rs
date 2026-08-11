@@ -147,7 +147,12 @@ pub struct Detection<T> {
 
 impl<T> Detection<T> {
     /// Build a successful detection.
-    pub fn found(value: T, confidence: Confidence, source: Source, reliability: Reliability) -> Self {
+    pub fn found(
+        value: T,
+        confidence: Confidence,
+        source: Source,
+        reliability: Reliability,
+    ) -> Self {
         Self {
             value: Some(value),
             confidence,
@@ -225,7 +230,12 @@ mod tests {
 
     #[test]
     fn detection_found_round_trips_value() {
-        let detection = Detection::found(42u32, Confidence::new(0.8), Source::Hud, Reliability::Heuristic);
+        let detection = Detection::found(
+            42u32,
+            Confidence::new(0.8),
+            Source::Hud,
+            Reliability::Heuristic,
+        );
         assert_eq!(detection.value, Some(42));
         assert!(detection.confidence.is_confident(0.5));
     }

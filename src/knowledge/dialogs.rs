@@ -61,7 +61,11 @@ pub fn classify(text: &str) -> DialogKind {
         return DialogKind::None;
     }
     for family in DIALOG_KEYWORDS {
-        if family.keywords.iter().any(|keyword| lowered.contains(keyword)) {
+        if family
+            .keywords
+            .iter()
+            .any(|keyword| lowered.contains(keyword))
+        {
             return family.kind;
         }
     }
@@ -80,7 +84,10 @@ mod tests {
 
     #[test]
     fn recognizes_level_up_banner() {
-        assert_eq!(classify("Congratulations! You have leveled up!"), DialogKind::LevelUp);
+        assert_eq!(
+            classify("Congratulations! You have leveled up!"),
+            DialogKind::LevelUp
+        );
     }
 
     #[test]

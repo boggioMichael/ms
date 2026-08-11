@@ -10,8 +10,8 @@
 
 use image::RgbaImage;
 
-use crate::knowledge::dialogs::{classify, DialogKind};
-use crate::vision::geometry::{dominant_color_bucket, find_uniform_color_panel, Rect};
+use crate::knowledge::dialogs::{DialogKind, classify};
+use crate::vision::geometry::{Rect, dominant_color_bucket, find_uniform_color_panel};
 use crate::vision::ocr;
 use crate::vision::types::{Confidence, Detection, Reliability, Source};
 
@@ -71,7 +71,8 @@ impl DialogDetector {
             return Detection::missing(Source::Dialog, "no coherent panel color found");
         };
 
-        let Some(panel) = find_uniform_color_panel(image, band, dominant, self.config.quantization) else {
+        let Some(panel) = find_uniform_color_panel(image, band, dominant, self.config.quantization)
+        else {
             return Detection::missing(Source::Dialog, "no panel-sized uniform region found");
         };
 
@@ -80,7 +81,8 @@ impl DialogDetector {
             return Detection::missing(Source::Dialog, "candidate panel too small to be a dialog");
         }
 
-        let text = ocr::ocr_region(image, panel.x, panel.y, panel.w, panel.h).map(|result| result.text);
+        let text =
+            ocr::ocr_region(image, panel.x, panel.y, panel.w, panel.h).map(|result| result.text);
         let kind = text.as_deref().map(classify).unwrap_or(DialogKind::None);
 
         let (confidence, reliability) = match (&text, kind) {
@@ -90,7 +92,11 @@ impl DialogDetector {
         };
 
         Detection::found(
-            DialogReading { bounds: panel, kind, text },
+            DialogReading {
+                bounds: panel,
+                kind,
+                text,
+            },
             confidence,
             Source::Dialog,
             reliability,

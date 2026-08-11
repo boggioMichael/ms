@@ -78,13 +78,11 @@ pub struct OcrWord {
 pub fn ocr_region(image: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> Option<OcrResult> {
     let binary = find_tesseract_binary()?;
     let crop = crop_region(image, x, y, w, h)?;
-    let mut best_text = String::new();
-    let mut best_words = Vec::new();
-    let mut best_score = i32::MIN;
 
     // OCR starts an external process, so process one contrast-enhanced frame
     // per stream tick rather than repeatedly scanning overlapping crops.
-    for preprocess in [Preprocess::ContrastSharp] {
+    {
+        let preprocess = Preprocess::ContrastSharp;
         let input_image = preprocess_image(&crop, preprocess);
         let input_path = write_temp_image(&input_image)?;
         let mut command = Command::new(&binary);
@@ -101,24 +99,16 @@ pub fn ocr_region(image: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> Option<O
                 .collect::<Vec<_>>()
                 .join(" "),
         );
-        let score = score_text(&text);
-        if score > best_score {
-            best_score = score;
-            best_text = text;
-            best_words = words;
+        if text.trim().is_empty() {
+            return None;
         }
-    }
 
-    return if best_text.trim().is_empty() {
-        None
-    } else {
-        Some(OcrResult {
-            text: best_text,
+        return Some(OcrResult {
+            text,
             available: true,
-            words: best_words,
-        })
-    };
-
+            words,
+        });
+    }
     fn parse_tsv_words(tsv: &str) -> Vec<OcrWord> {
         tsv.lines()
             .skip(1)
@@ -187,24 +177,6 @@ fn write_temp_image(image: &DynamicImage) -> Option<PathBuf> {
     let path = temp_dir.join(format!("hud-ocr-{timestamp}.png"));
     image.save(&path).ok()?;
     Some(path)
-}
-
-fn score_text(text: &str) -> i32 {
-    let lowered = text.to_lowercase();
-    let digit_count = lowered.chars().filter(|c| c.is_ascii_digit()).count() as i32;
-    let alpha_count = lowered.chars().filter(|c| c.is_ascii_alphabetic()).count() as i32;
-    let percent_count = lowered.chars().filter(|c| *c == '%').count() as i32;
-    let bad_count = lowered
-        .chars()
-        .filter(|c| {
-            !c.is_ascii_alphanumeric()
-                && !c.is_ascii_whitespace()
-                && *c != '%'
-                && *c != '/'
-                && *c != '.'
-        })
-        .count() as i32;
-    digit_count * 2 + alpha_count + percent_count * 6 - bad_count * 2
 }
 
 fn find_tesseract_binary() -> Option<PathBuf> {

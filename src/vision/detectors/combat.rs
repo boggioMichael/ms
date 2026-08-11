@@ -53,7 +53,11 @@ impl CombatIntensityDetector {
     /// Feed the current frame's moving-entity count and a diff-magnitude
     /// score (e.g. changed-pixel fraction from [`crate::vision::diff`]) and
     /// get back a classified combat intensity.
-    pub fn observe(&mut self, active_entities: usize, diff_magnitude: f32) -> Detection<CombatReading> {
+    pub fn observe(
+        &mut self,
+        active_entities: usize,
+        diff_magnitude: f32,
+    ) -> Detection<CombatReading> {
         self.motion_history.add(diff_magnitude as f64);
         self.samples_seen = (self.samples_seen + 1).min(self.window);
         let smoothed = self.motion_history.average() as f32;
@@ -65,9 +69,14 @@ impl CombatIntensityDetector {
             _ => CombatIntensity::Heavy,
         };
 
-        let confidence = Confidence::new(0.3 + (self.samples_seen as f32 / self.window as f32) * 0.5);
+        let confidence =
+            Confidence::new(0.3 + (self.samples_seen as f32 / self.window as f32) * 0.5);
         Detection::found(
-            CombatReading { intensity, active_entities, motion_score: smoothed },
+            CombatReading {
+                intensity,
+                active_entities,
+                motion_score: smoothed,
+            },
             confidence,
             Source::Combat,
             Reliability::Heuristic,

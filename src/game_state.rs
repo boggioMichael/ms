@@ -144,80 +144,104 @@ pub struct GameState {
 
 impl GameState {
     /// Create a GameState from a WorldState (vision pipeline output)
-    pub fn from_world_state(world_state: crate::vision::snapshot::WorldState, frame_number: u64, width: u32, height: u32) -> Self {
+    pub fn from_world_state(
+        world_state: crate::vision::snapshot::WorldState,
+        frame_number: u64,
+        width: u32,
+        height: u32,
+    ) -> Self {
         let timestamp_ms = chrono::Local::now().timestamp_millis() as u64;
-        
+
         // Extract HUD data
         let hud_hp = world_state.hud.hp.value.as_ref();
         let hud_mp = world_state.hud.mp.value.as_ref();
         let hud_exp = world_state.hud.exp.value.as_ref();
-        
+
         let hp = SerializedMetric {
-            percent: hud_hp.map(|m| m.percent).flatten(),
+            percent: hud_hp.and_then(|m| m.percent),
             current: hud_hp.and_then(|m| m.value),
             max: None,
             confidence: world_state.hud.hp.confidence.value(),
             reliability: format!("{:?}", world_state.hud.hp.reliability),
         };
-        
+
         let mp = SerializedMetric {
-            percent: hud_mp.map(|m| m.percent).flatten(),
+            percent: hud_mp.and_then(|m| m.percent),
             current: hud_mp.and_then(|m| m.value),
             max: None,
             confidence: world_state.hud.mp.confidence.value(),
             reliability: format!("{:?}", world_state.hud.mp.reliability),
         };
-        
+
         let exp = SerializedMetric {
-            percent: hud_exp.map(|m| m.percent).flatten(),
+            percent: hud_exp.and_then(|m| m.percent),
             current: hud_exp.and_then(|m| m.value),
             max: None,
             confidence: world_state.hud.exp.confidence.value(),
             reliability: format!("{:?}", world_state.hud.exp.reliability),
         };
-        
+
         let character = SerializedCharacter {
             name: world_state.hud.player_name.value.clone(),
             job: world_state.hud.character_class.value.clone(),
-            level: world_state.hud.level.value.as_ref().and_then(|s| s.parse::<u32>().ok()),
+            level: world_state
+                .hud
+                .level
+                .value
+                .as_ref()
+                .and_then(|s| s.parse::<u32>().ok()),
             name_confidence: world_state.hud.player_name.confidence.value(),
             job_confidence: world_state.hud.character_class.confidence.value(),
             level_confidence: world_state.hud.level.confidence.value(),
         };
-        
-        let hud = SerializedHudState { hp, mp, exp, character };
-        
+
+        let hud = SerializedHudState {
+            hp,
+            mp,
+            exp,
+            character,
+        };
+
         // Extract motion entities
-        let entities = world_state.motion.value.as_deref().unwrap_or(&[])
+        let entities = world_state
+            .motion
+            .value
+            .as_deref()
+            .unwrap_or(&[])
             .iter()
             .map(|e| SerializedEntity {
                 id: e.id,
-                x: e.bounds.x as u32,
-                y: e.bounds.y as u32,
-                width: e.bounds.w as u32,
-                height: e.bounds.h as u32,
+                x: e.bounds.x,
+                y: e.bounds.y,
+                width: e.bounds.w,
+                height: e.bounds.h,
                 velocity_x: e.velocity.0,
                 velocity_y: e.velocity.1,
                 age_frames: e.age_frames,
                 is_predicted: e.is_predicted,
             })
             .collect();
-        
+
         let motion = SerializedMotionState {
             entities,
-            total_count: world_state.motion.value.as_deref().map(|v| v.len()).unwrap_or(0),
+            total_count: world_state
+                .motion
+                .value
+                .as_deref()
+                .map(|v| v.len())
+                .unwrap_or(0),
             confidence: world_state.motion.confidence.value(),
             failure_reason: world_state.motion.failure_reason.clone(),
         };
-        
+
         // Extract dialog
         let dialog = if let Some(dialog_reading) = world_state.dialog.value.as_ref() {
             SerializedDialogState {
                 present: true,
-                x: Some(dialog_reading.bounds.x as u32),
-                y: Some(dialog_reading.bounds.y as u32),
-                width: Some(dialog_reading.bounds.w as u32),
-                height: Some(dialog_reading.bounds.h as u32),
+                x: Some(dialog_reading.bounds.x),
+                y: Some(dialog_reading.bounds.y),
+                width: Some(dialog_reading.bounds.w),
+                height: Some(dialog_reading.bounds.h),
                 dialog_kind: Some(format!("{:?}", dialog_reading.kind)),
                 text: dialog_reading.text.clone(),
                 confidence: world_state.dialog.confidence.value(),
@@ -234,49 +258,66 @@ impl GameState {
                 confidence: world_state.dialog.confidence.value(),
             }
         };
-        
+
         // Extract panels
         let panels = SerializedPanelState {
             minimap: SerializedPanelInfo {
                 present: world_state.minimap.value.is_some(),
-                x: world_state.minimap.value.as_ref().map(|m| m.bounds.x as u32),
-                y: world_state.minimap.value.as_ref().map(|m| m.bounds.y as u32),
-                width: world_state.minimap.value.as_ref().map(|m| m.bounds.w as u32),
-                height: world_state.minimap.value.as_ref().map(|m| m.bounds.h as u32),
+                x: world_state.minimap.value.as_ref().map(|m| m.bounds.x),
+                y: world_state.minimap.value.as_ref().map(|m| m.bounds.y),
+                width: world_state.minimap.value.as_ref().map(|m| m.bounds.w),
+                height: world_state.minimap.value.as_ref().map(|m| m.bounds.h),
             },
             chat_log: SerializedPanelInfo {
                 present: world_state.chat_log.value.is_some(),
-                x: world_state.chat_log.value.as_ref().map(|c| c.bounds.x as u32),
-                y: world_state.chat_log.value.as_ref().map(|c| c.bounds.y as u32),
-                width: world_state.chat_log.value.as_ref().map(|c| c.bounds.w as u32),
-                height: world_state.chat_log.value.as_ref().map(|c| c.bounds.h as u32),
+                x: world_state.chat_log.value.as_ref().map(|c| c.bounds.x),
+                y: world_state.chat_log.value.as_ref().map(|c| c.bounds.y),
+                width: world_state.chat_log.value.as_ref().map(|c| c.bounds.w),
+                height: world_state.chat_log.value.as_ref().map(|c| c.bounds.h),
             },
-            buff_icons: world_state.icon_row.value.as_ref().map(|i| i.icons.len()).unwrap_or(0),
+            buff_icons: world_state
+                .icon_row
+                .value
+                .as_ref()
+                .map(|i| i.icons.len())
+                .unwrap_or(0),
         };
-        
+
         // Extract environment
-        let platform_edges = world_state.footholds.value.as_deref().unwrap_or(&[])
+        let platform_edges = world_state
+            .footholds
+            .value
+            .as_deref()
+            .unwrap_or(&[])
             .iter()
             .map(|e| SerializedEdge {
-                y: e.bounds.y as u32,
-                x_start: e.bounds.x as u32,
-                x_end: (e.bounds.x + e.bounds.w) as u32,
+                y: e.bounds.y,
+                x_start: e.bounds.x,
+                x_end: (e.bounds.x + e.bounds.w),
             })
             .collect();
-        
+
         let environment = SerializedEnvironment {
             platform_edges,
-            total_edges: world_state.footholds.value.as_deref().map(|v| v.len()).unwrap_or(0),
+            total_edges: world_state
+                .footholds
+                .value
+                .as_deref()
+                .map(|v| v.len())
+                .unwrap_or(0),
         };
-        
+
         // Extract combat
         let combat = SerializedCombat {
-            intensity: world_state.combat_intensity.value.as_ref()
+            intensity: world_state
+                .combat_intensity
+                .value
+                .as_ref()
                 .map(|c| format!("{:?}", c.intensity))
                 .unwrap_or_else(|| "Unknown".to_string()),
             confidence: world_state.combat_intensity.confidence.value(),
         };
-        
+
         GameState {
             timestamp_ms,
             frame_number,
@@ -305,31 +346,20 @@ impl GameState {
     /// Create a formatted display string for console output
     pub fn to_display_string(&self) -> String {
         let mut output = String::new();
-        output.push_str(&format!(
-            "╔════════════════════════════════════════════════════════════════╗\n"
-        ));
-        output.push_str(&format!(
-            "║ FRAME #{:<50} ║\n",
-            self.frame_number
-        ));
+        output.push_str("╔════════════════════════════════════════════════════════════════╗\n");
+        output.push_str(&format!("║ FRAME #{:<50} ║\n", self.frame_number));
         output.push_str(&format!(
             "║ Time: {}ms | Resolution: {}x{:<29} ║\n",
-            self.timestamp_ms,
-            self.frame_width,
-            self.frame_height
+            self.timestamp_ms, self.frame_width, self.frame_height
         ));
         output.push_str(&format!(
             "║ Process: {:.2}ms                                             ║\n",
             self.processing_time_ms
         ));
-        output.push_str(&format!(
-            "╠════════════════════════════════════════════════════════════════╣\n"
-        ));
+        output.push_str("╠════════════════════════════════════════════════════════════════╣\n");
 
         // HUD State
-        output.push_str(&format!(
-            "║ [HUD STATE]                                                    ║\n"
-        ));
+        output.push_str("║ [HUD STATE]                                                    ║\n");
         output.push_str(&format!(
             "║   HP:    {:<3}% (conf: {:.0}%) | MP: {:<3}% | EXP: {:<3}%           ║\n",
             self.hud.hp.percent.unwrap_or(0.0) as u32,
@@ -346,9 +376,7 @@ impl GameState {
             "║   Job:   {}                                           ║\n",
             self.hud.character.job.as_deref().unwrap_or("???")
         ));
-        output.push_str(&format!(
-            "╠════════════════════════════════════════════════════════════════╣\n"
-        ));
+        output.push_str("╠════════════════════════════════════════════════════════════════╣\n");
 
         // Motion State
         output.push_str(&format!(
@@ -381,9 +409,7 @@ impl GameState {
                 reason
             ));
         }
-        output.push_str(&format!(
-            "╠════════════════════════════════════════════════════════════════╣\n"
-        ));
+        output.push_str("╠════════════════════════════════════════════════════════════════╣\n");
 
         // Dialog State
         output.push_str(&format!(
@@ -393,10 +419,7 @@ impl GameState {
             } else {
                 "  absent "
             },
-            self.dialog
-                .dialog_kind
-                .as_deref()
-                .unwrap_or("           ")
+            self.dialog.dialog_kind.as_deref().unwrap_or("           ")
         ));
         if let Some(text) = &self.dialog.text {
             let text_display = if text.len() > 50 {
@@ -409,9 +432,7 @@ impl GameState {
                 text_display
             ));
         }
-        output.push_str(&format!(
-            "╠════════════════════════════════════════════════════════════════╣\n"
-        ));
+        output.push_str("╠════════════════════════════════════════════════════════════════╣\n");
 
         // Panels & Environment
         output.push_str(&format!(
@@ -436,9 +457,7 @@ impl GameState {
             "║ [COMBAT] {}                                     ║\n",
             self.combat.intensity
         ));
-        output.push_str(&format!(
-            "╚════════════════════════════════════════════════════════════════╝\n"
-        ));
+        output.push_str("╚════════════════════════════════════════════════════════════════╝\n");
 
         output
     }

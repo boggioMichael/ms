@@ -20,10 +20,8 @@ pub fn unpremultiply_rgba_inplace(buf: &mut [u8]) {
         if a == 0.0 {
             continue;
         }
-        for c in 0..3 {
-            let v = chunk[c] as f32 / a;
-            chunk[c] = v.min(255.0).max(0.0) as u8;
+        for channel in chunk.iter_mut().take(3) {
+            *channel = (*channel as f32 / a).clamp(0.0, 255.0) as u8;
         }
     }
 }
-

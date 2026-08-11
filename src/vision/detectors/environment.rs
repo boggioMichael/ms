@@ -13,7 +13,7 @@
 
 use image::RgbaImage;
 
-use crate::vision::geometry::{group_segments, Rect};
+use crate::vision::geometry::{Rect, group_segments};
 use crate::vision::types::{Confidence, Detection, Reliability, Source};
 
 #[derive(Debug, Clone, Copy)]
@@ -53,7 +53,10 @@ impl FootholdDetector {
         let width = image.width();
         let height = image.height();
         if width < 8 || height < 8 {
-            return Detection::missing(Source::Environment, "frame too small to scan for platform edges");
+            return Detection::missing(
+                Source::Environment,
+                "frame too small to scan for platform edges",
+            );
         }
 
         let luminance = |x: u32, y: u32| -> f32 {
@@ -77,10 +80,10 @@ impl FootholdDetector {
                     start = None;
                 }
             }
-            if let Some(begin) = start {
-                if width - begin >= self.config.min_run_width {
-                    rows.push((y, begin, width - 1));
-                }
+            if let Some(begin) = start
+                && width - begin >= self.config.min_run_width
+            {
+                rows.push((y, begin, width - 1));
             }
         }
 
@@ -96,8 +99,14 @@ impl FootholdDetector {
         // Confidence scales with the longest edge's coverage of the frame
         // width: a nearly full-width line is very likely a real foothold.
         let longest = edges.iter().map(|edge| edge.bounds.w).max().unwrap_or(0);
-        let confidence = Confidence::new(longest as f32 / width as f32).combine(Confidence::new(0.1));
-        Detection::found(edges, confidence, Source::Environment, Reliability::Heuristic)
+        let confidence =
+            Confidence::new(longest as f32 / width as f32).combine(Confidence::new(0.1));
+        Detection::found(
+            edges,
+            confidence,
+            Source::Environment,
+            Reliability::Heuristic,
+        )
     }
 }
 
@@ -117,7 +126,11 @@ mod tests {
         let detection = FootholdDetector::default().detect(&image);
         assert!(detection.is_present());
         let edges = detection.value.unwrap();
-        assert!(edges.iter().any(|edge| edge.bounds.y == 59 || edge.bounds.y == 60));
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.bounds.y == 59 || edge.bounds.y == 60)
+        );
     }
 
     #[test]

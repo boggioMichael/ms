@@ -37,6 +37,12 @@ pub struct FrameTimer {
     last: Instant,
 }
 
+impl Default for FrameTimer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FrameTimer {
     pub fn new() -> Self {
         Self {

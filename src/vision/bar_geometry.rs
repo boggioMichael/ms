@@ -44,7 +44,7 @@ pub struct BarConfig {
 pub fn hp_config() -> BarConfig {
     BarConfig {
         expected_height: 10,
-        filled_hue_min: 350.0,    // Red
+        filled_hue_min: 350.0, // Red
         filled_hue_max: 10.0,
         filled_sat_min: 0.3,
         filled_val_min: 0.4,
@@ -56,7 +56,7 @@ pub fn hp_config() -> BarConfig {
 pub fn mp_config() -> BarConfig {
     BarConfig {
         expected_height: 10,
-        filled_hue_min: 200.0,    // Blue
+        filled_hue_min: 200.0, // Blue
         filled_hue_max: 250.0,
         filled_sat_min: 0.3,
         filled_val_min: 0.4,
@@ -68,7 +68,7 @@ pub fn mp_config() -> BarConfig {
 pub fn exp_config() -> BarConfig {
     BarConfig {
         expected_height: 10,
-        filled_hue_min: 40.0,     // Yellow
+        filled_hue_min: 40.0, // Yellow
         filled_hue_max: 60.0,
         filled_sat_min: 0.3,
         filled_val_min: 0.4,
@@ -105,14 +105,14 @@ fn rgba_to_hsv(rgba: image::Rgba<u8>) -> (f32, f32, f32) {
 /// Check if a pixel matches the filled bar color using HSV thresholds.
 fn is_filled_pixel(rgba: image::Rgba<u8>, config: &BarConfig) -> bool {
     let (h, s, v) = rgba_to_hsv(rgba);
-    
+
     // Check if hue is in range (account for wrap-around at 0/360).
     let hue_match = if config.filled_hue_min <= config.filled_hue_max {
         h >= config.filled_hue_min && h <= config.filled_hue_max
     } else {
         h >= config.filled_hue_min || h <= config.filled_hue_max
     };
-    
+
     hue_match && s >= config.filled_sat_min && v >= config.filled_val_min
 }
 
@@ -147,7 +147,7 @@ pub fn measure_bar(
                 continue;
             }
             let pixel = *image.get_pixel(col, row);
-            
+
             if is_filled_pixel(pixel, config) {
                 filled_pixels += 1;
             } else if is_empty_pixel(pixel, config) {
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn hsv_conversion_red() {
         let (h, s, v) = rgba_to_hsv(image::Rgba([255, 0, 0, 255]));
-        assert!(h < 30.0 || h > 330.0);
+        assert!(!(30.0..=330.0).contains(&h));
         assert!(s > 0.9);
         assert!(v > 0.9);
     }

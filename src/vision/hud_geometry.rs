@@ -43,7 +43,7 @@ pub struct HudSnapshot {
 }
 
 /// Detected user interface markers and inferred values.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct UiMarkers {
     pub hp_bar: Option<Rect>,
     pub mp_bar: Option<Rect>,
@@ -54,22 +54,6 @@ pub struct UiMarkers {
     pub hp_percent: Option<f32>,
     pub mp_percent: Option<f32>,
     pub exp_percent: Option<f32>,
-}
-
-impl Default for UiMarkers {
-    fn default() -> Self {
-        Self {
-            hp_bar: None,
-            mp_bar: None,
-            exp_bar: None,
-            name_plate: None,
-            class_plate: None,
-            level_plate: None,
-            hp_percent: None,
-            mp_percent: None,
-            exp_percent: None,
-        }
-    }
 }
 
 #[allow(dead_code)]
@@ -97,7 +81,11 @@ fn read_metric_from_ocr(image: &RgbaImage, rect: Option<Rect>, label: &str) -> O
 }
 
 #[allow(dead_code)]
-fn read_metric_with_fallback(image: &RgbaImage, rect: Option<Rect>, label: &str) -> Option<HudMetric> {
+fn read_metric_with_fallback(
+    image: &RgbaImage,
+    rect: Option<Rect>,
+    label: &str,
+) -> Option<HudMetric> {
     if let Some(metric) = read_metric_from_ocr(image, rect, label) {
         return Some(metric);
     }
@@ -298,7 +286,7 @@ fn score_text_region(text: &str) -> i32 {
 }
 
 fn parse_number_token(token: &str) -> Option<u64> {
-    let cleaned = token.replace(',', "").replace('.', "");
+    let cleaned = token.replace([',', '.'], "");
     cleaned.parse::<u64>().ok()
 }
 

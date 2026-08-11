@@ -137,8 +137,8 @@ mod windows_capture {
                 return None;
             }
 
-            let width = (rect.right - rect.left) as i32;
-            let height = (rect.bottom - rect.top) as i32;
+            let width = rect.right - rect.left;
+            let height = rect.bottom - rect.top;
             if width <= 0 || height <= 0 {
                 eprintln!(
                     "[window-search] rejected {:?}: invalid client size {}x{}",
@@ -177,7 +177,7 @@ mod windows_capture {
             bmi.bmiHeader.biHeight = -height;
             bmi.bmiHeader.biPlanes = 1;
             bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = BI_RGB.0 as u32;
+            bmi.bmiHeader.biCompression = BI_RGB.0;
 
             let mut buffer = vec![0u8; (width as usize) * (height as usize) * 4];
             let result = GetDIBits(

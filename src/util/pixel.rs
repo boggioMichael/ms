@@ -76,9 +76,9 @@ pub fn hsv_at(frame: &Frame<'_>, x: u32, y: u32) -> Option<Hsv> {
 
 /// Utility: log pixel values when enabled by the debug config
 pub fn log_pixel(frame: &Frame<'_>, x: u32, y: u32) {
-    if crate::config::get_global().log_pixel_values {
-        if let Some((r, g, b, a)) = rgba_at(frame, x, y) {
-            tracing::debug!(x, y, r, g, b, a, "pixel");
-        }
+    if crate::config::get_global().log_pixel_values
+        && let Some((r, g, b, a)) = rgba_at(frame, x, y)
+    {
+        tracing::debug!(x, y, r, g, b, a, "pixel");
     }
 }
