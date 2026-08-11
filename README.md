@@ -6,9 +6,9 @@ It is non-invasive by design: no game-memory reads, code injection, or input aut
 
 ## Narrated MVP demo
 
-[![Watch the MapleSyrup Vision Engine MVP demo](https://img.youtube.com/vi/pMacpPWjFUE/maxresdefault.jpg)](https://youtu.be/pMacpPWjFUE)
+[![Watch MapleStory and MapleSyrup running together](https://img.youtube.com/vi/yXIR59gGKhE/maxresdefault.jpg)](https://youtu.be/yXIR59gGKhE)
 
-[Watch the full narrated demo on YouTube](https://youtu.be/pMacpPWjFUE). It uses the repository's real MapleStory fixture and covers annotated detector output, architecture, code structure, verified results, and contribution guidance.
+[Watch the simultaneous gameplay demo on YouTube](https://youtu.be/yXIR59gGKhE). It shows a player using MapleStory and MapleSyrup together through exploration, combat detection, a low-HP warning, and recovery. The sequence is a clearly labeled simulation built with the repository's real gameplay fixture rather than a live-session recording.
 
 ## What the MVP includes
 
