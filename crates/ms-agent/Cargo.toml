@@ -1,9 +1,0 @@
-[package]
-name = "ms-agent"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-description = "The MapleSyrup agent loop: perceptions and a goal in, annotations out."
-
-[dependencies]
-ms-core.workspace = true

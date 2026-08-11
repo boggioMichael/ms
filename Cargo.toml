@@ -1,37 +1,7 @@
-[workspace]
-resolver = "3"
-members = [
-    "crates/ms-core",
-    "crates/ms-capture",
-    "crates/ms-vision",
-    "crates/ms-agent",
-    "crates/ms-overlay",
-]
-
-[workspace.package]
+[package]
+name = "ms"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
-[workspace.dependencies]
-ms-core = { path = "crates/ms-core" }
-ms-capture = { path = "crates/ms-capture" }
-ms-vision = { path = "crates/ms-vision" }
-ms-agent = { path = "crates/ms-agent" }
-ms-overlay = { path = "crates/ms-overlay" }
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
-
-[package]
-name = "ms"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-description = "MapleSyrup: a desktop AI agent with screen vision and overlay"
-
 [dependencies]
-ms-core.workspace = true
-ms-capture.workspace = true
-ms-vision.workspace = true
-ms-agent.workspace = true
-ms-overlay.workspace = true
