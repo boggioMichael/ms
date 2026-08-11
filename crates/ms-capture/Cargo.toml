@@ -1,0 +1,10 @@
+[package]
+name = "ms-capture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Screen and window capture for MapleSyrup."
+
+[dependencies]
+ms-core.workspace = true
+xcap = "0.9"

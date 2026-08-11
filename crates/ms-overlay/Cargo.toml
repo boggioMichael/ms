@@ -1,0 +1,9 @@
+[package]
+name = "ms-overlay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Transparent always-on-top annotation overlay for MapleSyrup."
+
+[dependencies]
+ms-core.workspace = true

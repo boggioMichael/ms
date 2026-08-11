@@ -1,0 +1,10 @@
+[package]
+name = "ms-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared domain types for MapleSyrup. No I/O."
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
