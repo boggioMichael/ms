@@ -96,14 +96,31 @@ fn main() {
     let mut frame_index = 0usize;
     let mut first_frame = true;
 
+    let has_fallback_arg = std::env::args().nth(1).is_some();
+    let mut waiting_announced = false;
+
     loop {
         let (source, image) = match load_image() {
             Some(item) => item,
             None => {
-                println!("No live MapleStory window capture was available.");
-                println!(
-                    "Open the game window, or pass a screenshot path explicitly: cargo run -- resources/maplestory.png"
-                );
+                // With no input at all, wait for the game rather than
+                // exiting: starting this before launching MapleStory is the
+                // normal way to use it.
+                if !has_fallback_arg {
+                    if !waiting_announced {
+                        println!("Waiting for the MapleStory window… {DIM}(ctrl-c to stop){RESET}");
+                        println!(
+                            "{DIM}Or run against a capture instead:{RESET}\n  \
+                             cargo run --release --bin ms -- resources/maplestory.png\n  \
+                             cargo run --release --bin vision_debug -- chaos-zakum-solo-lvl230.mp4"
+                        );
+                        waiting_announced = true;
+                    }
+                    thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+
+                println!("Could not read the image passed on the command line.");
                 return;
             }
         };
