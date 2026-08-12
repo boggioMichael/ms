@@ -14,9 +14,12 @@
 use ms::capture::capture_game_window_info;
 use ms::game_state::*;
 use ms::logging::init_tracing;
+use ms::observe::dashboard::Dashboard;
+use ms::observe::frame_result::{FrameTimings, VisionFrameResult};
 use ms::util::timing::{FPSCounter, FrameTimer};
 use ms::vision::snapshot::PerceptionPipeline;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 fn main() {
     init_tracing("info");
@@ -55,8 +58,7 @@ fn run_perception_loop(initial_image: &image::RgbaImage) {
     let mut fps_counter = FPSCounter::new(30);
     let mut frame_number: u64 = 0;
     let start_time = Instant::now();
-
-    let mut last_window_title = String::new();
+    let mut dashboard = Dashboard::new();
 
     // Process initial frame
     process_and_display_frame(
@@ -66,25 +68,13 @@ fn run_perception_loop(initial_image: &image::RgbaImage) {
         &mut frame_timer,
         &mut fps_counter,
         start_time,
+        &mut dashboard,
     );
 
     // Continuous capture loop
-    let mut frame_count_since_title_update = 0;
     loop {
         match capture_game_window_info() {
-            Some((window_title, image)) => {
-                // Update title every 30 frames to reduce console spam
-                if frame_count_since_title_update == 0 && window_title != last_window_title {
-                    println!(
-                        "📍 Window: {} ({}x{})",
-                        window_title,
-                        image.width(),
-                        image.height()
-                    );
-                    last_window_title = window_title;
-                }
-                frame_count_since_title_update = (frame_count_since_title_update + 1) % 30;
-
+            Some((_window_title, image)) => {
                 process_and_display_frame(
                     &mut pipeline,
                     &image,
@@ -92,9 +82,13 @@ fn run_perception_loop(initial_image: &image::RgbaImage) {
                     &mut frame_timer,
                     &mut fps_counter,
                     start_time,
+                    &mut dashboard,
                 );
             }
             None => {
+                // Surface the cursor before scrolling a warning past the
+                // in-place dashboard.
+                dashboard.finish();
                 println!("\n⚠️  Window lost. Retrying in 1 second...");
                 std::thread::sleep(std::time::Duration::from_secs(1));
             }
@@ -109,6 +103,7 @@ fn process_and_display_frame(
     frame_timer: &mut ms::util::timing::FrameTimer,
     fps_counter: &mut ms::util::timing::FPSCounter,
     start_time: Instant,
+    dashboard: &mut Dashboard,
 ) {
     frame_timer.mark();
 
@@ -288,27 +283,35 @@ fn process_and_display_frame(
         processing_time_ms: perception_elapsed.as_secs_f32() * 1000.0,
     };
 
-    // Display the game state
-    println!("{}", game_state.to_display_string());
-
     fps_counter.add_frame_seconds(frame_timer.mark().as_secs_f64());
     let current_fps = fps_counter.fps();
 
-    println!(
-        "📊 Performance: FPS={:.1} | Pipeline={:.2}ms",
-        current_fps, game_state.processing_time_ms
-    );
-    println!(
-        "\n📋 Compact JSON State:\n{}\n",
-        game_state.to_json_compact()
-    );
+    // Routine per-frame state belongs in the live dashboard, not the log:
+    // printing a full JSON document per frame made the terminal unusable.
+    let result = VisionFrameResult {
+        frame_id: *frame_number,
+        elapsed_ms: game_state.timestamp_ms,
+        source: format!("{}x{}", image.width(), image.height()),
+        image: Arc::new(image.clone()),
+        world: Arc::new(world_state),
+        timings: FrameTimings {
+            capture: Duration::ZERO,
+            vision: perception_elapsed,
+            frame_interval: Duration::from_secs_f64(if current_fps > 0.0 {
+                1.0 / current_fps
+            } else {
+                0.0
+            }),
+        },
+        fps: current_fps,
+    };
+    dashboard.draw(&result, 0);
 
-    // Periodically show full pretty JSON
-    if (*frame_number).is_multiple_of(10) {
-        println!(
-            "📄 Full Structured State (Frame {}):\n{}\n",
-            frame_number,
-            game_state.to_json_pretty()
-        );
+    // The structured state is this demo's actual product, so it is still
+    // emitted -- to a file, on an interval, where it can be inspected
+    // without drowning the live view.
+    if (*frame_number).is_multiple_of(30) {
+        let _ = std::fs::create_dir_all("out");
+        let _ = std::fs::write("out/gamestate-latest.json", game_state.to_json_pretty());
     }
 }

@@ -1,0 +1,415 @@
+// Live vision debugger: animated terminal dashboard + graphical preview.
+//
+// Run against the live game window:
+//   cargo run --release --bin vision_debug
+//
+// Against a recorded gameplay video (frames are extracted with ffmpeg once,
+// then replayed through the real pipeline):
+//   cargo run --release --bin vision_debug -- chaos-zakum-solo-lvl230.mp4
+//
+// Against a still image, which makes the tool usable with no game running:
+//   cargo run --release --bin vision_debug -- resources/maplestory.png
+//
+// Headless: render one annotated frame to disk instead of opening a window.
+//   MS_VISION_DUMP=out/frame.png cargo run --release --bin vision_debug -- <input>
+//
+// Video extraction knobs: MS_VIDEO_FPS (default 15), MS_VIDEO_FRAMES (default 900).
+//
+// Architecture: capture and perception run on a worker thread and publish
+// each result to a single-slot mailbox. The main thread owns both views and
+// renders whatever the newest result is, so a slow display drops
+// visualization frames instead of throttling the pipeline.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use image::RgbaImage;
+use ms::capture::capture_game_window_info;
+use ms::observe::dashboard::Dashboard;
+use ms::observe::frame_result::{FrameTimings, LatestFrame, VisionFrameResult};
+use ms::observe::preview::Preview;
+use ms::util::timing::FPSCounter;
+use ms::vision::snapshot::PerceptionPipeline;
+
+/// How long the worker waits before retrying after the window disappears.
+const RECAPTURE_BACKOFF: Duration = Duration::from_millis(500);
+
+const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "wmv", "flv"];
+
+/// Where frames come from. Resolved once at startup so the worker loop stays
+/// simple and every mode reports honest capture timings.
+enum FrameSource {
+    /// The live MapleStory window.
+    Live,
+    /// A single image, re-read each iteration so timings stay comparable.
+    Still { label: String, image: RgbaImage },
+    /// An ordered set of extracted video frames, replayed on a loop.
+    Sequence {
+        label: String,
+        frames: Vec<PathBuf>,
+        cursor: usize,
+    },
+}
+
+impl FrameSource {
+    /// Produce the next frame along with the time it took to obtain it.
+    fn next_frame(&mut self) -> Option<(String, RgbaImage, Duration)> {
+        let start = Instant::now();
+        match self {
+            FrameSource::Live => {
+                capture_game_window_info().map(|(title, image)| (title, image, start.elapsed()))
+            }
+            FrameSource::Still { label, image } => {
+                Some((label.clone(), image.clone(), start.elapsed()))
+            }
+            FrameSource::Sequence {
+                label,
+                frames,
+                cursor,
+            } => {
+                if frames.is_empty() {
+                    return None;
+                }
+                let path = &frames[*cursor % frames.len()];
+                let position = *cursor % frames.len() + 1;
+                *cursor = cursor.wrapping_add(1);
+                let image = load_image(path)?;
+                Some((
+                    format!("{label} [{}/{}]", position, frames.len()),
+                    image,
+                    start.elapsed(),
+                ))
+            }
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            FrameSource::Live => "live MapleStory window".to_string(),
+            FrameSource::Still { label, .. } => label.clone(),
+            FrameSource::Sequence { label, frames, .. } => {
+                format!("{label} ({} frames)", frames.len())
+            }
+        }
+    }
+}
+
+fn main() {
+    let input = std::env::args().nth(1);
+
+    let mut source = match resolve_source(input.as_deref()) {
+        Some(source) => source,
+        None => {
+            eprintln!("No MapleStory window found and no usable input was given.");
+            eprintln!(
+                "Pass a video or image, e.g.:\n  \
+                 cargo run --release --bin vision_debug -- chaos-zakum-solo-lvl230.mp4\n  \
+                 cargo run --release --bin vision_debug -- resources/maplestory.png"
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let description = source.describe();
+    let Some((first_label, first_frame, _)) = source.next_frame() else {
+        eprintln!("Could not read a first frame from {description}.");
+        std::process::exit(1);
+    };
+
+    // Headless verification path: render one annotated frame to disk and
+    // exit, so the overlay can be inspected where no window can be opened.
+    if let Ok(dump_path) = std::env::var("MS_VISION_DUMP") {
+        dump_overlay(&first_label, first_frame, &dump_path);
+        return;
+    }
+
+    let (width, height) = (first_frame.width(), first_frame.height());
+    println!("MapleSyrup vision debugger");
+    println!("  source : {description} ({width}x{height})");
+    if !ms::vision::ocr::is_ocr_available() {
+        println!(
+            "  note   : Tesseract not found — OCR-derived values (name, job, level, absolute\n\
+             \x20          HP/MP numbers) read as unknown. Bar percentages are unaffected."
+        );
+    }
+    println!("  keys   : Esc or closing the preview window stops the run\n");
+
+    let mailbox = Arc::new(LatestFrame::new());
+    let running = Arc::new(AtomicBool::new(true));
+
+    let worker = {
+        let mailbox = Arc::clone(&mailbox);
+        let running = Arc::clone(&running);
+        std::thread::spawn(move || {
+            run_pipeline(mailbox, running, source);
+        })
+    };
+
+    // The preview owns an OS window, which must stay on the main thread.
+    let mut preview = match Preview::open(width, height) {
+        Ok(preview) => Some(preview),
+        Err(err) => {
+            eprintln!("warning: could not open the preview window ({err}); dashboard only.");
+            None
+        }
+    };
+
+    let mut dashboard = Dashboard::new();
+    let mut last_frame_id = 0;
+
+    while running.load(Ordering::Relaxed) {
+        if let Some(preview) = preview.as_ref()
+            && !preview.is_open()
+        {
+            break;
+        }
+
+        match mailbox.take() {
+            Some(result) => {
+                last_frame_id = result.frame_id;
+                dashboard.draw(&result, mailbox.dropped_count());
+                if let Some(preview) = preview.as_mut() {
+                    preview.show(&result);
+                }
+            }
+            None => {
+                // Nothing new yet. Keep the window responsive and let the
+                // worker get on with capturing rather than busy-waiting.
+                if let Some(preview) = preview.as_mut() {
+                    preview.pump();
+                }
+                std::thread::sleep(Duration::from_millis(4));
+            }
+        }
+    }
+
+    running.store(false, Ordering::Relaxed);
+    dashboard.finish();
+    let _ = worker.join();
+
+    println!(
+        "\nStopped after {last_frame_id} frames ({} skipped for display).",
+        mailbox.dropped_count()
+    );
+}
+
+/// Decide where frames come from. An explicit argument always wins, so
+/// "test against this video" is not silently overridden by a live window.
+fn resolve_source(input: Option<&str>) -> Option<FrameSource> {
+    let Some(input) = input else {
+        // No argument: only the live window makes sense.
+        return capture_game_window_info().map(|_| FrameSource::Live);
+    };
+
+    let path = Path::new(input);
+    if !path.exists() {
+        eprintln!("input not found: {input}");
+        return None;
+    }
+
+    if path.is_dir() {
+        let frames = collect_frames(path);
+        return (!frames.is_empty()).then(|| FrameSource::Sequence {
+            label: input.to_string(),
+            frames,
+            cursor: 0,
+        });
+    }
+
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if VIDEO_EXTENSIONS.contains(&extension.as_str()) {
+        let frames = extract_video_frames(path)?;
+        return Some(FrameSource::Sequence {
+            label: input.to_string(),
+            frames,
+            cursor: 0,
+        });
+    }
+
+    load_image(path).map(|image| FrameSource::Still {
+        label: input.to_string(),
+        image,
+    })
+}
+
+fn collect_frames(dir: &Path) -> Vec<PathBuf> {
+    let mut frames: Vec<PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg"))
+        })
+        .collect();
+    // ffmpeg numbers frames zero-padded, so lexical order is temporal order.
+    frames.sort();
+    frames
+}
+
+/// Extract frames from a video once into `out/frames/<stem>/`, reusing them
+/// on later runs so repeated testing does not re-decode the whole clip.
+fn extract_video_frames(video: &Path) -> Option<Vec<PathBuf>> {
+    let stem = video
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("video");
+    let dir = PathBuf::from("out/frames").join(stem);
+
+    let existing = collect_frames(&dir);
+    if !existing.is_empty() {
+        println!(
+            "reusing {} frames already extracted in {}",
+            existing.len(),
+            dir.display()
+        );
+        return Some(existing);
+    }
+
+    let fps = std::env::var("MS_VIDEO_FPS").unwrap_or_else(|_| "15".to_string());
+    let max_frames = std::env::var("MS_VIDEO_FRAMES").unwrap_or_else(|_| "900".to_string());
+
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        eprintln!("could not create {}: {err}", dir.display());
+        return None;
+    }
+
+    println!(
+        "extracting frames from {} at {fps} fps (max {max_frames})…",
+        video.display()
+    );
+
+    let status = std::process::Command::new("ffmpeg")
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-i")
+        .arg(video)
+        .arg("-vf")
+        .arg(format!("fps={fps}"))
+        .arg("-frames:v")
+        .arg(&max_frames)
+        .arg("-y")
+        .arg(dir.join("frame-%05d.png"))
+        .status();
+
+    match status {
+        Ok(status) if status.success() => {}
+        Ok(status) => {
+            eprintln!("ffmpeg exited with {status}");
+            return None;
+        }
+        Err(err) => {
+            eprintln!(
+                "could not run ffmpeg ({err}). Install it, or pass a directory of \
+                 already-extracted frames instead."
+            );
+            return None;
+        }
+    }
+
+    let frames = collect_frames(&dir);
+    if frames.is_empty() {
+        eprintln!("ffmpeg produced no frames in {}", dir.display());
+        return None;
+    }
+    println!("extracted {} frames to {}", frames.len(), dir.display());
+    Some(frames)
+}
+
+/// Render one annotated frame to `path` without opening a window.
+fn dump_overlay(source: &str, image: RgbaImage, path: &str) {
+    let mut pipeline = PerceptionPipeline::new();
+    let vision_start = Instant::now();
+    let world = pipeline.detect(&image);
+    let vision = vision_start.elapsed();
+
+    let result = VisionFrameResult {
+        frame_id: 1,
+        elapsed_ms: 0,
+        source: source.to_string(),
+        image: Arc::new(image),
+        world: Arc::new(world),
+        timings: FrameTimings {
+            capture: Duration::ZERO,
+            vision,
+            frame_interval: Duration::ZERO,
+        },
+        fps: 0.0,
+    };
+
+    if let Some(parent) = Path::new(path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let annotated = ms::observe::overlay::render_overlay(&result);
+    match annotated.save(path) {
+        Ok(()) => println!("wrote annotated overlay to {path}"),
+        Err(err) => eprintln!("failed to write {path}: {err}"),
+    }
+}
+
+fn load_image(path: impl AsRef<Path>) -> Option<RgbaImage> {
+    let path = path.as_ref();
+    if !path.exists() {
+        return None;
+    }
+    Some(
+        image::io::Reader::open(path)
+            .ok()?
+            .decode()
+            .ok()?
+            .to_rgba8(),
+    )
+}
+
+/// Capture + perception loop. Publishes one result per processed frame.
+fn run_pipeline(mailbox: Arc<LatestFrame>, running: Arc<AtomicBool>, mut source: FrameSource) {
+    let mut pipeline = PerceptionPipeline::new();
+    let mut fps_counter = FPSCounter::new(30);
+    let mut frame_id: u64 = 0;
+    let start = Instant::now();
+    let mut previous_frame_at = Instant::now();
+
+    while running.load(Ordering::Relaxed) {
+        let Some((label, image, capture_time)) = source.next_frame() else {
+            // Only the live source can transiently fail; back off and retry
+            // rather than spinning on a missing window.
+            std::thread::sleep(RECAPTURE_BACKOFF);
+            continue;
+        };
+
+        let vision_start = Instant::now();
+        let world = pipeline.detect(&image);
+        let vision_time = vision_start.elapsed();
+
+        let now = Instant::now();
+        let frame_interval = now.duration_since(previous_frame_at);
+        previous_frame_at = now;
+        frame_id += 1;
+
+        let fps = fps_counter.add_frame_seconds(frame_interval.as_secs_f64());
+
+        mailbox.publish(VisionFrameResult {
+            frame_id,
+            elapsed_ms: start.elapsed().as_millis() as u64,
+            source: label,
+            image: Arc::new(image),
+            world: Arc::new(world),
+            timings: FrameTimings {
+                capture: capture_time,
+                vision: vision_time,
+                frame_interval,
+            },
+            fps,
+        });
+    }
+}

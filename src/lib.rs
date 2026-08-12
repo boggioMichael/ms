@@ -7,6 +7,7 @@
 //! - **util**: Timing, pixel, and image manipulation helpers.
 //! - **game_state**: Serializable game state aggregating all vision outputs.
 //! - **hud**: Convenience re-export of HUD detection API for backwards compatibility.
+//! - **observe**: Live terminal dashboard and graphical preview of the running pipeline.
 
 pub mod capture;
 pub mod config;
@@ -15,5 +16,6 @@ pub mod game_state;
 pub mod hud;
 pub mod knowledge;
 pub mod logging;
+pub mod observe;
 pub mod util;
 pub mod vision;
