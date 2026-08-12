@@ -6,38 +6,60 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-fn format_metric(metric: &Option<ms::hud::HudMetric>) -> String {
-    match metric {
-        Some(metric) => {
-            let percent = metric
-                .percent
-                .map(|p| format!("{p:.1}%"))
-                .unwrap_or_else(|| "unknown".into());
-            let value = metric
-                .value
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "unknown".into());
-            format!("{value} / {percent}")
-        }
-        None => "unknown".into(),
-    }
-}
-
 fn format_text(value: &Option<String>) -> String {
     value.as_deref().unwrap_or("unknown").to_string()
 }
 
+const DIM: &str = "\u{1b}[2m";
+const BOLD: &str = "\u{1b}[1m";
+const RED: &str = "\u{1b}[31m";
+const BLUE: &str = "\u{1b}[34m";
+const YELLOW: &str = "\u{1b}[33m";
+const RESET: &str = "\u{1b}[0m";
+
+fn bar(percent: Option<f32>, color: &str) -> String {
+    const WIDTH: usize = 24;
+    match percent {
+        Some(p) => {
+            let filled = ((p / 100.0) * WIDTH as f32)
+                .round()
+                .clamp(0.0, WIDTH as f32) as usize;
+            format!(
+                "{color}{}{RESET}{DIM}{}{RESET} {p:>5.1}%",
+                "█".repeat(filled),
+                "░".repeat(WIDTH - filled)
+            )
+        }
+        None => format!("{DIM}{} {:>5}{RESET}", "░".repeat(WIDTH), "--"),
+    }
+}
+
 fn print_hud_summary(frame_index: usize, snapshot: &ms::hud::HudSnapshot) {
-    let hp = format_metric(&snapshot.hp);
-    let mp = format_metric(&snapshot.mp);
-    let xp = format_metric(&snapshot.exp);
     let name = format_text(&snapshot.player_name);
     let job = format_text(&snapshot.character_class);
     let level = format_text(&snapshot.level);
 
+    // Redraw the panel in place so a live capture reads as one updating view.
+    if frame_index > 0 {
+        print!("\u{1b}[6A");
+    }
+    println!("\u{1b}[2K{BOLD}╭─ MapleSyrup{RESET} {DIM}· frame {frame_index}{RESET}");
     println!(
-        "[{frame_index}] HP {hp} | MP {mp} | EXP {xp} | Name {name} | Job {job} | Level {level}"
+        "\u{1b}[2K{DIM}│{RESET} HP  {}",
+        bar(snapshot.hp.as_ref().and_then(|m| m.percent), RED)
     );
+    println!(
+        "\u{1b}[2K{DIM}│{RESET} MP  {}",
+        bar(snapshot.mp.as_ref().and_then(|m| m.percent), BLUE)
+    );
+    println!(
+        "\u{1b}[2K{DIM}│{RESET} EXP {}",
+        bar(snapshot.exp.as_ref().and_then(|m| m.percent), YELLOW)
+    );
+    println!(
+        "\u{1b}[2K{DIM}│{RESET} {BOLD}{name}{RESET} {DIM}·{RESET} {job} {DIM}·{RESET} Lv {level}"
+    );
+    println!("\u{1b}[2K{DIM}╰────────────────────────────────────{RESET}");
 }
 
 fn write_debug_overlay(image: &image::RgbaImage, markers: &ms::hud::UiMarkers, frame_index: usize) {
@@ -88,18 +110,22 @@ fn main() {
 
         if first_frame {
             println!(
-                "Inspecting window/source: {} ({}x{}); OCR values and detection rectangles follow.",
-                source,
+                "{DIM}source{RESET} {source} {DIM}({}x{}){RESET}",
                 image.width(),
                 image.height()
             );
+            if !ms::vision::ocr::is_ocr_available() {
+                println!(
+                    "{YELLOW}!{RESET} Tesseract OCR not found — name, job, level and numeric \
+                     values stay unknown. Install it: {BOLD}winget install -e --id UB-Mannheim.TesseractOCR{RESET}"
+                );
+            }
+            println!();
         }
 
         let snapshot = detect_hud_snapshot(&image);
         let markers = snapshot.markers.clone();
-        println!("===============================");
         print_hud_summary(frame_index, &snapshot);
-        println!("===============================");
 
         std::fs::create_dir_all("out").expect("failed to create output directory");
         write_debug_overlay(&image, &markers, frame_index);

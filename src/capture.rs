@@ -51,10 +51,6 @@ mod windows_capture {
             .to_string_lossy()
             .into_owned();
         let matches_query = title.to_ascii_lowercase().contains(&state.query);
-        eprintln!(
-            "[window-search] candidate {:?}; matches {:?}: {}",
-            title, state.query, matches_query
-        );
         if matches_query {
             state.found = hwnd;
             state.title = title;
@@ -210,32 +206,135 @@ mod windows_capture {
         }
     }
 
-    /// Capture the first visible game client window using common MapleStory
-    /// title substring without requiring an exact title.
+    /// Windows whose titles can legitimately contain "maplestory" without
+    /// being the actual game client, e.g. a media player playing a recorded
+    /// clip or a browser tab with the word in its title.
+    const NON_GAME_TITLE_MARKERS: &[&str] = &[
+        ".mp4",
+        ".mkv",
+        ".avi",
+        ".mov",
+        ".wmv",
+        ".webm",
+        ".gif",
+        ".flv",
+        "vlc",
+        "media player",
+        "potplayer",
+        "mpc-",
+        "mpc-hc",
+        "quicktime",
+        "youtube",
+        "chrome",
+        "firefox",
+        "edge",
+        "obs ",
+    ];
+
+    fn last_status() -> &'static std::sync::Mutex<Option<String>> {
+        static LAST: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
+            std::sync::OnceLock::new();
+        LAST.get_or_init(|| std::sync::Mutex::new(None))
+    }
+
+    const DIM: &str = "\u{1b}[2m";
+    const BOLD: &str = "\u{1b}[1m";
+    const CYAN: &str = "\u{1b}[36m";
+    const GREEN: &str = "\u{1b}[32m";
+    const YELLOW: &str = "\u{1b}[33m";
+    const RESET: &str = "\u{1b}[0m";
+
+    fn truncate_title(title: &str, max: usize) -> String {
+        let chars: Vec<char> = title.chars().collect();
+        if chars.len() <= max {
+            return title.to_string();
+        }
+        format!(
+            "{}…",
+            chars[..max.saturating_sub(1)].iter().collect::<String>()
+        )
+    }
+
+    /// Redraws the search line in place, so scanning reads as one animated
+    /// line rather than a new line per candidate per frame.
+    fn draw_search_line(line: &str) {
+        eprint!("\r\u{1b}[2K{line}");
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+    }
+
+    /// Animates the candidate scan, then leaves a single settled line on
+    /// screen. Only replays when the outcome changes, so a polling loop
+    /// stays quiet once it has locked on.
+    fn animate_scan(candidates: &[(String, String)], chosen: Option<&str>) {
+        const FRAMES: [&str; 4] = ["⠋", "⠙", "⠹", "⠸"];
+
+        for (index, (title, _)) in candidates.iter().enumerate() {
+            let spinner = FRAMES[index % FRAMES.len()];
+            let is_match = chosen == Some(title.as_str());
+            let verdict = if is_match {
+                format!("{GREEN}{BOLD}MATCH{RESET}")
+            } else {
+                format!("{DIM}no{RESET}")
+            };
+            draw_search_line(&format!(
+                "{CYAN}{spinner}{RESET} scanning windows {DIM}…{RESET} [{}{DIM} · {RESET}{verdict}]",
+                truncate_title(title, 44)
+            ));
+            std::thread::sleep(std::time::Duration::from_millis(70));
+            if is_match {
+                break;
+            }
+        }
+
+        match chosen {
+            Some(title) => draw_search_line(&format!(
+                "{GREEN}✓{RESET} game window {BOLD}{}{RESET}\n",
+                truncate_title(title, 52)
+            )),
+            None => draw_search_line(&format!(
+                "{YELLOW}○{RESET} no MapleStory window found {DIM}(waiting…){RESET}\n"
+            )),
+        }
+    }
+
+    /// Capture the visible game client window, preferring an exact title
+    /// match ("MapleStory") and otherwise a substring match that isn't a
+    /// known non-game window (video players, browsers, etc.).
     pub fn capture_game_window_info() -> Option<(String, RgbaImage)> {
         const GAME_TITLE_SUBSTRING: &str = "maplestory";
-        eprintln!(
-            "[window-search] searching visible titles for case-insensitive substring: {GAME_TITLE_SUBSTRING:?}"
-        );
-        if let Some(capture) = capture_window_by_title_info(GAME_TITLE_SUBSTRING) {
-            eprintln!(
-                "[window-search] selected window {:?} ({}x{})",
-                capture.0,
-                capture.1.width(),
-                capture.1.height()
-            );
-            return Some(capture);
-        }
+
         let candidates = visible_window_titles();
-        eprintln!(
-            "[window-search] no matching window found; visible titled windows: {}",
-            if candidates.is_empty() {
-                "<none>".to_string()
-            } else {
-                candidates.join(" | ")
+        let lowered: Vec<(String, String)> = candidates
+            .iter()
+            .map(|title| (title.clone(), title.to_ascii_lowercase()))
+            .collect();
+
+        let exact = lowered
+            .iter()
+            .find(|(_, lower)| lower == GAME_TITLE_SUBSTRING);
+
+        let best = exact.or_else(|| {
+            lowered.iter().find(|(_, lower)| {
+                lower.contains(GAME_TITLE_SUBSTRING)
+                    && !NON_GAME_TITLE_MARKERS
+                        .iter()
+                        .any(|marker| lower.contains(marker))
+            })
+        });
+
+        {
+            let outcome = best
+                .map(|(title, _)| title.clone())
+                .unwrap_or_else(|| "<none>".to_string());
+            let mut last = last_status().lock().unwrap();
+            if last.as_deref() != Some(outcome.as_str()) {
+                animate_scan(&lowered, best.map(|(title, _)| title.as_str()));
+                *last = Some(outcome);
             }
-        );
-        None
+        }
+
+        let (title, _) = best?;
+        capture_window_by_title_info(title)
     }
 }
 
