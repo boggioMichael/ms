@@ -15,6 +15,7 @@ pub mod geometry;
 pub mod hud_geometry;
 pub mod hud_text;
 pub mod ocr;
+pub mod ocr_windows;
 pub mod snapshot;
 pub mod temporal;
 pub mod types;
