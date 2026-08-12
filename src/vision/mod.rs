@@ -13,6 +13,7 @@ pub mod detectors;
 pub mod diff;
 pub mod geometry;
 pub mod hud_geometry;
+pub mod hud_text;
 pub mod ocr;
 pub mod snapshot;
 pub mod temporal;

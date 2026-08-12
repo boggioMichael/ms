@@ -18,7 +18,8 @@ use crate::vision::ocr;
 // implementation instead of duplicating it.
 pub use crate::vision::geometry::Rect;
 use crate::vision::geometry::{
-    bar_percent, find_color_bar, find_color_regions, find_text_block_in_regions,
+    find_color_bar, find_color_regions, find_text_block_in_regions, is_color_pixel,
+    measure_bar_fill,
 };
 
 /// A parsed HUD metric from OCR.
@@ -27,6 +28,9 @@ pub struct HudMetric {
     pub label: String,
     pub percent: Option<f32>,
     pub value: Option<u64>,
+    /// Denominator when the HUD shows `current / max`. Knowing the maximum
+    /// is what turns a bar reading into an exact percentage.
+    pub max: Option<u64>,
     pub raw_text: Option<String>,
 }
 
@@ -76,6 +80,7 @@ fn read_metric_from_ocr(image: &RgbaImage, rect: Option<Rect>, label: &str) -> O
         label: label.to_string(),
         percent,
         value,
+        max: None,
         raw_text: (!text.is_empty()).then_some(text),
     })
 }
@@ -98,6 +103,7 @@ fn read_metric_with_fallback(
         label: label.to_string(),
         percent,
         value,
+        max: None,
         raw_text: (!text.is_empty()).then_some(text),
     })
 }
@@ -349,6 +355,7 @@ pub fn detect_hud_snapshot(image: &RgbaImage) -> HudSnapshot {
             label: label.to_string(),
             percent: Some(percent),
             value: None,
+            max: None,
             raw_text: None,
         })
     };
@@ -385,12 +392,24 @@ pub fn detect_ui_markers(image: &RgbaImage) -> UiMarkers {
         w: fill.w.saturating_add(12).max(min_width),
         h: fill.h.saturating_add(24),
     };
-    let hp_bar = find_color_bar(image, status_band, (340.0, 30.0), 0.35, 0.30)
-        .map(|fill| metric_region(fill, 140));
-    let mp_bar = find_color_bar(image, status_band, (190.0, 250.0), 0.30, 0.30)
-        .map(|fill| metric_region(fill, 140));
-    let exp_bar = find_color_bar(image, status_band, (40.0, 80.0), 0.25, 0.25)
-        .map(|fill| metric_region(fill, width / 8));
+    // Keep the raw colour fills: the fill span is what a bar's percentage
+    // must be measured from, while the padded region below is only used to
+    // give OCR room to find the adjacent numbers.
+    let hp_fill = find_color_bar(image, status_band, (340.0, 30.0), 0.35, 0.30);
+    let mp_fill = find_color_bar(image, status_band, (190.0, 250.0), 0.30, 0.30);
+    let exp_fill = find_color_bar(image, status_band, (40.0, 80.0), 0.25, 0.25);
+
+    let hp_bar = hp_fill.map(|fill| metric_region(fill, 140));
+    let mp_bar = mp_fill.map(|fill| metric_region(fill, 140));
+    let exp_bar = exp_fill.map(|fill| metric_region(fill, width / 8));
+
+    let fill_percent = |fill: Option<Rect>, hue: (f32, f32), sat: f32, val: f32| {
+        fill.and_then(|fill| {
+            measure_bar_fill(image, fill, status_band, |pixel| {
+                is_color_pixel(pixel, hue, sat, val)
+            })
+        })
+    };
 
     let _name_plate = find_text_block_in_regions(
         image,
@@ -497,9 +516,9 @@ pub fn detect_ui_markers(image: &RgbaImage) -> UiMarkers {
         name_plate,
         class_plate,
         level_plate,
-        hp_percent: bar_percent(hp_bar, width / 2),
-        mp_percent: bar_percent(mp_bar, width / 2),
-        exp_percent: bar_percent(exp_bar, width),
+        hp_percent: fill_percent(hp_fill, (340.0, 30.0), 0.35, 0.30),
+        mp_percent: fill_percent(mp_fill, (190.0, 250.0), 0.30, 0.30),
+        exp_percent: fill_percent(exp_fill, (40.0, 80.0), 0.25, 0.25),
     }
 }
 

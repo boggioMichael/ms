@@ -14,6 +14,7 @@ use image::RgbaImage;
 use crate::vision::hud_geometry::{
     self, HudMetric as RawHudMetric, HudSnapshot as RawHudSnapshot, UiMarkers,
 };
+use crate::vision::hud_text::HudTextReader;
 use crate::vision::types::{Confidence, Detection, Reliability, Source};
 
 /// A HUD metric (HP/MP/EXP) with confidence-scored percent and absolute value.
@@ -22,6 +23,8 @@ pub struct HudMetric {
     pub label: String,
     pub percent: Option<f32>,
     pub value: Option<u64>,
+    /// Maximum, when the HUD printed `current / max`.
+    pub max: Option<u64>,
     pub raw_text: Option<String>,
 }
 
@@ -31,6 +34,7 @@ impl From<RawHudMetric> for HudMetric {
             label: raw.label,
             percent: raw.percent,
             value: raw.value,
+            max: raw.max,
             raw_text: raw.raw_text,
         }
     }
@@ -91,19 +95,32 @@ fn text_detection(value: Option<String>, plate_found: bool) -> Detection<String>
     }
 }
 
-/// Stateless HUD detector. Cheap to construct; holds no per-frame state
-/// (temporal smoothing of HUD values is handled by the pipeline via
-/// [`crate::vision::temporal::ConfidenceAccumulator`] so a single dropped
-/// OCR read does not make a value flicker to "unknown").
-#[derive(Debug, Default, Clone, Copy)]
-pub struct HudDetector;
+/// HUD detector.
+///
+/// Stateful only because reading the HUD's *text* costs an OCR subprocess
+/// per region. Bar geometry runs every frame; the text is refreshed on a
+/// cadence and cached in between (see
+/// [`crate::vision::hud_text::HudTextReader`]), which keeps the pipeline
+/// real-time while still reporting names, levels and exact `current/max`
+/// numbers.
+#[derive(Debug, Default)]
+pub struct HudDetector {
+    text: HudTextReader,
+}
 
 impl HudDetector {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 
-    pub fn detect(&self, image: &RgbaImage) -> HudReading {
+    /// Build a detector with an explicit OCR cadence, in frames.
+    pub fn with_ocr_interval(interval: u64) -> Self {
+        Self {
+            text: HudTextReader::new(interval),
+        }
+    }
+
+    pub fn detect(&mut self, image: &RgbaImage) -> HudReading {
         let RawHudSnapshot {
             markers,
             hp,
@@ -114,16 +131,72 @@ impl HudDetector {
             level,
         } = hud_geometry::detect_hud_snapshot(image);
 
+        // Geometry gives the fill ratio every frame; OCR contributes the
+        // printed numbers and plate text when its cadence comes round.
+        let text = self.text.read(image, &markers);
+
+        let hp = fuse(hp, "HP", text.hp, None);
+        let mp = fuse(mp, "MP", text.mp, None);
+        let exp = fuse(exp, "EXP", text.exp, text.exp_percent);
+
         HudReading {
             hp: metric_detection(hp),
             mp: metric_detection(mp),
             exp: metric_detection(exp),
-            player_name: text_detection(player_name, markers.name_plate.is_some()),
-            character_class: text_detection(character_class, markers.class_plate.is_some()),
-            level: text_detection(level, markers.level_plate.is_some()),
+            player_name: text_detection(
+                player_name.or(text.player_name),
+                markers.name_plate.is_some(),
+            ),
+            character_class: text_detection(
+                character_class.or(text.character_class),
+                markers.class_plate.is_some(),
+            ),
+            level: text_detection(level.or(text.level), markers.level_plate.is_some()),
             markers,
         }
     }
+}
+
+/// Combine the geometric bar reading with whatever OCR could read.
+///
+/// When the HUD printed `current / max`, that pair is authoritative: it is
+/// an exact figure, whereas the bar fill is a pixel estimate that skins,
+/// borders and antialiasing all nudge. The measured fill is kept as the
+/// fallback so a failed OCR read degrades to an approximate percentage
+/// rather than to nothing.
+fn fuse(
+    geometric: Option<RawHudMetric>,
+    label: &str,
+    ocr_pair: Option<(u64, Option<u64>)>,
+    ocr_percent: Option<f32>,
+) -> Option<RawHudMetric> {
+    let measured_percent = geometric.as_ref().and_then(|metric| metric.percent);
+    let (value, max) = match ocr_pair {
+        Some((current, max)) => (Some(current), max),
+        None => (None, None),
+    };
+
+    // An exact percentage is preferred, then current/max, then the bar.
+    let percent = ocr_percent
+        .or_else(|| match (value, max) {
+            (Some(current), Some(max)) if max > 0 => {
+                Some((current as f32 / max as f32 * 100.0).clamp(0.0, 100.0))
+            }
+            _ => None,
+        })
+        .or(measured_percent);
+
+    if percent.is_none() && value.is_none() {
+        return None;
+    }
+
+    Some(RawHudMetric {
+        label: label.to_string(),
+        percent,
+        value,
+        max,
+        raw_text: geometric.and_then(|metric| metric.raw_text),
+    })
 }
 
 #[cfg(test)]
@@ -143,6 +216,7 @@ mod tests {
             label: "HP".into(),
             percent: Some(100.0),
             value: Some(400),
+            max: None,
             raw_text: Some("HP 400/400".into()),
         };
         let detection = metric_detection(Some(raw));
@@ -156,6 +230,7 @@ mod tests {
             label: "MP".into(),
             percent: Some(50.0),
             value: None,
+            max: None,
             raw_text: None,
         };
         let detection = metric_detection(Some(raw));
