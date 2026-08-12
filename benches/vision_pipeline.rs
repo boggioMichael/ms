@@ -1,4 +1,4 @@
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use image::{ImageBuffer, Rgba};
 use ms::vision::PerceptionPipeline;
 
@@ -31,12 +31,21 @@ fn create_test_frame() -> ImageBuffer<Rgba<u8>, Vec<u8>> {
     img
 }
 
+/// `PerceptionPipeline` is stateful: the motion detector keeps the previous
+/// frame and the combat detector keeps a motion history, so a pipeline reused
+/// across iterations measures a cold first iteration followed by warm ones.
+/// Every benchmark below therefore builds a fresh pipeline in an untimed
+/// setup closure. `PerIteration` batching is used because a warmed pipeline
+/// retains a full frame copy, which makes larger batches memory-hungry.
 fn benchmark_full_pipeline(c: &mut Criterion) {
     let frame = black_box(create_test_frame());
-    let mut pipeline = PerceptionPipeline::new();
 
     c.bench_function("full_pipeline_single_frame", |b| {
-        b.iter(|| pipeline.detect(&frame))
+        b.iter_batched(
+            PerceptionPipeline::new,
+            |mut pipeline| pipeline.detect(&frame),
+            BatchSize::PerIteration,
+        )
     });
 }
 
@@ -58,12 +67,17 @@ fn benchmark_frame_dimensions(c: &mut Criterion) {
         }
 
         let frame = black_box(frame);
-        let mut pipeline = PerceptionPipeline::new();
 
         group.bench_with_input(
             BenchmarkId::from_parameter(label),
             &(width, height),
-            |b, _| b.iter(|| pipeline.detect(&frame)),
+            |b, _| {
+                b.iter_batched(
+                    PerceptionPipeline::new,
+                    |mut pipeline| pipeline.detect(&frame),
+                    BatchSize::PerIteration,
+                )
+            },
         );
     }
 
@@ -74,7 +88,6 @@ fn benchmark_successive_frames(c: &mut Criterion) {
     let mut group = c.benchmark_group("temporal");
     group.sample_size(30);
 
-    let mut pipeline = PerceptionPipeline::new();
     let frame1 = black_box(create_test_frame());
     let mut frame2 = create_test_frame();
 
@@ -86,12 +99,29 @@ fn benchmark_successive_frames(c: &mut Criterion) {
     }
     let frame2 = black_box(frame2);
 
+    // Cold start: a pipeline that has never seen a frame, which is what the
+    // name promises. With a shared pipeline only the very first iteration was
+    // actually cold.
     group.bench_function("first_frame_cold_start", |b| {
-        b.iter(|| pipeline.detect(&frame1))
+        b.iter_batched(
+            PerceptionPipeline::new,
+            |mut pipeline| pipeline.detect(&frame1),
+            BatchSize::PerIteration,
+        )
     });
 
+    // Warm state: prime the pipeline with frame1 in the untimed setup so the
+    // measured call is the second frame of a fresh pipeline every time.
     group.bench_function("second_frame_warm_state", |b| {
-        b.iter(|| pipeline.detect(&frame2))
+        b.iter_batched(
+            || {
+                let mut pipeline = PerceptionPipeline::new();
+                pipeline.detect(&frame1);
+                pipeline
+            },
+            |mut pipeline| pipeline.detect(&frame2),
+            BatchSize::PerIteration,
+        )
     });
 
     group.finish();

@@ -164,6 +164,10 @@ mod windows_capture {
                 let _ = SelectObject(hdc_mem, old_obj);
                 let _ = DeleteObject(hbitmap.into());
                 let _ = DeleteDC(hdc_mem);
+                // The screen DC comes from GetDC and must be released on every
+                // path out of this block, not just the success path, or each
+                // failed capture burns one of the process' 10k GDI handles.
+                let _ = ReleaseDC(None, hdc_screen);
                 return None;
             }
 

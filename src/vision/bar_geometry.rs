@@ -9,6 +9,8 @@
 
 use image::RgbaImage;
 
+use crate::util::pixel::{Hsv, hsv_from_rgb};
+
 /// A measured bar reading with geometry-derived percentage.
 #[derive(Debug, Clone)]
 pub struct BarMeasurement {
@@ -16,7 +18,8 @@ pub struct BarMeasurement {
     pub bounds: (u32, u32, u32, u32),
     /// Filled pixel count.
     pub filled_pixels: u32,
-    /// Total bar pixels.
+    /// Total bar pixels actually sampled, i.e. the requested region clamped
+    /// to the image bounds.
     pub total_pixels: u32,
     /// Estimated percentage: filled_pixels / total_pixels.
     pub percent: f32,
@@ -77,29 +80,12 @@ pub fn exp_config() -> BarConfig {
 }
 
 /// Convert RGBA to HSV for color-based bar segmentation.
-fn rgba_to_hsv(rgba: image::Rgba<u8>) -> (f32, f32, f32) {
-    let r = rgba[0] as f32 / 255.0;
-    let g = rgba[1] as f32 / 255.0;
-    let b = rgba[2] as f32 / 255.0;
-
-    let max = r.max(g).max(b);
-    let min = r.min(g).min(b);
-    let delta = max - min;
-
-    let v = max;
-    let s = if max > 0.0 { delta / max } else { 0.0 };
-
-    let h = if delta == 0.0 {
-        0.0
-    } else if max == r {
-        (60.0 * ((g - b) / delta) + 360.0) % 360.0
-    } else if max == g {
-        (60.0 * ((b - r) / delta) + 120.0) % 360.0
-    } else {
-        (60.0 * ((r - g) / delta) + 240.0) % 360.0
-    };
-
-    (h, s, v)
+///
+/// Adapter over the crate's single HSV implementation in [`crate::util::pixel`];
+/// alpha is ignored. This module used to carry its own copy of the conversion,
+/// which meant two implementations that could drift apart independently.
+fn rgba_to_hsv(rgba: image::Rgba<u8>) -> Hsv {
+    hsv_from_rgb(rgba[0], rgba[1], rgba[2])
 }
 
 /// Check if a pixel matches the filled bar color using HSV thresholds.
@@ -140,12 +126,15 @@ pub fn measure_bar(
     let mut filled_pixels = 0u32;
     let mut empty_pixels = 0u32;
 
+    // Clamp the region to the image. Pixels outside it cannot be sampled, so
+    // counting them in the denominator would bias `percent` low for any bar
+    // that runs past an image edge.
+    let x_end = x.saturating_add(width).min(image.width());
+    let y_end = y.saturating_add(height).min(image.height());
+
     // Scan the bar region to count filled and empty pixels.
-    for row in y..y.saturating_add(height) {
-        for col in x..x.saturating_add(width) {
-            if row >= image.height() || col >= image.width() {
-                continue;
-            }
+    for row in y..y_end {
+        for col in x..x_end {
             let pixel = *image.get_pixel(col, row);
 
             if is_filled_pixel(pixel, config) {
@@ -156,7 +145,9 @@ pub fn measure_bar(
         }
     }
 
-    let total_pixels = width * height;
+    let total_pixels = x_end
+        .saturating_sub(x)
+        .saturating_mul(y_end.saturating_sub(y));
     let percent = if total_pixels > 0 {
         (filled_pixels as f32) / (total_pixels as f32) * 100.0
     } else {
@@ -164,8 +155,13 @@ pub fn measure_bar(
     };
 
     // Confidence is high if the bar has a clear filled/empty split,
-    // and lower if pixels are ambiguous.
-    let clarity = ((filled_pixels + empty_pixels) as f32) / (total_pixels as f32);
+    // and lower if pixels are ambiguous. An empty region has no evidence
+    // either way, so it scores zero rather than NaN from a 0/0 divide.
+    let clarity = if total_pixels > 0 {
+        (filled_pixels.saturating_add(empty_pixels) as f32) / (total_pixels as f32)
+    } else {
+        0.0
+    };
     let confidence = clarity * (1.0 - (percent.abs() - 50.0).abs() / 100.0).max(0.1);
 
     BarMeasurement {
@@ -208,5 +204,58 @@ mod tests {
         let config = hp_config();
         let dark = image::Rgba([20, 20, 20, 255]);
         assert!(is_empty_pixel(dark, &config));
+    }
+
+    /// Pins the values the module-local HSV conversion produced before it was
+    /// folded into `util::pixel`, so the shared implementation cannot silently
+    /// change the bar segmentation thresholds.
+    #[test]
+    fn hsv_matches_shared_implementation() {
+        let cases = [
+            ([255u8, 0, 0], (0.0f32, 1.0f32, 1.0f32)),
+            ([0, 255, 0], (120.0, 1.0, 1.0)),
+            ([0, 0, 255], (240.0, 1.0, 1.0)),
+            ([255, 255, 0], (60.0, 1.0, 1.0)),
+            ([0, 255, 255], (180.0, 1.0, 1.0)),
+            ([255, 0, 255], (300.0, 1.0, 1.0)),
+            ([10, 20, 30], (210.0, 2.0 / 3.0, 30.0 / 255.0)),
+            ([0, 0, 0], (0.0, 0.0, 0.0)),
+            ([255, 255, 255], (0.0, 0.0, 1.0)),
+        ];
+
+        for ([r, g, b], expected) in cases {
+            let actual = rgba_to_hsv(image::Rgba([r, g, b, 255]));
+            assert_eq!(actual, hsv_from_rgb(r, g, b));
+            assert!(
+                (actual.0 - expected.0).abs() < 1e-3
+                    && (actual.1 - expected.1).abs() < 1e-3
+                    && (actual.2 - expected.2).abs() < 1e-3,
+                "rgb {r},{g},{b} -> {actual:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn measure_bar_clamps_region_to_image() {
+        let mut image = RgbaImage::new(8, 4);
+        for pixel in image.pixels_mut() {
+            *pixel = image::Rgba([255, 0, 0, 255]);
+        }
+
+        // Ask for a region twice the size of the image in both axes: only the
+        // 8x4 pixels that exist may count toward the denominator.
+        let measurement = measure_bar(&image, 0, 0, 16, 8, &hp_config());
+        assert_eq!(measurement.total_pixels, 32);
+        assert_eq!(measurement.filled_pixels, 32);
+        assert!((measurement.percent - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn measure_bar_outside_image_is_not_nan() {
+        let image = RgbaImage::new(4, 4);
+        let measurement = measure_bar(&image, 10, 10, 4, 4, &hp_config());
+        assert_eq!(measurement.total_pixels, 0);
+        assert_eq!(measurement.percent, 0.0);
+        assert!(measurement.confidence.is_finite());
     }
 }

@@ -5,8 +5,9 @@
 //! backend later without changing the higher-level HUD logic.
 
 use std::env;
+use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,6 +34,8 @@ impl Default for OcrConfig {
 }
 
 impl OcrConfig {
+    /// Option flags only, without the leading positional arguments or the
+    /// trailing config-file name.
     fn to_args(&self) -> Vec<String> {
         let mut args = vec![
             "--oem".to_string(),
@@ -48,6 +51,42 @@ impl OcrConfig {
         args.push("-c".to_string());
         args.push("preserve_interword_spaces=1".to_string());
         args
+    }
+}
+
+/// Build the full Tesseract command line for one crop.
+///
+/// Tesseract's grammar is `tesseract IMAGE OUTPUTBASE [options...] [configfile...]`
+/// and its parser stops reading options at the first non-flag argument that
+/// follows the two positional ones. Putting the `tsv` config file before
+/// `--oem`/`--psm`/`-c` makes Tesseract treat every flag as a config file name
+/// ("read_params_file: Can't open --oem") and silently fall back to its default
+/// page segmentation mode, so `tsv` has to come last.
+fn tesseract_args(input: &Path, config: &OcrConfig) -> Vec<OsString> {
+    let mut args = vec![input.as_os_str().to_os_string(), OsString::from("stdout")];
+    args.extend(config.to_args().into_iter().map(OsString::from));
+    args.push(OsString::from("tsv"));
+    args
+}
+
+/// Owns a temporary OCR input image and deletes it on drop.
+///
+/// The Tesseract call has several fallible steps after the PNG is written; an
+/// early return from any of them used to leak the file into the temp
+/// directory. Tying deletion to the value's lifetime covers every exit path.
+struct TempImage {
+    path: PathBuf,
+}
+
+impl TempImage {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempImage {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
     }
 }
 
@@ -84,14 +123,13 @@ pub fn ocr_region(image: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> Option<O
     {
         let preprocess = Preprocess::ContrastSharp;
         let input_image = preprocess_image(&crop, preprocess);
-        let input_path = write_temp_image(&input_image)?;
+        // `input` deletes the PNG when it drops, including on the `?` below.
+        let input = write_temp_image(&input_image)?;
         let mut command = Command::new(&binary);
-        command.arg(&input_path).arg("stdout").arg("tsv");
-        command.args(OcrConfig::default().to_args());
+        command.args(tesseract_args(input.path(), &OcrConfig::default()));
 
         let output = command.output().ok()?;
         let words = parse_tsv_words(&String::from_utf8_lossy(&output.stdout));
-        let _ = fs::remove_file(&input_path);
         let text = normalize_text(
             &words
                 .iter()
@@ -168,15 +206,18 @@ fn preprocess_image(image: &RgbaImage, mode: Preprocess) -> DynamicImage {
     }
 }
 
-fn write_temp_image(image: &DynamicImage) -> Option<PathBuf> {
+fn write_temp_image(image: &DynamicImage) -> Option<TempImage> {
     let temp_dir = env::temp_dir();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()?
         .as_nanos();
     let path = temp_dir.join(format!("hud-ocr-{timestamp}.png"));
-    image.save(&path).ok()?;
-    Some(path)
+    // Take ownership before writing: a failed save can still leave a partial
+    // file on disk, and the guard cleans that up when this returns None.
+    let image_file = TempImage { path };
+    image.save(image_file.path()).ok()?;
+    Some(image_file)
 }
 
 fn find_tesseract_binary() -> Option<PathBuf> {
@@ -227,4 +268,53 @@ fn normalize_text(text: &str) -> String {
         })
         .collect();
     normalized.trim().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn as_strings(args: &[OsString]) -> Vec<String> {
+        args.iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn tsv_config_comes_after_option_flags() {
+        let args = as_strings(&tesseract_args(
+            Path::new("crop.png"),
+            &OcrConfig {
+                psm: 11,
+                whitelist: Some("0123456789".to_string()),
+            },
+        ));
+
+        assert_eq!(args[0], "crop.png");
+        assert_eq!(args[1], "stdout");
+        // Tesseract stops parsing options at the first config-file argument,
+        // so every flag must precede `tsv` or it is read as a config name.
+        assert_eq!(args.last().map(String::as_str), Some("tsv"));
+        let tsv = args.iter().position(|arg| arg == "tsv").unwrap();
+        for flag in ["--oem", "--psm", "-c"] {
+            let at = args.iter().position(|arg| arg == flag).unwrap();
+            assert!(at < tsv, "{flag} must come before the tsv config file");
+        }
+        assert!(
+            args.iter()
+                .any(|arg| arg == "tessedit_char_whitelist=0123456789")
+        );
+    }
+
+    #[test]
+    fn temp_image_is_removed_on_drop() {
+        let image = DynamicImage::ImageRgba8(RgbaImage::new(4, 4));
+        let path = {
+            let temp = write_temp_image(&image).expect("temp image written");
+            let path = temp.path().to_path_buf();
+            assert!(path.exists());
+            path
+        };
+        assert!(!path.exists(), "temp OCR image outlived its guard");
+    }
 }
