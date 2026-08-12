@@ -1,6 +1,7 @@
 # MapleSyrup
 [![logo](https://github.com/boggioMichael/ms/blob/mvp/logos/final_logo.png)](https://youtu.be/yXIR59gGKhE)
-[![ad](https://github.com/boggioMichael/ms/blob/mvp/ad.mp4)](https://youtu.be/yXIR59gGKhE)
+
+https://github.com/user-attachments/assets/0ce354f2-6cfe-4d13-8a45-432393b07cec
 
 MapleSyrup is a real-time AI gaming companion that observes MapleStory entirely through captured pixels. The project is implemented in Rust for Windows and keeps capture, perception, structured game state, and overlay presentation as separate, testable layers.
 
