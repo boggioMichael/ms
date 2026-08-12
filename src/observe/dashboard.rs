@@ -71,15 +71,29 @@ fn format_ms(duration: std::time::Duration) -> String {
     format!("{:.1} ms", duration.as_secs_f64() * 1000.0)
 }
 
-/// A metric row: absolute value when OCR read one, always the bar.
+/// Format a metric's readout, preferring the printed `current / max` over
+/// the percentage: the absolute numbers are what a player acts on, and the
+/// percentage is a derived estimate.
+pub fn format_amount(current: Option<u64>, max: Option<u64>) -> String {
+    match (current, max) {
+        (Some(current), Some(max)) => format!("{} / {}", format_int(current), format_int(max)),
+        (Some(current), None) => format_int(current),
+        // Nothing readable; the bar alongside still carries the percentage.
+        _ => "--".to_string(),
+    }
+}
+
+/// A metric row: the printed amounts when OCR read them, always the bar.
 fn metric_row(name: &str, metric: &Detection<HudMetric>, color: &str) -> String {
     let percent = metric.value.as_ref().and_then(|m| m.percent);
     let absolute = metric.value.as_ref().and_then(|m| m.value);
+    let maximum = metric.value.as_ref().and_then(|m| m.max);
 
-    let value_text = match absolute {
-        Some(v) => format!("{:>12}", format_int(v)),
-        // No OCR value available; the bar still carries the percentage.
-        None => format!("{DIM}{:>12}{RESET}", "--"),
+    let amount = format_amount(absolute, maximum);
+    let value_text = if absolute.is_some() {
+        format!("{BOLD}{amount:>17}{RESET}")
+    } else {
+        format!("{DIM}{amount:>17}{RESET}")
     };
     let percent_text = match percent {
         Some(p) => format!("{p:>5.1}%"),
@@ -381,6 +395,16 @@ mod tests {
             },
             fps: 60.0,
         }
+    }
+
+    #[test]
+    fn amounts_prefer_current_and_max_over_a_bare_number() {
+        assert_eq!(format_amount(Some(2341), Some(3100)), "2,341 / 3,100");
+        assert_eq!(format_amount(Some(400), Some(400)), "400 / 400");
+        // A maximum the HUD did not print must not be invented.
+        assert_eq!(format_amount(Some(35900), None), "35,900");
+        assert_eq!(format_amount(None, None), "--");
+        assert_eq!(format_amount(None, Some(400)), "--");
     }
 
     #[test]

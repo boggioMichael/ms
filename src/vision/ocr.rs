@@ -193,6 +193,14 @@ fn crop_region(image: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> Option<Rgba
     Some(crop)
 }
 
+/// Crop height, in pixels, that OCR is given to work with.
+///
+/// Game HUD text is drawn around 8-10 pixels tall, far below what Tesseract
+/// is trained for, and at that size it returns near-noise: `HP [400/400]`
+/// came back as `ace".`. Enlarging the crop first is what makes small UI
+/// text legible to it, so crops are scaled up to roughly this height.
+const MIN_OCR_TEXT_HEIGHT: u32 = 48;
+
 fn preprocess_image(image: &RgbaImage, mode: Preprocess) -> DynamicImage {
     let gray = DynamicImage::ImageRgba8(image.clone())
         .grayscale()
@@ -200,10 +208,28 @@ fn preprocess_image(image: &RgbaImage, mode: Preprocess) -> DynamicImage {
     match mode {
         Preprocess::ContrastSharp => {
             let mut image = DynamicImage::ImageLuma8(gray);
+            image = upscale_for_ocr(image);
             image = image.adjust_contrast(45.0);
             image.unsharpen(1.0, 1)
         }
     }
+}
+
+/// Enlarge a crop so its text is tall enough for OCR, preserving aspect
+/// ratio. Uses Lanczos3, which keeps thin glyph strokes intact where a
+/// nearest-neighbour blow-up would leave them jagged and unreadable.
+fn upscale_for_ocr(image: DynamicImage) -> DynamicImage {
+    let height = image.height();
+    if height == 0 || height >= MIN_OCR_TEXT_HEIGHT {
+        return image;
+    }
+    // Integer factors avoid resampling artefacts on pixel-art UI text.
+    let factor = MIN_OCR_TEXT_HEIGHT.div_ceil(height).clamp(2, 8);
+    let (width, height) = (
+        image.width().saturating_mul(factor),
+        height.saturating_mul(factor),
+    );
+    image.resize_exact(width, height, image::imageops::FilterType::Lanczos3)
 }
 
 fn write_temp_image(image: &DynamicImage) -> Option<TempImage> {

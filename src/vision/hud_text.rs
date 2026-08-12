@@ -69,21 +69,39 @@ pub fn parse_current_max(text: &str) -> Option<(u64, Option<u64>)> {
         .collect();
 
     let chars: Vec<char> = cleaned.chars().collect();
-    if let Some(slash) = chars.iter().position(|c| *c == '/') {
+
+    // Every slash is tried, not just the first. OCR turns the label's own
+    // characters into slashes too ("HP [400/400]" reads as "HIP | 400/408)",
+    // whose first slash is the mangled label), so stopping at the first one
+    // finds no digits and the pair is lost.
+    for (index, character) in chars.iter().enumerate() {
+        if *character != '/' {
+            continue;
+        }
         // The numbers may be spaced away from the slash ("400 / 400"), so
         // scan outward past whitespace to the digit run on each side.
-        let left = digit_run_before(&chars, slash);
-        let right = digit_run_after(&chars, slash);
-        if let Some(current) = left {
-            return Some((current, right));
+        if let Some(current) = digit_run_before(&chars, index) {
+            return Some((current, digit_run_after(&chars, index)));
         }
     }
 
-    // No pair, but a lone number is still worth reporting.
-    cleaned
-        .split_whitespace()
-        .find_map(digits_only)
-        .map(|value| (value, None))
+    // No pair, but a lone number is still worth reporting. Take the first
+    // maximal digit run rather than every digit in the token, so a
+    // still-unsplit "400/408" cannot fuse into 400408.
+    first_digit_run(&cleaned).map(|value| (value, None))
+}
+
+/// First maximal run of digits in `text`.
+fn first_digit_run(text: &str) -> Option<u64> {
+    let mut digits = String::new();
+    for character in text.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else if !digits.is_empty() {
+            break;
+        }
+    }
+    digits.parse().ok()
 }
 
 /// Collect the digit run ending before `index`, skipping intervening spaces.
@@ -140,14 +158,6 @@ pub fn parse_percent(text: &str) -> Option<f32> {
         .parse::<f32>()
         .ok()
         .filter(|value| (0.0..=100.0).contains(value))
-}
-
-fn digits_only(token: &str) -> Option<u64> {
-    let digits: String = token.chars().filter(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() {
-        return None;
-    }
-    digits.parse::<u64>().ok()
 }
 
 /// Does this look like a character name rather than OCR noise?
