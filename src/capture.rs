@@ -15,9 +15,14 @@ mod windows_capture {
         BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CreateCompatibleBitmap, CreateCompatibleDC,
         DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SRCCOPY, SelectObject,
     };
+    use windows::Win32::Storage::Xps::{PRINT_WINDOW_FLAGS, PrintWindow};
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClientRect, GetWindowTextLengthW, GetWindowTextW, IsWindowVisible,
     };
+
+    /// PW_CLIENTONLY | PW_RENDERFULLCONTENT: render just the client area,
+    /// and include content drawn outside the classic GDI path.
+    const PW_CLIENTONLY_FULL: u32 = 0x0000_0001 | 0x0000_0002;
     use windows::core::BOOL;
 
     struct WindowSearchState {
@@ -92,6 +97,17 @@ mod windows_capture {
         state.titles
     }
 
+    /// Every visible titled window, so a caller can offer a choice instead
+    /// of relying on the title heuristic.
+    ///
+    /// Title matching cannot cover every case: a private server, a custom
+    /// client, or a test window will not be called "MapleStory", and there
+    /// is no way to guess which window a user means. Listing them lets the
+    /// user say.
+    pub fn list_windows() -> Vec<String> {
+        visible_window_titles()
+    }
+
     pub fn capture_window_by_title(search_title: &str) -> Option<RgbaImage> {
         capture_window_by_title_info(search_title).map(|(_, image)| image)
     }
@@ -147,28 +163,42 @@ mod windows_capture {
             let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
             let hbitmap = CreateCompatibleBitmap(hdc_screen, width, height);
             let old_obj = SelectObject(hdc_mem, hbitmap.into());
-            if BitBlt(
-                hdc_mem,
-                0,
-                0,
-                width,
-                height,
-                Some(hdc_screen),
-                origin.x,
-                origin.y,
-                SRCCOPY,
-            )
-            .is_err()
-            {
-                eprintln!("[window-search] BitBlt failed for {:?}", state.title);
-                let _ = SelectObject(hdc_mem, old_obj);
-                let _ = DeleteObject(hbitmap.into());
-                let _ = DeleteDC(hdc_mem);
-                // The screen DC comes from GetDC and must be released on every
-                // path out of this block, not just the success path, or each
-                // failed capture burns one of the process' 10k GDI handles.
-                let _ = ReleaseDC(None, hdc_screen);
-                return None;
+
+            // Ask the window to draw itself, rather than copying the screen
+            // region it occupies. Copying the screen returns whatever is
+            // visually on top: with the game behind another window, the
+            // "capture" is of that other window, and the vision pipeline
+            // then analyses the wrong pixels entirely. PrintWindow reads the
+            // window's own surface, so it works while occluded.
+            let printed = PrintWindow(hwnd, hdc_mem, PRINT_WINDOW_FLAGS(PW_CLIENTONLY_FULL));
+
+            if !printed.as_bool() {
+                // Some windows (hardware-accelerated or protected content)
+                // refuse PrintWindow; fall back to the screen copy, which
+                // still works as long as the window is unobstructed.
+                if BitBlt(
+                    hdc_mem,
+                    0,
+                    0,
+                    width,
+                    height,
+                    Some(hdc_screen),
+                    origin.x,
+                    origin.y,
+                    SRCCOPY,
+                )
+                .is_err()
+                {
+                    eprintln!("[window-search] BitBlt failed for {:?}", state.title);
+                    let _ = SelectObject(hdc_mem, old_obj);
+                    let _ = DeleteObject(hbitmap.into());
+                    let _ = DeleteDC(hdc_mem);
+                    // The screen DC comes from GetDC and must be released on every
+                    // path out of this block, not just the success path, or each
+                    // failed capture burns one of the process' 10k GDI handles.
+                    let _ = ReleaseDC(None, hdc_screen);
+                    return None;
+                }
             }
 
             let mut bmi: BITMAPINFO = std::mem::zeroed();
@@ -180,7 +210,7 @@ mod windows_capture {
             bmi.bmiHeader.biCompression = BI_RGB.0;
 
             let mut buffer = vec![0u8; (width as usize) * (height as usize) * 4];
-            let result = GetDIBits(
+            let mut result = GetDIBits(
                 hdc_mem,
                 hbitmap,
                 0,
@@ -189,6 +219,39 @@ mod windows_capture {
                 &mut bmi,
                 windows::Win32::Graphics::Gdi::DIB_RGB_COLORS,
             );
+
+            // PrintWindow can report success yet return an empty surface for
+            // content the GPU draws (DirectX game clients, video overlays):
+            // the frame comes back a flat colour. That is indistinguishable
+            // from a real capture to everything downstream, which would then
+            // analyse a blank image and report "nothing detected" forever, so
+            // check for it and retry via the screen instead.
+            if printed.as_bool()
+                && result != 0
+                && is_blank(&buffer)
+                && BitBlt(
+                    hdc_mem,
+                    0,
+                    0,
+                    width,
+                    height,
+                    Some(hdc_screen),
+                    origin.x,
+                    origin.y,
+                    SRCCOPY,
+                )
+                .is_ok()
+            {
+                result = GetDIBits(
+                    hdc_mem,
+                    hbitmap,
+                    0,
+                    height as u32,
+                    Some(buffer.as_mut_ptr() as *mut _),
+                    &mut bmi,
+                    windows::Win32::Graphics::Gdi::DIB_RGB_COLORS,
+                );
+            }
 
             let _ = SelectObject(hdc_mem, old_obj);
             let _ = DeleteObject(hbitmap.into());
@@ -208,6 +271,25 @@ mod windows_capture {
             RgbaImage::from_raw(width as u32, height as u32, buffer)
                 .map(|image| (state.title.clone(), image))
         }
+    }
+
+    /// Is this captured surface effectively featureless?
+    ///
+    /// Used to spot a PrintWindow call that "succeeded" but returned nothing
+    /// drawable. Sampling rather than scanning every pixel keeps this off
+    /// the per-frame cost; a real game frame varies within any few hundred
+    /// samples, so a uniform sample means a uniform image.
+    fn is_blank(buffer: &[u8]) -> bool {
+        const SAMPLES: usize = 512;
+        let pixels = buffer.len() / 4;
+        if pixels == 0 {
+            return true;
+        }
+        let stride = (pixels / SAMPLES).max(1);
+        let first = &buffer[0..3];
+        !(0..pixels)
+            .step_by(stride)
+            .any(|index| buffer[index * 4..index * 4 + 3] != *first)
     }
 
     /// Windows whose titles can legitimately contain "maplestory" without
@@ -344,7 +426,7 @@ mod windows_capture {
 
 #[cfg(target_os = "windows")]
 pub use windows_capture::{
-    capture_game_window_info, capture_window_by_title, capture_window_by_title_info,
+    capture_game_window_info, capture_window_by_title, capture_window_by_title_info, list_windows,
 };
 
 #[cfg(not(target_os = "windows"))]
@@ -360,4 +442,9 @@ pub fn capture_game_window_info() -> Option<(String, RgbaImage)> {
 #[cfg(not(target_os = "windows"))]
 pub fn capture_window_by_title_info(_: &str) -> Option<(String, RgbaImage)> {
     None
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn list_windows() -> Vec<String> {
+    Vec::new()
 }

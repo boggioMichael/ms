@@ -24,6 +24,10 @@ use image::RgbaImage;
 use crate::vision::geometry::Rect;
 use crate::vision::ocr;
 
+/// Most whitespace-separated words a real stats row can hold: a label plus
+/// a value of at most two words.
+const MAX_PLATE_TOKENS: usize = 3;
+
 /// How many frames pass between OCR refreshes by default.
 ///
 /// At ~40 FPS this re-reads roughly every 1.5s, which keeps level-ups and
@@ -198,6 +202,46 @@ pub fn plausible_level(value: &str) -> Option<String> {
     (1..=300).contains(&level).then(|| level.to_string())
 }
 
+/// Choose a field's value out of an OCR'd plate row.
+///
+/// The row holds the field's label followed by its value, so the obvious
+/// approach is to strip the label — but the label is small stylised text and
+/// OCR mangles it constantly ("NAME" comes back as "HATE"), leaving the
+/// label glued to the value and failing validation. Rather than trusting the
+/// label to be readable, every candidate is tested and the first plausible
+/// one wins: the stripped row, then individual tokens from the right, since
+/// the value follows the label.
+pub fn pick_value(raw: &str, label: &str, accept: impl Fn(&str) -> bool) -> Option<String> {
+    let stripped = strip_label(raw, label);
+    if accept(&stripped) {
+        return Some(stripped);
+    }
+
+    let tokens: Vec<&str> = stripped.split_whitespace().collect();
+
+    // A stats row is a label plus a short value. A row of many words is
+    // text from something overlapping the panel, and picking the most
+    // name-shaped word out of a sentence would confidently report
+    // "advancement" as the player's name.
+    if tokens.len() > MAX_PLATE_TOKENS {
+        return None;
+    }
+
+    // Two-word values (job names like "Dawn Warrior") before single tokens.
+    for window in tokens.windows(2).rev() {
+        let joined = window.join(" ");
+        if accept(&joined) {
+            return Some(joined);
+        }
+    }
+    for token in tokens.iter().rev() {
+        if accept(token) {
+            return Some((*token).to_string());
+        }
+    }
+    None
+}
+
 /// Strip a leading `NAME:` style label from an OCR'd plate value.
 pub fn strip_label(text: &str, label: &str) -> String {
     let trimmed = text.trim();
@@ -286,17 +330,18 @@ impl HudTextReader {
         text.player_name = markers
             .name_plate
             .and_then(|rect| read_region(image, rect))
-            .map(|raw| strip_label(&raw, "name"))
-            .filter(|value| plausible_name(value));
+            .and_then(|raw| pick_value(&raw, "name", plausible_name));
         text.character_class = markers
             .class_plate
             .and_then(|rect| read_region(image, rect))
-            .map(|raw| strip_label(&raw, "job"))
-            .filter(|value| plausible_job(value));
+            .and_then(|raw| pick_value(&raw, "job", plausible_job));
         text.level = markers
             .level_plate
             .and_then(|rect| read_region(image, rect))
-            .and_then(|raw| plausible_level(&strip_label(&raw, "lv")));
+            .and_then(|raw| {
+                pick_value(&raw, "lv", |candidate| plausible_level(candidate).is_some())
+            })
+            .and_then(|value| plausible_level(&value));
 
         self.cached = text.clone();
         self.primed = true;
@@ -368,6 +413,40 @@ mod tests {
         assert_eq!(strip_label("LV 30", "lv"), "30");
         // Without the label the value passes through untouched.
         assert_eq!(strip_label("Cleric", "job"), "Cleric");
+    }
+
+    #[test]
+    fn picks_the_value_even_when_ocr_mangles_the_label() {
+        // The stylised "NAME" label routinely comes back as "HATE", so the
+        // value cannot be found by stripping a label that is not there.
+        assert_eq!(
+            pick_value("HATE SnareDremGuy", "name", plausible_name),
+            Some("SnareDremGuy".into())
+        );
+        assert_eq!(
+            pick_value("NAME: SnareDremGuy", "name", plausible_name),
+            Some("SnareDremGuy".into())
+        );
+        assert_eq!(
+            pick_value("J0B MAGICIAN", "job", plausible_job),
+            Some("MAGICIAN".into())
+        );
+    }
+
+    #[test]
+    fn picks_two_word_values_before_single_tokens() {
+        assert_eq!(
+            pick_value("JOB Dawn Warrior", "job", plausible_job),
+            Some("Dawn Warrior".into())
+        );
+    }
+
+    #[test]
+    fn picks_nothing_when_no_candidate_is_plausible() {
+        assert_eq!(
+            pick_value("Can make the job advancement to", "name", plausible_name),
+            None
+        );
     }
 
     #[test]

@@ -18,8 +18,8 @@ use crate::vision::ocr;
 // implementation instead of duplicating it.
 pub use crate::vision::geometry::Rect;
 use crate::vision::geometry::{
-    find_color_bar, find_color_regions, find_text_block_in_regions, is_color_pixel,
-    measure_bar_fill,
+    dominant_color_bucket, find_color_bar, find_color_regions, find_text_block_in_regions,
+    is_color_pixel, measure_bar_fill,
 };
 
 /// A parsed HUD metric from OCR.
@@ -375,6 +375,79 @@ pub fn detect_hud_snapshot(image: &RgbaImage) -> HudSnapshot {
 ///
 /// This returns bounding boxes for HP/MP/EXP bars and text regions for
 /// character name, class and level.
+/// Right edge of the character-stats panel holding the given label rows.
+///
+/// The panel's background is sampled from the strip immediately right of the
+/// labels — the area a value is printed on — and the edge is where that
+/// background stops. Anything overlapping the panel (a dialog, the game
+/// world) has a different background and therefore ends the row, which is
+/// the point: a value region must never run past the panel it belongs to.
+///
+/// Returns `None` when no coherent background can be found, leaving the
+/// caller on its previous fixed-width behaviour rather than guessing.
+fn stats_panel_right_edge(image: &RgbaImage, rows: &[Rect]) -> Option<u32> {
+    let first = rows.first()?;
+    let width = image.width();
+
+    // Start just past the label text and sample a narrow strip down the
+    // rows, which is panel background between the values.
+    let sample_x = first.x.saturating_add(first.w).saturating_add(4);
+    if sample_x >= width {
+        return None;
+    }
+    let sample_region = Rect {
+        x: sample_x,
+        y: first.y,
+        w: 24.min(width.saturating_sub(sample_x)),
+        h: rows
+            .last()
+            .map(|last| last.y.saturating_add(last.h).saturating_sub(first.y))
+            .unwrap_or(first.h)
+            .max(1),
+    };
+    // Learn the background colour from pixels known to be inside the panel.
+    let bucket = dominant_color_bucket(image, sample_region, 12)?;
+    let is_panel_bg = |x: u32, y: u32| -> bool {
+        let pixel = image.get_pixel(x, y);
+        pixel[3] >= 200
+            && pixel[0] / 12 == bucket.0
+            && pixel[1] / 12 == bucket.1
+            && pixel[2] / 12 == bucket.2
+    };
+
+    // Extend rightward while the panel background is still present, which
+    // must be judged over each row's full height rather than a single
+    // scanline: a printed value's glyph covers the middle of the row, so
+    // sampling one line stops at the first letter of the name. Looking for
+    // any background pixel within the row's band sees past the glyph, while
+    // an overlapping window — which has none of this background anywhere in
+    // the band — still ends the row.
+    let height = image.height();
+    let row_has_background = |x: u32, row: &Rect| -> bool {
+        let y_end = row.y.saturating_add(row.h).min(height);
+        (row.y..y_end).any(|y| is_panel_bg(x, y))
+    };
+
+    let mut edge = sample_x;
+    let mut misses = 0u32;
+    for x in sample_x..width {
+        if rows.iter().any(|row| row_has_background(x, row)) {
+            edge = x;
+            misses = 0;
+        } else {
+            misses += 1;
+            // A panel border or inset shadow is a few columns of non-
+            // background inside the panel; stop only once the gap is wider
+            // than that.
+            if misses > 6 {
+                break;
+            }
+        }
+    }
+
+    (edge > sample_x).then(|| edge.saturating_add(1))
+}
+
 pub fn detect_ui_markers(image: &RgbaImage) -> UiMarkers {
     let width = image.width();
     let height = image.height();
@@ -499,15 +572,42 @@ pub fn detect_ui_markers(image: &RgbaImage) -> UiMarkers {
         0.35,
     );
     stat_rows.sort_by_key(|rect| rect.y);
-    let stat_value_row = |rect: Rect| Rect {
-        x: rect.x,
-        y: rect.y,
-        w: (width.saturating_mul(3) / 10).min(width.saturating_sub(rect.x)),
-        h: rect.h,
+
+    // A field's value sits to the right of its label, inside the same panel.
+    // The panel's right edge has to be found, not guessed: extending each row
+    // by a fixed fraction of the frame runs straight through whatever overlaps
+    // the panel, and OCR then returns the window on top of it — which is how
+    // a character's name came back as a sentence from a job-advancement
+    // dialog. `stats_panel_right` bounds the row to the panel it belongs to.
+    let panel_right = stats_panel_right_edge(image, &stat_rows);
+    let stat_value_row = move |rect: Rect| {
+        let default_right = rect
+            .x
+            .saturating_add(width.saturating_mul(3) / 10)
+            .min(width);
+        let right = panel_right.unwrap_or(default_right).min(default_right);
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            w: right.saturating_sub(rect.x),
+            h: rect.h,
+        }
     };
-    let name_plate = stat_rows.first().copied().map(stat_value_row);
-    let class_plate = stat_rows.get(1).copied().map(stat_value_row);
-    let level_plate = stat_rows.get(2).copied().map(stat_value_row);
+    let name_plate = stat_rows
+        .first()
+        .copied()
+        .map(stat_value_row)
+        .filter(|rect| rect.w > 0);
+    let class_plate = stat_rows
+        .get(1)
+        .copied()
+        .map(stat_value_row)
+        .filter(|rect| rect.w > 0);
+    let level_plate = stat_rows
+        .get(2)
+        .copied()
+        .map(stat_value_row)
+        .filter(|rect| rect.w > 0);
 
     UiMarkers {
         hp_bar,

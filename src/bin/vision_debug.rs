@@ -41,8 +41,12 @@ const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "wmv", "
 /// Where frames come from. Resolved once at startup so the worker loop stays
 /// simple and every mode reports honest capture timings.
 enum FrameSource {
-    /// The live MapleStory window.
+    /// The live MapleStory window, found by title.
     Live,
+    /// A specific window the user chose, captured by its exact title. This
+    /// is the escape hatch for anything the title heuristic cannot name:
+    /// private servers, custom clients, a test window.
+    Window { title: String },
     /// A single image, re-read each iteration so timings stay comparable.
     Still { label: String, image: RgbaImage },
     /// An ordered set of extracted video frames, replayed on a loop.
@@ -61,6 +65,8 @@ impl FrameSource {
             FrameSource::Live => {
                 capture_game_window_info().map(|(title, image)| (title, image, start.elapsed()))
             }
+            FrameSource::Window { title } => ms::capture::capture_window_by_title_info(title)
+                .map(|(found, image)| (found, image, start.elapsed())),
             FrameSource::Still { label, image } => {
                 Some((label.clone(), image.clone(), start.elapsed()))
             }
@@ -88,6 +94,7 @@ impl FrameSource {
     fn describe(&self) -> String {
         match self {
             FrameSource::Live => "live MapleStory window".to_string(),
+            FrameSource::Window { title } => format!("window \"{title}\""),
             FrameSource::Still { label, .. } => label.clone(),
             FrameSource::Sequence { label, frames, .. } => {
                 format!("{label} ({} frames)", frames.len())
@@ -195,13 +202,71 @@ fn main() {
     );
 }
 
+/// Print every visible window with an index, for `--windows` and the
+/// interactive picker.
+fn print_window_list(windows: &[String]) {
+    if windows.is_empty() {
+        println!("No visible titled windows found.");
+        return;
+    }
+    println!("Visible windows:");
+    for (index, title) in windows.iter().enumerate() {
+        println!("  [{index}] {title}");
+    }
+}
+
+/// Ask which window to capture.
+///
+/// The title heuristic cannot cover a private server, a custom client, or a
+/// window the user made themselves, and guessing wrong is worse than
+/// asking. Returns `None` if stdin gives nothing usable, so non-interactive
+/// runs fall through instead of hanging on a prompt.
+fn prompt_for_window(windows: &[String]) -> Option<FrameSource> {
+    use std::io::{BufRead, Write};
+
+    print_window_list(windows);
+    if windows.is_empty() {
+        return None;
+    }
+    print!("Capture which window? [0-{}] ", windows.len() - 1);
+    let _ = std::io::stdout().flush();
+
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line).ok()? == 0 {
+        return None;
+    }
+    let choice: usize = line.trim().parse().ok()?;
+    let title = windows.get(choice)?;
+    println!("Capturing \"{title}\"");
+    Some(FrameSource::Window {
+        title: title.clone(),
+    })
+}
+
 /// Decide where frames come from. An explicit argument always wins, so
 /// "test against this video" is not silently overridden by a live window.
 fn resolve_source(input: Option<&str>) -> Option<FrameSource> {
     let Some(input) = input else {
-        // No argument: only the live window makes sense.
-        return capture_game_window_info().map(|_| FrameSource::Live);
+        // No argument: try the game window, and if it is not there offer
+        // the window list rather than just giving up.
+        if capture_game_window_info().is_some() {
+            return Some(FrameSource::Live);
+        }
+        println!("No MapleStory window found.");
+        return prompt_for_window(&ms::capture::list_windows());
     };
+
+    // Window selection flags.
+    if input == "--windows" || input == "--list-windows" {
+        print_window_list(&ms::capture::list_windows());
+        std::process::exit(0);
+    }
+    if let Some(selector) = input.strip_prefix("--window=") {
+        return select_window(selector);
+    }
+    if input == "--window" || input == "--pick" {
+        return prompt_for_window(&ms::capture::list_windows());
+    }
 
     let path = Path::new(input);
     if !path.exists() {
@@ -237,6 +302,40 @@ fn resolve_source(input: Option<&str>) -> Option<FrameSource> {
         label: input.to_string(),
         image,
     })
+}
+
+/// Resolve `--window=<index|substring>` against the visible window list.
+fn select_window(selector: &str) -> Option<FrameSource> {
+    let windows = ms::capture::list_windows();
+
+    // A bare number picks by index from `--windows`.
+    if let Ok(index) = selector.trim().parse::<usize>() {
+        return match windows.get(index) {
+            Some(title) => Some(FrameSource::Window {
+                title: title.clone(),
+            }),
+            None => {
+                eprintln!("No window with index {index}.");
+                print_window_list(&windows);
+                None
+            }
+        };
+    }
+
+    let needle = selector.to_ascii_lowercase();
+    match windows
+        .iter()
+        .find(|title| title.to_ascii_lowercase().contains(&needle))
+    {
+        Some(title) => Some(FrameSource::Window {
+            title: title.clone(),
+        }),
+        None => {
+            eprintln!("No visible window matches {selector:?}.");
+            print_window_list(&windows);
+            None
+        }
+    }
 }
 
 fn collect_frames(dir: &Path) -> Vec<PathBuf> {
