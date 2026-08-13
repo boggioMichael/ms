@@ -16,6 +16,7 @@ use image::{Rgba, RgbaImage};
 use crate::observe::font;
 use crate::observe::frame_result::VisionFrameResult;
 use crate::vision::geometry::Rect;
+use crate::vision::hud_ocr::{HudOcrResult, ReadState};
 
 const HP_COLOR: Rgba<u8> = Rgba([235, 64, 64, 255]);
 const MP_COLOR: Rgba<u8> = Rgba([64, 140, 245, 255]);
@@ -166,18 +167,165 @@ fn label_for_rect(image: &mut RgbaImage, text: &str, rect: Rect, color: Rgba<u8>
     draw_label(image, text, rect.x as i64, anchor_y, color);
 }
 
-fn format_metric(
-    name: &str,
-    metric: &crate::vision::types::Detection<crate::vision::detectors::hud::HudMetric>,
-) -> String {
-    let percent = metric.value.as_ref().and_then(|m| m.percent);
-    let absolute = metric.value.as_ref().and_then(|m| m.value);
-    match (absolute, percent) {
-        (Some(value), Some(pct)) => format!("{name}: {value} ({pct:.1}%)"),
-        (Some(value), None) => format!("{name}: {value}"),
-        (None, Some(pct)) => format!("{name}: {pct:.1}%"),
-        (None, None) => format!("{name}: ?"),
+/// Colour for an OCR region that read successfully this frame.
+const OCR_READ_COLOR: Rgba<u8> = Rgba([80, 255, 200, 255]);
+/// Colour for an OCR region serving a value carried from an earlier frame.
+const OCR_CARRIED_COLOR: Rgba<u8> = Rgba([255, 200, 60, 255]);
+/// Colour for an OCR region that could not be read.
+const OCR_FAILED_COLOR: Rgba<u8> = Rgba([255, 90, 90, 255]);
+
+fn ocr_color(state: ReadState) -> Rgba<u8> {
+    match state {
+        ReadState::ReadThisFrame => OCR_READ_COLOR,
+        ReadState::CarriedForward { .. } => OCR_CARRIED_COLOR,
+        ReadState::Unknown => OCR_FAILED_COLOR,
     }
+}
+
+/// Draw corner brackets with a halo around an OCR region.
+///
+/// OCR regions must be told apart from ordinary detector boxes at a glance
+/// during fast gameplay, so they get a shape no other annotation uses —
+/// brackets rather than a full outline — plus a dark halo that keeps them
+/// visible over both bright and dark game pixels.
+fn ocr_brackets(image: &mut RgbaImage, rect: Rect, color: Rgba<u8>) {
+    let (x0, y0) = (rect.x as i64, rect.y as i64);
+    let (x1, y1) = (x0 + rect.w as i64 - 1, y0 + rect.h as i64 - 1);
+    // Brackets span a quarter of each edge, so the region stays readable.
+    let arm_x = (rect.w as i64 / 4).clamp(3, 24);
+    let arm_y = (rect.h as i64 / 4).clamp(3, 24);
+
+    let mut draw = |x: i64, y: i64| {
+        // Halo first, then the bright stroke on top of it.
+        for (dx, dy) in [(0, 1), (0, -1), (1, 0), (-1, 0)] {
+            blend_pixel(image, x + dx, y + dy, Rgba([0, 0, 0, 255]), 0.55);
+        }
+        blend_pixel(image, x, y, color, 1.0);
+    };
+
+    for offset in 0..arm_x {
+        for (x, y) in [
+            (x0 + offset, y0),
+            (x1 - offset, y0),
+            (x0 + offset, y1),
+            (x1 - offset, y1),
+        ] {
+            draw(x, y);
+            // Two pixels thick: one-pixel brackets vanish when the preview
+            // is scaled down to fit the window.
+            draw(x, if y == y0 { y + 1 } else { y - 1 });
+        }
+    }
+    for offset in 0..arm_y {
+        for (x, y) in [
+            (x0, y0 + offset),
+            (x0, y1 - offset),
+            (x1, y0 + offset),
+            (x1, y1 - offset),
+        ] {
+            draw(x, y);
+            draw(if x == x0 { x + 1 } else { x - 1 }, y);
+        }
+    }
+}
+
+/// Annotate one OCR region: brackets, the field it belongs to, the raw text
+/// the recogniser returned, and the parsed value.
+///
+/// Raw text is shown even when parsing failed. Seeing `raw "234I / 3I00"` is
+/// how a misread is recognised as a misread instead of looking like an
+/// absent HUD element.
+fn draw_ocr_region(canvas: &mut RgbaImage, reading: &HudOcrResult) {
+    let color = ocr_color(reading.state);
+    ocr_brackets(canvas, reading.roi, color);
+
+    let mut lines = vec![format!(
+        "OCR {} {}",
+        reading.field.label(),
+        reading.state.marker()
+    )];
+    match reading.raw_text.as_deref() {
+        Some(raw) => lines.push(format!("RAW {}", truncate_text(raw, 26))),
+        None => lines.push("RAW <none>".to_string()),
+    }
+    lines.push(format!(
+        "VAL {}",
+        truncate_text(&reading.parsed.display(), 26)
+    ));
+    if let ReadState::CarriedForward { from_frame } = reading.state {
+        lines.push(format!("FROM FRAME {from_frame}"));
+    }
+    if reading.quality.is_some_and(|quality| !quality.is_legible()) {
+        // A blurred ROI explains a bad read, so say so next to it rather
+        // than leaving the user to wonder why OCR is wrong.
+        lines.push("BLURRED - OCR UNRELIABLE".to_string());
+    }
+
+    draw_label_block(canvas, &lines, reading.roi, color);
+}
+
+/// Draw a multi-line plate anchored above `rect`, or below when there is no
+/// room above.
+fn draw_label_block(canvas: &mut RgbaImage, lines: &[String], rect: Rect, color: Rgba<u8>) {
+    let line_height = font::text_height(LABEL_SCALE) + 2;
+    let block_height = line_height * lines.len() as u32 + LABEL_PAD * 2;
+    let above = rect.y as i64 - block_height as i64 - 2;
+    let anchor_y = if above >= 0 {
+        above
+    } else {
+        rect.y as i64 + rect.h as i64 + 2
+    };
+
+    let width = lines
+        .iter()
+        .map(|line| font::text_width(line, LABEL_SCALE))
+        .max()
+        .unwrap_or(0)
+        + LABEL_PAD * 2;
+
+    let x = (rect.x as i64).clamp(0, (canvas.width() as i64 - width as i64).max(0));
+    let y = anchor_y.clamp(0, (canvas.height() as i64 - block_height as i64).max(0));
+
+    fill_rect(
+        canvas,
+        Rect {
+            x: x as u32,
+            y: y as u32,
+            w: width,
+            h: block_height,
+        },
+        Rgba([0, 0, 0, 255]),
+        0.72,
+    );
+    fill_rect(
+        canvas,
+        Rect {
+            x: x as u32,
+            y: y as u32,
+            w: 2,
+            h: block_height,
+        },
+        color,
+        1.0,
+    );
+
+    for (index, line) in lines.iter().enumerate() {
+        font::draw_text(
+            line,
+            x + LABEL_PAD as i64,
+            y + LABEL_PAD as i64 + (index as u32 * line_height) as i64,
+            LABEL_SCALE,
+            |px, py| blend_pixel(canvas, px, py, TEXT_COLOR, 1.0),
+        );
+    }
+}
+
+fn truncate_text(text: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max {
+        return text.to_string();
+    }
+    chars[..max].iter().collect()
 }
 
 /// Render the frame with every available detection drawn on top.
@@ -189,33 +337,17 @@ pub fn render_overlay(result: &VisionFrameResult) -> RgbaImage {
     let world = &result.world;
     let markers = &world.hud.markers;
 
-    // HUD bars: region + the value read from it.
+    // Bar outlines mark where a *bar* was measured. These are corroboration
+    // only; the authoritative numbers come from the OCR regions drawn last,
+    // on top, so they cannot be confused with one another.
     if let Some(rect) = markers.hp_bar {
         stroke_rect(&mut canvas, rect, HP_COLOR, 2);
-        label_for_rect(
-            &mut canvas,
-            &format_metric("HP", &world.hud.hp),
-            rect,
-            HP_COLOR,
-        );
     }
     if let Some(rect) = markers.mp_bar {
         stroke_rect(&mut canvas, rect, MP_COLOR, 2);
-        label_for_rect(
-            &mut canvas,
-            &format_metric("MP", &world.hud.mp),
-            rect,
-            MP_COLOR,
-        );
     }
     if let Some(rect) = markers.exp_bar {
         stroke_rect(&mut canvas, rect, EXP_COLOR, 2);
-        label_for_rect(
-            &mut canvas,
-            &format_metric("EXP", &world.hud.exp),
-            rect,
-            EXP_COLOR,
-        );
     }
 
     // Character plates.
@@ -233,14 +365,8 @@ pub fn render_overlay(result: &VisionFrameResult) -> RgbaImage {
         (markers.level_plate, world.hud.level.value.as_deref(), "LV"),
     ] {
         if let Some(rect) = rect {
+            let _ = (value, name);
             stroke_rect(&mut canvas, rect, PLATE_COLOR, 1);
-            let text = match value {
-                Some(text) if !text.trim().is_empty() => format!("{name}: {text}"),
-                // The plate was located but OCR could not read it — say so
-                // rather than leaving the box unexplained.
-                _ => format!("{name}: ?"),
-            };
-            label_for_rect(&mut canvas, &text, rect, PLATE_COLOR);
         }
     }
 
@@ -363,6 +489,12 @@ pub fn render_overlay(result: &VisionFrameResult) -> RgbaImage {
         result.timings.capture.as_secs_f64() * 1000.0,
         result.timings.vision.as_secs_f64() * 1000.0,
     );
+    // OCR regions are drawn last so they sit above every detector box: the
+    // authoritative readings must never be obscured by corroborating marks.
+    for reading in &world.hud.ocr {
+        draw_ocr_region(&mut canvas, reading);
+    }
+
     let stats_y =
         canvas.height() as i64 - font::text_height(LABEL_SCALE) as i64 - LABEL_PAD as i64 * 2 - 2;
     draw_label(&mut canvas, &stats, 2, stats_y, PRIMARY_COLOR);
@@ -443,43 +575,5 @@ mod tests {
             image.pixels().any(|p| p[0] > 0 || p[1] > 0 || p[2] > 0),
             "clamped label should have drawn inside the frame"
         );
-    }
-
-    #[test]
-    fn metric_text_reports_what_was_actually_read() {
-        use crate::vision::detectors::hud::HudMetric;
-        use crate::vision::types::{Confidence, Detection, Reliability, Source};
-
-        let with_value = Detection::found(
-            HudMetric {
-                label: "HP".into(),
-                percent: Some(75.5),
-                value: Some(2341),
-                max: None,
-                raw_text: None,
-            },
-            Confidence::new(0.9),
-            Source::Hud,
-            Reliability::Corroborated,
-        );
-        assert_eq!(format_metric("HP", &with_value), "HP: 2341 (75.5%)");
-
-        // Geometry-only reads must show the percentage, not invent a value.
-        let percent_only = Detection::found(
-            HudMetric {
-                label: "MP".into(),
-                percent: Some(50.0),
-                value: None,
-                max: None,
-                raw_text: None,
-            },
-            Confidence::new(0.55),
-            Source::Hud,
-            Reliability::Heuristic,
-        );
-        assert_eq!(format_metric("MP", &percent_only), "MP: 50.0%");
-
-        let missing: Detection<HudMetric> = Detection::missing(Source::Hud, "none");
-        assert_eq!(format_metric("EXP", &missing), "EXP: ?");
     }
 }

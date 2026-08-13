@@ -14,14 +14,12 @@
 use std::io::Write;
 
 use crate::observe::frame_result::VisionFrameResult;
-use crate::vision::detectors::hud::HudMetric;
-use crate::vision::types::Detection;
+use crate::vision::hud_ocr::{Agreement, HudField, HudOcrResult, ReadState, agreement};
 
 const DIM: &str = "\u{1b}[2m";
 const BOLD: &str = "\u{1b}[1m";
 const RED: &str = "\u{1b}[31m";
 const GREEN: &str = "\u{1b}[32m";
-const BLUE: &str = "\u{1b}[34m";
 const YELLOW: &str = "\u{1b}[33m";
 const CYAN: &str = "\u{1b}[36m";
 const RESET: &str = "\u{1b}[0m";
@@ -83,28 +81,61 @@ pub fn format_amount(current: Option<u64>, max: Option<u64>) -> String {
     }
 }
 
-/// A metric row: the printed amounts when OCR read them, always the bar.
-fn metric_row(name: &str, metric: &Detection<HudMetric>, color: &str) -> String {
-    let percent = metric.value.as_ref().and_then(|m| m.percent);
-    let absolute = metric.value.as_ref().and_then(|m| m.value);
-    let maximum = metric.value.as_ref().and_then(|m| m.max);
+/// A HUD row driven by what was read as text.
+///
+/// The read value is dominant; the bar's fill follows only as a check, with
+/// a mark showing whether the two agree. When nothing was read the row says
+/// so — a bar percentage is never promoted into the value column, because
+/// an estimate presented as a reading is worse than an admitted gap.
+fn ocr_row(name: &str, reading: Option<&HudOcrResult>, bar_percent: Option<f32>) -> String {
+    let Some(reading) = reading else {
+        return format!(
+            "{}{DIM}{:>17}{RESET}   {}",
+            label(name),
+            "unknown",
+            match bar_percent {
+                Some(percent) => format!("{DIM}(no OCR; bar ~{percent:.1}%){RESET}"),
+                None => format!("{DIM}(no OCR region){RESET}"),
+            }
+        );
+    };
 
-    let amount = format_amount(absolute, maximum);
-    let value_text = if absolute.is_some() {
-        format!("{BOLD}{amount:>17}{RESET}")
+    let value = reading.parsed.display();
+    let value_text = if reading.is_usable() {
+        format!("{BOLD}{value:>17}{RESET}")
     } else {
-        format!("{DIM}{amount:>17}{RESET}")
-    };
-    let percent_text = match percent {
-        Some(p) => format!("{p:>5.1}%"),
-        None => format!("{DIM}{:>6}{RESET}", "--"),
+        format!("{RED}{value:>17}{RESET}")
     };
 
-    format!(
-        "{}{value_text}   {}  {percent_text}",
-        label(name),
-        render_bar(percent, color)
-    )
+    let mut suffix = String::new();
+    match reading.state {
+        ReadState::ReadThisFrame => {}
+        ReadState::CarriedForward { from_frame } => {
+            suffix.push_str(&format!("{YELLOW}carried f{from_frame}{RESET} "));
+        }
+        ReadState::Unknown => {}
+    }
+
+    // Show the bar only as corroboration, and flag a real disagreement
+    // rather than quietly preferring one of the two.
+    if let Some(percent) = bar_percent {
+        let mark = match agreement(reading.percent(), Some(percent)) {
+            Agreement::Consistent => format!("{GREEN}ok{RESET}"),
+            Agreement::Conflicting => format!("{RED}MISMATCH{RESET}"),
+            Agreement::Unchecked => format!("{DIM}--{RESET}"),
+        };
+        suffix.push_str(&format!("{DIM}bar ~{percent:.1}%{RESET} {mark}"));
+    }
+
+    // Raw text is surfaced when parsing failed, so a misread is visible as
+    // a misread instead of as an absent HUD element.
+    if !reading.is_usable()
+        && let Some(raw) = reading.raw_text.as_deref()
+    {
+        suffix.push_str(&format!(" {DIM}raw {:?}{RESET}", truncate(raw, 18)));
+    }
+
+    format!("{}{value_text}   {suffix}", label(name))
 }
 
 fn status_mark(present: bool) -> String {
@@ -198,24 +229,28 @@ impl Dashboard {
         ));
         lines.push(String::new());
 
-        lines.push(metric_row("HP:", &world.hud.hp, RED));
-        lines.push(metric_row("MP:", &world.hud.mp, BLUE));
-        lines.push(metric_row("EXP:", &world.hud.exp, YELLOW));
-        lines.push(format!(
-            "{}{}",
-            label("Level:"),
-            optional_text(world.hud.level.value.as_deref())
+        // Values the game printed, read as text. These are authoritative;
+        // the bar beside each one is only a consistency check, which is why
+        // it is dimmed and suffixed rather than given the row.
+        let find = |field: HudField| world.hud.ocr.iter().find(|entry| entry.field == field);
+        lines.push(ocr_row(
+            "HP:",
+            find(HudField::Hp),
+            world.hud.hp.value.as_ref().and_then(|m| m.percent),
         ));
-        lines.push(format!(
-            "{}{}",
-            label("Player:"),
-            optional_text(world.hud.player_name.value.as_deref())
+        lines.push(ocr_row(
+            "MP:",
+            find(HudField::Mp),
+            world.hud.mp.value.as_ref().and_then(|m| m.percent),
         ));
-        lines.push(format!(
-            "{}{}",
-            label("Job:"),
-            optional_text(world.hud.character_class.value.as_deref())
+        lines.push(ocr_row(
+            "EXP:",
+            find(HudField::Exp),
+            world.hud.exp.value.as_ref().and_then(|m| m.percent),
         ));
+        lines.push(ocr_row("Level:", find(HudField::Level), None));
+        lines.push(ocr_row("Player:", find(HudField::PlayerName), None));
+        lines.push(ocr_row("Job:", find(HudField::Job), None));
         lines.push(String::new());
 
         lines.push(detector_row(
@@ -353,13 +388,6 @@ impl Drop for Dashboard {
     }
 }
 
-fn optional_text(value: Option<&str>) -> String {
-    match value {
-        Some(text) if !text.trim().is_empty() => format!("{BOLD}{text}{RESET}"),
-        _ => format!("{DIM}unknown{RESET}"),
-    }
-}
-
 fn truncate(text: &str, max: usize) -> String {
     let chars: Vec<char> = text.chars().collect();
     if chars.len() <= max {
@@ -375,6 +403,7 @@ fn truncate(text: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::observe::frame_result::{FrameTimings, VisionFrameResult};
+    use crate::vision::hud_ocr::ParsedValue;
     use crate::vision::snapshot::PerceptionPipeline;
     use image::{Rgba, RgbaImage};
     use std::sync::Arc;
@@ -395,6 +424,107 @@ mod tests {
             },
             fps: 60.0,
         }
+    }
+
+    fn ocr_reading(parsed: ParsedValue, state: ReadState) -> HudOcrResult {
+        HudOcrResult {
+            field: HudField::Hp,
+            roi: crate::vision::geometry::Rect {
+                x: 288,
+                y: 733,
+                w: 152,
+                h: 38,
+            },
+            raw_text: Some("2341 / 3100".into()),
+            parsed,
+            frame_id: 778,
+            state,
+            quality: None,
+        }
+    }
+
+    #[test]
+    fn a_read_value_is_shown_as_the_value_and_the_bar_only_as_a_check() {
+        let reading = ocr_reading(
+            ParsedValue::Amount {
+                current: 2341,
+                max: Some(3100),
+            },
+            ReadState::ReadThisFrame,
+        );
+        let row = ocr_row("HP:", Some(&reading), Some(75.4));
+        assert!(
+            row.contains("2341 / 3100"),
+            "read value must dominate: {row}"
+        );
+        assert!(
+            row.contains("bar ~75.4%"),
+            "bar must appear as a check: {row}"
+        );
+        assert!(
+            row.contains("ok"),
+            "agreeing bar should be marked ok: {row}"
+        );
+    }
+
+    #[test]
+    fn a_bar_that_contradicts_the_reading_is_flagged_not_hidden() {
+        let reading = ocr_reading(
+            ParsedValue::Amount {
+                current: 2341,
+                max: Some(3100),
+            },
+            ReadState::ReadThisFrame,
+        );
+        // 75.5% read vs a bar measuring 21.7%: one of them is wrong.
+        let row = ocr_row("HP:", Some(&reading), Some(21.7));
+        assert!(
+            row.contains("MISMATCH"),
+            "disagreement must be reported: {row}"
+        );
+    }
+
+    #[test]
+    fn a_failed_read_shows_unknown_and_never_the_bar_percentage_as_a_value() {
+        let row = ocr_row("HP:", None, Some(74.8));
+        assert!(row.contains("unknown"), "failure must read unknown: {row}");
+        // The estimate may be mentioned, but never as the value itself.
+        assert!(
+            !row.contains("2341") && !row.contains("74.8% "),
+            "a bar estimate must not become the value: {row}"
+        );
+        assert!(row.contains("bar ~74.8%"), "estimate stays labelled: {row}");
+    }
+
+    #[test]
+    fn an_invalid_read_shows_the_raw_text_so_the_misread_is_visible() {
+        let mut reading = ocr_reading(ParsedValue::Invalid, ReadState::Unknown);
+        reading.raw_text = Some("234I / 3I00".into());
+        let row = ocr_row("HP:", Some(&reading), None);
+        assert!(
+            row.contains("INVALID"),
+            "parse failure must be stated: {row}"
+        );
+        assert!(
+            row.contains("234I"),
+            "raw text must be surfaced for debugging: {row}"
+        );
+    }
+
+    #[test]
+    fn a_carried_value_is_labelled_with_the_frame_it_came_from() {
+        let reading = ocr_reading(
+            ParsedValue::Amount {
+                current: 2341,
+                max: Some(3100),
+            },
+            ReadState::CarriedForward { from_frame: 776 },
+        );
+        let row = ocr_row("HP:", Some(&reading), None);
+        assert!(
+            row.contains("carried") && row.contains("776"),
+            "a reused value must not look freshly read: {row}"
+        );
     }
 
     #[test]

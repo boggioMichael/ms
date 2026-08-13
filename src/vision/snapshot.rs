@@ -47,6 +47,8 @@ pub struct PerceptionPipeline {
     icon_row: IconRowDetector,
     footholds: FootholdDetector,
     combat: CombatIntensityDetector,
+    /// Counts frames when the caller does not supply an id of its own.
+    frame_id: u64,
 }
 
 impl Default for PerceptionPipeline {
@@ -66,13 +68,21 @@ impl PerceptionPipeline {
             icon_row: IconRowDetector::default(),
             footholds: FootholdDetector::new(Default::default()),
             combat: CombatIntensityDetector::default(),
+            frame_id: 0,
         }
     }
 
     /// Run all detectors on the current frame and return an aggregated
     /// [`WorldState`].
     pub fn detect(&mut self, image: &RgbaImage) -> WorldState {
-        let hud = self.hud.detect(image);
+        self.frame_id = self.frame_id.wrapping_add(1);
+        self.detect_frame(image, self.frame_id)
+    }
+
+    /// Run detection for an explicitly numbered frame, so OCR provenance
+    /// records the same frame id the rest of the pipeline reports.
+    pub fn detect_frame(&mut self, image: &RgbaImage, frame_id: u64) -> WorldState {
+        let hud = self.hud.detect(image, frame_id);
         let motion = self.motion.detect(image);
         let dialog = self.dialog.detect(image);
         let minimap = self.minimap.detect(image);

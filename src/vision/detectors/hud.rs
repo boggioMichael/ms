@@ -14,6 +14,7 @@ use image::RgbaImage;
 use crate::vision::hud_geometry::{
     self, HudMetric as RawHudMetric, HudSnapshot as RawHudSnapshot, UiMarkers,
 };
+use crate::vision::hud_ocr::HudOcrResult;
 use crate::vision::hud_text::HudTextReader;
 use crate::vision::types::{Confidence, Detection, Reliability, Source};
 
@@ -44,6 +45,9 @@ impl From<RawHudMetric> for HudMetric {
 #[derive(Debug, Clone)]
 pub struct HudReading {
     pub markers: UiMarkers,
+    /// Per-field OCR provenance: ROI, raw text, parsed value, frame and
+    /// whether it was read now or carried forward.
+    pub ocr: Vec<HudOcrResult>,
     pub hp: Detection<HudMetric>,
     pub mp: Detection<HudMetric>,
     pub exp: Detection<HudMetric>,
@@ -120,7 +124,7 @@ impl HudDetector {
         }
     }
 
-    pub fn detect(&mut self, image: &RgbaImage) -> HudReading {
+    pub fn detect(&mut self, image: &RgbaImage, frame_id: u64) -> HudReading {
         let RawHudSnapshot {
             markers,
             hp,
@@ -133,7 +137,8 @@ impl HudDetector {
 
         // Geometry gives the fill ratio every frame; OCR contributes the
         // printed numbers and plate text when its cadence comes round.
-        let text = self.text.read(image, &markers);
+        let reading = self.text.read(image, &markers, frame_id);
+        let text = reading.text;
 
         let hp = fuse(hp, "HP", text.hp, None);
         let mp = fuse(mp, "MP", text.mp, None);
@@ -152,6 +157,7 @@ impl HudDetector {
                 markers.class_plate.is_some(),
             ),
             level: text_detection(level.or(text.level), markers.level_plate.is_some()),
+            ocr: reading.ocr,
             markers,
         }
     }

@@ -22,7 +22,9 @@
 use image::RgbaImage;
 
 use crate::vision::geometry::Rect;
+use crate::vision::hud_ocr::{HudField, HudOcrResult, ParsedValue, ReadState};
 use crate::vision::ocr;
+use crate::vision::quality::assess_text_quality;
 
 /// Most whitespace-separated words a real stats row can hold: a label plus
 /// a value of at most two words.
@@ -266,12 +268,29 @@ pub fn strip_label(text: &str, label: &str) -> String {
         .to_string()
 }
 
+/// Everything one OCR pass produced: the parsed values the pipeline
+/// consumes, and the per-field provenance the debugger displays.
+#[derive(Debug, Clone, Default)]
+pub struct HudTextReading {
+    pub text: HudText,
+    /// One entry per field whose ROI was located, whether or not it read.
+    pub ocr: Vec<HudOcrResult>,
+}
+
 /// Reads HUD text on a cadence and caches it between reads.
 #[derive(Debug)]
 pub struct HudTextReader {
     interval: u64,
     frames_seen: u64,
     cached: HudText,
+    /// Last usable reading per field, so a value can be carried across a
+    /// frame that failed to read — labelled as carried, never as fresh.
+    remembered: Vec<HudOcrResult>,
+    /// Every field from the most recent OCR pass, including the ones that
+    /// failed. Kept so a field that cannot be read still appears in the
+    /// debugger between passes: a ROI that exists and fails must look
+    /// different from a ROI that was never located at all.
+    last_pass: Vec<HudOcrResult>,
     /// True once at least one OCR pass has completed, so callers can tell
     /// "not read yet" from "read and genuinely empty".
     primed: bool,
@@ -289,8 +308,71 @@ impl HudTextReader {
             interval: interval.max(1),
             frames_seen: 0,
             cached: HudText::default(),
+            remembered: Vec::new(),
+            last_pass: Vec::new(),
             primed: false,
         }
+    }
+
+    /// The last usable reading of `field`, if there is one.
+    fn recall(&self, field: HudField) -> Option<&HudOcrResult> {
+        self.remembered.iter().find(|entry| entry.field == field)
+    }
+
+    /// Record a usable reading so later frames can carry it forward.
+    fn remember(&mut self, result: &HudOcrResult) {
+        if !result.is_usable() {
+            return;
+        }
+        self.remembered.retain(|entry| entry.field != result.field);
+        self.remembered.push(result.clone());
+    }
+
+    /// Re-serve a remembered reading, relabelled so it cannot be mistaken
+    /// for a fresh one.
+    fn carry_forward(&self, field: HudField) -> Option<HudOcrResult> {
+        let remembered = self.recall(field)?;
+        let mut carried = remembered.clone();
+        carried.state = ReadState::CarriedForward {
+            from_frame: remembered.frame_id,
+        };
+        Some(carried)
+    }
+
+    /// Read one field: recognise, parse, validate, and fall back to a
+    /// carried value only when this frame genuinely could not be read.
+    fn read_field(
+        &self,
+        image: &RgbaImage,
+        field: HudField,
+        roi: Rect,
+        frame_id: u64,
+        parse: impl Fn(&str) -> ParsedValue,
+    ) -> HudOcrResult {
+        let raw = read_region(image, roi);
+        let parsed = raw.as_deref().map(&parse).unwrap_or(ParsedValue::NotRead);
+
+        if parsed.is_usable() {
+            return HudOcrResult {
+                field,
+                roi,
+                raw_text: raw,
+                parsed,
+                frame_id,
+                state: ReadState::ReadThisFrame,
+                quality: Some(assess_text_quality(image, roi)),
+            };
+        }
+
+        // This frame did not read. A remembered value may still be shown,
+        // but only labelled as carried forward.
+        if let Some(carried) = self.carry_forward(field) {
+            return carried;
+        }
+
+        let mut unread = HudOcrResult::unread(field, roi, frame_id, raw);
+        unread.quality = Some(assess_text_quality(image, roi));
+        unread
     }
 
     /// Whether the next [`Self::read`] will actually invoke OCR.
@@ -304,58 +386,143 @@ impl HudTextReader {
 
     /// Return HUD text, refreshing from OCR when the cadence calls for it.
     ///
-    /// Between refreshes this is free: it hands back the cached values.
-    pub fn read(&mut self, image: &RgbaImage, markers: &super::hud_geometry::UiMarkers) -> HudText {
+    /// Between refreshes this is free: it hands back the cached values,
+    /// every one of them labelled as carried forward.
+    pub fn read(
+        &mut self,
+        image: &RgbaImage,
+        markers: &super::hud_geometry::UiMarkers,
+        frame_id: u64,
+    ) -> HudTextReading {
         let refresh = self.will_refresh();
         self.frames_seen = self.frames_seen.wrapping_add(1);
 
         if !refresh || !ocr::is_ocr_available() {
-            return self.cached.clone();
+            // Re-serve the whole previous pass so every located ROI stays
+            // visible, with usable values relabelled as carried forward and
+            // failures still shown as failures.
+            let ocr = self
+                .last_pass
+                .iter()
+                .map(|entry| {
+                    self.carry_forward(entry.field)
+                        .unwrap_or_else(|| entry.clone())
+                })
+                .collect();
+            return HudTextReading {
+                text: self.cached.clone(),
+                ocr,
+            };
         }
 
-        let mut text = HudText::default();
+        let mut results = Vec::new();
 
-        // Bar numbers sit inside the padded region around each bar.
         // MapleStory always prints HP and MP as `current/max`, so a reading
         // without a denominator is OCR noise (a fragment of the label, a
-        // neighbouring icon) rather than a real value, and is discarded.
-        if let Some(rect) = markers.hp_bar {
-            text.hp = read_pair(image, rect).filter(|(_, max)| max.is_some());
-        }
-        if let Some(rect) = markers.mp_bar {
-            text.mp = read_pair(image, rect).filter(|(_, max)| max.is_some());
-        }
-        if let Some(rect) = markers.exp_bar {
-            let raw = read_region(image, rect);
-            text.exp_percent = raw.as_deref().and_then(parse_percent);
-            // EXP is printed as an absolute with a bracketed percentage, so
-            // a lone number is legitimate here only when the percentage
-            // confirms we are looking at the EXP readout.
-            text.exp = raw
-                .as_deref()
-                .and_then(parse_current_max)
-                .filter(|(_, max)| max.is_some() || text.exp_percent.is_some());
+        // neighbouring icon) rather than a real value, and is rejected.
+        for (field, roi) in [
+            (HudField::Hp, markers.hp_bar),
+            (HudField::Mp, markers.mp_bar),
+        ] {
+            let Some(roi) = roi else { continue };
+            results.push(self.read_field(
+                image,
+                field,
+                roi,
+                frame_id,
+                |raw| match parse_current_max(raw) {
+                    Some((current, Some(max))) => ParsedValue::Amount {
+                        current,
+                        max: Some(max),
+                    },
+                    _ => ParsedValue::Invalid,
+                },
+            ));
         }
 
-        text.player_name = markers
-            .name_plate
-            .and_then(|rect| read_region(image, rect))
-            .and_then(|raw| pick_value(&raw, "name", plausible_name));
-        text.character_class = markers
-            .class_plate
-            .and_then(|rect| read_region(image, rect))
-            .and_then(|raw| pick_value(&raw, "job", plausible_job));
-        text.level = markers
-            .level_plate
-            .and_then(|rect| read_region(image, rect))
-            .and_then(|raw| {
-                pick_value(&raw, "lv", |candidate| plausible_level(candidate).is_some())
-            })
-            .and_then(|value| plausible_level(&value));
+        // EXP prints an absolute with a bracketed percentage. The exact
+        // printed percentage is preferred, since that is the game's own
+        // number rather than anything derived.
+        if let Some(roi) = markers.exp_bar {
+            results.push(self.read_field(image, HudField::Exp, roi, frame_id, |raw| {
+                if let Some(percent) = parse_percent(raw) {
+                    return ParsedValue::Percent(percent);
+                }
+                match parse_current_max(raw) {
+                    Some((current, max @ Some(_))) => ParsedValue::Amount { current, max },
+                    _ => ParsedValue::Invalid,
+                }
+            }));
+        }
 
+        for (field, roi, label) in [
+            (HudField::PlayerName, markers.name_plate, "name"),
+            (HudField::Job, markers.class_plate, "job"),
+            (HudField::Level, markers.level_plate, "lv"),
+        ] {
+            let Some(roi) = roi else { continue };
+            results.push(self.read_field(image, field, roi, frame_id, |raw| {
+                let picked = match field {
+                    HudField::PlayerName => pick_value(raw, label, plausible_name),
+                    HudField::Job => pick_value(raw, label, plausible_job),
+                    _ => pick_value(raw, label, |candidate| plausible_level(candidate).is_some())
+                        .and_then(|value| plausible_level(&value)),
+                };
+                match picked {
+                    Some(value) => ParsedValue::Text(value),
+                    None => ParsedValue::Invalid,
+                }
+            }));
+        }
+
+        for result in &results {
+            self.remember(result);
+        }
+        self.last_pass = results.clone();
+
+        let text = HudText::from_results(&results);
         self.cached = text.clone();
         self.primed = true;
+        HudTextReading { text, ocr: results }
+    }
+}
+
+impl HudText {
+    /// Project provenance records onto the flat shape the fusion step and
+    /// the serialised game state already consume.
+    fn from_results(results: &[HudOcrResult]) -> Self {
+        let mut text = HudText::default();
+        for result in results {
+            match result.field {
+                HudField::Hp => text.hp = amount_of(result),
+                HudField::Mp => text.mp = amount_of(result),
+                HudField::Exp => {
+                    text.exp = amount_of(result);
+                    if let ParsedValue::Percent(percent) = result.parsed {
+                        text.exp_percent = Some(percent);
+                    }
+                }
+                HudField::PlayerName => text.player_name = text_of(result),
+                HudField::Job => text.character_class = text_of(result),
+                HudField::Level => text.level = text_of(result),
+                HudField::Mesos | HudField::MapName => {}
+            }
+        }
         text
+    }
+}
+
+fn amount_of(result: &HudOcrResult) -> Option<(u64, Option<u64>)> {
+    match result.parsed {
+        ParsedValue::Amount { current, max } => Some((current, max)),
+        _ => None,
+    }
+}
+
+fn text_of(result: &HudOcrResult) -> Option<String> {
+    match &result.parsed {
+        ParsedValue::Text(value) => Some(value.clone()),
+        _ => None,
     }
 }
 
@@ -363,12 +530,6 @@ fn read_region(image: &RgbaImage, rect: Rect) -> Option<String> {
     let result = ocr::ocr_region(image, rect.x, rect.y, rect.w, rect.h)?;
     let text = result.text.trim().to_string();
     (!text.is_empty()).then_some(text)
-}
-
-fn read_pair(image: &RgbaImage, rect: Rect) -> Option<(u64, Option<u64>)> {
-    read_region(image, rect)
-        .as_deref()
-        .and_then(parse_current_max)
 }
 
 #[cfg(test)]
@@ -493,6 +654,93 @@ mod tests {
         assert_eq!(plausible_level("9999"), None);
         assert_eq!(plausible_level("CEN MAKE THE JOB"), None);
         assert_eq!(plausible_level(""), None);
+    }
+
+    /// A reader primed with one usable and one failed field, without
+    /// invoking OCR.
+    fn primed_reader() -> HudTextReader {
+        let roi = Rect {
+            x: 10,
+            y: 20,
+            w: 30,
+            h: 12,
+        };
+        let mut reader = HudTextReader::new(60);
+        let good = HudOcrResult {
+            field: HudField::Hp,
+            roi,
+            raw_text: Some("400 / 400".into()),
+            parsed: ParsedValue::Amount {
+                current: 400,
+                max: Some(400),
+            },
+            frame_id: 7,
+            state: ReadState::ReadThisFrame,
+            quality: None,
+        };
+        let bad = HudOcrResult::unread(HudField::Mp, roi, 7, Some("OAP 6201".into()));
+        reader.remember(&good);
+        reader.remember(&bad);
+        reader.last_pass = vec![good, bad];
+        reader
+    }
+
+    #[test]
+    fn a_carried_value_keeps_its_original_frame_and_is_relabelled() {
+        let reader = primed_reader();
+        let carried = reader
+            .carry_forward(HudField::Hp)
+            .expect("a usable reading should be carried");
+        // The frame id must stay the frame it was read from, so provenance
+        // never claims the current frame produced it.
+        assert_eq!(carried.frame_id, 7);
+        assert_eq!(carried.state, ReadState::CarriedForward { from_frame: 7 });
+    }
+
+    #[test]
+    fn a_failed_field_is_never_carried_forward() {
+        let reader = primed_reader();
+        // Nothing usable was ever read for MP, so there is nothing to reuse.
+        assert!(reader.carry_forward(HudField::Mp).is_none());
+    }
+
+    #[test]
+    fn results_are_projected_onto_the_flat_text_shape() {
+        let roi = Rect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        };
+        let results = vec![
+            HudOcrResult {
+                field: HudField::Hp,
+                roi,
+                raw_text: None,
+                parsed: ParsedValue::Amount {
+                    current: 2341,
+                    max: Some(3100),
+                },
+                frame_id: 1,
+                state: ReadState::ReadThisFrame,
+                quality: None,
+            },
+            HudOcrResult {
+                field: HudField::Exp,
+                roi,
+                raw_text: None,
+                parsed: ParsedValue::Percent(59.823),
+                frame_id: 1,
+                state: ReadState::ReadThisFrame,
+                quality: None,
+            },
+            // A failed field must contribute nothing at all.
+            HudOcrResult::unread(HudField::Mp, roi, 1, Some("junk".into())),
+        ];
+        let text = HudText::from_results(&results);
+        assert_eq!(text.hp, Some((2341, Some(3100))));
+        assert_eq!(text.exp_percent, Some(59.823));
+        assert_eq!(text.mp, None, "an invalid read must not produce a value");
     }
 
     #[test]
