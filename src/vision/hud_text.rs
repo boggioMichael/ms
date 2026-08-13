@@ -26,6 +26,31 @@ use crate::vision::hud_ocr::{HudField, HudOcrResult, ParsedValue, ReadState};
 use crate::vision::ocr;
 use crate::vision::quality::assess_text_quality;
 
+/// Bounds on a region that could plausibly hold one line of HUD text.
+///
+/// A region far outside these is a layout fault, not a recognition
+/// problem: an 8-pixel-tall strip has no room for a glyph, and a
+/// 62-pixel-tall one spans several stat rows at once, so whatever OCR
+/// returns describes the wrong thing. Recognising them anyway produced
+/// exactly that — a job read as "eo Pages os Te".
+const MIN_TEXT_ROI_HEIGHT: u32 = 10;
+const MAX_TEXT_ROI_HEIGHT: u32 = 48;
+const MIN_TEXT_ROI_WIDTH: u32 = 24;
+
+/// Why a region cannot hold a line of text, or `None` when it can.
+fn roi_rejection(roi: Rect) -> Option<String> {
+    if roi.h < MIN_TEXT_ROI_HEIGHT {
+        return Some(format!("region only {}px tall; no room for text", roi.h));
+    }
+    if roi.h > MAX_TEXT_ROI_HEIGHT {
+        return Some(format!("region {}px tall; spans several rows", roi.h));
+    }
+    if roi.w < MIN_TEXT_ROI_WIDTH {
+        return Some(format!("region only {}px wide", roi.w));
+    }
+    None
+}
+
 /// Most whitespace-separated words a real stats row can hold: a label plus
 /// a value of at most two words.
 const MAX_PLATE_TOKENS: usize = 3;
@@ -349,18 +374,25 @@ impl HudTextReader {
         frame_id: u64,
         parse: impl Fn(&str) -> ParsedValue,
     ) -> HudOcrResult {
+        // Reject a malformed region before spending an OCR call on it.
+        if let Some(reason) = roi_rejection(roi) {
+            return HudOcrResult::rejected_roi(field, roi, frame_id, &reason);
+        }
         let raw = read_region(image, roi);
         let parsed = raw.as_deref().map(&parse).unwrap_or(ParsedValue::NotRead);
 
         if parsed.is_usable() {
+            let quality = Some(assess_text_quality(image, roi));
             return HudOcrResult {
+                confidence: HudOcrResult::score(&parsed, quality),
                 field,
                 roi,
                 raw_text: raw,
                 parsed,
                 frame_id,
                 state: ReadState::ReadThisFrame,
-                quality: Some(assess_text_quality(image, roi)),
+                quality,
+                note: None,
             };
         }
 
@@ -677,12 +709,76 @@ mod tests {
             frame_id: 7,
             state: ReadState::ReadThisFrame,
             quality: None,
+            note: None,
+            confidence: 0.9,
         };
         let bad = HudOcrResult::unread(HudField::Mp, roi, 7, Some("OAP 6201".into()));
         reader.remember(&good);
         reader.remember(&bad);
         reader.last_pass = vec![good, bad];
         reader
+    }
+
+    #[test]
+    fn regions_too_small_or_too_tall_for_text_are_rejected() {
+        // An 8px strip cannot hold a glyph; recognising it produced the
+        // job "eo Pages os Te" from the real fixture.
+        assert!(
+            roi_rejection(Rect {
+                x: 0,
+                y: 0,
+                w: 210,
+                h: 8
+            })
+            .is_some()
+        );
+        // 62px spans several stat rows, so whatever is read describes the
+        // wrong thing.
+        assert!(
+            roi_rejection(Rect {
+                x: 0,
+                y: 0,
+                w: 210,
+                h: 62
+            })
+            .is_some()
+        );
+        assert!(
+            roi_rejection(Rect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 20
+            })
+            .is_some()
+        );
+        // A normal HUD text row passes.
+        assert!(
+            roi_rejection(Rect {
+                x: 0,
+                y: 0,
+                w: 152,
+                h: 38
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_rejected_region_reports_the_layout_fault_not_a_read_failure() {
+        let roi = Rect {
+            x: 75,
+            y: 270,
+            w: 210,
+            h: 8,
+        };
+        let result = HudOcrResult::rejected_roi(HudField::Job, roi, 12, "region only 8px tall");
+        assert!(!result.is_usable());
+        assert_eq!(result.raw_text, None, "nothing was recognised");
+        assert!(
+            result.note.as_deref().is_some_and(|n| n.contains("8px")),
+            "the reason must be reported"
+        );
     }
 
     #[test]
@@ -724,6 +820,8 @@ mod tests {
                 frame_id: 1,
                 state: ReadState::ReadThisFrame,
                 quality: None,
+                note: None,
+                confidence: 0.9,
             },
             HudOcrResult {
                 field: HudField::Exp,
@@ -733,6 +831,8 @@ mod tests {
                 frame_id: 1,
                 state: ReadState::ReadThisFrame,
                 quality: None,
+                note: None,
+                confidence: 0.9,
             },
             // A failed field must contribute nothing at all.
             HudOcrResult::unread(HudField::Mp, roi, 1, Some("junk".into())),

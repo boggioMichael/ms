@@ -52,7 +52,8 @@ MapleStory window / image fixture
 The main modules are:
 
 - `src/capture.rs` and `src/frame.rs`: capture boundaries and RGBA frame representation.
-- `src/vision/`: detectors, geometry, OCR, temporal reasoning, shared types, and snapshots.
+- `src/vision/`: detectors, geometry, OCR and OCR provenance, capture-quality assessment, temporal reasoning, shared types, and snapshots.
+- `src/observe/`: the live terminal dashboard, the graphical preview, and the per-frame result both render from.
 - `src/game_state.rs`: stable application-facing and serialized state.
 - `src/overlay/`: transparent window, manager, coordinates, configuration, and widgets.
 - `src/knowledge/`: game-domain classification and lookup helpers.
@@ -78,6 +79,44 @@ Run the structured perception demo against the real fixture:
 cargo run --release --bin demo_realtime
 ```
 
+## Live vision debugger
+
+`vision_debug` is the tool for seeing what the engine believes it is looking at. It opens
+an in-place terminal dashboard and a graphical preview of the captured frame, both rendered
+from the same per-frame result, so the two can never disagree.
+
+```powershell
+cargo run --release --bin vision_debug -- --pick                    # choose a window
+cargo run --release --bin vision_debug -- resources/maplestory.png  # a screenshot
+cargo run --release --bin vision_debug -- gameplay.mp4              # a recording
+cargo run --release --bin vision_debug -- --help
+```
+
+Every region the engine reads as text is marked in the preview with corner brackets,
+labelled with its field, and captioned with both the raw recognised text and the parsed
+value. Colour follows the read state: read this frame, carried forward from an earlier
+frame, or failed.
+
+To ask where a value came from, use `--explain`, which prints the region, the raw text, the
+parse, the confidence and the capture legibility for every field:
+
+```powershell
+cargo run --release --bin vision_debug -- resources/maplestory.png --explain
+```
+
+### Reading numbers, not estimating them
+
+Values the game prints as text are read as text; a bar's fill is only ever a corroborating
+estimate and is never presented as the value. When recognition fails the engine reports
+`unknown` or `INVALID` with the raw text attached, rather than substituting a number
+derived from bar width.
+
+Recognition quality depends on the capture. Native pixel-font text has single-pixel glyph
+edges; rescaling a screenshot or compressing a video averages them into ramps and the digits
+cannot be recovered by any recogniser. The engine measures this per region and marks an
+unreliable read rather than presenting it as fact, so capture the game window directly at
+its native size for best results.
+
 ## Verification
 
 Run every required check before submitting a change:
@@ -89,7 +128,7 @@ cargo test --all-targets
 cargo bench --bench vision_pipeline
 ```
 
-The integrated MVP passes 42 unit tests, the real-image HP-bar integration test, all target checks, and the Criterion vision benchmark. Benchmark latency depends heavily on frame size and OCR work; use the generated Criterion report and measured evidence rather than assuming a fixed real-time rate.
+The integrated MVP passes 122 unit tests, the real-image HP-bar integration test, the HUD accuracy regression tests, all target checks, and the Criterion vision benchmark. Benchmark latency depends heavily on frame size and OCR work; use the generated Criterion report and measured evidence rather than assuming a fixed real-time rate.
 
 ## Contributing
 

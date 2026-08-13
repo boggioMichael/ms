@@ -103,17 +103,51 @@ impl FrameSource {
     }
 }
 
-fn main() {
-    let input = std::env::args().nth(1);
+fn print_usage() {
+    println!(
+        r#"MapleSyrup vision debugger
 
+USAGE
+  vision_debug [INPUT] [--explain]
+
+INPUT
+  <none>              the live MapleStory window, or a window picker
+  <image>             a screenshot, e.g. resources/maplestory.png
+  <video>             a recording; frames are extracted once with ffmpeg
+  <directory>         a directory of already-extracted frames
+  --windows           list every visible window and exit
+  --window=<n|text>   capture a window by index or title substring
+  --pick              choose a window interactively
+
+OPTIONS
+  --explain           print OCR provenance and capture quality, then exit
+  --help              show this message
+
+ENVIRONMENT
+  MS_VISION_DUMP=<p>  write one annotated frame to <p> and exit
+  MS_VIDEO_FPS        frames per second to extract (default 15)
+  MS_VIDEO_FRAMES     maximum frames to extract (default 900)"#
+    );
+}
+
+fn main() {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // `--explain` may sit either side of the input, so pull it out first.
+    let explain_requested = args.iter().any(|arg| arg == "--explain");
+    args.retain(|arg| arg != "--explain");
+    let input = args.into_iter().next();
+
+    // Report what actually went wrong. A generic "no usable input" after
+    // the user plainly supplied an input sends them looking in the wrong
+    // place.
     let mut source = match resolve_source(input.as_deref()) {
-        Some(source) => source,
-        None => {
-            eprintln!("No MapleStory window found and no usable input was given.");
+        Ok(source) => source,
+        Err(reason) => {
+            eprintln!("{reason}");
             eprintln!(
-                "Pass a video or image, e.g.:\n  \
-                 cargo run --release --bin vision_debug -- chaos-zakum-solo-lvl230.mp4\n  \
-                 cargo run --release --bin vision_debug -- resources/maplestory.png"
+                "\nRun `vision_debug --help` for usage, or try:\n  \
+                 vision_debug --pick                      choose a window\n  \
+                 vision_debug resources/maplestory.png    a screenshot"
             );
             std::process::exit(1);
         }
@@ -124,6 +158,12 @@ fn main() {
         eprintln!("Could not read a first frame from {description}.");
         std::process::exit(1);
     };
+
+    // Provenance report: one frame, fully explained, then exit.
+    if explain_requested {
+        explain(&first_label, first_frame);
+        return;
+    }
 
     // Headless verification path: render one annotated frame to disk and
     // exit, so the overlay can be inspected where no window can be opened.
@@ -245,18 +285,23 @@ fn prompt_for_window(windows: &[String]) -> Option<FrameSource> {
 
 /// Decide where frames come from. An explicit argument always wins, so
 /// "test against this video" is not silently overridden by a live window.
-fn resolve_source(input: Option<&str>) -> Option<FrameSource> {
+fn resolve_source(input: Option<&str>) -> Result<FrameSource, String> {
     let Some(input) = input else {
         // No argument: try the game window, and if it is not there offer
         // the window list rather than just giving up.
         if capture_game_window_info().is_some() {
-            return Some(FrameSource::Live);
+            return Ok(FrameSource::Live);
         }
         println!("No MapleStory window found.");
-        return prompt_for_window(&ms::capture::list_windows());
+        return prompt_for_window(&ms::capture::list_windows())
+            .ok_or_else(|| "No window was chosen.".to_string());
     };
 
-    // Window selection flags.
+    // Diagnostic and window-selection flags.
+    if input == "--help" || input == "-h" {
+        print_usage();
+        std::process::exit(0);
+    }
     if input == "--windows" || input == "--list-windows" {
         print_window_list(&ms::capture::list_windows());
         std::process::exit(0);
@@ -265,18 +310,21 @@ fn resolve_source(input: Option<&str>) -> Option<FrameSource> {
         return select_window(selector);
     }
     if input == "--window" || input == "--pick" {
-        return prompt_for_window(&ms::capture::list_windows());
+        return prompt_for_window(&ms::capture::list_windows())
+            .ok_or_else(|| "No window was chosen.".to_string());
     }
 
     let path = Path::new(input);
     if !path.exists() {
-        eprintln!("input not found: {input}");
-        return None;
+        return Err(format!("Input not found: {input}"));
     }
 
     if path.is_dir() {
         let frames = collect_frames(path);
-        return (!frames.is_empty()).then(|| FrameSource::Sequence {
+        if frames.is_empty() {
+            return Err(format!("{input} contains no .png/.jpg frames to replay."));
+        }
+        return Ok(FrameSource::Sequence {
             label: input.to_string(),
             frames,
             cursor: 0,
@@ -290,8 +338,9 @@ fn resolve_source(input: Option<&str>) -> Option<FrameSource> {
         .to_ascii_lowercase();
 
     if VIDEO_EXTENSIONS.contains(&extension.as_str()) {
-        let frames = extract_video_frames(path)?;
-        return Some(FrameSource::Sequence {
+        let frames = extract_video_frames(path)
+            .ok_or_else(|| format!("Could not extract frames from {input}."))?;
+        return Ok(FrameSource::Sequence {
             label: input.to_string(),
             frames,
             cursor: 0,
@@ -302,22 +351,29 @@ fn resolve_source(input: Option<&str>) -> Option<FrameSource> {
         label: input.to_string(),
         image,
     })
+    .ok_or_else(|| {
+        format!(
+            "{input} is not a readable image. Supported inputs are an image, a video, a directory of frames, or a window (see --windows)."
+        )
+    })
 }
 
 /// Resolve `--window=<index|substring>` against the visible window list.
-fn select_window(selector: &str) -> Option<FrameSource> {
+fn select_window(selector: &str) -> Result<FrameSource, String> {
     let windows = ms::capture::list_windows();
 
     // A bare number picks by index from `--windows`.
     if let Ok(index) = selector.trim().parse::<usize>() {
         return match windows.get(index) {
-            Some(title) => Some(FrameSource::Window {
+            Some(title) => Ok(FrameSource::Window {
                 title: title.clone(),
             }),
             None => {
-                eprintln!("No window with index {index}.");
                 print_window_list(&windows);
-                None
+                Err(format!(
+                    "No window with index {index}; {} are listed above.",
+                    windows.len()
+                ))
             }
         };
     }
@@ -327,13 +383,12 @@ fn select_window(selector: &str) -> Option<FrameSource> {
         .iter()
         .find(|title| title.to_ascii_lowercase().contains(&needle))
     {
-        Some(title) => Some(FrameSource::Window {
+        Some(title) => Ok(FrameSource::Window {
             title: title.clone(),
         }),
         None => {
-            eprintln!("No visible window matches {selector:?}.");
             print_window_list(&windows);
-            None
+            Err(format!("No visible window matches {selector:?}."))
         }
     }
 }
@@ -423,6 +478,85 @@ fn extract_video_frames(video: &Path) -> Option<Vec<PathBuf>> {
     }
     println!("extracted {} frames to {}", frames.len(), dir.display());
     Some(frames)
+}
+
+/// Print a full provenance and capture-quality report for one frame.
+///
+/// This is the answer to "where did that number come from?": for every HUD
+/// field it prints the region that was recognised, the raw text, what the
+/// parser made of it, whether it is trusted, and how legible the pixels
+/// were. It is also the fastest way to tell whether a capture is even
+/// readable before running the live debugger against it.
+fn explain(source: &str, image: RgbaImage) {
+    let mut pipeline = PerceptionPipeline::new();
+    let world = pipeline.detect(&image);
+
+    println!("source : {source} ({}x{})", image.width(), image.height());
+    println!(
+        "engines: tesseract {} | windows-ocr {}",
+        if ms::vision::ocr::is_ocr_available() {
+            "available"
+        } else {
+            "missing"
+        },
+        if ms::vision::ocr_windows::is_available() {
+            "available"
+        } else {
+            "missing"
+        }
+    );
+    println!();
+
+    if world.hud.ocr.is_empty() {
+        println!("No HUD text regions were located in this frame.");
+        return;
+    }
+
+    let mut blurred = 0;
+    for reading in &world.hud.ocr {
+        let quality = reading
+            .quality
+            .map(|q| format!("{:?} (sharpness {:.3})", q.legibility, q.sharpness))
+            .unwrap_or_else(|| "not measured".to_string());
+        if reading.quality.is_some_and(|q| !q.is_legible()) {
+            blurred += 1;
+        }
+
+        println!("{}", reading.field.label());
+        println!(
+            "  roi       : ({}, {}) {}x{}",
+            reading.roi.x, reading.roi.y, reading.roi.w, reading.roi.h
+        );
+        println!(
+            "  raw text  : {:?}",
+            reading.raw_text.as_deref().unwrap_or("")
+        );
+        println!("  parsed    : {}", reading.parsed.display());
+        println!(
+            "  trusted   : {} (confidence {:.2})",
+            reading.is_trusted(),
+            reading.confidence
+        );
+        println!("  state     : {}", reading.state.describe());
+        println!("  legibility: {quality}");
+        if let Some(note) = reading.note.as_deref() {
+            println!("  note      : {note}");
+        }
+        println!();
+    }
+
+    if blurred > 0 {
+        println!(
+            "{blurred} of {} regions are too blurred to recognise reliably.",
+            world.hud.ocr.len()
+        );
+        println!(
+            "Native pixel-font text has single-pixel glyph edges; rescaling or video\n\
+             compression averages them away and no recogniser can recover the digits.\n\
+             Capture the game window directly at its native size:\n  \
+             vision_debug --pick"
+        );
+    }
 }
 
 /// Render one annotated frame to `path` without opening a window.

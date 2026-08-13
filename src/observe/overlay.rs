@@ -174,8 +174,14 @@ const OCR_CARRIED_COLOR: Rgba<u8> = Rgba([255, 200, 60, 255]);
 /// Colour for an OCR region that could not be read.
 const OCR_FAILED_COLOR: Rgba<u8> = Rgba([255, 90, 90, 255]);
 
-fn ocr_color(state: ReadState) -> Rgba<u8> {
-    match state {
+fn ocr_color(reading: &HudOcrResult) -> Rgba<u8> {
+    // An untrusted read is coloured like a failure rather than a success:
+    // a value recognised from illegible pixels is closer to a failure than
+    // to a fact, and the preview should not imply otherwise.
+    if reading.is_usable() && !reading.is_trusted() {
+        return OCR_CARRIED_COLOR;
+    }
+    match reading.state {
         ReadState::ReadThisFrame => OCR_READ_COLOR,
         ReadState::CarriedForward { .. } => OCR_CARRIED_COLOR,
         ReadState::Unknown => OCR_FAILED_COLOR,
@@ -236,7 +242,7 @@ fn ocr_brackets(image: &mut RgbaImage, rect: Rect, color: Rgba<u8>) {
 /// how a misread is recognised as a misread instead of looking like an
 /// absent HUD element.
 fn draw_ocr_region(canvas: &mut RgbaImage, reading: &HudOcrResult) {
-    let color = ocr_color(reading.state);
+    let color = ocr_color(reading);
     ocr_brackets(canvas, reading.roi, color);
 
     let mut lines = vec![format!(

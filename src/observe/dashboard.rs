@@ -101,13 +101,21 @@ fn ocr_row(name: &str, reading: Option<&HudOcrResult>, bar_percent: Option<f32>)
     };
 
     let value = reading.parsed.display();
-    let value_text = if reading.is_usable() {
+    let value_text = if reading.is_trusted() {
         format!("{BOLD}{value:>17}{RESET}")
+    } else if reading.is_usable() {
+        // Recognised, but from pixels too poor to vouch for. Shown, because
+        // it is the only evidence there is, and marked, because presenting
+        // it plainly would make a guess look like the game's own number.
+        format!("{YELLOW}{value:>17}{RESET}")
     } else {
         format!("{RED}{value:>17}{RESET}")
     };
 
     let mut suffix = String::new();
+    if reading.is_usable() && !reading.is_trusted() {
+        suffix.push_str(&format!("{YELLOW}UNVERIFIED{RESET} "));
+    }
     match reading.state {
         ReadState::ReadThisFrame => {}
         ReadState::CarriedForward { from_frame } => {
@@ -125,6 +133,12 @@ fn ocr_row(name: &str, reading: Option<&HudOcrResult>, bar_percent: Option<f32>)
             Agreement::Unchecked => format!("{DIM}--{RESET}"),
         };
         suffix.push_str(&format!("{DIM}bar ~{percent:.1}%{RESET} {mark}"));
+    }
+
+    // A structural failure is reported as itself, so a bad region is not
+    // mistaken for a recognition problem.
+    if let Some(note) = reading.note.as_deref() {
+        suffix.push_str(&format!("{DIM}{note}{RESET}"));
     }
 
     // Raw text is surfaced when parsing failed, so a misread is visible as
@@ -440,6 +454,8 @@ mod tests {
             frame_id: 778,
             state,
             quality: None,
+            note: None,
+            confidence: 0.9,
         }
     }
 
