@@ -139,6 +139,84 @@ The integrated MVP passes 122 unit tests, the real-image HP-bar integration test
 5. Run formatting, strict Clippy, all-target tests, and relevant benchmarks.
 6. Keep generated captures, benchmark output, build artifacts, and large demo media out of Git.
 
+## Proposed LLM & Knowledge Architecture
+
+The following directory structure is proposed for the new AI, LLM, voice, memory, and knowledge layers.  
+This structure is subject to review and may evolve during implementation.
+
+```text
+ms/
+├── src/                         # Existing Rust application
+│   ├── capture.rs
+│   ├── frame.rs
+│   ├── game_state.rs
+│   ├── vision/
+│   ├── overlay/
+│   └── ...
+│
+├── ai/                          # Proposed Python AI layer
+│   │
+│   ├── agent/
+│   │   ├── __init__.py
+│   │   ├── agent.py             # Main Agent orchestration
+│   │   ├── context.py           # Builds LLM context
+│   │   ├── memory.py            # In-memory user cache (RAM only)
+│   │   └── prompts.py
+│   │
+│   ├── llm/
+│   │   ├── __init__.py
+│   │   ├── provider.py          # Common LLM provider interface
+│   │   ├── openai_provider.py
+│   │   ├── claude_provider.py
+│   │   ├── ollama_provider.py
+│   │   └── factory.py
+│   │
+│   ├── voice/
+│   │   ├── __init__.py
+│   │   ├── stt.py               # Speech-to-Text
+│   │   ├── tts.py               # Text-to-Speech
+│   │   └── audio.py             # Microphone input / audio playback
+│   │
+│   ├── knowledge/
+│   │   ├── __init__.py
+│   │   ├── server.py            # Knowledge MCP Server
+│   │   │
+│   │   ├── tools/
+│   │   │   ├── __init__.py
+│   │   │   ├── game_tools.py
+│   │   │   └── user_tools.py
+│   │   │
+│   │   └── schemas/
+│   │       ├── __init__.py
+│   │       ├── game.py
+│   │       └── user.py
+│   │
+│   ├── models/
+│   │   ├── __init__.py
+│   │   ├── game_state.py
+│   │   └── recommendation.py
+│   │
+│   ├── mcp_client.py
+│   ├── config.py
+│   └── main.py
+│
+├── db/                          # Persistent data only
+│   ├── game/                    # MapleStory knowledge
+│   └── user/                    # Long-term user memory
+│
+├── tests/
+│   └── ai/
+│       ├── test_agent.py
+│       ├── test_llm.py
+│       ├── test_voice.py
+│       └── test_knowledge.py
+│
+├── requirements.txt
+├── .env.example
+├── Cargo.toml
+└── README.md
+```
+
 ## License
 
 MapleSyrup is licensed under the [MIT License](LICENSE).
