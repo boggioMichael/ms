@@ -99,3 +99,37 @@ class OllamaProvider:
 
     def close(self) -> None:
         """Each HTTP request already closes its own connection."""
+
+    def stream(self, instructions: str, user_input: str, history=None):
+        """Read Ollama NDJSON incrementally; thinking fields are never spoken."""
+        payload = {'model': self.model, 'stream': True, 'messages': [
+            {'role': 'system', 'content': instructions}, *(history or []),
+            {'role': 'user', 'content': user_input},
+        ]}
+        request = Request(f'{self.base_url}/api/chat', data=json.dumps(payload).encode(),
+                          headers={'Content-Type': 'application/json'})
+        try:
+            with urlopen(request, timeout=self.timeout) as response:
+                for line in response:
+                    if not line.strip():
+                        continue
+                    item = json.loads(line)
+                    if not isinstance(item, dict) or item.get('error'):
+                        raise RuntimeError('Ollama returned a stream error. Please retry.')
+                    message = item.get('message', {})
+                    if not isinstance(message, dict):
+                        raise ValueError('Invalid message')
+                    text = message.get('content', '')
+                    if not isinstance(text, str):
+                        raise ValueError('Invalid text')
+                    if text:
+                        yield text
+                    if item.get('done') is True:
+                        return
+            raise RuntimeError('Ollama stream ended before the response was complete.')
+        except HTTPError as exc:
+            raise RuntimeError(f'Ollama returned HTTP {exc.code}. Check the model and service.') from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise RuntimeError('Ollama stream connection failed or timed out. Check the local service.') from exc
+        except (ValueError, UnicodeError) as exc:
+            raise RuntimeError('Ollama returned an invalid stream message.') from exc

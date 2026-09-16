@@ -71,3 +71,24 @@ class OpenAIProvider:
     def close(self) -> None:
         """Release the SDK's HTTP connections."""
         self.client.close()
+
+    def stream(self, instructions: str, user_input: str, history=None):
+        """Yield only answer text deltas and require successful stream completion."""
+        completed = False
+        try:
+            with self.client.responses.create(
+                model=self.model, instructions=instructions,
+                input=[*(history or []), {'role': 'user', 'content': user_input}],
+                stream=True,
+            ) as events:
+                for event in events:
+                    if event.type == 'response.output_text.delta':
+                        yield event.delta
+                    elif event.type == 'response.completed':
+                        completed = True
+                    elif event.type in ('response.failed', 'response.incomplete', 'error'):
+                        raise RuntimeError('OpenAI could not finish the response. Please retry.')
+            if not completed:
+                raise RuntimeError('OpenAI stream ended before the response was complete.')
+        except OpenAIError as exc:
+            raise RuntimeError(self._error_message(exc)) from exc
