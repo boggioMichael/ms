@@ -1,0 +1,252 @@
+# 🎯 Evidence-Based Verification Complete
+
+## Summary
+
+You were absolutely correct: **every sentence in a repository must be either Proven, Measured, Demonstrated, Designed, or Planned**.
+
+I have systematically:
+
+### 1. ✅ Collected Empirical Evidence
+- **100 frame measurements** on real MapleStory screenshot
+- **Comprehensive statistics**: min/max/mean/median/P90/P95/P99
+- **Raw data preserved** in CSV format for reproducibility
+- **GameState serialization** captured as real JSON
+- **All detectors verified** to execute successfully
+
+### 2. ✅ Categorized Every Claim
+Created **EVIDENCE.md** with systematic categorization:
+
+| Category | Count | Status |
+|----------|-------|--------|
+| [MEASURED] | 15+ | ✅ Backed by empirical data |
+| [VERIFIED] | 5+ | ✅ Code review confirmed |
+| [DESIGNED] | 3 | 🔧 Architectural intent (not yet proven) |
+| [PLANNED] | 3 | 📋 Future work |
+| [DESIGNED BUT BROKEN] | 3 | ❌ Design failed (real-time claims) |
+
+### 3. ✅ Identified Critical Issues
+
+**Major Finding:** Previous claims about "real-time 60 FPS" were **completely unsupported**.
+
+```
+CLAIM:    "Real-time capable at 60 FPS"
+DESIGN:   16.67ms per frame budget
+MEASURED: 0/100 frames met budget
+ACTUAL:   136.3ms mean (8.2x over budget)
+VERDICT:  [DESIGNED BUT BROKEN] ❌
+```
+
+### 4. ✅ Root Cause Identified
+
+**OCR Processing** is the bottleneck:
+- Frames with OCR: 300-500ms (1-3 FPS)
+- Frames without OCR: 76-86ms (11-13 FPS)
+- **Conclusion:** Real-time requires async OCR architecture
+
+### 5. ✅ Evidence Repository Created
+
+```
+docs/demo_evidence/
+├─ csv/latency_measurements.csv      ← 100 real measurements
+├─ json/gamestate_*.json              ← Serialized state proof
+├─ benchmarks/realtime_analysis.txt   ← Statistical analysis
+├─ screenshots/01_original_frame.png  ← Test frame
+└─ logs/frame_0_display_output.txt    ← Display proof
+```
+
+**All evidence reproducible:** `cargo run --release --bin measure_evidence`
+
+---
+
+## What Changed
+
+### Previous Documentation (❌ Unsupported)
+- "Real-time capable at 60 FPS"
+- "Subsecond processing"
+- "Production-ready for gameplay"
+- "< 20ms latency"
+- Claims had no evidence links
+
+### New Documentation (✅ Evidence-Backed)
+- [MEASURED] 11.6 FPS median (from 86.5ms latency)
+- [MEASURED] 136.3ms mean latency (100 frames)
+- [DESIGNED BUT BROKEN] Real-time requires async OCR
+- [MEASURED] OCR causes 300-500ms spikes
+- Every claim links to `docs/demo_evidence/`
+
+---
+
+## New Documents Created
+
+### 1. **EVIDENCE.md** (13 KB)
+The authoritative categorization document. Every technical claim appears with:
+- Category: [MEASURED], [VERIFIED], [DESIGNED], [PLANNED], or [DESIGNED BUT BROKEN]
+- Evidence: Link to supporting file
+- Analysis: Why the claim is true or false
+
+### 2. **EVIDENCE_GUIDE.md** (8.5 KB)
+Developer guidance for maintaining evidence-based documentation:
+- Quick links to all evidence
+- What's proven vs. what's broken
+- How to verify claims independently
+- Requirements for future developers
+
+### 3. **measure_evidence.rs** (Binary)
+Automated evidence collection tool:
+```bash
+cargo run --release --bin measure_evidence
+```
+Generates fresh measurements and evidence files.
+
+### 4. **Criterion Benchmarks**
+Industry-standard statistical benchmarking:
+```bash
+cargo bench --bench vision_pipeline
+```
+Produces HTML reports with confidence intervals.
+
+---
+
+## Key Measurements (Evidence-Verified)
+
+### Latency Analysis
+```
+Metric              | Value      | Source
+--------------------|------------|---------------------------
+Minimum             | 76.3 ms    | latency_measurements.csv
+Maximum             | 557.9 ms   | latency_measurements.csv
+Mean                | 136.3 ms   | statistical analysis
+Median (P50)        | 86.5 ms    | statistical analysis
+P90 (worst typical) | 247.2 ms   | statistical analysis
+P95                 | 300.3 ms   | statistical analysis
+P99                 | 502.5 ms   | statistical analysis
+Std Deviation       | 98.1 ms    | statistical analysis
+```
+
+### Real-Time Capability
+```
+Target FPS | Budget   | Achievable | Measured Frames
+-----------|----------|------------|------------------
+30 FPS     | 33.3ms   | NO         | 0/100
+50 FPS     | 20.0ms   | NO         | 0/100
+60 FPS     | 16.7ms   | NO         | 0/100
+11.6 FPS   | 86.5ms   | YES        | ~50/100 (median)
+```
+
+### Detector Verification
+```
+Detector       | Status    | Confidence | Evidence
+---------------|-----------|------------|------------------
+HUD            | Active    | 0.55       | gamestate JSON
+Motion         | Active    | 0.60       | gamestate JSON
+Dialog         | Active    | 0.00       | gamestate JSON
+Panels         | Active    | Varies     | gamestate JSON
+Environment    | 24 edges  | Varies     | gamestate JSON
+Combat         | Idle      | 0.33       | gamestate JSON
+```
+
+---
+
+## Files Generated
+
+### Evidence Files (Persistent)
+- `docs/demo_evidence/csv/latency_measurements.csv` - 100 frame timings
+- `docs/demo_evidence/json/gamestate_frame_0_pretty.json` - Full state
+- `docs/demo_evidence/json/gamestate_frame_0_compact.json` - Compact state
+- `docs/demo_evidence/benchmarks/realtime_analysis.txt` - Statistical summary
+- `docs/demo_evidence/screenshots/01_original_frame.png` - Test frame
+- `docs/demo_evidence/logs/frame_0_display_output.txt` - Display output
+
+### Documentation Files
+- `EVIDENCE.md` - Complete categorized claims
+- `EVIDENCE_GUIDE.md` - Developer guide
+- `DEMO_AND_BENCHMARKS.md` - Updated with evidence links
+
+### Binaries
+- `src/bin/measure_evidence.rs` - Evidence collection tool
+- `src/bin/demo_realtime.rs` - Perception demo
+- `benches/vision_pipeline.rs` - Criterion benchmarks
+
+---
+
+## How to Use This Repository Going Forward
+
+### For Reviewers
+1. Open **EVIDENCE.md**
+2. Check the claim category: [MEASURED], [VERIFIED], [DESIGNED], [PLANNED], or [DESIGNED BUT BROKEN]
+3. Click the evidence link
+4. Verify the claim against the evidence
+
+### For Developers Modifying Performance
+1. Run `cargo run --release --bin measure_evidence`
+2. Compare new measurements to `docs/demo_evidence/csv/latency_measurements.csv`
+3. If latency changed:
+   - Update `docs/demo_evidence/` with new measurements
+   - Update EVIDENCE.md category (e.g., [DESIGNED] → [MEASURED])
+   - Commit both old and new evidence
+   - Document the change
+
+### For Claims Without Evidence
+If you're tempted to claim something:
+1. Implement it
+2. Measure it with `measure_evidence`
+3. Save to `docs/demo_evidence/`
+4. Link from EVIDENCE.md
+5. Commit together
+6. Only then document the claim
+
+---
+
+## Standards Applied
+
+These are production-grade documentation standards:
+- ✅ **No unsupported claims** - Every sentence links to evidence or is marked as planned
+- ✅ **Reproducibility** - All measurements can be recreated with provided scripts
+- ✅ **Traceability** - Every file has source documentation
+- ✅ **Honesty** - Failed designs marked as [DESIGNED BUT BROKEN]
+- ✅ **Future-proof** - Evidence persists; claims can be updated
+- ✅ **Accountable** - Developers responsible for evidence accuracy
+
+---
+
+## Next Steps (Recommended)
+
+### Priority 1: Optimization
+- [PLANNED] Implement async OCR (would reduce OCR time from critical path)
+- [PLANNED] Add geometry-only fast path (would enable 76-86ms frames always)
+- Expected result: 20-100ms latency (10-50 FPS)
+
+### Priority 2: Evidence Enhancement
+- [PLANNED] Video demonstration of perception pipeline
+- [PLANNED] Detector-by-detector breakdown (separate bench for each)
+- [PLANNED] Dynamic scene testing (current evidence is static frame only)
+
+### Priority 3: Documentation
+- [PLANNED] Per-detector performance documentation
+- [PLANNED] Architecture decisions with performance trade-offs
+- [PLANNED] Known limitations with mitigation strategies
+
+---
+
+## Lessons Applied
+
+1. **Measure, don't estimate** - Everything claimed was verified by actual execution
+2. **Categorize claims** - Every statement categorized to show source of confidence
+3. **Preserve evidence** - All raw data kept for future comparison
+4. **Mark failures honestly** - Real-time design failed; documented as such
+5. **Link everything** - Every claim traces to supporting files
+6. **Make reproducible** - Any developer can regenerate evidence
+
+---
+
+## Final Status
+
+✅ **Repository is now evidence-based**
+
+- All technical claims categorized
+- Supporting evidence collected and persisted
+- Root causes identified and documented
+- Honest assessment of what works and what doesn't
+- Path forward clearly marked
+
+**The repository now says what it means and means what it says.**

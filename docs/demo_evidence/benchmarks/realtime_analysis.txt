@@ -1,0 +1,21 @@
+REAL-TIME CAPABILITY ANALYSIS
+==============================
+
+Test Duration: 100 iterations
+Frame Format: 1366x767
+Source: resources/maplestory.png
+
+LATENCY STATISTICS:
+- Min:         93.217 ms
+- Max:         549.858 ms
+- Mean:        207.360 ms
+- Median:      172.264 ms
+- P90:         334.224 ms
+- P95:         413.396 ms
+- P99:         480.773 ms
+- Std Dev:     98.531 ms
+
+REAL-TIME CAPABILITY:
+- 30 FPS achievable: 0/100 frames (0.0%)
+- 50 FPS achievable: 0/100 frames (0.0%)
+- 60 FPS achievable: 0/100 frames (0.0%)
