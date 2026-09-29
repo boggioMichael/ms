@@ -160,7 +160,6 @@ Combat         | Idle      | 0.33       | gamestate JSON
 ### Documentation Files
 - `EVIDENCE.md` - Complete categorized claims
 - `EVIDENCE_GUIDE.md` - Developer guide
-- `DEMO_AND_BENCHMARKS.md` - Updated with evidence links
 
 ### Binaries
 - `src/bin/measure_evidence.rs` - Evidence collection tool

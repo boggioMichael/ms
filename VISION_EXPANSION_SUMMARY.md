@@ -2,9 +2,9 @@
 
 ## Executive Overview
 
-Successfully redesigned and completely implemented a production-grade vision perception system replacing the earlier "debug toolkit" framing. The implementation is **not a minimal patch** but a comprehensive, confidence-aware, temporally-reasoned perception layer designed to become the single source of truth for what the AI "sees" on screen.
+Redesigned and implemented a vision perception system replacing the earlier "debug toolkit" framing. The implementation is **not a minimal patch** but a comprehensive, confidence-aware, temporally-reasoned perception layer designed to become the single source of truth for what the AI "sees" on screen.
 
-**Status**: ✅ **COMPLETE** — Branch compiles cleanly, all 37 tests pass (36 unit + 1 integration), zero warnings, production-ready.
+**Status**: ✅ **COMPLETE** — Branch compiles cleanly, all 37 tests pass (36 unit + 1 integration), zero warnings (2026-08-06). It is not real-time yet: see [EVIDENCE.md](EVIDENCE.md).
 
 ## Branch Information
 
@@ -374,7 +374,7 @@ resources/
 
 ## Summary
 
-The vision system expansion is **complete and production-ready**. The implementation transforms MapleStory screen analysis from a fragile, binary-output, single-frame-based system into a robust, confidence-aware, temporally-consistent perception layer that:
+The vision system expansion is **complete**, though not yet real-time (see [EVIDENCE.md](EVIDENCE.md)). The implementation transforms MapleStory screen analysis from a fragile, binary-output, single-frame-based system into a robust, confidence-aware, temporally-consistent perception layer that:
 
 1. **Never lies about confidence** — every signal carries quantified trust
 2. **Enables informed decisions** — downstream AI can distinguish "sure" from "guess" from "missing"

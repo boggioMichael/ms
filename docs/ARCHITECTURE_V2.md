@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-The MARB critique is correct: the current architecture is not yet a production-grade perception system. It is a promising prototype with a weak evidence model, insufficient validation infrastructure, and an under-specified separation between UI reasoning, world reasoning, temporal reasoning, and confidence estimation.
+The current architecture is not yet a production-grade perception system. It is a promising prototype with a weak evidence model, insufficient validation infrastructure, and an under-specified separation between UI reasoning, world reasoning, temporal reasoning, and confidence estimation.
 
 This redesign replaces the current OCR-first and detector-by-detector improvisation with a deterministic, evidence-first, belief-based perception stack. The goal is not to make the system look sophisticated. The goal is to make it robust, measurable, debuggable, and capable of improving under real gameplay data.
 
@@ -13,13 +13,11 @@ The architecture below is designed to satisfy four hard requirements:
 3. Replay-based validation over intuition
 4. Modular decomposition over hidden coupling
 
-The result is a perception architecture that should realistically achieve a MARB score above 90/100 once implemented and validated.
-
 ---
 
 ## 1. Root Cause Analysis
 
-The MARB reviews identified a small number of recurring structural failures. They are not isolated implementation issues. They are architectural failures caused by incorrect assumptions.
+A review of the first design identified a small number of recurring structural failures. They are not isolated implementation issues. They are architectural failures caused by incorrect assumptions.
 
 ### 1.1 Major Themes
 
@@ -434,7 +432,7 @@ Future extensibility:
 
 ## 5. Confidence Architecture
 
-The confidence architecture is one of the most important redesign elements. MARB was correct: the previous system had no robust confidence model.
+The confidence architecture is one of the most important redesign elements: the previous system had no robust confidence model.
 
 ### 5.1 Goals
 
@@ -857,33 +855,7 @@ Mitigation:
 
 ---
 
-## 9. Self-Review Against MARB Standards
-
-This architecture is intentionally designed to exceed MARB standards. The following self-review assumes a strict standard: every subsystem should be at least 90/100 before implementation proceeds.
-
-### 9.1 Subsystem Scores
-
-| Subsystem | Score | Reason |
-|---|---:|---|
-| Layout prior and ROI estimation | 94/100 | Strong separation of UI/world, deterministic and testable |
-| HUD perception | 92/100 | Geometric bars, constrained text recognition, OCR only as fallback |
-| World geometry | 91/100 | Explicit UI masking and platform semantics |
-| Entity tracking | 90/100 | Tracker-by-detection with motion and appearance fusion |
-| Temporal fusion | 92/100 | Explicit belief-state and contradiction handling |
-| Confidence architecture | 95/100 | Evidence-based, calibrated, explainable |
-| Replay and validation | 95/100 | Frame-perfect replay, annotation, benchmarking, regression |
-| Debugging and visualization | 93/100 | Intermediate evidence and confidence traces |
-| Plugin architecture | 91/100 | Clear detector interface and shared belief state |
-
-### 9.2 Overall Score
-
-Overall architecture score: 93/100
-
-This is above the MARB threshold and is credible as a production-grade architecture proposal.
-
----
-
-## 10. Final Recommendation
+## 9. Final Recommendation
 
 The correct architecture is not a generic OCR system. It is a deterministic, evidence-first perception stack with:
 
