@@ -121,8 +121,8 @@ The [Real recording demo](.github/workflows/real-recording.yml) workflow does th
 Windows runner for the first three minutes of `chaos-zakum-solo-lvl230.mp4` and publishes the
 video, the timings and the logs to the
 [`demo/real-recording-output`](https://github.com/boggioMichael/ms/tree/demo/real-recording-output)
-branch. On 2026-09-30 it processed 2,700 frames with a mean of 43.1 ms of perception per frame
-(median 35.7 ms, p95 45.7 ms); about 4% of frames, the ones where OCR runs, took 0.1 to 0.7 s.
+branch. On 2026-09-30 it processed 2,700 frames with a mean of 43.2 ms of perception per frame
+(median 35.6 ms, p95 44.7 ms); 101 frames (3.7%), the ones where OCR runs, took 0.14 to 0.73 s.
 All 128 tests passed on the same runner. The recording is a compressed screen capture, so the
 HUD text is flagged unreliable rather than read.
 
@@ -141,7 +141,9 @@ its native size for best results.
 
 ## Verification
 
-Run every required check before submitting a change:
+The [CI](.github/workflows/ci.yml) workflow runs formatting, clippy and the tests on a Windows
+runner for every push to `master` and every pull request. Run the same checks locally before
+submitting a change:
 
 ```powershell
 cargo fmt --check

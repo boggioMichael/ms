@@ -5,8 +5,6 @@ name: Real recording demo
 # MS_VISION_RECORD, encodes the frames into a video, and publishes the video,
 # the per-frame timings and the logs to the demo/real-recording-output branch.
 on:
-  push:
-    branches: ["demo/real-recording"]
   workflow_dispatch:
 
 permissions:
@@ -17,33 +15,7 @@ defaults:
     shell: bash
 
 jobs:
-  lint:
-    runs-on: windows-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - name: Rust toolchain
-        run: |
-          rustup update stable --no-self-update
-          rustup default stable
-          rustup component add clippy rustfmt
-      - name: Format
-        run: cargo fmt --check
-      - name: Clippy
-        run: |
-          cargo clippy --version | sed 's/^/::notice::/'
-          set +e
-          cargo clippy --all-targets --message-format=short -- -D warnings > clippy.txt 2>&1
-          status=$?
-          grep -E "(error|warning)(\[[A-Za-z0-9_]+\])?: " clippy.txt | grep -v "^error: could not compile" | awk '!seen[$0]++' > findings.txt
-          echo "$(wc -l < findings.txt) findings"
-          sed -n '1,10p' findings.txt | sed 's/^/::error::/'
-          sed -n '11,20p' findings.txt | sed 's/^/::warning::/'
-          sed -n '21,30p' findings.txt | sed 's/^/::notice::/'
-          exit $status
-
   record:
-    if: "!contains(github.event.head_commit.message, '[skip record]')"
     runs-on: windows-latest
     timeout-minutes: 120
     env:
