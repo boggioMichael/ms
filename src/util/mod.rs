@@ -15,7 +15,7 @@ pub use timing::{FPSCounter, FrameTimer, MovingAverage, ScopedTimer};
 /// Convert u8 alpha-premultiplied RGBA to non-premultiplied RGB bytes in place.
 /// This operates on a slice of bytes in RGBA order. Minimal allocations.
 pub fn unpremultiply_rgba_inplace(buf: &mut [u8]) {
-    for chunk in buf.chunks_exact_mut(4) {
+    for chunk in buf.as_chunks_mut::<4>().0 {
         let a = chunk[3] as f32 / 255.0;
         if a == 0.0 {
             continue;
