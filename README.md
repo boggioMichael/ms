@@ -21,7 +21,7 @@ It is non-invasive by design: no game-memory reads, code injection, or input aut
 - Structured `WorldState` and serializable `GameState` output.
 - A transparent overlay architecture with managers and reusable widgets.
 - A real-image HP-bar integration test and Criterion performance benchmarks.
-- Evidence, architecture, development, and review documentation under `docs/`.
+- Evidence, architecture, and development documentation under `docs/`.
 
 ## Architecture
 

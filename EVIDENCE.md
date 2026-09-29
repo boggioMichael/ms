@@ -398,7 +398,7 @@ test result: ok. 38 passed; 0 failed; 0 ignored
 - Update docs to reflect measured performance
 - Redesign architecture for async OCR
 - Implement geometry-only fast path
-- Document as 1-2 FPS production ready, 11-20 FPS with optimizations
+- Document as 1-2 FPS today, with 11-20 FPS as the target after optimization
 
 ---
 
