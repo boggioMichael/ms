@@ -104,6 +104,28 @@ parse, the confidence and the capture legibility for every field:
 cargo run --release --bin vision_debug -- resources/maplestory.png --explain
 ```
 
+### Recording a run
+
+`MS_VISION_RECORD=<dir>` runs every frame of the input through the pipeline once, saves each
+annotated view as `frame_000001.png`, `frame_000002.png`, … and writes `timings.csv` with the
+measured capture and perception time of every frame. From a live window it records
+`MS_VISION_RECORD_FRAMES` frames (default 900). The frames become a video with ffmpeg:
+
+```powershell
+$env:MS_VISION_RECORD = "out/record"
+cargo run --release --bin vision_debug -- gameplay.mp4
+ffmpeg -framerate 15 -i out/record/frame_%06d.png -c:v libx264 -pix_fmt yuv420p run.mp4
+```
+
+The [Real recording demo](.github/workflows/real-recording.yml) workflow does this on a GitHub
+Windows runner for the first three minutes of `chaos-zakum-solo-lvl230.mp4` and publishes the
+video, the timings and the logs to the
+[`demo/real-recording-output`](https://github.com/boggioMichael/ms/tree/demo/real-recording-output)
+branch. On 2026-09-30 it processed 2,700 frames with a mean of 43.1 ms of perception per frame
+(median 35.7 ms, p95 45.7 ms); about 4% of frames, the ones where OCR runs, took 0.1 to 0.7 s.
+All 128 tests passed on the same runner. The recording is a compressed screen capture, so the
+HUD text is flagged unreliable rather than read.
+
 ### Reading numbers, not estimating them
 
 Values the game prints as text are read as text; a bar's fill is only ever a corroborating
