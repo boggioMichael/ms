@@ -1,0 +1,111 @@
+name: Real recording demo
+
+# Runs the vision debugger over the real gameplay recording committed in this
+# repository (chaos-zakum-solo-lvl230.mp4), saves every annotated frame with
+# MS_VISION_RECORD, encodes the frames into a video, and publishes the video,
+# the per-frame timings and the logs to the demo/real-recording-output branch.
+on:
+  push:
+    branches: ["demo/real-recording"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  record:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      CARGO_TERM_COLOR: never
+      FRAMES: C:/ms-rec/frames
+      RECORD: C:/ms-rec/record
+      OUT: C:/ms-out
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc --version
+          mkdir -p "$OUT"
+
+      - name: ffmpeg
+        run: |
+          choco install ffmpeg -y --no-progress > /dev/null
+          ffmpeg -version | sed -n 1p
+
+      - name: Tesseract
+        continue-on-error: true
+        run: |
+          choco install tesseract -y --no-progress > /dev/null
+          "C:/Program Files/Tesseract-OCR/tesseract.exe" --version 2>&1 | sed -n 1p | tee "$OUT/tesseract.txt"
+
+      - name: Build
+        run: cargo build --release --bin vision_debug 2>&1 | tee "$OUT/build.txt"
+
+      - name: Tests
+        continue-on-error: true
+        run: cargo test --release 2>&1 | tee "$OUT/tests.txt"
+
+      - name: Extract frames (15 per second, first 3 minutes)
+        run: |
+          mkdir -p "$FRAMES"
+          ffmpeg -hide_banner -loglevel error -i chaos-zakum-solo-lvl230.mp4 -vf fps=15 -frames:v 2700 "$FRAMES/frame-%05d.png"
+          ls "$FRAMES" | wc -l
+
+      - name: Provenance report for one frame
+        continue-on-error: true
+        run: ./target/release/vision_debug.exe "$FRAMES/frame-01000.png" --explain 2>&1 | tee "$OUT/explain.txt"
+
+      - name: Record
+        run: MS_VISION_RECORD="$RECORD" ./target/release/vision_debug.exe "$FRAMES" 2>&1 | tee "$OUT/record-log.txt"
+
+      - name: Encode
+        run: |
+          ffmpeg -hide_banner -loglevel error -framerate 15 -i "$RECORD/frame_%06d.png" -c:v libx264 -preset slow -crf 22 -pix_fmt yuv420p -movflags +faststart "$OUT/real-recording.mp4"
+          if [ "$(stat -c %s "$OUT/real-recording.mp4")" -gt 95000000 ]; then
+            ffmpeg -hide_banner -loglevel error -y -framerate 15 -i "$RECORD/frame_%06d.png" -c:v libx264 -preset slow -crf 27 -pix_fmt yuv420p -movflags +faststart "$OUT/real-recording.mp4"
+          fi
+          cp "$RECORD/timings.csv" "$OUT/"
+          for n in 000150 000600 001200 001800 002400; do cp "$RECORD/frame_$n.png" "$OUT/still-$n.png" || true; done
+          ls -l "$OUT"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Real recording"
+            echo '```'
+            tail -n 3 "$OUT/record-log.txt" 2>/dev/null || echo "no recording log"
+            echo '```'
+            echo "Tests:"
+            echo '```'
+            grep -E "^test result:" "$OUT/tests.txt" 2>/dev/null || echo "no test output"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: real-recording
+          path: C:/ms-out
+          retention-days: 14
+
+      - name: Publish to the demo/real-recording-output branch
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd "$OUT"
+          git init -q -b out
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Real recording output (run $GITHUB_RUN_ID, commit $GITHUB_SHA)"
+          git push -q -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" out:refs/heads/demo/real-recording-output
