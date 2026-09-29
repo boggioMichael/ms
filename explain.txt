@@ -1,0 +1,51 @@
+source : C:/ms-rec/frames/frame-01000.png (1152x720)
+engines: tesseract available | windows-ocr available
+
+MP
+  roi       : (666, 700) 140x28
+  raw text  : "EEE"
+  parsed    : INVALID
+  trusted   : false (confidence 0.00)
+  state     : unknown
+  legibility: Blurred (sharpness 0.058)
+
+EXP
+  roi       : (0, 632) 314x29
+  raw text  : "a -"
+  parsed    : INVALID
+  trusted   : false (confidence 0.00)
+  state     : unknown
+  legibility: Blurred (sharpness 0.272)
+
+NAME
+  roi       : (518, 210) 34x5
+  raw text  : ""
+  parsed    : unknown
+  trusted   : false (confidence 0.00)
+  state     : unknown
+  legibility: not measured
+  note      : region only 5px tall; no room for text
+
+JOB
+  roi       : (216, 216) 336x5
+  raw text  : ""
+  parsed    : unknown
+  trusted   : false (confidence 0.00)
+  state     : unknown
+  legibility: not measured
+  note      : region only 5px tall; no room for text
+
+LEVEL
+  roi       : (456, 238) 96x7
+  raw text  : ""
+  parsed    : unknown
+  trusted   : false (confidence 0.00)
+  state     : unknown
+  legibility: not measured
+  note      : region only 7px tall; no room for text
+
+2 of 5 regions are too blurred to recognise reliably.
+Native pixel-font text has single-pixel glyph edges; rescaling or video
+compression averages them away and no recogniser can recover the digits.
+Capture the game window directly at its native size:
+  vision_debug --pick

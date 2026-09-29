@@ -1,0 +1,249 @@
+ Downloading crates ...
+  Downloaded ciborium-io v0.2.2
+  Downloaded cast v0.3.0
+  Downloaded tinytemplate v1.2.1
+  Downloaded clap_lex v1.1.0
+  Downloaded winapi-util v0.1.11
+  Downloaded is-terminal v0.4.17
+  Downloaded ciborium-ll v0.2.2
+  Downloaded same-file v1.0.6
+  Downloaded plotters-backend v0.3.7
+  Downloaded oorandom v11.1.5
+  Downloaded anes v0.1.6
+  Downloaded plotters-svg v0.3.7
+  Downloaded anstyle v1.0.14
+  Downloaded criterion-plot v0.5.0
+  Downloaded walkdir v2.5.0
+  Downloaded ciborium v0.2.2
+  Downloaded clap v4.6.5
+  Downloaded criterion v0.5.1
+  Downloaded itertools v0.10.5
+  Downloaded plotters v0.3.7
+  Downloaded clap_builder v4.6.5
+  Downloaded regex v1.13.1
+   Compiling serde_core v1.0.229
+   Compiling windows-sys v0.61.2
+   Compiling either v1.17.0
+   Compiling serde v1.0.229
+   Compiling regex-automata v0.4.16
+   Compiling rayon v1.12.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling winapi-util v0.1.11
+   Compiling anstyle v1.0.14
+   Compiling serde_json v1.0.151
+   Compiling jpeg-decoder v0.3.2
+   Compiling matchers v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling tiff v0.9.1
+   Compiling image v0.24.9
+   Compiling chrono v0.4.45
+   Compiling ms v0.1.0 (D:\a\ms\ms)
+   Compiling clap_lex v1.1.0
+   Compiling plotters-backend v0.3.7
+   Compiling ciborium-io v0.2.2
+   Compiling ciborium-ll v0.2.2
+   Compiling plotters-svg v0.3.7
+   Compiling clap_builder v4.6.5
+   Compiling same-file v1.0.6
+   Compiling itertools v0.10.5
+   Compiling cast v0.3.0
+   Compiling criterion-plot v0.5.0
+   Compiling walkdir v2.5.0
+   Compiling clap v4.6.5
+   Compiling plotters v0.3.7
+   Compiling ciborium v0.2.2
+   Compiling tinytemplate v1.2.1
+   Compiling regex v1.13.1
+   Compiling is-terminal v0.4.17
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling criterion v0.5.1
+    Finished `release` profile [optimized] target(s) in 2m 03s
+     Running unittests src\lib.rs (target\release\deps\ms-1850bdcec6783b09.exe)
+
+running 122 tests
+test game_state::tests::serializes_to_json ... ok
+test game_state::tests::display_string_is_readable ... ok
+test knowledge::dialogs::tests::empty_text_classifies_as_none ... ok
+test knowledge::dialogs::tests::recognizes_level_up_banner ... ok
+test knowledge::dialogs::tests::unrelated_text_has_no_dialog_kind ... ok
+test knowledge::tests::classifies_death_prompt_text ... ok
+test knowledge::tests::looks_up_known_monster_case_insensitively ... ok
+test observe::dashboard::tests::a_bar_that_contradicts_the_reading_is_flagged_not_hidden ... ok
+test observe::dashboard::tests::a_carried_value_is_labelled_with_the_frame_it_came_from ... ok
+test observe::dashboard::tests::a_failed_read_shows_unknown_and_never_the_bar_percentage_as_a_value ... ok
+test observe::dashboard::tests::a_read_value_is_shown_as_the_value_and_the_bar_only_as_a_check ... ok
+test observe::dashboard::tests::amounts_prefer_current_and_max_over_a_bare_number ... ok
+test observe::dashboard::tests::an_invalid_read_shows_the_raw_text_so_the_misread_is_visible ... ok
+test observe::dashboard::tests::bar_fills_proportionally_and_clamps ... ok
+test observe::dashboard::tests::format_int_inserts_thousands_separators ... ok
+test observe::dashboard::tests::missing_percent_still_renders_a_full_width_bar ... ok
+test observe::font::tests::glyphs_stay_within_their_cell ... ok
+test observe::font::tests::known_characters_have_glyphs ... ok
+test observe::font::tests::lowercase_falls_back_to_uppercase_glyph ... ok
+test observe::font::tests::scale_expands_pixel_count_quadratically ... ok
+test observe::font::tests::space_draws_nothing_but_still_advances ... ok
+test observe::font::tests::text_width_accounts_for_spacing ... ok
+test observe::font::tests::unmapped_characters_are_skipped_not_panicking ... ok
+test observe::frame_result::tests::fps_derives_from_frame_interval ... ok
+test observe::dashboard::tests::absent_detectors_render_as_absent_not_as_values ... ok
+test observe::frame_result::tests::mailbox_is_empty_after_taking ... ok
+test observe::frame_result::tests::total_latency_is_capture_plus_vision ... ok
+test observe::frame_result::tests::zero_interval_reports_zero_fps_rather_than_infinity ... ok
+test observe::overlay::tests::drawing_clips_at_frame_edges_instead_of_panicking ... ok
+test observe::overlay::tests::labels_are_clamped_into_the_frame ... ok
+test observe::dashboard::tests::dashboard_reports_frame_and_timing_values ... ok
+test observe::overlay::tests::overlay_draws_something_over_a_blank_frame ... ok
+test observe::overlay::tests::overlay_does_not_mutate_the_captured_frame ... ok
+test observe::preview::tests::degenerate_sizes_do_not_divide_by_zero ... ok
+test observe::preview::tests::large_frames_scale_down_preserving_aspect_ratio ... ok
+test observe::preview::tests::portrait_frames_clamp_on_their_longest_edge ... ok
+test observe::preview::tests::small_frames_are_not_scaled_up ... ok
+test util::image_ops::tests::draw_rect_runs ... ok
+test util::timing::tests::moving_avg_works ... ok
+test vision::bar_geometry::tests::empty_pixel_detection ... ok
+test vision::bar_geometry::tests::filled_pixel_detection ... ok
+test vision::bar_geometry::tests::hsv_conversion_red ... ok
+test vision::bar_geometry::tests::hsv_conversion_white ... ok
+test vision::bar_geometry::tests::hsv_matches_shared_implementation ... ok
+test vision::bar_geometry::tests::measure_bar_clamps_region_to_image ... ok
+test vision::bar_geometry::tests::measure_bar_outside_image_is_not_nan ... ok
+test vision::detectors::combat::tests::no_motion_reads_idle ... ok
+test vision::detectors::combat::tests::sustained_high_motion_and_entities_reads_heavy ... ok
+test observe::dashboard::tests::line_count_is_stable_across_different_frames ... ok
+test vision::detectors::dialog::tests::empty_frame_is_reported_as_missing_not_panicking ... ok
+test vision::detectors::environment::tests::detects_a_strong_horizontal_edge ... ok
+test vision::detectors::environment::tests::flat_scene_reports_no_edges ... ok
+test vision::detectors::hud::tests::metric_with_geometry_only_is_heuristic ... ok
+test vision::detectors::hud::tests::metric_with_ocr_value_is_corroborated ... ok
+test vision::detectors::hud::tests::missing_metric_reports_failure_reason ... ok
+test vision::detectors::motion::tests::first_call_reports_warmup_not_failure_masquerading_as_empty ... ok
+test vision::detectors::motion::tests::moving_square_is_tracked_with_stable_id ... ok
+test vision::detectors::motion::tests::static_scene_reports_no_motion_confidently ... ok
+test vision::detectors::panels::tests::icon_row_detector_rejects_empty_row ... ok
+test vision::detectors::panels::tests::minimap_detector_rejects_empty_region ... ok
+test vision::geometry::tests::a_completely_full_bar_reads_full_not_diluted_by_background ... ok
+test vision::geometry::tests::find_color_bar_locates_solid_block ... ok
+test vision::geometry::tests::measure_bar_fill_handles_a_bar_touching_the_frame_edge ... ok
+test vision::geometry::tests::measure_bar_fill_handles_a_light_groove_not_only_a_dark_one ... ok
+test vision::geometry::tests::measure_bar_fill_is_independent_of_track_width_and_position ... ok
+test vision::geometry::tests::measure_bar_fill_reports_true_fill_ratio ... ok
+test vision::geometry::tests::measure_bar_fill_returns_none_without_a_track ... ok
+test vision::geometry::tests::segment_row_finds_runs_above_min_width ... ok
+test vision::hud_geometry::tests::detect_synthetic_name_job_level_blocks ... ok
+test vision::hud_geometry::tests::detect_synthetic_ui_markers ... ok
+test vision::hud_geometry::tests::parses_percentages_and_exp_values ... ok
+test vision::hud_geometry::tests::reads_labeled_player_text_without_consuming_the_next_label ... ok
+test vision::hud_ocr::tests::a_complete_reading_from_sharp_pixels_is_trusted ... ok
+test vision::hud_ocr::tests::a_lone_number_has_no_maximum_and_no_percent ... ok
+test vision::hud_ocr::tests::a_lone_number_scores_below_a_complete_pair ... ok
+test vision::hud_ocr::tests::a_printed_percentage_is_reported_exactly ... ok
+test vision::hud_ocr::tests::a_reading_from_blurred_pixels_is_never_trusted ... ok
+test vision::hud_ocr::tests::absent_text_is_distinguished_from_invalid_text ... ok
+test vision::hud_ocr::tests::agreement_flags_a_bar_that_contradicts_the_reading ... ok
+test vision::hud_ocr::tests::an_amount_exposes_current_max_and_a_derived_percent ... ok
+test vision::hud_ocr::tests::an_unparsed_reading_scores_zero ... ok
+test vision::hud_ocr::tests::carried_forward_values_report_their_origin_frame ... ok
+test vision::hud_ocr::tests::provenance_traces_a_value_back_to_pixels ... ok
+test vision::hud_ocr::tests::unreadable_text_is_invalid_and_unusable ... ok
+test vision::hud_text::tests::a_carried_value_keeps_its_original_frame_and_is_relabelled ... ok
+test vision::hud_text::tests::a_failed_field_is_never_carried_forward ... ok
+test vision::hud_text::tests::a_lone_number_still_reports_a_current_value ... ok
+test vision::hud_text::tests::a_rejected_region_reports_the_layout_fault_not_a_read_failure ... ok
+test vision::hud_text::tests::cadence_refreshes_on_the_first_frame_then_on_interval ... ok
+test vision::hud_text::tests::cadence_treats_zero_interval_as_every_frame ... ok
+test vision::hud_text::tests::level_must_be_a_number_in_range ... ok
+test vision::hud_text::tests::parses_a_trailing_percentage ... ok
+test vision::hud_text::tests::parses_current_and_max_with_separators ... ok
+test vision::hud_text::tests::picks_nothing_when_no_candidate_is_plausible ... ok
+test vision::hud_text::tests::picks_the_value_even_when_ocr_mangles_the_label ... ok
+test vision::hud_text::tests::picks_two_word_values_before_single_tokens ... ok
+test vision::hud_text::tests::regions_too_small_or_too_tall_for_text_are_rejected ... ok
+test vision::hud_text::tests::rejects_ocr_spill_as_a_character_name ... ok
+test vision::hud_text::tests::rejects_ocr_spill_as_a_job_name ... ok
+test vision::hud_text::tests::rejects_out_of_range_percentages ... ok
+test vision::hud_text::tests::results_are_projected_onto_the_flat_text_shape ... ok
+test vision::hud_text::tests::returns_none_when_there_are_no_digits ... ok
+test vision::hud_text::tests::strips_plate_labels ... ok
+test vision::hud_text::tests::tolerates_ocr_confusing_the_slash ... ok
+test vision::ocr::tests::temp_image_is_removed_on_drop ... ok
+test vision::ocr::tests::tsv_config_comes_after_option_flags ... ok
+test vision::quality::tests::a_flat_region_is_reported_as_having_no_text ... ok
+test vision::quality::tests::assessment_is_clipped_to_the_image ... ok
+test vision::quality::tests::native_pixel_text_reads_as_sharp ... ok
+test vision::quality::tests::rescaled_text_reads_as_blurred ... ok
+test observe::overlay::tests::overlay_preserves_frame_dimensions ... ok
+test vision::temporal::tests::confidence_accumulator_rises_and_decays ... ok
+test vision::temporal::tests::ema_tracks_toward_new_samples ... ok
+test vision::temporal::tests::tracker_assigns_stable_ids_across_frames ... ok
+test vision::temporal::tests::tracker_drops_object_after_grace_period ... ok
+test vision::temporal::tests::tracker_survives_brief_occlusion ... ok
+test vision::types::tests::confidence_clamps_and_combines ... ok
+test vision::types::tests::detection_found_round_trips_value ... ok
+test vision::types::tests::detection_missing_has_no_value_and_a_reason ... ok
+test vision::detectors::dialog::tests::detects_uniform_panel_region ... ok
+test vision::snapshot::tests::pipeline_produces_world_state_on_empty_frame ... ok
+test observe::frame_result::tests::mailbox_returns_newest_and_counts_dropped ... ok
+
+test result: ok. 122 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+
+     Running unittests src\bin\demo_realtime.rs (target\release\deps\demo_realtime-263d8a1104903067.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\demo_video.rs (target\release\deps\demo_video-c7f27cf9c0055801.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\measure_evidence.rs (target\release\deps\measure_evidence-a83567a79dd4eb66.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\release\deps\ms-cde18cf7e3db212b.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\vision_debug.rs (target\release\deps\vision_debug-384cee0fcf075929.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\hp_bar_integration.rs (target\release\deps\hp_bar_integration-a3175bd7e4a6d0f7.exe)
+
+running 1 test
+test finds_hp_bar_in_resource_photo ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests\hud_accuracy.rs (target\release\deps\hud_accuracy-58fca7cfa41bd5fc.exe)
+
+running 4 tests
+test mp_bar_reads_nearly_full_on_a_1291_of_1351_capture ... ok
+test exp_bar_reads_about_a_third_full ... ok
+test bars_are_not_all_reported_as_identical ... ok
+test hp_bar_reads_full_on_a_400_of_400_capture ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests\probe.rs (target\release\deps\probe-d855db6093c05c7b.exe)
+
+running 1 test
+test probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests ms
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

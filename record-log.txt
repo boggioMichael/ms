@@ -1,0 +1,31 @@
+recording 2700 frames from C:/ms-rec/frames (2700 frames) to C:/ms-rec/record
+  100/2700 frames
+  200/2700 frames
+  300/2700 frames
+  400/2700 frames
+  500/2700 frames
+  600/2700 frames
+  700/2700 frames
+  800/2700 frames
+  900/2700 frames
+  1000/2700 frames
+  1100/2700 frames
+  1200/2700 frames
+  1300/2700 frames
+  1400/2700 frames
+  1500/2700 frames
+  1600/2700 frames
+  1700/2700 frames
+  1800/2700 frames
+  1900/2700 frames
+  2000/2700 frames
+  2100/2700 frames
+  2200/2700 frames
+  2300/2700 frames
+  2400/2700 frames
+  2500/2700 frames
+  2600/2700 frames
+  2700/2700 frames
+recorded 2700 frames to C:/ms-rec/record
+perception per frame: mean 43.2 ms, median 35.6 ms, p95 44.7 ms, max 726.0 ms
+rate sustained by perception alone: 23.2 frames per second
