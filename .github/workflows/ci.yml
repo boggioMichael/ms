@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: ["master"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  checks:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup component add clippy rustfmt
+          rustc --version
+
+      - name: Tesseract
+        run: choco install tesseract -y --no-progress > /dev/null
+
+      - name: Format
+        run: cargo fmt --check
+
+      # Findings are also printed as annotations, so they show on the run page.
+      - name: Clippy
+        run: |
+          set +e
+          cargo clippy --all-targets --message-format=short -- -D warnings > clippy.txt 2>&1
+          status=$?
+          cat clippy.txt
+          grep -E "(error|warning)(\[[A-Za-z0-9_]+\])?: " clippy.txt | grep -v "^error: could not compile" | awk '!seen[$0]++' | sed -n '1,10p' | sed 's/^/::error::/'
+          exit $status
+
+      - name: Tests
+        run: cargo test --release

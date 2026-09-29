@@ -13,6 +13,11 @@
 // Headless: render one annotated frame to disk instead of opening a window.
 //   MS_VISION_DUMP=out/frame.png cargo run --release --bin vision_debug -- <input>
 //
+// Record: run every frame through the pipeline once, save each annotated
+// view and a per-frame timing log, then exit (turn the frames into a video
+// with ffmpeg). A live window is recorded for MS_VISION_RECORD_FRAMES frames.
+//   MS_VISION_RECORD=out/record cargo run --release --bin vision_debug -- <input>
+//
 // Video extraction knobs: MS_VIDEO_FPS (default 15), MS_VIDEO_FRAMES (default 900).
 //
 // Architecture: capture and perception run on a worker thread and publish
@@ -125,6 +130,10 @@ OPTIONS
 
 ENVIRONMENT
   MS_VISION_DUMP=<p>  write one annotated frame to <p> and exit
+  MS_VISION_RECORD=<dir>
+                      save every annotated frame and timings.csv to <dir>, then exit
+  MS_VISION_RECORD_FRAMES
+                      frames to record from a live window (default 900)
   MS_VIDEO_FPS        frames per second to extract (default 15)
   MS_VIDEO_FRAMES     maximum frames to extract (default 900)"#
     );
@@ -169,6 +178,13 @@ fn main() {
     // exit, so the overlay can be inspected where no window can be opened.
     if let Ok(dump_path) = std::env::var("MS_VISION_DUMP") {
         dump_overlay(&first_label, first_frame, &dump_path);
+        return;
+    }
+
+    // Recording path: every frame of the input, annotated, plus the measured
+    // timing of each one, so a video and its speed claim come from one run.
+    if let Ok(record_dir) = std::env::var("MS_VISION_RECORD") {
+        record_run(source, first_label, first_frame, Path::new(&record_dir));
         return;
     }
 
@@ -588,6 +604,126 @@ fn dump_overlay(source: &str, image: RgbaImage, path: &str) {
         Ok(()) => println!("wrote annotated overlay to {path}"),
         Err(err) => eprintln!("failed to write {path}: {err}"),
     }
+}
+
+/// Run the input through the real pipeline and save every annotated frame.
+///
+/// A video or a directory of frames is processed once, start to end; a live
+/// window is recorded for `MS_VISION_RECORD_FRAMES` frames (default 900).
+/// Frames are written as `frame_000001.png`, … next to `timings.csv`, which
+/// holds the measured capture and perception time of every frame.
+fn record_run(mut source: FrameSource, first_label: String, first_frame: RgbaImage, dir: &Path) {
+    let limit = match &source {
+        FrameSource::Sequence { frames, .. } => frames.len(),
+        FrameSource::Still { .. } => 1,
+        FrameSource::Live | FrameSource::Window { .. } => std::env::var("MS_VISION_RECORD_FRAMES")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(900),
+    };
+    if let Err(err) = std::fs::create_dir_all(dir) {
+        eprintln!("could not create {}: {err}", dir.display());
+        std::process::exit(1);
+    }
+    println!(
+        "recording {limit} frames from {} to {}",
+        source.describe(),
+        dir.display()
+    );
+
+    let mut pipeline = PerceptionPipeline::new();
+    let mut fps_counter = FPSCounter::new(30);
+    let start = Instant::now();
+    let mut previous_frame_at = Instant::now();
+    let mut log = String::from("frame,capture_ms,vision_ms\n");
+    let mut vision_ms: Vec<f64> = Vec::with_capacity(limit);
+    let mut pending = Some((first_label, first_frame, Duration::ZERO));
+    let mut frame_id: u64 = 0;
+    let mut misses = 0;
+
+    while (frame_id as usize) < limit {
+        let Some((label, image, capture_time)) = pending.take().or_else(|| source.next_frame())
+        else {
+            // Only a live source fails transiently; give up after ~10 s.
+            misses += 1;
+            if misses > 20 {
+                break;
+            }
+            std::thread::sleep(RECAPTURE_BACKOFF);
+            continue;
+        };
+        misses = 0;
+
+        let vision_start = Instant::now();
+        let world = pipeline.detect(&image);
+        let vision_time = vision_start.elapsed();
+
+        let now = Instant::now();
+        let frame_interval = now.duration_since(previous_frame_at);
+        previous_frame_at = now;
+        frame_id += 1;
+
+        // The rate shown is capture + perception only: writing the PNG below
+        // is the recorder's cost, not the engine's.
+        let timings = FrameTimings {
+            capture: capture_time,
+            vision: vision_time,
+            frame_interval,
+        };
+        let fps = fps_counter.add_frame_seconds(timings.total().as_secs_f64());
+
+        let result = VisionFrameResult {
+            frame_id,
+            elapsed_ms: start.elapsed().as_millis() as u64,
+            source: label,
+            image: Arc::new(image),
+            world: Arc::new(world),
+            timings,
+            fps,
+        };
+
+        let path = dir.join(format!("frame_{frame_id:06}.png"));
+        if let Err(err) = ms::observe::overlay::render_overlay(&result).save(&path) {
+            eprintln!("failed to write {}: {err}", path.display());
+            std::process::exit(1);
+        }
+
+        let capture_ms = capture_time.as_secs_f64() * 1000.0;
+        let frame_vision_ms = vision_time.as_secs_f64() * 1000.0;
+        log.push_str(&format!(
+            "{frame_id},{capture_ms:.3},{frame_vision_ms:.3}\n"
+        ));
+        vision_ms.push(frame_vision_ms);
+        if frame_id.is_multiple_of(100) {
+            println!("  {frame_id}/{limit} frames");
+        }
+    }
+
+    let log_path = dir.join("timings.csv");
+    if let Err(err) = std::fs::write(&log_path, log) {
+        eprintln!("failed to write {}: {err}", log_path.display());
+        std::process::exit(1);
+    }
+    if vision_ms.is_empty() {
+        eprintln!("no frames were recorded");
+        std::process::exit(1);
+    }
+
+    let mut sorted = vision_ms.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let mean = vision_ms.iter().sum::<f64>() / vision_ms.len() as f64;
+    let percentile = |p: f64| sorted[((sorted.len() - 1) as f64 * p).round() as usize];
+    println!("recorded {} frames to {}", vision_ms.len(), dir.display());
+    println!(
+        "perception per frame: mean {mean:.1} ms, median {:.1} ms, p95 {:.1} ms, max {:.1} ms",
+        percentile(0.5),
+        percentile(0.95),
+        percentile(1.0)
+    );
+    println!(
+        "rate sustained by perception alone: {:.1} frames per second",
+        1000.0 / mean
+    );
 }
 
 fn load_image(path: impl AsRef<Path>) -> Option<RgbaImage> {
