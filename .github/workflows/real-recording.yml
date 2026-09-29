@@ -30,9 +30,20 @@ jobs:
       - name: Format
         run: cargo fmt --check
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: |
+          cargo clippy --version | sed 's/^/::notice::/'
+          set +e
+          cargo clippy --all-targets --message-format=short -- -D warnings > clippy.txt 2>&1
+          status=$?
+          grep -E "^[a-z_/]+\.rs:[0-9]+:[0-9]+: (error|warning)" clippy.txt | sort -u > findings.txt
+          echo "$(wc -l < findings.txt) findings"
+          sed -n '1,10p' findings.txt | sed 's/^/::error::/'
+          sed -n '11,20p' findings.txt | sed 's/^/::warning::/'
+          sed -n '21,30p' findings.txt | sed 's/^/::notice::/'
+          exit $status
 
   record:
+    if: "!contains(github.event.head_commit.message, '[skip record]')"
     runs-on: windows-latest
     timeout-minutes: 120
     env:
