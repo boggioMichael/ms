@@ -694,7 +694,7 @@ fn record_run(mut source: FrameSource, first_label: String, first_frame: RgbaIma
             "{frame_id},{capture_ms:.3},{frame_vision_ms:.3}\n"
         ));
         vision_ms.push(frame_vision_ms);
-        if frame_id % 100 == 0 {
+        if frame_id.is_multiple_of(100) {
             println!("  {frame_id}/{limit} frames");
         }
     }
