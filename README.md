@@ -15,6 +15,7 @@ Download **`MapleSyrup-Setup-<version>.exe`** from [Releases](https://github.com
 - **Sees your game and learns it.** It finds your HUD by itself (any resolution or layout), measures HP, MP and EXP on every frame, and learns what you teach it by talking: "that's an Orange Mushroom, tell me when one shows up".
 - **Watches your back.** Low HP and MP warnings, level-ups, EXP per hour and time to level, with MapleStory's sound turned down while it talks.
 - **Your phone is its microphone and a second screen**, in 14 languages.
+- **Records the session for you.** Tap *Record the session* on the phone (or say "start recording"): a video of the whole screen with every sound — the game, its voice and yours — each sound placed where it was heard, saved in the session folder.
 
 Everything it does, recording and streaming, and privacy: [package/README.txt](package/README.txt).
 

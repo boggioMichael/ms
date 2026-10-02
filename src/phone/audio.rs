@@ -147,6 +147,38 @@ pub fn samples_from_bytes(bytes: &[u8]) -> Vec<i16> {
         .collect()
 }
 
+/// The samples of a 16-bit PCM WAV (several channels are mixed to one),
+/// with its rate.
+pub fn wav_samples(bytes: &[u8]) -> Option<(u32, Vec<i16>)> {
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
+        return None;
+    }
+    let (mut rate, mut channels, mut bits) = (0u32, 0usize, 0u16);
+    let mut at = 12;
+    while at + 8 <= bytes.len() {
+        let id = &bytes[at..at + 4];
+        let size = u32::from_le_bytes(bytes[at + 4..at + 8].try_into().ok()?) as usize;
+        let body = &bytes[at + 8..(at + 8 + size).min(bytes.len())];
+        if id == b"fmt " && body.len() >= 16 {
+            channels = u16::from_le_bytes([body[2], body[3]]) as usize;
+            rate = u32::from_le_bytes(body[4..8].try_into().ok()?);
+            bits = u16::from_le_bytes([body[14], body[15]]);
+        } else if id == b"data" {
+            if bits != 16 || channels == 0 || rate == 0 {
+                return None;
+            }
+            let all = samples_from_bytes(body);
+            let mono = all
+                .chunks(channels)
+                .map(|f| (f.iter().map(|&s| s as i32).sum::<i32>() / f.len() as i32) as i16)
+                .collect();
+            return Some((rate, mono));
+        }
+        at += 8 + size + (size & 1);
+    }
+    None
+}
+
 /// A 16-bit mono WAV file whose header is kept correct as it grows, so the
 /// file plays even if MapleSyrup is closed without warning.
 pub struct WavWriter {
@@ -290,5 +322,13 @@ mod tests {
         assert_eq!(data, 80_000);
         assert_eq!(bytes.len(), 44 + 80_000);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_wav_reads_back_as_its_samples() {
+        let wav = crate::ai::wav_bytes(&[1, -2, 300, -400], 24_000);
+        assert_eq!(wav_samples(&wav), Some((24_000, vec![1, -2, 300, -400])));
+        assert_eq!(wav_samples(b"RIFF....WAVE"), None);
+        assert_eq!(wav_samples(b"not a wav"), None);
     }
 }

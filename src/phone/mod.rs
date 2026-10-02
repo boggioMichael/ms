@@ -15,6 +15,17 @@
 //! new — a line, a spoken clip, a reply cut short — so the phone hears of
 //! it at once instead of at its next look.
 //!
+//! On a live call (`crate::ai::live`) the phone talks to OpenAI itself and
+//! asks the PC for a short-lived key (`/api/live`), the screen
+//! (`/api/eyes`) and MapleSyrup's tools (`/api/tool`); it tells the PC what
+//! was said (`/api/said`) and when MapleSyrup's voice is playing
+//! (`/api/talking`, to turn the game down).
+//!
+//! While the session is recorded ([`Recording`]), the phone's sound goes
+//! into the recording too: its microphone and what it plays (a live call's
+//! voice in a second channel of `/api/audio`, spoken lines told by
+//! `/api/playing`), each placed by how long ago it was heard.
+//!
 //! The page is served over HTTPS because phone browsers give the microphone
 //! only to secure pages: on the local network with a certificate made on
 //! this PC ([`tls`]), or through a Cloudflare quick tunnel ([`tunnel`]),
@@ -43,6 +54,7 @@ use serde_json::{Value, json};
 use crate::companion::Kind;
 use audio::{Mic, MicSummary};
 use http::{Conn, HttpError, Request, Response};
+use image::RgbaImage;
 
 /// The phone page, with its script and styles.
 pub const PAGE: &str = include_str!("page.html");
@@ -114,6 +126,76 @@ pub enum Inbound {
     Forget(String),
     /// The player's language (a locale such as `he-IL`).
     Language(String),
+    /// On a live call: something said, by the player ("player") or by
+    /// MapleSyrup ("maplesyrup"), for the log.
+    Said { who: String, text: String },
+    /// A live call started (true) or ended (false): MapleSyrup's own lines
+    /// go to the call to be said, not to the PC's voice.
+    Live(bool),
+    /// MapleSyrup's voice on the phone started (true) or stopped (false).
+    Talking(bool),
+    /// A tool run for the call changed something: a line to show, or a
+    /// command (mark, mute, unmute).
+    Effect(crate::ai::Effect),
+    /// Start (true) or stop (false) recording the session.
+    Record(bool),
+}
+
+/// What the phone's live call asks the PC for.
+pub trait Service: Send + Sync {
+    /// A short-lived key for the call, and where to connect: `{key, url,
+    /// model}`. `recent`: the last things said (a call picked up again);
+    /// `language`: the phone's language.
+    fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String>;
+    /// Run one of MapleSyrup's tools the call's model asked for, on the
+    /// frame the player is looking at. Returns what to tell the model.
+    fn tool(
+        &self,
+        name: &str,
+        arguments: &str,
+        frame: Option<&RgbaImage>,
+    ) -> (String, Option<crate::ai::Effect>);
+}
+
+/// Where the phone's sound goes while the session is recorded
+/// (`crate::app::recorder`). `age`: how many seconds ago the end of the
+/// sound (or the moment) was, as near as the phone can tell.
+pub trait Recording: Send + Sync {
+    /// The phone's microphone, and what the phone played meanwhile (a live
+    /// call's voice), as many samples of each.
+    fn phone(&self, rate: u32, mic: &[i16], played: Option<&[i16]>, age: f64);
+    /// A spoken line the phone started playing `age` ago.
+    fn played(&self, rate: u32, samples: &[i16], age: f64);
+    /// The phone stopped what it was playing, `age` ago.
+    fn stopped(&self, age: f64);
+}
+
+/// What the call's model can see: the frame (only while the game is the
+/// window in front), and what is read off it.
+#[derive(Default, Clone)]
+struct Sight {
+    frame: Option<Arc<RgbaImage>>,
+    snapshot: String,
+}
+
+/// The picture for a call: the frame with rulers, as a JPEG small enough
+/// for the call's data channel (which takes messages up to about 64 kB).
+fn eyes_picture(frame: &RgbaImage) -> String {
+    use crate::ai::images;
+    let mut size = (768u32, 480u32);
+    let mut quality = 60u8;
+    loop {
+        let picture = images::with_rulers(&images::fit(frame, size.0, size.1));
+        let url = images::jpeg_url(&picture, quality);
+        if url.len() <= 56_000 || size.0 <= 400 {
+            return url;
+        }
+        if quality > 40 {
+            quality -= 10;
+        } else {
+            size = (size.0 * 4 / 5, size.1 * 4 / 5);
+        }
+    }
 }
 
 /// A line on the phone's screen.
@@ -153,6 +235,8 @@ struct State {
     last_clip: u64,
     /// How many times a reply was cut short: the phone stops its clips.
     cut: u64,
+    /// What a live call's model can see.
+    sight: Sight,
     /// Pictures of the things it was taught: by id, with a tag that changes
     /// with the picture.
     thumbs: std::collections::HashMap<String, (String, Arc<Vec<u8>>)>,
@@ -177,6 +261,10 @@ pub struct Hub {
     state: Mutex<State>,
     /// Told when there is something new for the phone.
     changed: Condvar,
+    /// What answers a live call's requests (with an OpenAI key).
+    service: Mutex<Option<Arc<dyn Service>>>,
+    /// Where the phone's sound goes while the session is recorded.
+    recording: Mutex<Option<Arc<dyn Recording>>>,
 }
 
 impl Hub {
@@ -198,9 +286,12 @@ impl Hub {
                 clips: VecDeque::new(),
                 last_clip: 0,
                 cut: 0,
+                sight: Sight::default(),
                 thumbs: std::collections::HashMap::new(),
             }),
             changed: Condvar::new(),
+            service: Mutex::new(None),
+            recording: Mutex::new(None),
         })
     }
 
@@ -259,6 +350,35 @@ impl Hub {
         drop(state);
         self.changed.notify_all();
         seq
+    }
+
+    /// Live calls can be made (an OpenAI key): what answers them.
+    pub fn set_service(&self, service: Arc<dyn Service>) {
+        if let Ok(mut slot) = self.service.lock() {
+            *slot = Some(service);
+        }
+    }
+
+    fn service(&self) -> Option<Arc<dyn Service>> {
+        self.service.lock().ok().and_then(|s| s.clone())
+    }
+
+    /// The session is being recorded (Some): the phone's sound goes there
+    /// too. None: no longer.
+    pub fn set_recording(&self, recording: Option<Arc<dyn Recording>>) {
+        if let Ok(mut slot) = self.recording.lock() {
+            *slot = recording;
+        }
+    }
+
+    fn recording(&self) -> Option<Arc<dyn Recording>> {
+        self.recording.lock().ok().and_then(|r| r.clone())
+    }
+
+    /// What a call's model can see now: the frame (None while the game is
+    /// not the window in front), and what is read off it.
+    pub fn set_sight(&self, frame: Option<Arc<RgbaImage>>, snapshot: String) {
+        self.lock().sight = Sight { frame, snapshot };
     }
 
     /// The reply was cut short (the player talked over it): the phone stops
@@ -447,10 +567,64 @@ impl Hub {
                 if !(4_000..=96_000).contains(&rate) {
                     return Response::json(400, &json!({"error": "unsupported sample rate"}));
                 }
+                // Two channels: the microphone, and what the phone played
+                // meanwhile (a live call's voice, for the recording).
+                let channels: usize = request
+                    .param("channels")
+                    .and_then(|c| c.parse().ok())
+                    .unwrap_or(1);
                 let samples = audio::samples_from_bytes(&request.body);
-                self.lock().mic.ingest(&samples, rate, Instant::now());
+                let (mic, played) = match channels {
+                    2 => {
+                        let frames = samples.as_chunks::<2>().0;
+                        let mic: Vec<i16> = frames.iter().map(|f| f[0]).collect();
+                        let played: Vec<i16> = frames.iter().map(|f| f[1]).collect();
+                        (mic, Some(played))
+                    }
+                    _ => (samples, None),
+                };
+                self.lock().mic.ingest(&mic, rate, Instant::now());
+                if let Some(recording) = self.recording() {
+                    recording.phone(rate, &mic, played.as_deref(), age_of(request));
+                }
                 Response::empty(204)
             }
+            ("POST", "/api/playing") => {
+                // The phone started (or stopped short) one of the spoken
+                // lines it was handed: for the recording.
+                let Some(recording) = self.recording() else {
+                    return Response::json(200, &json!({"ok": true, "recording": false}));
+                };
+                let body = body();
+                let age = body["age"].as_f64().unwrap_or(0.0) / 1000.0;
+                if body["on"].as_bool() == Some(false) {
+                    recording.stopped(age);
+                    return Response::json(200, &json!({"ok": true}));
+                }
+                let seq = body["seq"].as_u64().unwrap_or(0);
+                let clip = self
+                    .lock()
+                    .clips
+                    .iter()
+                    .find(|(n, _)| *n == seq)
+                    .map(|(_, wav)| Arc::clone(wav));
+                match clip.as_deref().and_then(|wav| audio::wav_samples(wav)) {
+                    Some((rate, samples)) => {
+                        recording.played(rate, &samples, age);
+                        Response::json(200, &json!({"ok": true}))
+                    }
+                    None => Response::json(404, &json!({"error": "no such clip"})),
+                }
+            }
+            ("POST", "/api/record") => match body().get("on").and_then(Value::as_bool) {
+                Some(on) => {
+                    let mut state = self.lock();
+                    state.inbox.retain(|i| !matches!(i, Inbound::Record(_)));
+                    state.inbox.push(Inbound::Record(on));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                None => Response::json(400, &json!({"error": "on must be true or false"})),
+            },
             ("POST", "/api/heard") => match text_field("text") {
                 Some(text) if !text.trim().is_empty() => {
                     self.lock()
@@ -459,6 +633,75 @@ impl Hub {
                     Response::json(200, &json!({"ok": true}))
                 }
                 _ => Response::json(400, &json!({"error": "no text"})),
+            },
+            ("POST", "/api/live") => {
+                let Some(service) = self.service() else {
+                    return Response::json(503, &json!({"error": "live calls need an OpenAI key"}));
+                };
+                let recent: Vec<String> = body()["recent"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|l| l.as_str().map(|t| t.chars().take(400).collect()))
+                    .take(20)
+                    .collect();
+                let language = text_field("lang").filter(|l| plausible_locale(l));
+                match service.live(&recent, language.as_deref()) {
+                    Ok(call) => Response::json(200, &call).with_header("Cache-Control", "no-store"),
+                    Err(why) => Response::json(502, &json!({"error": why})),
+                }
+            }
+            ("GET", "/api/eyes") => {
+                let sight = self.lock().sight.clone();
+                let image = sight.frame.as_deref().map(eyes_picture);
+                Response::json(200, &json!({"snapshot": sight.snapshot, "image": image}))
+            }
+            ("POST", "/api/tool") => {
+                let Some(service) = self.service() else {
+                    return Response::json(
+                        503,
+                        &json!({"error": "no tools without an OpenAI key"}),
+                    );
+                };
+                let name = text_field("name").unwrap_or_default();
+                let arguments = body()["arguments"].as_str().unwrap_or("{}").to_string();
+                let frame = self.lock().sight.frame.clone();
+                let (output, effect) = service.tool(&name, &arguments, frame.as_deref());
+                if let Some(effect) = effect {
+                    self.lock().inbox.push(Inbound::Effect(effect));
+                }
+                Response::json(200, &json!({"output": output}))
+            }
+            ("POST", "/api/said") => {
+                let who = text_field("who").unwrap_or_default();
+                match text_field("text") {
+                    Some(text)
+                        if !text.trim().is_empty() && (who == "player" || who == "maplesyrup") =>
+                    {
+                        self.lock().inbox.push(Inbound::Said {
+                            who,
+                            text: text.trim().to_string(),
+                        });
+                        Response::json(200, &json!({"ok": true}))
+                    }
+                    _ => Response::json(400, &json!({"error": "who and text"})),
+                }
+            }
+            ("POST", "/api/mode") => match body().get("live").and_then(Value::as_bool) {
+                Some(on) => {
+                    self.lock().inbox.push(Inbound::Live(on));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                None => Response::json(400, &json!({"error": "live must be true or false"})),
+            },
+            ("POST", "/api/talking") => match body().get("on").and_then(Value::as_bool) {
+                Some(on) => {
+                    let mut state = self.lock();
+                    state.inbox.retain(|i| !matches!(i, Inbound::Talking(_)));
+                    state.inbox.push(Inbound::Talking(on));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                None => Response::json(400, &json!({"error": "on must be true or false"})),
             },
             ("POST", "/api/hearing") => match text_field("text") {
                 Some(text) if !text.trim().is_empty() => {
@@ -515,6 +758,17 @@ impl Hub {
             _ => Response::json(404, &json!({"error": "no such call"})),
         }
     }
+}
+
+/// How long ago the end of a request's sound was heard, in seconds, as the
+/// phone tells it (`age=` milliseconds).
+fn age_of(request: &Request) -> f64 {
+    request
+        .param("age")
+        .and_then(|a| a.parse::<f64>().ok())
+        .filter(|a| a.is_finite())
+        .map(|a| a.clamp(0.0, 10_000.0) / 1000.0)
+        .unwrap_or(0.05)
 }
 
 /// Serve requests on one connection until it closes, errs or idles out.
@@ -688,6 +942,111 @@ pub fn link(base: &str, key: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A stand-in for what answers live calls.
+    struct FakeService;
+
+    impl Service for FakeService {
+        fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String> {
+            Ok(
+                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language}),
+            )
+        }
+        fn tool(
+            &self,
+            name: &str,
+            arguments: &str,
+            frame: Option<&RgbaImage>,
+        ) -> (String, Option<crate::ai::Effect>) {
+            (
+                format!("{name} {arguments} {}", frame.is_some()),
+                Some(crate::ai::Effect::Note(format!("ran {name}"))),
+            )
+        }
+    }
+
+    #[test]
+    fn a_live_call_gets_a_key_the_screen_and_the_tools_from_the_pc() {
+        let hub = Hub::new("k1".into(), None, VoiceOn::Phone);
+        // No key: no calls.
+        let r = hub.handle(&request("POST", "/api/live?k=k1", "{}"));
+        assert_eq!(r.status, 503);
+        hub.set_service(Arc::new(FakeService));
+        let r = hub.handle(&request(
+            "POST",
+            "/api/live?k=k1",
+            r#"{"recent": ["Player: hi", "MapleSyrup: hey"], "lang": "he-IL"}"#,
+        ));
+        assert_eq!(r.status, 200);
+        let call: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(
+            (call["key"].as_str(), call["recent"].as_u64()),
+            (Some("ek_1"), Some(2))
+        );
+        assert_eq!(call["lang"], "he-IL");
+        // The screen only once there is one (the game in front); always the snapshot.
+        let r = hub.handle(&request("GET", "/api/eyes?k=k1", ""));
+        let eyes: Value = serde_json::from_slice(&r.body).unwrap();
+        assert!(eyes["image"].is_null());
+        let frame = RgbaImage::from_fn(1920, 1080, |x, y| {
+            image::Rgba([(x % 256) as u8, (y % 256) as u8, ((x ^ y) % 256) as u8, 255])
+        });
+        hub.set_sight(Some(Arc::new(frame)), "HP about 75%.".into());
+        let r = hub.handle(&request("GET", "/api/eyes?k=k1", ""));
+        let eyes: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(eyes["snapshot"], "HP about 75%.");
+        let image = eyes["image"].as_str().unwrap();
+        // Small enough for the call's data channel, even from a screen of noise.
+        assert!(
+            image.starts_with("data:image/jpeg;base64,") && image.len() <= 56_000,
+            "{}",
+            image.len()
+        );
+        // A tool runs on the PC with the frame; what it changed reaches the main loop.
+        let r = hub.handle(&request(
+            "POST",
+            "/api/tool?k=k1",
+            r#"{"name": "remember_fact", "arguments": "{\"fact\":\"x\"}"}"#,
+        ));
+        let out: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(out["output"], r#"remember_fact {"fact":"x"} true"#);
+        // What was said, the call starting, the voice playing: for the main loop.
+        for (path, body) in [
+            (
+                "/api/said?k=k1",
+                r#"{"who": "player", "text": "מה הרמה שלי"}"#,
+            ),
+            ("/api/mode?k=k1", r#"{"live": true}"#),
+            ("/api/talking?k=k1", r#"{"on": true}"#),
+        ] {
+            assert_eq!(
+                hub.handle(&request("POST", path, body)).status,
+                200,
+                "{path}"
+            );
+        }
+        assert_eq!(
+            hub.handle(&request(
+                "POST",
+                "/api/said?k=k1",
+                r#"{"who": "someone", "text": "x"}"#
+            ))
+            .status,
+            400
+        );
+        assert_eq!(
+            hub.take_inbox(),
+            vec![
+                Inbound::Effect(crate::ai::Effect::Note("ran remember_fact".into())),
+                Inbound::Said {
+                    who: "player".into(),
+                    text: "מה הרמה שלי".into()
+                },
+                Inbound::Live(true),
+                Inbound::Talking(true),
+            ]
+        );
+    }
+
     fn request(method: &str, target: &str, body: &str) -> Request {
         let (path, query) = match target.split_once('?') {
             Some((p, q)) => (p.to_string(), http::parse_query(q)),
@@ -802,6 +1161,90 @@ mod tests {
         let mut bad = request("POST", "/api/audio?k=k1&rate=5", "");
         bad.body = vec![0, 0];
         assert_eq!(hub.handle(&bad).status, 400);
+    }
+
+    /// A stand-in recording: what it was handed.
+    #[derive(Default)]
+    struct FakeRecording(Mutex<Vec<String>>);
+
+    impl Recording for FakeRecording {
+        fn phone(&self, rate: u32, mic: &[i16], played: Option<&[i16]>, age: f64) {
+            self.0.lock().unwrap().push(format!(
+                "phone {rate} {} {:?} {age:.3}",
+                mic.len(),
+                played.map(|p| (p.len(), p[0]))
+            ));
+        }
+        fn played(&self, rate: u32, samples: &[i16], age: f64) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("played {rate} {} {age:.3}", samples.len()));
+        }
+        fn stopped(&self, age: f64) {
+            self.0.lock().unwrap().push(format!("stopped {age:.3}"));
+        }
+    }
+
+    #[test]
+    fn while_recording_the_phones_sound_goes_into_the_recording() {
+        let hub = hub();
+        let stereo: Vec<u8> = (0..2_400)
+            .flat_map(|i| {
+                let (mic, played) = ((i as i16) % 100, 7_000i16);
+                [mic.to_le_bytes(), played.to_le_bytes()].concat()
+            })
+            .collect();
+        let mut req = request("POST", "/api/audio?k=k1&rate=24000&channels=2&age=120", "");
+        req.body = stereo.clone();
+        // Not recording: only the meter.
+        assert_eq!(hub.handle(&req).status, 204);
+        let recording = Arc::new(FakeRecording::default());
+        hub.set_recording(Some(Arc::clone(&recording) as Arc<dyn Recording>));
+        assert_eq!(hub.handle(&req).status, 204);
+        // A spoken line the phone started playing a moment ago, then stopped.
+        let seq = hub.set_clip(crate::ai::wav_bytes(&[100; 2_400], 24_000));
+        let started = format!(r#"{{"seq": {seq}, "on": true, "age": 80}}"#);
+        assert_eq!(
+            hub.handle(&request("POST", "/api/playing?k=k1", &started))
+                .status,
+            200
+        );
+        assert_eq!(
+            hub.handle(&request(
+                "POST",
+                "/api/playing?k=k1",
+                r#"{"seq": 99, "on": true}"#
+            ))
+            .status,
+            404
+        );
+        hub.handle(&request(
+            "POST",
+            "/api/playing?k=k1",
+            r#"{"on": false, "age": 30}"#,
+        ));
+        assert_eq!(
+            *recording.0.lock().unwrap(),
+            [
+                "phone 24000 2400 Some((2400, 7000)) 0.120",
+                "played 24000 2400 0.080",
+                "stopped 0.030"
+            ]
+        );
+        // Stopped: nothing more goes there.
+        hub.set_recording(None);
+        assert_eq!(hub.handle(&req).status, 204);
+        assert_eq!(recording.0.lock().unwrap().len(), 3);
+        // The button.
+        hub.handle(&request("POST", "/api/record?k=k1", r#"{"on": true}"#));
+        hub.handle(&request("POST", "/api/record?k=k1", r#"{"on": false}"#));
+        assert_eq!(hub.take_inbox(), [Inbound::Record(false)]);
+        assert_eq!(
+            hub.handle(&request("POST", "/api/record?k=k1", "{}"))
+                .status,
+            400
+        );
     }
 
     #[test]

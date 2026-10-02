@@ -10,7 +10,7 @@ name: MapleSyrup standalone
 #   build-cache/vendor      the crates this tree depends on, for offline builds
 #                           (only for a commit whose message says [vendor])
 #
-# A version tag (v0.4.0) also makes a draft GitHub release with the installer
+# A version tag (v0.5.0) also makes a draft GitHub release with the installer
 # and the portable zip, to publish by hand.
 # A commit message with [vendor-only] runs the vendor job alone.
 on:
@@ -101,6 +101,23 @@ jobs:
         run: |
           set -o pipefail
           ./target/release/maplesyrup.exe --self-test 2>&1 | tee logs/self-test.log
+      - name: Recording test (fetches ffmpeg the way a first recording does)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          {
+            echo "ffmpeg on the PATH: $(command -v ffmpeg || echo none)"
+            status=0
+            ./target/release/maplesyrup.exe --record-test || status=$?
+            # What this machine's screen gives ffmpeg directly.
+            ff="$(cygpath -u "$APPDATA")/MapleSyrup/ffmpeg/ffmpeg.exe"
+            if [ -f "$ff" ]; then
+              "$ff" -version | head -1
+              echo "--- gdigrab"; "$ff" -hide_banner -loglevel info -f gdigrab -framerate 30 -t 2 -i desktop -y "$RUNNER_TEMP/gdi.mp4" 2>&1 | tail -6
+              echo "--- ddagrab"; "$ff" -hide_banner -loglevel info -f lavfi -t 2 -i "ddagrab=output_idx=0:framerate=30,hwdownload,format=bgra" -y "$RUNNER_TEMP/dda.mp4" 2>&1 | tail -6
+            fi
+            exit $status
+          } 2>&1 | tee logs/record-test.log
       - name: Package
         run: |
           pkg="$RUNNER_TEMP/MapleSyrup"
@@ -180,6 +197,9 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: ffmpeg and Xvfb (recording tests)
+        continue-on-error: true
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg xvfb > /dev/null
       - name: Checks
         continue-on-error: true
         run: |

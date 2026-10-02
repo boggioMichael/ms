@@ -422,6 +422,45 @@ impl OpenAi {
         AiError::Http(status, message)
     }
 
+    /// A GET that answers JSON.
+    pub fn get_json(&self, path: &str) -> Result<Value, AiError> {
+        let (status, body) = self.call("GET", path, None, Duration::from_secs(15))?;
+        if status != 200 {
+            return Err(Self::error_of(status, &body));
+        }
+        serde_json::from_slice(&body).map_err(|e| AiError::Parse(e.to_string()))
+    }
+
+    /// A POST of JSON that answers JSON.
+    pub fn post_json(&self, path: &str, body: &Value, timeout: Duration) -> Result<Value, AiError> {
+        let (status, raw) = self.call("POST", path, Some(body), timeout)?;
+        if !(200..300).contains(&status) {
+            return Err(Self::error_of(status, &raw));
+        }
+        serde_json::from_slice(&raw).map_err(|e| AiError::Parse(e.to_string()))
+    }
+
+    /// The models this key may use, with when each was made.
+    pub fn models(&self) -> Result<Vec<(String, i64)>, AiError> {
+        let list = self.get_json("/models")?;
+        Ok(list["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| {
+                Some((
+                    m["id"].as_str()?.to_string(),
+                    m["created"].as_i64().unwrap_or(0),
+                ))
+            })
+            .collect())
+    }
+
+    /// Where requests go (`https://api.openai.com/v1`, or a stand-in).
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
     /// Whether the key works (lists the models it may use).
     pub fn check(&self) -> Result<(), AiError> {
         let (status, body) = self.call("GET", "/models", None, Duration::from_secs(15))?;

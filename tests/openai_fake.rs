@@ -136,6 +136,22 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                                     Response::json(400, &json!({"error": {"message": "no model"}}))
                                 }
                             },
+                            "/v1/realtime/client_secrets" => {
+                                match body["session"]["model"].as_str() {
+                                    Some("gpt-realtime") => Response::json(
+                                        404,
+                                        &json!({"error": {"message": "The model `gpt-realtime` does not exist or you do not have access to it."}}),
+                                    ),
+                                    Some(_) => Response::json(
+                                        200,
+                                        &json!({"value": "ek_test_live", "expires_at": 1, "session": body["session"]}),
+                                    ),
+                                    None => Response::json(
+                                        400,
+                                        &json!({"error": {"message": "no session"}}),
+                                    ),
+                                }
+                            }
                             "/v1/audio/speech" => {
                                 let mut pcm = Vec::new();
                                 for i in 0..2400i16 {
@@ -541,4 +557,69 @@ fn nothing_listening_is_a_network_error() {
         None,
     );
     assert!(matches!(ai.check(), Err(AiError::Network(_))));
+}
+
+#[test]
+fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = Arc::new(OpenAi::new(
+        "sk-test-key-0123456789abcdef",
+        &base,
+        "cedar",
+        None,
+    ));
+    let live = ms::ai::live::Live::new(Arc::clone(&ai), "cedar");
+    let instructions =
+        ms::ai::live::instructions("- Their class is Night Lord.", &[], Some("he-IL"));
+    let tools = ms::ai::live::tools(
+        vec![
+            json!({"type": "function", "name": "remember_fact", "strict": true, "parameters": {}}),
+        ],
+        true,
+    );
+    let call = live.session(&instructions, &tools).unwrap();
+    // The full model isn't there for this key: the smaller one is used.
+    assert_eq!(call["key"], "ek_test_live");
+    assert_eq!(call["model"], "gpt-realtime-mini");
+    assert!(
+        call["url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/v1/realtime/calls")
+    );
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r["path"] == "/v1/realtime/client_secrets")
+        .cloned()
+        .unwrap();
+    let session = &asked["body"]["session"];
+    assert_eq!(session["type"], "realtime");
+    assert_eq!(session["audio"]["output"]["voice"], "cedar");
+    assert_eq!(
+        session["audio"]["input"]["turn_detection"]["type"],
+        "semantic_vad"
+    );
+    assert!(session["audio"]["input"]["transcription"]["language"].is_null());
+    assert!(
+        session["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Night Lord")
+    );
+    let names: Vec<&str> = session["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert_eq!(names, ["remember_fact", "search_web"]);
+    // The model that worked is kept.
+    let again = live.session(&instructions, &tools).unwrap();
+    assert_eq!(again["model"], "gpt-realtime-mini");
 }
