@@ -266,7 +266,7 @@
       thinkingShown = false;
       $("bubbleText").textContent = lastReply || "…";
     }
-    if (status.speaking) quietUntil = Date.now() + 900;
+    updateHold();
   }
   let thinkingShown = false, lastReply = "", quietUntil = 0;
 
@@ -321,14 +321,24 @@
     player.src = silentWav();
     player.play().catch(() => {});
   }
+  // Replies come a sentence at a time: each is played after the one before.
+  let nextClip = null;
   function maybePlayClip(seq) {
-    if (lastClip === null) { lastClip = seq; return; }
-    if (!seq || seq <= lastClip) return;
-    lastClip = seq;
+    if (lastClip === null) { lastClip = seq; nextClip = seq + 1; return; }
+    if (seq > lastClip) lastClip = seq;
+    playNextClip();
+  }
+  function playNextClip() {
+    if (!player.paused || nextClip === null || nextClip > lastClip) return;
+    // Far behind (the phone slept): only the latest.
+    if (lastClip - nextClip > 3) nextClip = lastClip;
+    const seq = nextClip++;
     player.src = "/api/clip?k=" + encodeURIComponent(KEY) + "&seq=" + seq;
     player.play().catch(() => {});
   }
-  player.addEventListener("ended", () => { quietUntil = Date.now() + 700; });
+  player.addEventListener("playing", () => updateHold());
+  player.addEventListener("ended", () => { quietUntil = Date.now() + 500; playNextClip(); updateHold(); });
+  player.addEventListener("error", () => { playNextClip(); updateHold(); });
 
   // ---- polling ---------------------------------------------------------------
   let since = 0, first = true, failures = 0;
@@ -468,17 +478,51 @@
   // ---- speech recognition --------------------------------------------------------------
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   let rec = null, wantRec = false, recStarted = 0, quickEnds = 0, lastSent = "", lastSentAt = 0;
+  const plain = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
 
   function sendHeard(text) {
     text = (text || "").trim();
     if (!text) return;
     // While MapleSyrup speaks, the microphone mostly hears MapleSyrup.
-    if (status.speaking || Date.now() < quietUntil || !player.paused) return;
-    const now = Date.now();
-    if (text.toLowerCase() === lastSent && now - lastSentAt < 4000) return;
-    lastSent = text.toLowerCase(); lastSentAt = now;
+    if (held || speakingNow() || Date.now() < quietUntil) return;
+    const now = Date.now(), p = plain(text);
+    if (!p) return;
+    // Safari sometimes hands the same words over twice, or a piece of them again.
+    if (now - lastSentAt < 5000 && (" " + lastSent + " ").includes(" " + p + " ")) return;
+    lastSent = p; lastSentAt = now;
     $("heard").textContent = "“" + text + "”";
     postJson("/api/heard", { text }).catch(() => {});
+  }
+
+  // While MapleSyrup speaks (on the PC or on this phone) recognition is
+  // stopped, and what it caught of MapleSyrup is thrown away; it starts again
+  // right after. Otherwise its last words and the player's answer end up in
+  // one sentence.
+  let held = false, holdTimer = 0;
+  function speakingNow() { return !!status.speaking || !player.paused; }
+  function updateHold() {
+    clearTimeout(holdTimer);
+    if (speakingNow()) {
+      quietUntil = Math.max(quietUntil, Date.now() + 600);
+      setHeld(true);
+      return;
+    }
+    const wait = quietUntil - Date.now();
+    if (wait > 0) { holdTimer = setTimeout(updateHold, wait + 20); return; }
+    setHeld(false);
+  }
+  function setHeld(hold) {
+    if (held === hold) return;
+    held = hold;
+    if (listening && Recognition) $("micStatus").textContent = hold ? "MapleSyrup is talking…" : "Listening — just talk.";
+    if (!rec || !wantRec || !listening) return;
+    if (hold) { try { rec.abort(); } catch (e) {} }
+    else restartRecognition(0);
+  }
+  function restartRecognition(tries) {
+    if (!rec || !wantRec || !listening || held) return;
+    try { recStarted = Date.now(); rec.start(); }
+    catch (e) { if (tries < 8) setTimeout(() => restartRecognition(tries + 1), 250); }
   }
 
   function startRecognition() {
@@ -513,10 +557,11 @@
       }
     };
     rec.onend = () => {
-      if (!wantRec || !listening) return;
+      // While held, it is started again when MapleSyrup stops talking.
+      if (!wantRec || !listening || held) return;
       quickEnds = Date.now() - recStarted < 1500 ? quickEnds + 1 : 0;
       setTimeout(() => {
-        if (!wantRec || !listening) return;
+        if (!wantRec || !listening || held) return;
         try { recStarted = Date.now(); rec.start(); } catch (e) {}
       }, quickEnds > 3 ? 3000 : 200);
     };
@@ -563,7 +608,7 @@
     if (document.visibilityState !== "visible" || !listening) return;
     keepAwake();
     if (audio && audio.ctx.state !== "running") audio.ctx.resume().catch(() => {});
-    if (wantRec && rec) { try { rec.start(); } catch (e) {} }
+    if (wantRec && rec && !held) { try { rec.start(); } catch (e) {} }
   });
 
   if (KEY) postJson("/api/hello", { agent: navigator.userAgent }).catch(() => {});

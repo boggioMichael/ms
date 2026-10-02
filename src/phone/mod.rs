@@ -131,9 +131,14 @@ struct State {
     phone_seen: Option<Instant>,
     browser: Option<String>,
     requests: u64,
-    /// The latest spoken reply as a WAV, for the phone to play, and its number.
-    clip: Option<(u64, Arc<Vec<u8>>)>,
+    /// The latest spoken lines as WAVs, for the phone to play in turn, with
+    /// their numbers.
+    clips: VecDeque<(u64, Arc<Vec<u8>>)>,
+    last_clip: u64,
 }
+
+/// How many spoken lines the phone can still fetch.
+const CLIPS_KEPT: usize = 8;
 
 /// Everything the phone link shares between the server's threads and the
 /// main loop.
@@ -159,7 +164,8 @@ impl Hub {
                 phone_seen: None,
                 browser: None,
                 requests: 0,
-                clip: None,
+                clips: VecDeque::new(),
+                last_clip: 0,
             }),
         })
     }
@@ -204,11 +210,16 @@ impl Hub {
         std::mem::take(&mut self.lock().inbox)
     }
 
-    /// Hand the phone a spoken line (a WAV) to play. Returns its number.
+    /// Hand the phone a spoken line (a WAV) to play after the ones before
+    /// it. Returns its number.
     pub fn set_clip(&self, wav: Vec<u8>) -> u64 {
         let mut state = self.lock();
-        let seq = state.clip.as_ref().map(|(n, _)| n + 1).unwrap_or(1);
-        state.clip = Some((seq, Arc::new(wav)));
+        state.last_clip += 1;
+        let seq = state.last_clip;
+        state.clips.push_back((seq, Arc::new(wav)));
+        while state.clips.len() > CLIPS_KEPT {
+            state.clips.pop_front();
+        }
         seq
     }
 
@@ -305,15 +316,23 @@ impl Hub {
                         "messages": messages,
                         "last_id": state.next_id - 1,
                         "uptime": self.started.elapsed().as_secs_f64(),
-                        "clip": state.clip.as_ref().map(|(n, _)| *n).unwrap_or(0),
+                        "clip": state.last_clip,
                     }),
                 )
             }
             ("GET", "/api/clip") => {
-                let clip = self.lock().clip.clone();
+                // The clip asked for by number, or else the latest.
+                let wanted: Option<u64> = request.param("seq").and_then(|s| s.parse().ok());
+                let clip = {
+                    let state = self.lock();
+                    match wanted {
+                        Some(seq) => state.clips.iter().find(|(n, _)| *n == seq).cloned(),
+                        None => state.clips.back().cloned(),
+                    }
+                };
                 match clip {
                     Some((_, wav)) => Response::new(200, "audio/wav", wav.as_slice()),
-                    None => Response::json(404, &json!({"error": "nothing spoken yet"})),
+                    None => Response::json(404, &json!({"error": "no such clip"})),
                 }
             }
             ("POST", "/api/listen") => match body().get("always").and_then(Value::as_bool) {
@@ -676,6 +695,17 @@ mod tests {
         let clip = hub.handle(&request("GET", "/api/clip?k=k1&seq=2", ""));
         assert_eq!((clip.status, clip.content_type), (200, "audio/wav"));
         assert_eq!(clip.body, b"RIFF....WAVE2");
+        // Earlier lines can still be fetched, in turn; long gone ones cannot.
+        let first = hub.handle(&request("GET", "/api/clip?k=k1&seq=1", ""));
+        assert_eq!(first.body, b"RIFF....WAVE");
+        for _ in 0..super::CLIPS_KEPT {
+            hub.set_clip(b"RIFF....MORE".to_vec());
+        }
+        assert_eq!(
+            hub.handle(&request("GET", "/api/clip?k=k1&seq=1", ""))
+                .status,
+            404
+        );
         let dog = hub.handle(&request("GET", "/dog.png", ""));
         assert_eq!(dog.status, 200);
         assert_eq!(&dog.body[1..4], b"PNG");

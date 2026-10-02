@@ -5,14 +5,15 @@
 //!   phone: "can you see my game?"
 //!      │
 //!      ▼            snapshot of the game (HP, MP, EXP, level, EXP/h)
-//!   Worker ─────────────────────────────────────────────┐
-//!      │  respond(persona + snapshot + conversation)    │
-//!      ▼                                                │
-//!   Text  ──▶ phone screen, console (right away)        │
-//!      │  speech(text)                                  │
-//!      ▼                                                │
-//!   Audio ──▶ the PC's speakers (the game ducked), or the phone
+//!   Worker: respond_stream(persona + snapshot + conversation)
+//!      │  the reply arrives a few words at a time and is cut into sentences
+//!      ├──▶ each sentence ──▶ speech ──▶ the PC's speakers (the game
+//!      │                                  ducked) and/or the phone, in turn
+//!      ▼
+//!   Text ──▶ phone screen, console (once the reply is complete)
 //! ```
+//!
+//! The first sentence is spoken while the rest is still being written.
 //!
 //! Without a key, or when OpenAI cannot be reached, MapleSyrup falls back
 //! to its own answers and the Windows voice.
@@ -36,8 +37,21 @@ pub fn key_file(settings: &Path) -> PathBuf {
 
 /// Whether `text` looks like an OpenAI API key.
 pub fn looks_like_key(text: &str) -> bool {
-    let t = text.trim();
+    let t = clean_key(text);
     t.starts_with("sk-") && t.len() >= 20 && !t.contains(char::is_whitespace)
+}
+
+/// A key as pasted or saved: without the byte-order mark Notepad may put in
+/// front, quotes around it, or lines after it.
+pub fn clean_key(text: &str) -> &str {
+    text.trim_start_matches('\u{feff}')
+        .trim()
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .trim()
 }
 
 /// The key from `OPENAI_API_KEY`, the settings folder, or `openai-key.txt`
@@ -47,7 +61,7 @@ pub fn load_key(settings: &Path) -> Option<String> {
     if let Ok(key) = std::env::var("OPENAI_API_KEY")
         && looks_like_key(&key)
     {
-        return Some(key.trim().to_string());
+        return Some(clean_key(&key).to_string());
     }
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
@@ -56,7 +70,7 @@ pub fn load_key(settings: &Path) -> Option<String> {
         if let Ok(key) = std::fs::read_to_string(&beside)
             && looks_like_key(&key)
         {
-            let key = key.trim().to_string();
+            let key = clean_key(&key).to_string();
             if save_key(settings, &key).is_ok() {
                 let _ = std::fs::remove_file(&beside);
             }
@@ -65,13 +79,13 @@ pub fn load_key(settings: &Path) -> Option<String> {
     }
     std::fs::read_to_string(key_file(settings))
         .ok()
-        .map(|k| k.trim().to_string())
         .filter(|k| looks_like_key(k))
+        .map(|k| clean_key(&k).to_string())
 }
 
 pub fn save_key(settings: &Path, key: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(settings)?;
-    std::fs::write(key_file(settings), key.trim())
+    std::fs::write(key_file(settings), clean_key(key))
 }
 
 /// Something for the worker to do.
@@ -96,8 +110,15 @@ pub enum Done {
     },
     /// The model judged the sentence was not for it.
     Silent { heard: String },
-    /// Speech for a line: 24 kHz mono samples.
-    Audio { text: String, samples: Vec<i16> },
+    /// Speech for a line (a reply comes a sentence at a time): 24 kHz mono
+    /// samples. `after`: since the player's sentence came in (or since the
+    /// line was asked for); `first`: the first sentence of a reply.
+    Audio {
+        text: String,
+        samples: Vec<i16>,
+        after: Duration,
+        first: bool,
+    },
     Failed {
         heard: Option<String>,
         error: AiError,
@@ -153,52 +174,32 @@ pub fn spawn(openai: OpenAi, mut brain: Brain) -> Worker {
                             snapshot = s;
                             speak |= sp;
                         }
-                        Job::Speak { text } => match openai.speech(&text, brain::VOICE_STYLE) {
-                            Ok(samples) => {
-                                let _ = tx.send(Done::Audio { text, samples });
+                        Job::Speak { text } => {
+                            let asked = Instant::now();
+                            match openai.speech(&text, brain::VOICE_STYLE) {
+                                Ok(samples) => {
+                                    let _ = tx.send(Done::Audio {
+                                        text,
+                                        samples,
+                                        after: asked.elapsed(),
+                                        first: false,
+                                    });
+                                }
+                                Err(error) => {
+                                    let _ = tx.send(Done::Failed { heard: None, error });
+                                }
                             }
-                            Err(error) => {
-                                let _ = tx.send(Done::Failed { heard: None, error });
-                            }
-                        },
+                        }
                     }
                 }
                 if !heard.is_empty() {
                     let heard = heard.join(" ");
                     brain.heard(&heard);
-                    let started = Instant::now();
-                    match openai.respond(&brain.instructions(&snapshot), &brain.turns()) {
-                        Ok(reply) if brain::is_silent(&reply) => {
-                            let _ = tx.send(Done::Silent { heard });
-                        }
-                        Ok(reply) => {
-                            let text = brain::for_speech(&reply);
-                            brain.said(&text);
-                            if let Ok(mut slot) = model_slot.lock() {
-                                *slot = openai.model();
-                            }
-                            let _ = tx.send(Done::Reply {
-                                heard,
-                                text: text.clone(),
-                                took: started.elapsed(),
-                            });
-                            if speak {
-                                match openai.speech(&text, brain::VOICE_STYLE) {
-                                    Ok(samples) => {
-                                        let _ = tx.send(Done::Audio { text, samples });
-                                    }
-                                    Err(error) => {
-                                        let _ = tx.send(Done::Failed { heard: None, error });
-                                    }
-                                }
-                            }
-                        }
-                        Err(error) => {
-                            let _ = tx.send(Done::Failed {
-                                heard: Some(heard),
-                                error,
-                            });
-                        }
+                    converse(
+                        &openai, &mut brain, heard, &snapshot, speak, &tx, &busy_flag,
+                    );
+                    if let Ok(mut slot) = model_slot.lock() {
+                        *slot = openai.model();
                     }
                 }
                 busy_flag.store(false, Ordering::Relaxed);
@@ -210,6 +211,83 @@ pub fn spawn(openai: OpenAi, mut brain: Brain) -> Worker {
         busy,
         model,
     }
+}
+
+/// Answer the player. The reply is streamed and cut into sentences; each
+/// sentence is turned into speech (on a second thread) as soon as it is
+/// complete, so the first is heard while the rest is still being written.
+fn converse(
+    openai: &OpenAi,
+    brain: &mut Brain,
+    heard: String,
+    snapshot: &str,
+    speak: bool,
+    tx: &Sender<Done>,
+    busy: &AtomicBool,
+) {
+    let started = Instant::now();
+    let instructions = brain.instructions(snapshot);
+    let turns = brain.turns();
+    std::thread::scope(|scope| {
+        let (lines, to_say) = channel::<String>();
+        if speak {
+            let tx = tx.clone();
+            scope.spawn(move || {
+                let mut first = true;
+                for text in to_say {
+                    match openai.speech(&text, brain::VOICE_STYLE) {
+                        Ok(samples) => {
+                            let _ = tx.send(Done::Audio {
+                                text,
+                                samples,
+                                after: started.elapsed(),
+                                first,
+                            });
+                            first = false;
+                        }
+                        Err(error) => {
+                            let _ = tx.send(Done::Failed { heard: None, error });
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+        let mut sentences = brain::Sentences::default();
+        let result = openai.respond_stream(&instructions, &turns, &mut |piece| {
+            if speak {
+                for sentence in sentences.push(piece) {
+                    let _ = lines.send(brain::for_speech(&sentence));
+                }
+            }
+        });
+        match result {
+            Ok(reply) if brain::is_silent(&reply) => {
+                let _ = tx.send(Done::Silent { heard });
+            }
+            Ok(reply) => {
+                if speak && let Some(rest) = sentences.finish() {
+                    let _ = lines.send(brain::for_speech(&rest));
+                }
+                let text = brain::for_speech(&reply);
+                brain.said(&text);
+                let _ = tx.send(Done::Reply {
+                    heard,
+                    text,
+                    took: started.elapsed(),
+                });
+            }
+            Err(error) => {
+                let _ = tx.send(Done::Failed {
+                    heard: Some(heard),
+                    error,
+                });
+            }
+        }
+        // The words are out; the voice may still be on its last sentences.
+        drop(lines);
+        busy.store(false, Ordering::Relaxed);
+    });
 }
 
 /// 16-bit mono samples as a WAV file in memory.
@@ -244,6 +322,16 @@ mod tests {
         assert!(looks_like_key("  sk-abcdefghijklmnopqrstuvwxyz \n"));
         assert!(!looks_like_key("hello"));
         assert!(!looks_like_key("sk- spaced key that is long enough"));
+        // Saved by Notepad with a byte-order mark, quoted, or with a note after.
+        let key = "sk-proj-abcdefghijklmnopqrstuvwxyz0123";
+        for saved in [
+            format!("\u{feff}{key}\r\n"),
+            format!("\"{key}\""),
+            format!("{key}\nmy key from October"),
+        ] {
+            assert!(looks_like_key(&saved), "{saved:?}");
+            assert_eq!(clean_key(&saved), key);
+        }
     }
 
     #[test]

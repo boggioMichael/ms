@@ -166,6 +166,10 @@ pub struct Companion {
 /// How long a new level reading must hold before it is believed, in seconds.
 const LEVEL_HOLD_SECS: f64 = 3.0;
 
+/// How long after a line was said the phone may still hand it back as heard,
+/// in seconds: the line, its playing, and the phone's recognition finishing.
+const ECHO_WINDOW: f64 = 30.0;
+
 impl Companion {
     pub fn new(settings: Settings) -> Self {
         Self {
@@ -201,24 +205,93 @@ impl Companion {
         }
     }
 
-    /// Whether `heard` is MapleSyrup's own voice coming back through the
-    /// phone's microphone rather than the player.
+    /// Whether `heard` is only MapleSyrup's own voice coming back through the
+    /// phone's microphone, with nothing of the player's in it.
     pub fn is_echo(&self, now: f64, heard: &str) -> bool {
-        let heard = commands::normalize(heard);
-        let words: Vec<&str> = heard.split(' ').filter(|w| !w.is_empty()).collect();
-        if words.is_empty() {
-            return false;
-        }
-        self.spoken.iter().any(|(t, said)| {
-            let age = now - t;
-            if !(-1.0..=45.0).contains(&age) {
-                return false;
+        self.strip_echo(now, heard).is_none()
+    }
+
+    /// The player's words in `heard`, with MapleSyrup's own voice taken out:
+    /// runs of words it said lately that the phone heard back, as when its
+    /// last words and the player's answer end up in one sentence ("how are
+    /// you doing — let's play"). `None` when nothing of the player's is left.
+    ///
+    /// A run counts as an echo when its words were said lately and mostly in
+    /// that order: three words or more, or two within a few seconds. A word
+    /// or two the player repeats from MapleSyrup's line stays theirs.
+    pub fn strip_echo(&self, now: f64, heard: &str) -> Option<String> {
+        let heard = heard.trim();
+        // Each word of the sentence, normalised, with the token it came from.
+        let tokens: Vec<&str> = heard.split_whitespace().collect();
+        let mut words: Vec<(String, usize)> = Vec::new();
+        for (i, token) in tokens.iter().enumerate() {
+            for word in commands::normalize(token)
+                .split(' ')
+                .filter(|w| !w.is_empty())
+            {
+                words.push((word.to_string(), i));
             }
-            let said: std::collections::HashSet<&str> = said.split(' ').collect();
-            let shared = words.iter().filter(|w| said.contains(*w)).count() as f64;
-            let overlap = shared / words.len() as f64;
-            (words.len() >= 3 && overlap >= 0.6)
-                || (words.len() >= 2 && age < 15.0 && overlap >= 0.8)
+        }
+        if words.is_empty() {
+            return None;
+        }
+        let recent: Vec<(f64, Vec<&str>)> = self
+            .spoken
+            .iter()
+            .map(|(t, said)| (now - t, said.split(' ').collect::<Vec<_>>()))
+            .filter(|(age, _)| (-1.0..=ECHO_WINDOW).contains(age))
+            .collect();
+        if recent.is_empty() {
+            return Some(heard.to_string());
+        }
+        let said = |w: &str| recent.iter().any(|(_, line)| line.contains(&w));
+        let mut echo = vec![false; words.len()];
+        let mut start = 0;
+        while start < words.len() {
+            if !said(&words[start].0) {
+                start += 1;
+                continue;
+            }
+            let mut end = start + 1;
+            while end < words.len() && said(&words[end].0) {
+                end += 1;
+            }
+            let run = &words[start..end];
+            let length = run.len();
+            let is_echo = length >= 2
+                && recent.iter().any(|(age, line)| {
+                    let in_order = run
+                        .windows(2)
+                        .filter(|pair| {
+                            line.windows(2)
+                                .any(|l| l[0] == pair[0].0.as_str() && l[1] == pair[1].0.as_str())
+                        })
+                        .count();
+                    (length >= 3 && in_order * 2 >= length - 1)
+                        || (length == 2 && in_order == 1 && *age <= 12.0)
+                });
+            if is_echo {
+                echo[start..end].iter_mut().for_each(|e| *e = true);
+            }
+            start = end;
+        }
+        if !echo.contains(&true) {
+            return Some(heard.to_string());
+        }
+        // Tokens with a word of the player's in them, in order.
+        let mut kept: Vec<usize> = words
+            .iter()
+            .zip(&echo)
+            .filter(|(_, e)| !**e)
+            .map(|((_, token), _)| *token)
+            .collect();
+        kept.dedup();
+        let left = echo.iter().filter(|e| !**e).count();
+        (left >= 2).then(|| {
+            kept.iter()
+                .map(|&i| tokens[i])
+                .collect::<Vec<_>>()
+                .join(" ")
         })
     }
 
@@ -410,9 +483,10 @@ impl Companion {
             text: sentence.to_string(),
             speak: false,
         })];
-        if self.is_echo(now, sentence) {
+        let Some(sentence) = self.strip_echo(now, sentence) else {
             return out;
-        }
+        };
+        let sentence = sentence.as_str();
         let addressed = self.settings.always_listen || self.listening(now);
         match commands::interpret(sentence, addressed) {
             Heard::NotForUs => {}
@@ -795,6 +869,42 @@ mod tests {
         assert!(!c.is_echo(4.0, "how about my exp"));
         // Long after, the same words are the player's.
         assert!(!c.is_echo(100.0, "HP about 82% MP about 40%"));
+    }
+
+    #[test]
+    fn the_players_answer_is_kept_when_the_echo_runs_into_it() {
+        let mut c = Companion::new(Settings::default());
+        c.remember_spoken(
+            1.0,
+            "I’m doing great, just lounging in my pancake hat and keeping you company. How are you doing?",
+        );
+        // Its last words and the player's answer, heard as one sentence.
+        assert_eq!(
+            c.strip_echo(9.0, "How are you doing let's play").as_deref(),
+            Some("let's play")
+        );
+        // Only its own words, even misheard in places.
+        assert_eq!(c.strip_echo(4.0, "How are you"), None);
+        assert_eq!(
+            c.strip_echo(5.0, "I'm doing great just longing in my pancake hat"),
+            None
+        );
+        // Nothing of it.
+        assert_eq!(
+            c.strip_echo(9.0, "let's go to the forest").as_deref(),
+            Some("let's go to the forest")
+        );
+        // A word or two of it, said by the player, is the player's.
+        assert_eq!(
+            c.strip_echo(9.0, "my hat is great").as_deref(),
+            Some("my hat is great")
+        );
+        assert_eq!(
+            c.strip_echo(30.0, "you doing ok").as_deref(),
+            Some("you doing ok")
+        );
+        // With AI off, the simple answers get the player's part only.
+        assert!(!said(&c.heard(9.5, "How are you doing what's my hp")).is_empty());
     }
 
     #[test]

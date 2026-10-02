@@ -489,6 +489,8 @@ struct Mouth {
     /// When the Windows voice or the phone is expected to finish speaking.
     sapi_until: Instant,
     phone_until: Instant,
+    /// When the phone is expected to finish the clips it was handed.
+    phone_end: Instant,
     /// The game's process, turned down while the PC speaks.
     game_pid: Option<u32>,
 }
@@ -571,23 +573,31 @@ impl Outputs {
         }
     }
 
-    /// Play a natural-voice clip where replies are spoken.
-    fn play(&mut self, samples: &[i16], companion: &Companion) {
+    /// Play a natural-voice clip where replies are spoken, after the ones
+    /// before it (a reply comes a sentence at a time).
+    fn play(&mut self, samples: Vec<i16>, companion: &Companion) {
         if companion.muted() {
             return;
         }
         let voice_on = self.voice_on();
-        if voice_on.pc() {
-            self.mouth
-                .player
-                .play(samples, ai::openai::SPEECH_RATE, self.mouth.game_pid);
-        }
         if voice_on.phone()
             && let Some(hub) = &self.phone
         {
-            hub.set_clip(ai::wav_bytes(samples, ai::openai::SPEECH_RATE));
-            let length = samples.len() as f64 / ai::openai::SPEECH_RATE as f64;
-            self.mouth.phone_until = Instant::now() + Duration::from_secs_f64(length + 0.8);
+            hub.set_clip(ai::wav_bytes(&samples, ai::openai::SPEECH_RATE));
+            let length =
+                Duration::from_secs_f64(samples.len() as f64 / ai::openai::SPEECH_RATE as f64);
+            // The phone fetches it within a poll and plays it after the last.
+            let begins = self
+                .mouth
+                .phone_end
+                .max(Instant::now() + Duration::from_millis(500));
+            self.mouth.phone_end = begins + length;
+            self.mouth.phone_until = self.mouth.phone_end + Duration::from_millis(800);
+        }
+        if voice_on.pc() {
+            self.mouth
+                .player
+                .enqueue(samples, ai::openai::SPEECH_RATE, self.mouth.game_pid);
         }
     }
 
@@ -672,7 +682,7 @@ fn openai_key(options: &Options, settings: &Path) -> Option<String> {
     println!("Paste the key and press Enter, or just press Enter to go without:");
     let mut line = String::new();
     let _ = std::io::stdin().read_line(&mut line);
-    let key = line.trim().to_string();
+    let key = ai::clean_key(&line).to_string();
     if !ai::looks_like_key(&key) {
         if !key.is_empty() {
             println!("That does not look like an OpenAI key (they start with sk-). Going without.");
@@ -835,6 +845,7 @@ fn run(options: Options) -> Result<(), String> {
             player: Player::new(),
             sapi_until: Instant::now(),
             phone_until: Instant::now(),
+            phone_end: Instant::now(),
             game_pid: None,
         },
         phone: phone.as_ref().map(|p| Arc::clone(&p.hub)),
@@ -920,12 +931,22 @@ fn run(options: Options) -> Result<(), String> {
         if let Some(hub) = out.phone.clone() {
             for inbound in hub.take_inbox() {
                 match inbound {
-                    Inbound::Heard(text) => {
-                        if companion.is_echo(now, &text) {
-                            // MapleSyrup's own voice, heard back by the phone.
-                            out.session.line("echo", &text);
-                            continue;
-                        }
+                    Inbound::Heard(heard) => {
+                        // MapleSyrup's own voice, heard back by the phone, is
+                        // taken out; what is left is the player's.
+                        let text = match companion.strip_echo(now, &heard) {
+                            None => {
+                                out.session.line("echo", &heard);
+                                continue;
+                            }
+                            Some(rest) => {
+                                if rest != heard.trim() {
+                                    out.session
+                                        .line("echo", &format!("{heard}  (kept: {rest})"));
+                                }
+                                rest
+                            }
+                        };
                         if out.mouth.ai.is_some() {
                             out.show(Kind::Heard, &text);
                             if let Some(command) = commands::local_command(&text) {
@@ -1012,7 +1033,20 @@ fn run(options: Options) -> Result<(), String> {
                     out.session
                         .line("timing", &format!("reply in {:.1} s", took.as_secs_f64()));
                 }
-                Done::Audio { samples, .. } => out.play(&samples, &companion),
+                Done::Audio {
+                    samples,
+                    after,
+                    first,
+                    ..
+                } => {
+                    if first {
+                        out.session.line(
+                            "timing",
+                            &format!("first words after {:.1} s", after.as_secs_f64()),
+                        );
+                    }
+                    out.play(samples, &companion);
+                }
                 Done::Silent { heard } => out.session.line("silent", &heard),
                 Done::Failed { heard, error } => {
                     let message = format!("OpenAI: {error}");

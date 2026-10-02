@@ -23,8 +23,12 @@ Start
 How it talks
   It answers everything you say, knowing what is on your screen (HP, MP, EXP,
   level, your EXP per hour). If you talk to your stream's chat instead, it
-  stays quiet. While it speaks, MapleStory's sound is turned down for a
-  moment. It also speaks up by itself when HP or MP runs low or you level up.
+  stays quiet. It starts speaking as soon as its first sentence is ready.
+  While it speaks, MapleStory's sound is turned down for a moment, and the
+  phone stops listening so it does not hear itself.
+  The OpenAI account needs credit (platform.openai.com/settings/organization/billing);
+  without it MapleSyrup says so and goes on with simple answers and the
+  Windows voice. It also speaks up by itself when HP or MP runs low or you level up.
   On the phone you can choose where replies are spoken (PC, phone, both, off)
   and switch to "only after 'syrup'" for streaming.
 
@@ -35,8 +39,11 @@ If the phone cannot connect
 
 If Windows blocks MapleSyrup.exe ("Smart App Control" / "blocked by your
 organization's Device Guard policy")
-  The program is not signed. Windows Security -> App & browser control ->
-  Smart App Control settings -> Off.
+  The program is not signed, and each new version is a file Windows has not
+  seen before. Smart App Control cannot allow a single program:
+  Windows Security -> App & browser control -> Smart App Control settings -> Off.
+  (Since the April 2026 update it can be turned on again from the same place;
+  MapleSyrup is then blocked again.)
 
 Files
   Each session is kept in "MapleSyrup sessions" next to MapleSyrup.exe:

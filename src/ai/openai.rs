@@ -4,10 +4,11 @@
 //! client to MapleSyrup. Requests go in on stdin, answers come back on
 //! stdout, and the HTTP status on stderr.
 //!
-//! Two calls: a reply to the player (the Responses API) and that reply as
-//! speech (`/audio/speech`, raw 24 kHz 16-bit PCM).
+//! Two calls: a reply to the player (the Responses API, streamed, so the
+//! first sentence can be spoken while the rest is still being written) and
+//! that reply as speech (`/audio/speech`, raw 24 kHz 16-bit PCM).
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -110,12 +111,30 @@ impl OpenAi {
         body: Option<&Value>,
         timeout: Duration,
     ) -> Result<(u16, Vec<u8>), AiError> {
+        let mut all = Vec::new();
+        let status = self.call_with(method, path, body, timeout, &mut |chunk| {
+            all.extend_from_slice(chunk)
+        })?;
+        Ok((status, all))
+    }
+
+    /// One HTTP request, its answer handed to `on_body` piece by piece as it
+    /// arrives (curl's `--no-buffer`). Returns the HTTP status.
+    fn call_with(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+        timeout: Duration,
+        on_body: &mut dyn FnMut(&[u8]),
+    ) -> Result<u16, AiError> {
         let url = format!("{}{path}", self.base);
         let mut command = Command::new(&self.curl);
         command
             .args([
                 "--silent",
                 "--show-error",
+                "--no-buffer",
                 "--connect-timeout",
                 "8",
                 "--max-time",
@@ -155,10 +174,30 @@ impl OpenAi {
                 .write_all(&bytes)
                 .map_err(|e| AiError::Network(e.to_string()))?;
         }
-        let output = child
-            .wait_with_output()
-            .map_err(|e| AiError::NoCurl(e.to_string()))?;
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        // curl's errors and the status, read on the side so neither pipe can
+        // fill up and stall it.
+        let mut errors = child.stderr.take();
+        let error_reader = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            if let Some(stderr) = errors.as_mut() {
+                let _ = stderr.read_to_end(&mut bytes);
+            }
+            bytes
+        });
+        if let Some(mut stdout) = child.stdout.take() {
+            let mut buffer = [0u8; 8192];
+            loop {
+                match stdout.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(n) => on_body(&buffer[..n]),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+        let stderr_bytes = error_reader.join().unwrap_or_default();
+        let _ = child.wait();
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         let status = stderr
             .rsplit("HTTPSTATUS:")
             .next()
@@ -177,7 +216,7 @@ impl OpenAi {
                 message
             }));
         }
-        Ok((status, output.stdout))
+        Ok(status)
     }
 
     fn error_of(status: u16, body: &[u8]) -> AiError {
@@ -200,6 +239,26 @@ impl OpenAi {
 
     /// The model's reply to the conversation so far.
     pub fn respond(&self, instructions: &str, turns: &[Turn]) -> Result<String, AiError> {
+        self.converse(instructions, turns, None)
+    }
+
+    /// The model's reply, streamed: `on_text` gets each piece as it is
+    /// written. Returns the whole reply.
+    pub fn respond_stream(
+        &self,
+        instructions: &str,
+        turns: &[Turn],
+        on_text: &mut dyn FnMut(&str),
+    ) -> Result<String, AiError> {
+        self.converse(instructions, turns, Some(on_text))
+    }
+
+    fn converse(
+        &self,
+        instructions: &str,
+        turns: &[Turn],
+        mut on_text: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<String, AiError> {
         let input: Vec<Value> = turns
             .iter()
             .map(|t| json!({"role": t.role, "content": t.text}))
@@ -229,16 +288,51 @@ impl OpenAi {
                 if choice.reasoning {
                     body["reasoning"] = json!({"effort": "none"});
                 }
-                let (status, raw) =
-                    self.call("POST", "/responses", Some(&body), Duration::from_secs(40))?;
+                let mut events = EventStream::default();
+                let status = match on_text.as_mut() {
+                    Some(on_text) => {
+                        body["stream"] = json!(true);
+                        self.call_with(
+                            "POST",
+                            "/responses",
+                            Some(&body),
+                            Duration::from_secs(40),
+                            &mut |chunk| {
+                                for piece in events.feed(chunk) {
+                                    on_text(&piece);
+                                }
+                            },
+                        )?
+                    }
+                    None => self.call_with(
+                        "POST",
+                        "/responses",
+                        Some(&body),
+                        Duration::from_secs(40),
+                        &mut |chunk| events.keep(chunk),
+                    )?,
+                };
+                let raw = &events.raw;
                 if status == 200 {
-                    let text = output_text(&raw)?;
+                    if let Some(message) = events.error {
+                        return Err(AiError::Http(500, message));
+                    }
+                    let text = if events.text.trim().is_empty() {
+                        // A whole answer (not streamed, or buffered on the way).
+                        let text = output_text(raw)?;
+                        if let Some(on_text) = on_text.as_mut() {
+                            on_text(&text);
+                        }
+                        text
+                    } else {
+                        events.text.trim().to_string()
+                    };
                     if let Ok(mut slot) = self.choice.lock() {
                         *slot = Some(choice.clone());
                     }
                     return Ok(text);
                 }
-                let error = Self::error_of(status, &raw);
+                let error = Self::error_of(status, raw);
                 let message = match &error {
                     AiError::Http(_, m) => m.to_ascii_lowercase(),
                     _ => String::new(),
@@ -302,6 +396,82 @@ impl OpenAi {
     }
 }
 
+/// A Responses API answer as it arrives: the events of a stream
+/// (server-sent events, one `data:` line each), or a whole JSON answer kept
+/// as it is.
+#[derive(Default)]
+pub struct EventStream {
+    /// The bytes received (up to a limit), for an answer that is not a stream.
+    pub raw: Vec<u8>,
+    /// The reply's text so far.
+    pub text: String,
+    /// An error reported in the stream.
+    pub error: Option<String>,
+    line: Vec<u8>,
+}
+
+impl EventStream {
+    fn keep(&mut self, chunk: &[u8]) {
+        if self.raw.len() < (1 << 20) {
+            self.raw.extend_from_slice(chunk);
+        }
+    }
+
+    /// Bytes as they arrive. Returns the pieces of text in the lines they
+    /// completed.
+    pub fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
+        self.keep(chunk);
+        let mut pieces = Vec::new();
+        for &byte in chunk {
+            if byte == b'\n' {
+                let line = std::mem::take(&mut self.line);
+                if let Some(piece) = self.event(&line) {
+                    pieces.push(piece);
+                }
+            } else {
+                self.line.push(byte);
+            }
+        }
+        pieces
+    }
+
+    fn event(&mut self, line: &[u8]) -> Option<String> {
+        let line = String::from_utf8_lossy(line);
+        let data = line
+            .trim_end_matches('\r')
+            .strip_prefix("data:")?
+            .trim_start();
+        let event: Value = serde_json::from_str(data).ok()?;
+        match event["type"].as_str()? {
+            "response.output_text.delta" | "response.refusal.delta" => {
+                let piece = event["delta"].as_str()?.to_string();
+                self.text.push_str(&piece);
+                Some(piece)
+            }
+            "response.failed" => {
+                self.error = Some(
+                    event["response"]["error"]["message"]
+                        .as_str()
+                        .unwrap_or("the reply failed")
+                        .to_string(),
+                );
+                None
+            }
+            "error" => {
+                self.error = Some(
+                    event["message"]
+                        .as_str()
+                        .or(event["error"]["message"].as_str())
+                        .unwrap_or("the reply failed")
+                        .to_string(),
+                );
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
 /// The text of a Responses API answer: every `output_text` of every
 /// `message` in `output`.
 pub fn output_text(raw: &[u8]) -> Result<String, AiError> {
@@ -339,5 +509,26 @@ mod tests {
         assert_eq!(output_text(raw).unwrap(), "Hey! HP looks great.");
         assert!(output_text(br#"{"output":[]}"#).is_err());
         assert!(output_text(b"not json").is_err());
+    }
+
+    #[test]
+    fn a_stream_is_read_whatever_pieces_it_arrives_in() {
+        let stream = "event: response.created\ndata: {\"type\":\"response.created\"}\n\n\
+event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hey! \"}\n\n\
+event: response.output_text.delta\r\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"עלית רמה 🎉\"}\r\n\r\n\
+event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n";
+        for size in [1, 2, 5, 64, 4096] {
+            let mut events = EventStream::default();
+            let mut pieces = Vec::new();
+            for chunk in stream.as_bytes().chunks(size) {
+                pieces.extend(events.feed(chunk));
+            }
+            assert_eq!(pieces, ["Hey! ", "עלית רמה 🎉"], "{size}");
+            assert_eq!(events.text, "Hey! עלית רמה 🎉");
+            assert!(events.error.is_none());
+        }
+        let mut failed = EventStream::default();
+        failed.feed(b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"server busy\"}}}\n");
+        assert_eq!(failed.error.as_deref(), Some("server busy"));
     }
 }

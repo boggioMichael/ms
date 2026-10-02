@@ -178,6 +178,72 @@ pub fn is_silent(reply: &str) -> bool {
     t.eq_ignore_ascii_case("[silent]") || t.eq_ignore_ascii_case("silent") || t.is_empty()
 }
 
+/// A sentence is spoken on its own once it has at least this many
+/// characters; a shorter one ("Hey!") waits for the next.
+const SENTENCE_MIN_CHARS: usize = 16;
+
+/// Cuts a reply that arrives a few words at a time into sentences, so the
+/// first can be spoken while the rest is still being written.
+#[derive(Default)]
+pub struct Sentences {
+    pending: String,
+}
+
+impl Sentences {
+    /// More of the reply. Returns the sentences it completed.
+    pub fn push(&mut self, text: &str) -> Vec<String> {
+        self.pending.push_str(text);
+        let mut out = Vec::new();
+        // "[silent]" is not to be spoken: anything in brackets waits for the end.
+        if self.pending.trim_start().starts_with('[') {
+            return out;
+        }
+        while let Some(end) = sentence_end(&self.pending, SENTENCE_MIN_CHARS) {
+            let sentence: String = self.pending.drain(..end).collect();
+            let sentence = sentence.trim();
+            if !sentence.is_empty() {
+                out.push(sentence.to_string());
+            }
+        }
+        out
+    }
+
+    /// What is left at the end of the reply.
+    pub fn finish(&mut self) -> Option<String> {
+        let rest = std::mem::take(&mut self.pending);
+        let rest = rest.trim();
+        (!rest.is_empty()).then(|| rest.to_string())
+    }
+}
+
+/// Where the first complete sentence of `text` ends (at the space after its
+/// punctuation), if it has at least `min` characters. A full stop inside a
+/// number ("2.5") ends nothing, and one at the very end of `text` is not
+/// known to end a sentence until what follows it arrives.
+fn sentence_end(text: &str, min: usize) -> Option<usize> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    for (k, &(_, c)) in chars.iter().enumerate() {
+        if !matches!(c, '.' | '!' | '?' | '…') {
+            continue;
+        }
+        // "...", "?!" and closing quotes belong to it.
+        let mut next = k + 1;
+        while next < chars.len()
+            && matches!(
+                chars[next].1,
+                '.' | '!' | '?' | '"' | '\'' | '”' | '’' | ')'
+            )
+        {
+            next += 1;
+        }
+        let &(at, after) = chars.get(next)?;
+        if after.is_whitespace() && text[..at].trim().chars().count() >= min {
+            return Some(at);
+        }
+    }
+    None
+}
+
 /// The reply as it should be spoken: no markdown, no emoji.
 pub fn for_speech(reply: &str) -> String {
     reply
@@ -255,5 +321,45 @@ mod tests {
             for_speech("**Nice!** You're at *80%* 🎉"),
             "Nice! You're at 80%"
         );
+    }
+
+    /// The reply fed in pieces, as the stream brings it.
+    fn split(reply: &str, piece: usize) -> Vec<String> {
+        let chars: Vec<char> = reply.chars().collect();
+        let mut sentences = Sentences::default();
+        let mut out = Vec::new();
+        for part in chars.chunks(piece) {
+            out.extend(sentences.push(&part.iter().collect::<String>()));
+        }
+        out.extend(sentences.finish());
+        out
+    }
+
+    #[test]
+    fn a_streamed_reply_is_cut_into_sentences() {
+        let reply =
+            "Hey! You're at about 2.5 hours to level 58. Want me to mark this spot? Let's go!";
+        for piece in [1, 3, 7, 200] {
+            assert_eq!(
+                split(reply, piece),
+                [
+                    "Hey! You're at about 2.5 hours to level 58.",
+                    "Want me to mark this spot?",
+                    "Let's go!"
+                ],
+                "{piece}"
+            );
+        }
+        // Hebrew, quotes and an ellipsis.
+        assert_eq!(
+            split("וואו, עלית רמה! \"כל הכבוד...\" נמשיך לחרוש?", 4),
+            ["וואו, עלית רמה! \"כל הכבוד...\"", "נמשיך לחרוש?"]
+        );
+        // "[silent]" is never cut up to be spoken.
+        assert_eq!(
+            split("[silent]. Talking to chat.", 2),
+            ["[silent]. Talking to chat."]
+        );
+        assert!(is_silent(&split("[silent]", 3)[0]));
     }
 }

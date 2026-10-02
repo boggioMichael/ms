@@ -2,23 +2,34 @@
 //! while it talks — the way Discord ducks other sounds during a call — so
 //! it is heard over MapleStory's music and skills.
 //!
-//! The voice is played with `PlaySound` from memory. The game is ducked
+//! The voice is played with `PlaySound` from memory, one clip after the
+//! other (a reply comes a sentence at a time). The game is ducked
 //! through Windows' per-application volume (WASAPI audio sessions): every
 //! session of the game's process is set to a fraction of its own volume and
 //! put back afterwards — also when MapleSyrup's window is closed, from the
 //! console's close handler.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 /// How loud the game stays while MapleSyrup speaks, as a fraction of its volume.
 pub const DUCK_TO: f32 = 0.3;
 
+/// The pause between two sentences of a reply. It also covers the sound
+/// card's delay, so a clip is never cut off by the next.
+const SENTENCE_GAP: Duration = Duration::from_millis(150);
+
 pub struct Player {
     /// The WAV being played: `PlaySound` reads it in place until it ends.
     #[cfg_attr(not(windows), allow(dead_code))]
     playing: Option<Vec<u8>>,
+    /// When the clip playing now ends.
+    ends: Option<Instant>,
+    /// When the game may come back up: a moment after the last clip.
     until: Option<Instant>,
     ducked: bool,
+    /// Clips waiting their turn: samples, their rate, whose sound to duck.
+    queue: VecDeque<(Vec<i16>, u32, Option<u32>)>,
 }
 
 impl Default for Player {
@@ -31,9 +42,22 @@ impl Player {
     pub fn new() -> Self {
         Self {
             playing: None,
+            ends: None,
             until: None,
             ducked: false,
+            queue: VecDeque::new(),
         }
+    }
+
+    /// Play `samples` after the clips before it (now, if none is playing).
+    pub fn enqueue(&mut self, samples: Vec<i16>, rate: u32, duck_pid: Option<u32>) {
+        self.queue.push_back((samples, rate, duck_pid));
+        self.tick();
+    }
+
+    /// Whether a clip is playing right now.
+    pub fn busy(&self) -> bool {
+        self.ends.is_some_and(|ends| Instant::now() < ends)
     }
 
     /// Play `samples` (mono, at `rate`), ducking the process `duck_pid`'s
@@ -67,12 +91,16 @@ impl Player {
         {
             self.playing = Some(wav);
         }
+        let now = Instant::now();
+        self.ends = Some(now + length + SENTENCE_GAP);
         // A short tail, so the game comes back after the last word, not on it.
-        self.until = Some(Instant::now() + length + Duration::from_millis(250));
+        self.until = Some(now + length + Duration::from_millis(250));
         length
     }
 
     pub fn stop(&mut self) {
+        self.queue.clear();
+        self.ends = None;
         #[cfg(windows)]
         unsafe {
             use windows::Win32::Media::Audio::PlaySoundW;
@@ -84,11 +112,18 @@ impl Player {
     }
 
     pub fn speaking(&self) -> bool {
-        self.until.is_some_and(|until| Instant::now() < until)
+        !self.queue.is_empty() || self.until.is_some_and(|until| Instant::now() < until)
     }
 
-    /// Call often: puts the game's volume back once the voice has ended.
+    /// Call often: starts the next clip when one ends, and puts the game's
+    /// volume back once the voice has ended.
     pub fn tick(&mut self) {
+        if !self.busy()
+            && let Some((samples, rate, duck_pid)) = self.queue.pop_front()
+        {
+            self.play(&samples, rate, duck_pid);
+            return;
+        }
         if !self.speaking() {
             if self.ducked {
                 restore();
@@ -96,6 +131,7 @@ impl Player {
             }
             if self.until.is_some() {
                 self.until = None;
+                self.ends = None;
                 self.playing = None;
             }
         }
@@ -232,6 +268,29 @@ mod tests {
         let length = player.play(&vec![0i16; 24_000], 24_000, None);
         assert_eq!(length, Duration::from_secs(1));
         assert!(player.speaking());
+        player.stop();
+        assert!(!player.speaking());
+    }
+
+    #[test]
+    fn clips_play_one_after_the_other() {
+        let mut player = Player::new();
+        // Two sentences of 0.1 s each.
+        player.enqueue(vec![0i16; 2_400], 24_000, None);
+        player.enqueue(vec![0i16; 2_400], 24_000, None);
+        assert!(player.busy());
+        assert_eq!(player.queue.len(), 1);
+        std::thread::sleep(Duration::from_millis(280));
+        player.tick();
+        // The second has started; the voice is not over.
+        assert!(player.queue.is_empty());
+        assert!(player.busy() && player.speaking());
+        std::thread::sleep(Duration::from_millis(400));
+        player.tick();
+        assert!(!player.busy() && !player.speaking());
+        // Stopping drops what was waiting.
+        player.enqueue(vec![0i16; 24_000], 24_000, None);
+        player.enqueue(vec![0i16; 24_000], 24_000, None);
         player.stop();
         assert!(!player.speaking());
     }

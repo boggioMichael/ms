@@ -1,12 +1,14 @@
 //! The OpenAI client against a stand-in server on this machine, through the
 //! same `curl` the real calls use: model fallback, the reasoning retry,
-//! speech, and refused keys.
+//! streamed replies, speech, refused keys, and the worker speaking a reply
+//! a sentence at a time.
 
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ms::ai::openai::Turn;
-use ms::ai::{AiError, OpenAi};
+use ms::ai::{AiError, Brain, Done, Job, OpenAi};
 use ms::phone::http::{Conn, Response};
 use serde_json::{Value, json};
 
@@ -46,6 +48,31 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                                         400,
                                         &json!({"error": {"message": "Unsupported parameter: 'reasoning.effort' is not supported with this model."}}),
                                     )
+                                }
+                                Some(model) if body["stream"] == true => {
+                                    let last = body["input"]
+                                        .as_array()
+                                        .and_then(|a| a.last())
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    let said = last["content"].as_str().unwrap_or("");
+                                    let reply = format!(
+                                        "Hello there, my friend! ({model}) you said: {said}."
+                                    );
+                                    // Server-sent events, the text a few characters at a time.
+                                    let mut events = String::from(
+                                        "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+                                    );
+                                    let chars: Vec<char> = reply.chars().collect();
+                                    for piece in chars.chunks(5) {
+                                        let delta: String = piece.iter().collect();
+                                        events.push_str(&format!(
+                                            "event: response.output_text.delta\ndata: {}\n\n",
+                                            json!({"type": "response.output_text.delta", "delta": delta})
+                                        ));
+                                    }
+                                    events.push_str("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n");
+                                    Response::new(200, "text/event-stream", events.into_bytes())
                                 }
                                 Some(model) => {
                                     let last = body["input"]
@@ -121,6 +148,97 @@ fn replies_fall_back_through_the_models_and_drop_reasoning_when_refused() {
     assert!(last["body"].get("reasoning").is_none());
     assert_eq!(last["body"]["store"], false);
     assert_eq!(last["body"]["instructions"], "be a dog");
+}
+
+#[test]
+fn a_streamed_reply_arrives_in_pieces_after_the_same_fallbacks() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let turns = vec![Turn {
+        role: "user",
+        text: "how am I doing".into(),
+    }];
+    let mut pieces = Vec::new();
+    let reply = ai
+        .respond_stream("be a dog", &turns, &mut |piece| {
+            pieces.push(piece.to_string())
+        })
+        .unwrap();
+    assert_eq!(
+        reply,
+        "Hello there, my friend! (gpt-6.1-sol) you said: how am I doing."
+    );
+    assert!(pieces.len() > 5);
+    assert_eq!(pieces.concat(), reply);
+    let last = seen.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(last["body"]["stream"], true);
+    assert_eq!(ai.model().as_deref(), Some("gpt-6.1-sol"));
+}
+
+#[test]
+fn the_worker_speaks_a_reply_a_sentence_at_a_time() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    worker.send(Job::Converse {
+        heard: "can you see my game".into(),
+        snapshot: "HP is about 80%.".into(),
+        speak: true,
+    });
+    let mut reply = None;
+    let mut spoken = Vec::new();
+    while reply.is_none() || spoken.len() < 2 {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { text, .. }) => reply = Some(text),
+            Ok(Done::Audio {
+                text,
+                samples,
+                first,
+                ..
+            }) => {
+                assert_eq!(samples.len(), 2400);
+                spoken.push((text, first));
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(Done::Silent { heard }) => panic!("silent: {heard}"),
+            Err(e) => panic!("{e}: {reply:?} {spoken:?}"),
+        }
+    }
+    assert_eq!(
+        reply.as_deref(),
+        Some("Hello there, my friend! (gpt-6.1-sol) you said: can you see my game.")
+    );
+    assert_eq!(
+        spoken,
+        [
+            ("Hello there, my friend!".to_string(), true),
+            (
+                "(gpt-6.1-sol) you said: can you see my game.".to_string(),
+                false
+            )
+        ]
+    );
+    // The model was told what is on screen.
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r["path"] == "/v1/responses")
+        .cloned()
+        .unwrap();
+    assert!(
+        asked["body"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("HP is about 80%.")
+    );
 }
 
 #[test]
