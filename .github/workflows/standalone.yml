@@ -107,8 +107,8 @@ jobs:
           set -o pipefail
           {
             echo "ffmpeg on the PATH: $(command -v ffmpeg || echo none)"
-            ./target/release/maplesyrup.exe --record-test
-            status=$?
+            status=0
+            ./target/release/maplesyrup.exe --record-test || status=$?
             # What this machine's screen gives ffmpeg directly.
             ff="$(cygpath -u "$APPDATA")/MapleSyrup/ffmpeg/ffmpeg.exe"
             if [ -f "$ff" ]; then

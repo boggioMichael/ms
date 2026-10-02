@@ -345,14 +345,8 @@ fn arguments(
         "1",
     ]);
     push(&["-progress", &progress.display().to_string()]);
-    // The screen, stamped with the time each frame is taken. A short queue:
-    // a frame that can't be taken in time is skipped, not piled up.
-    let stamped = [
-        "-use_wallclock_as_timestamps",
-        "1",
-        "-thread_queue_size",
-        "16",
-    ];
+    // The screen, stamped with the time each frame is taken.
+    let stamped = ["-use_wallclock_as_timestamps", "1"];
     match grab {
         Grab::Duplication => {
             push(&stamped);
@@ -397,8 +391,6 @@ fn arguments(
     // The sound: a sample's time is when it was written.
     let sound = format!("tcp://127.0.0.1:{port}?listen=1");
     push(&[
-        "-thread_queue_size",
-        "1024",
         "-itsoffset",
         &start,
         "-f",
@@ -416,10 +408,10 @@ fn arguments(
         "-map",
         "1:a",
     ]);
-    // At most 1080 lines tall (a 4K screen is a lot to encode while
-    // playing), in the colours players expect.
     // Thirty frames a second, each frame in the slot nearest to when it was
-    // taken (a frame that could not be taken in time is repeated).
+    // taken (a frame that could not be taken in time is repeated); at most
+    // 1080 lines tall (a 4K screen is a lot to encode while playing), in
+    // the colours players expect.
     let filters = format!(
         "fps=30:round=near,scale=w=-2:h='min(1080,ih)':flags=bilinear:out_color_matrix=bt709:out_range=tv,format={pixels}"
     );
@@ -1390,8 +1382,10 @@ mod tests {
         );
         let text = args.join(" ");
         assert!(text.contains(
-            "-use_wallclock_as_timestamps 1 -thread_queue_size 16 -f lavfi -i ddagrab=output_idx=0:framerate=30"
+            "-use_wallclock_as_timestamps 1 -f lavfi -i ddagrab=output_idx=0:framerate=30"
         ));
+        // Newer ffmpeg takes a queue size only for outputs.
+        assert!(!text.contains("thread_queue_size"));
         assert!(text.contains("-itsoffset 1700000000.250000 -f s16le"));
         assert!(text.contains("tcp://127.0.0.1:4567?listen=1"));
         assert!(text.contains("-copyts"));
