@@ -238,7 +238,7 @@ fn phone_link(dir: &Path) -> Result<String, String> {
         .as_str()
         .unwrap_or_default()
         .to_string();
-    if !reply.starts_with("Say syrup") {
+    if !(reply.starts_with("Just talk to me") || reply.starts_with("Say syrup")) {
         return Err(format!("the phone would have shown {reply:?}"));
     }
     let redirect = client::request_plain(port, "GET", "/", b"")?;

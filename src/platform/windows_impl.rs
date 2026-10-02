@@ -20,7 +20,9 @@ unsafe extern "system" fn on_ctrl(kind: u32) -> BOOL {
         // Handled: the main loop stops and tidies up.
         return BOOL(1);
     }
-    // Closing the window, logging off: let Windows end the process.
+    // Closing the window, logging off: put the game's volume back if it was
+    // turned down for MapleSyrup's voice, then let Windows end the process.
+    super::sound::restore();
     BOOL(0)
 }
 
