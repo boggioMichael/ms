@@ -292,31 +292,6 @@ mod windows_capture {
             .any(|index| buffer[index * 4..index * 4 + 3] != *first)
     }
 
-    /// Windows whose titles can legitimately contain "maplestory" without
-    /// being the actual game client, e.g. a media player playing a recorded
-    /// clip or a browser tab with the word in its title.
-    const NON_GAME_TITLE_MARKERS: &[&str] = &[
-        ".mp4",
-        ".mkv",
-        ".avi",
-        ".mov",
-        ".wmv",
-        ".webm",
-        ".gif",
-        ".flv",
-        "vlc",
-        "media player",
-        "potplayer",
-        "mpc-",
-        "mpc-hc",
-        "quicktime",
-        "youtube",
-        "chrome",
-        "firefox",
-        "edge",
-        "obs ",
-    ];
-
     fn last_status() -> &'static std::sync::Mutex<Option<String>> {
         static LAST: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
             std::sync::OnceLock::new();
@@ -387,26 +362,16 @@ mod windows_capture {
     /// match ("MapleStory") and otherwise a substring match that isn't a
     /// known non-game window (video players, browsers, etc.).
     pub fn capture_game_window_info() -> Option<(String, RgbaImage)> {
-        const GAME_TITLE_SUBSTRING: &str = "maplestory";
-
         let candidates = visible_window_titles();
         let lowered: Vec<(String, String)> = candidates
             .iter()
             .map(|title| (title.clone(), title.to_ascii_lowercase()))
             .collect();
 
-        let exact = lowered
-            .iter()
-            .find(|(_, lower)| lower == GAME_TITLE_SUBSTRING);
-
-        let best = exact.or_else(|| {
-            lowered.iter().find(|(_, lower)| {
-                lower.contains(GAME_TITLE_SUBSTRING)
-                    && !NON_GAME_TITLE_MARKERS
-                        .iter()
-                        .any(|marker| lower.contains(marker))
-            })
-        });
+        let chosen = super::pick_game_window(&candidates);
+        let best = chosen
+            .as_ref()
+            .and_then(|title| lowered.iter().find(|(t, _)| t == title));
 
         {
             let outcome = best
@@ -430,6 +395,9 @@ pub use windows_capture::{
 };
 
 #[cfg(not(target_os = "windows"))]
+use image::RgbaImage;
+
+#[cfg(not(target_os = "windows"))]
 pub fn capture_window_by_title(_: &str) -> Option<RgbaImage> {
     None
 }
@@ -447,4 +415,170 @@ pub fn capture_window_by_title_info(_: &str) -> Option<(String, RgbaImage)> {
 #[cfg(not(target_os = "windows"))]
 pub fn list_windows() -> Vec<String> {
     Vec::new()
+}
+
+/// Windows whose titles can legitimately contain "maplestory" without
+/// being the actual game client, e.g. a media player playing a recorded
+/// clip or a browser tab with the word in its title.
+const NON_GAME_TITLE_MARKERS: &[&str] = &[
+    ".mp4",
+    ".mkv",
+    ".avi",
+    ".mov",
+    ".wmv",
+    ".webm",
+    ".gif",
+    ".flv",
+    "vlc",
+    "media player",
+    "potplayer",
+    "mpc-",
+    "mpc-hc",
+    "quicktime",
+    "youtube",
+    "chrome",
+    "firefox",
+    "edge",
+    "obs ",
+    "maplesyrup",
+];
+
+/// Which of `titles` is the game: one called exactly "MapleStory", or else
+/// the first containing it that is not a known non-game window (a video
+/// player, a browser, MapleSyrup's own windows).
+pub fn pick_game_window(titles: &[String]) -> Option<String> {
+    const GAME: &str = "maplestory";
+    let lowered: Vec<String> = titles.iter().map(|t| t.to_ascii_lowercase()).collect();
+    let exact = lowered.iter().position(|t| t.trim() == GAME);
+    let fallback = || {
+        lowered
+            .iter()
+            .position(|t| t.contains(GAME) && !NON_GAME_TITLE_MARKERS.iter().any(|m| t.contains(m)))
+    };
+    exact.or_else(fallback).map(|i| titles[i].clone())
+}
+
+/// What one attempt to capture the game gave.
+pub enum Captured {
+    /// The game window's title and its pixels.
+    Frame {
+        title: String,
+        image: image::RgbaImage,
+    },
+    /// No window that looks like the game.
+    NotFound,
+    /// The window is there but gave no picture, and why.
+    Unavailable(String),
+}
+
+/// A capture session on the game window, through syrup's capture: the
+/// window is found once and kept between frames (syrup's `Window`), and a
+/// failed capture says why, so the companion can tell "minimised" from
+/// "closed".
+pub struct GameCapture {
+    /// A title to match instead of looking for MapleStory.
+    query: Option<String>,
+    window: Option<syrup::capture::Window>,
+}
+
+impl GameCapture {
+    /// Find the MapleStory client by its title.
+    pub fn auto() -> Self {
+        Self {
+            query: None,
+            window: None,
+        }
+    }
+
+    /// Capture the first window whose title contains `query` instead.
+    pub fn titled(query: &str) -> Self {
+        Self {
+            query: Some(query.to_string()),
+            window: None,
+        }
+    }
+
+    pub fn capture(&mut self) -> Captured {
+        if self.window.is_none() {
+            let titles = syrup::capture::list_windows();
+            let target = match &self.query {
+                Some(query) => {
+                    let query = query.to_lowercase();
+                    titles
+                        .iter()
+                        .find(|t| t.to_lowercase().contains(&query) && !is_own_window(t))
+                        .cloned()
+                }
+                None => pick_game_window(&titles),
+            };
+            let Some(target) = target else {
+                return Captured::NotFound;
+            };
+            match syrup::capture::Window::find(&target) {
+                // syrup matches by "contains"; make sure it is the one chosen.
+                Ok(window) if window.title() == target => self.window = Some(window),
+                Ok(window) => {
+                    return Captured::Unavailable(format!(
+                        "another window, \"{}\", has the game's title in its own; close it or start MapleSyrup with --window",
+                        window.title()
+                    ));
+                }
+                Err(syrup::capture::CaptureError::NotFound) => return Captured::NotFound,
+                Err(e) => return Captured::Unavailable(e.to_string()),
+            }
+        }
+        let Some(window) = self.window.as_mut() else {
+            return Captured::NotFound;
+        };
+        match window.capture() {
+            Ok(image) => Captured::Frame {
+                title: window.title().to_string(),
+                image,
+            },
+            Err(syrup::capture::CaptureError::Closed | syrup::capture::CaptureError::NotFound) => {
+                self.window = None;
+                Captured::NotFound
+            }
+            Err(e) => {
+                let reason = e.to_string();
+                if reason.contains("minimised") {
+                    Captured::Unavailable("it is minimised".into())
+                } else {
+                    Captured::Unavailable(reason)
+                }
+            }
+        }
+    }
+}
+
+/// MapleSyrup's own windows (the preview, the console) mention the game.
+fn is_own_window(title: &str) -> bool {
+    title.to_ascii_lowercase().contains("maplesyrup")
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+
+    fn titles(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_exact_title_wins_over_lookalikes_above_it() {
+        let list = titles(&["MapleStory boss run.mp4 - VLC", "MapleSyrup", "MapleStory"]);
+        assert_eq!(pick_game_window(&list).as_deref(), Some("MapleStory"));
+    }
+
+    #[test]
+    fn a_decorated_title_is_taken_when_nothing_is_exact() {
+        let list = titles(&["MapleStory - YouTube - Google Chrome", "MapleStory v.271"]);
+        assert_eq!(pick_game_window(&list).as_deref(), Some("MapleStory v.271"));
+    }
+
+    #[test]
+    fn no_game_no_pick() {
+        let list = titles(&["MapleSyrup — Vision Preview", "Notepad", "maplestory.mkv"]);
+        assert_eq!(pick_game_window(&list), None);
+    }
 }

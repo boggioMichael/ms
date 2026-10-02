@@ -113,10 +113,60 @@ pub struct OcrWord {
     pub h: u32,
 }
 
+/// Which recogniser reads text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    /// Tesseract, an external program (`TESSERACT_BIN`, the PATH, or its
+    /// standard Windows install folders).
+    Tesseract,
+    /// The OCR engine built into Windows, used when Tesseract is not
+    /// installed (or when `MS_OCR=windows` asks for it).
+    Windows,
+}
+
+/// The recogniser `ocr_region` uses on this machine, if any.
+///
+/// Tesseract stays first where it is installed, since the HUD parsers were
+/// measured against it. Without it — the usual case on a gaming PC — the
+/// engine Windows ships with reads the HUD instead of nothing at all.
+/// `MS_OCR=tesseract` or `MS_OCR=windows` chooses explicitly.
+pub fn engine() -> Option<Engine> {
+    let tesseract = find_tesseract_binary().is_some();
+    let windows = windows_ocr_available();
+    match env::var("MS_OCR").ok().as_deref() {
+        Some("windows") if windows => Some(Engine::Windows),
+        Some("tesseract") if tesseract => Some(Engine::Tesseract),
+        _ if tesseract => Some(Engine::Tesseract),
+        _ if windows => Some(Engine::Windows),
+        _ => None,
+    }
+}
+
+/// Whether the Windows engine can be created, asked once: it depends on an
+/// installed language pack, which does not change while running.
+fn windows_ocr_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(crate::vision::ocr_windows::is_available)
+}
+
 /// Run OCR over an image crop and return the recognized text.
 pub fn ocr_region(image: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> Option<OcrResult> {
-    let binary = find_tesseract_binary()?;
+    let engine = engine()?;
     let crop = crop_region(image, x, y, w, h)?;
+    if engine == Engine::Windows {
+        // The same enlarged, contrast-stretched crop Tesseract is given.
+        let prepared = preprocess_image(&crop, Preprocess::ContrastSharp).to_rgba8();
+        let text = normalize_text(&crate::vision::ocr_windows::recognize(&prepared)?);
+        if text.trim().is_empty() {
+            return None;
+        }
+        return Some(OcrResult {
+            text,
+            available: true,
+            words: Vec::new(),
+        });
+    }
+    let binary = find_tesseract_binary()?;
 
     // OCR starts an external process, so process one contrast-enhanced frame
     // per stream tick rather than repeatedly scanning overlapping crops.
@@ -169,7 +219,7 @@ pub fn ocr_region(image: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> Option<O
 
 /// Check whether an OCR backend is available on the current machine.
 pub fn is_ocr_available() -> bool {
-    find_tesseract_binary().is_some()
+    engine().is_some()
 }
 
 fn crop_region(image: &RgbaImage, x: u32, y: u32, w: u32, h: u32) -> Option<RgbaImage> {
@@ -232,8 +282,29 @@ fn upscale_for_ocr(image: DynamicImage) -> DynamicImage {
     image.resize_exact(width, height, image::imageops::FilterType::Lanczos3)
 }
 
+/// Where the crops handed to Tesseract are written.
+///
+/// Tesseract opens its input with narrow-character file calls, which cannot
+/// reach a path with non-ASCII characters — and on Windows the temporary
+/// folder sits under the user's name (a Hebrew name, say). There, the
+/// crops go to the Public folder, which every Windows has under an ASCII
+/// path, instead.
+fn ocr_temp_dir() -> PathBuf {
+    let temp = env::temp_dir();
+    if cfg!(windows)
+        && !temp.to_string_lossy().is_ascii()
+        && let Some(public) = env::var_os("PUBLIC")
+    {
+        let dir = PathBuf::from(public).join("MapleSyrup").join("ocr");
+        if fs::create_dir_all(&dir).is_ok() && dir.to_string_lossy().is_ascii() {
+            return dir;
+        }
+    }
+    temp
+}
+
 fn write_temp_image(image: &DynamicImage) -> Option<TempImage> {
-    let temp_dir = env::temp_dir();
+    let temp_dir = ocr_temp_dir();
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()?
@@ -267,11 +338,19 @@ fn find_tesseract_binary() -> Option<PathBuf> {
         }
     }
 
-    let candidates = [
+    let mut candidates = vec![
         PathBuf::from(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
         PathBuf::from(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
-        PathBuf::from(r"C:\Users\magshimim\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"),
     ];
+    // A per-user install (winget's default for the UB-Mannheim build).
+    if let Some(local) = env::var_os("LOCALAPPDATA") {
+        candidates.push(
+            PathBuf::from(local)
+                .join("Programs")
+                .join("Tesseract-OCR")
+                .join("tesseract.exe"),
+        );
+    }
 
     candidates.into_iter().find(|path| path.exists())
 }

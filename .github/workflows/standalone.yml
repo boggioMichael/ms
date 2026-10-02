@@ -1,0 +1,203 @@
+name: MapleSyrup standalone
+
+# Builds and checks the standalone companion (MapleSyrup.exe) on master, a
+# branch under claude/ or a version tag, and publishes what it made where it
+# can be read with git:
+#
+#   build-output/<branch>   the Windows package (MapleSyrup.zip), the
+#                           installer (MapleSyrup-Setup-<version>.exe) and
+#                           every log
+#   build-cache/vendor      the crates this tree depends on, for offline builds
+#                           (only for a commit whose message says [vendor])
+#
+# A version tag (v0.4.0) also makes a draft GitHub release with the installer
+# and the portable zip, to publish by hand.
+# A commit message with [vendor-only] runs the vendor job alone.
+on:
+  push:
+    branches: ["master", "claude/**"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: never
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  vendor:
+    if: contains(github.event.head_commit.message, '[vendor')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Vendor
+        run: |
+          set -o pipefail
+          cargo vendor --versioned-dirs vendor > vendor-config.toml 2> vendor.log || { cat vendor.log; exit 1; }
+          du -sh vendor
+          out="$RUNNER_TEMP/cache"
+          mkdir -p "$out"
+          tar czf "$RUNNER_TEMP/vendor.tar.gz" vendor vendor-config.toml Cargo.lock
+          # GitHub refuses files over 100 MB.
+          split -b 90m -d "$RUNNER_TEMP/vendor.tar.gz" "$out/vendor.tar.gz.part-"
+          cp Cargo.lock vendor-config.toml vendor.log "$out/"
+          git rev-parse HEAD > "$out/commit.txt"
+          ls -l "$out"
+      - name: Publish
+        run: |
+          cd "$RUNNER_TEMP/cache"
+          git init -q && git checkout -q -b cache
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "vendored crates [skip ci]"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" "cache:refs/heads/build-cache/vendor"
+
+  windows:
+    if: ${{ !contains(github.event.head_commit.message, '[vendor-only]') }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # The C runtime linked in: MapleSyrup.exe runs on a PC without the
+      # Visual C++ Redistributable.
+      RUSTFLAGS: "-C target-feature=+crt-static"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Toolchain
+        run: |
+          mkdir -p logs
+          { rustc --version; cargo --version; } | tee logs/toolchain.log
+      - name: Format
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo fmt --check 2>&1 | tee logs/fmt.log
+      - name: Clippy
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo clippy --all-targets -- -D warnings 2>&1 | tee logs/clippy.log
+      - name: Build
+        run: |
+          set -o pipefail
+          cargo build --release --bins 2>&1 | tee logs/build.log
+      - name: Tests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          cargo test --release 2>&1 | tee logs/test.log
+          echo "TESTS PASSED: $(grep -oE '[0-9]+ passed' logs/test.log | awk '{s+=$1} END {print s}')" | tee -a logs/test.log
+      - name: Self-test of the built program
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ./target/release/maplesyrup.exe --self-test 2>&1 | tee logs/self-test.log
+      - name: Package
+        run: |
+          pkg="$RUNNER_TEMP/MapleSyrup"
+          mkdir -p "$pkg"
+          cp target/release/maplesyrup.exe "$pkg/MapleSyrup.exe"
+          cp target/release/vision_debug.exe "$pkg/"
+          if [ -d package ]; then cp -r package/. "$pkg/"; fi
+          (cd "$RUNNER_TEMP" && 7z a -tzip MapleSyrup.zip MapleSyrup > /dev/null)
+          ls -l "$RUNNER_TEMP/MapleSyrup.zip" | tee logs/package.log
+          sha256sum "$RUNNER_TEMP/MapleSyrup.zip" | tee -a logs/package.log
+      - name: Installer
+        run: |
+          set -o pipefail
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          iscc="/c/Program Files (x86)/Inno Setup 6/ISCC.exe"
+          if [ ! -f "$iscc" ]; then choco install innosetup -y --no-progress > logs/innosetup.log 2>&1; fi
+          MSYS_NO_PATHCONV=1 "$iscc" /Q "/DAppVersion=$version" "/DSourceDir=$(cygpath -w "$RUNNER_TEMP/MapleSyrup")" "/O$(cygpath -w "$RUNNER_TEMP")" installer/MapleSyrup.iss 2>&1 | tee logs/installer.log
+          ls -l "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe | tee -a logs/installer.log
+          sha256sum "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe | tee -a logs/installer.log
+      - name: Installer test (install, run, uninstall)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          {
+            setup=$(ls "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe)
+            MSYS_NO_PATHCONV=1 "$setup" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART "/LOG=$(cygpath -w "$RUNNER_TEMP/setup.log")"
+            app="$(cygpath -u "$LOCALAPPDATA")/Programs/MapleSyrup"
+            menu="$(cygpath -u "$APPDATA")/Microsoft/Windows/Start Menu/Programs/MapleSyrup"
+            ls -l "$app" "$menu"
+            test -f "$app/MapleSyrup.exe" && echo "INSTALLED: $app"
+            echo "sessions folder: $(cat "$app/sessions-folder.txt")"
+            test -f "$menu/MapleSyrup.lnk" && echo "SHORTCUT: MapleSyrup.lnk"
+            "$app/MapleSyrup.exe" --self-test && echo "INSTALLED COPY: self-test passed"
+            MSYS_NO_PATHCONV=1 "$app/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+            for i in $(seq 1 30); do [ -f "$app/MapleSyrup.exe" ] || break; sleep 1; done
+            if [ -f "$app/MapleSyrup.exe" ]; then echo "UNINSTALL: files left"; exit 1; else echo "UNINSTALLED"; fi
+          } 2>&1 | tee logs/installer-test.log
+      - name: Publish
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/out"
+          mkdir -p "$out"
+          cp -r logs "$out/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/MapleSyrup.zip" "$out/" 2>/dev/null || true
+          cp "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe "$out/" 2>/dev/null || true
+          git rev-parse HEAD > "$out/commit.txt"
+          echo "${{ job.status }}" > "$out/status.txt"
+          cd "$out"
+          git init -q && git checkout -q -b out
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "windows build of $(cat commit.txt) [skip ci]"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" "out:refs/heads/build-output/$GITHUB_REF_NAME/windows"
+      - name: Draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          setup=$(ls "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe)
+          portable="$RUNNER_TEMP/MapleSyrup-$GITHUB_REF_NAME-portable.zip"
+          cp "$RUNNER_TEMP/MapleSyrup.zip" "$portable"
+          # A release made on GitHub's page (which made the tag) gets the
+          # files built here; otherwise a draft is made with them.
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$setup" "$portable" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --draft --title "MapleSyrup $GITHUB_REF_NAME" \
+              --notes-file installer/release-notes.md "$setup" "$portable"
+          fi
+
+  linux:
+    if: ${{ !contains(github.event.head_commit.message, '[vendor-only]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Checks
+        continue-on-error: true
+        run: |
+          set +e
+          mkdir -p logs
+          cargo fmt --check 2>&1 | tee logs/fmt.log
+          cargo clippy --all-targets -- -D warnings 2>&1 | tee logs/clippy.log
+          cargo test --release 2>&1 | tee logs/test.log
+          echo "TESTS PASSED: $(grep -oE '[0-9]+ passed' logs/test.log | awk '{s+=$1} END {print s}')" | tee -a logs/test.log
+      - name: Publish
+        if: always()
+        run: |
+          out="$RUNNER_TEMP/out"
+          mkdir -p "$out"
+          cp -r logs "$out/" 2>/dev/null || true
+          git rev-parse HEAD > "$out/commit.txt"
+          cd "$out"
+          git init -q && git checkout -q -b out
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "linux checks of $(cat commit.txt) [skip ci]"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" "out:refs/heads/build-output/$GITHUB_REF_NAME/linux"

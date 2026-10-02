@@ -1,18 +1,53 @@
 [package]
 name = "ms"
-version = "0.1.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
+# `cargo run --release` starts the companion; the other binaries are tools.
+default-run = "maplesyrup"
 
 [dependencies]
 image = "0.24"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
-windows = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_Storage_Xps", "Media_Ocr", "Graphics_Imaging", "Storage_Streams", "Foundation"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 minifb = "0.28.0"
+
+# The generic engine MapleSyrup is the MapleStory edition of. Pinned to the
+# newest syrup (PR #2, "compiled operations"): its window capture keeps the
+# window between frames and says why a capture failed.
+syrup = { git = "https://github.com/boggioMichael/syrup", rev = "8995d89fa972ac58d1f387031398d65ed7d1d2ac" }
+
+# The phone link: HTTPS on the local network (a phone browser only opens the
+# microphone for a secure page), with a self-signed certificate made on the
+# first run. ring rather than aws-lc keeps the build free of cmake and nasm.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rcgen = "0.13"
+ring = "0.17"
+qrcode = { version = "0.14", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Foundation",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_Speech",
+    "Win32_Storage_Xps",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Console",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_System_Variant",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
