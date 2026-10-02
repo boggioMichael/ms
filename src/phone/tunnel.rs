@@ -63,12 +63,16 @@ pub fn download(settings: &Path) -> Result<PathBuf, String> {
     };
     std::fs::create_dir_all(settings).map_err(|e| e.to_string())?;
     let dest = settings.join(binary_name());
-    let partial = settings.join(format!("{}.partial", binary_name()));
+    let partial_name = format!("{}.partial", binary_name());
+    let partial = settings.join(&partial_name);
     let url = format!("https://github.com/cloudflare/cloudflared/releases/latest/download/{asset}");
-    // curl ships with Windows 10 and later.
+    // curl ships with Windows 10 and later. It runs in the folder and is
+    // given the file's name only: Windows' curl can't take a path with
+    // letters outside the PC's code page (a user folder in Hebrew, say).
     let status = Command::new("curl")
+        .current_dir(settings)
         .args(["-L", "--fail", "--silent", "--show-error", "-o"])
-        .arg(&partial)
+        .arg(&partial_name)
         .arg(&url)
         .status()
         .map_err(|e| format!("could not run curl to download cloudflared: {e}"))?;
