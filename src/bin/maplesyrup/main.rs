@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
+use ms::app::panel;
 use ms::app::screen::{self, LogLine};
 use ms::app::session::{self, Session};
 use ms::capture::{Captured, GameCapture};
@@ -29,6 +30,7 @@ use ms::companion::{Action, Command, Companion, GameView, Kind, Observation, Set
 use ms::observe::frame_result::{FrameTimings, VisionFrameResult};
 use ms::observe::preview::Preview;
 use ms::phone::{self, Hub, Inbound, VoiceOn, qr, tls, tunnel};
+use ms::platform::overlay::{self, Overlay};
 use ms::platform::{self, voice::Voice};
 use ms::util::timing::FPSCounter;
 use ms::vision::snapshot::PerceptionPipeline;
@@ -63,6 +65,9 @@ OPTIONS
   --mp-low N            warn below N% MP (default 15)
   --fps N               frames watched per second (default 10)
   --preview             also open a window showing what the engine sees
+  --no-overlay          no panel over the game window
+  --overlay-on-stream   let OBS and screenshots see the panel (by default it
+                        keeps out of captures)
   --plain               no colours or redrawing in the console
   --self-test           check this PC: the engine, the phone link, the voice
   --help
@@ -82,6 +87,8 @@ struct Options {
     mp_low: f32,
     fps: f64,
     preview: bool,
+    overlay: bool,
+    overlay_on_stream: bool,
     plain: bool,
     self_test: bool,
 }
@@ -101,6 +108,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         mp_low: 15.0,
         fps: 10.0,
         preview: false,
+        overlay: true,
+        overlay_on_stream: false,
         plain: false,
         self_test: false,
     };
@@ -137,6 +146,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--mp-low" => o.mp_low = number("--mp-low", value("--mp-low")?)? as f32,
             "--fps" => o.fps = number("--fps", value("--fps")?)?.clamp(1.0, 30.0),
             "--preview" => o.preview = true,
+            "--no-overlay" => o.overlay = false,
+            "--overlay-on-stream" => o.overlay_on_stream = true,
             "--plain" => o.plain = true,
             "--self-test" => o.self_test = true,
             "-h" | "--help" | "/?" => return Err(String::new()),
@@ -518,7 +529,12 @@ impl Outputs {
             };
             println!("{time}  {who:<7} {text}");
         }
-        self.log.push(LogLine { time, kind, text });
+        self.log.push(LogLine {
+            time,
+            kind,
+            text,
+            at: Instant::now(),
+        });
         if self.log.len() > 200 {
             self.log.drain(..100);
         }
@@ -636,6 +652,20 @@ fn run(options: Options) -> Result<(), String> {
     };
     out.apply(companion.hello(), &companion, None, options.replies);
 
+    // The panel over the game (Windows): only for the live game, not a screenshot.
+    let mut panel_window = if options.overlay && options.input.is_none() {
+        match Overlay::new(options.overlay_on_stream) {
+            Ok(window) => Some(window),
+            Err(e) => {
+                out.push(Kind::Info, format!("no panel over the game: {e}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut panel_failed = false;
+
     let mut preview: Option<Preview> = None;
     let mut preview_failed = false;
     let mut latest_image: Option<Arc<RgbaImage>> = None;
@@ -681,6 +711,9 @@ fn run(options: Options) -> Result<(), String> {
             out.apply(actions, &companion, latest_image.clone(), options.replies);
         } else if let Some(p) = preview.as_mut() {
             p.pump();
+        }
+        if let Some(window) = &panel_window {
+            window.pump();
         }
 
         if let Some(hub) = out.phone.clone() {
@@ -746,6 +779,47 @@ fn run(options: Options) -> Result<(), String> {
                     "fps": fps,
                     "wake": "syrup",
                 }));
+            }
+            if let Some(window) = panel_window.as_mut() {
+                let obs = companion.last();
+                let area = match obs.map(|o| &o.game) {
+                    Some(GameView::Seen(title)) => overlay::game_area(title),
+                    _ => None,
+                };
+                match area {
+                    Some(area) if area.foreground && area.width > 200 && area.height > 150 => {
+                        let scale = panel::scale_for(area.height);
+                        let (pw, _) = panel::size(scale);
+                        let margin = (12.0 * scale) as i32;
+                        let recent = out
+                            .log
+                            .iter()
+                            .rev()
+                            .find(|l| matches!(l.kind, Kind::Reply | Kind::Alert))
+                            .filter(|l| l.at.elapsed() < Duration::from_secs(12))
+                            .map(|l| l.text.as_str());
+                        let content = panel::Content {
+                            obs,
+                            exp_per_hour: progress.exp_per_hour,
+                            phone_connected: summary.as_ref().map(|s| s.connected),
+                            speaking: summary.as_ref().is_some_and(|s| s.mic.speaking),
+                            muted: companion.muted(),
+                            last_line: recent,
+                        };
+                        let painted = panel::paint(&content, scale);
+                        let at = (
+                            area.left + area.width - pw as i32 - margin,
+                            area.top + margin,
+                        );
+                        if let Err(e) = window.show(&painted, at)
+                            && !panel_failed
+                        {
+                            panel_failed = true;
+                            out.push(Kind::Info, format!("the panel could not be drawn: {e}"));
+                        }
+                    }
+                    _ => window.hide(),
+                }
             }
             if ansi {
                 let view = screen::View {

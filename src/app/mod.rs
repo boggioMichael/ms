@@ -3,5 +3,6 @@
 //! wires them to the capture, the vision engine, the companion and the
 //! phone link.
 
+pub mod panel;
 pub mod screen;
 pub mod session;

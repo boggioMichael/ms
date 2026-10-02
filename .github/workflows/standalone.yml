@@ -129,6 +129,7 @@ jobs:
       - name: Checks
         continue-on-error: true
         run: |
+          set +e
           mkdir -p logs
           cargo fmt --check 2>&1 | tee logs/fmt.log
           cargo clippy --all-targets -- -D warnings 2>&1 | tee logs/clippy.log

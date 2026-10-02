@@ -25,6 +25,8 @@ pub struct LogLine {
     pub time: String,
     pub kind: Kind,
     pub text: String,
+    /// When it was said.
+    pub at: std::time::Instant,
 }
 
 /// Everything the live block shows.
@@ -345,6 +347,7 @@ mod tests {
                 time: "13:42:10".into(),
                 kind: Kind::Reply,
                 text: format!("line {i}"),
+                at: std::time::Instant::now(),
             })
             .collect();
         let full = render(&view(Some(&obs), &progress, &log), true);

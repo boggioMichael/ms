@@ -140,8 +140,10 @@ pub fn db_to_level(db: f32) -> f32 {
 /// Little-endian 16-bit samples from a request body.
 pub fn samples_from_bytes(bytes: &[u8]) -> Vec<i16> {
     bytes
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b))
         .collect()
 }
 
