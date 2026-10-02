@@ -109,6 +109,10 @@ jobs:
             echo "ffmpeg on the PATH: $(command -v ffmpeg || echo none)"
             status=0
             ./target/release/maplesyrup.exe --record-test || status=$?
+            # Again with the settings in a folder named in Hebrew (a fresh
+            # download there), like a user folder can be.
+            echo "--- settings in a Hebrew-named folder"
+            MAPLESYRUP_HOME="$(cygpath -w "$RUNNER_TEMP")\\בית" ./target/release/maplesyrup.exe --record-test || status=$?
             # What this machine's screen gives ffmpeg directly.
             ff="$(cygpath -u "$APPDATA")/MapleSyrup/ffmpeg/ffmpeg.exe"
             if [ -f "$ff" ]; then

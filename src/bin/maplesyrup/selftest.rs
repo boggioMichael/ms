@@ -284,7 +284,11 @@ pub fn record_test() -> i32 {
             }
         }
     };
-    let dir = std::env::temp_dir().join(format!("maplesyrup-record-test-{}", std::process::id()));
+    // A folder named in Hebrew, like a user folder can be.
+    let dir = std::env::temp_dir().join(format!(
+        "maplesyrup-record-test-מבחן-{}",
+        std::process::id()
+    ));
     let file = dir.join("record-test.mp4");
     let mut screen = flash::Screen::black();
     if let Err(e) = &screen {

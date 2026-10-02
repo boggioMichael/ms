@@ -95,6 +95,13 @@ pub fn download_ffmpeg(settings: &Path) -> Result<PathBuf, String> {
     let dir = settings.join("ffmpeg");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let zip = download_partial(settings);
+    // curl and tar run in the folder and are given names only: Windows'
+    // curl and tar can't take a path with letters outside the PC's code page
+    // (a user folder in Hebrew, say).
+    let zip_name = zip
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_default();
     let urls = [
         "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
         "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
@@ -104,9 +111,10 @@ pub fn download_ffmpeg(settings: &Path) -> Result<PathBuf, String> {
         // curl and tar come with Windows 10 and later.
         let mut fetch = Command::new("curl");
         fetch
+            .current_dir(&dir)
             .args(["-L", "--fail", "--silent", "--show-error", "--retry", "2"])
             .args(["--connect-timeout", "20", "--max-time", "1800", "-o"])
-            .arg(&zip)
+            .arg(&zip_name)
             .arg(url)
             .stdin(Stdio::null());
         no_window(&mut fetch);
@@ -121,10 +129,10 @@ pub fn download_ffmpeg(settings: &Path) -> Result<PathBuf, String> {
         let _ = std::fs::remove_dir_all(&unpack);
         std::fs::create_dir_all(&unpack).map_err(|e| e.to_string())?;
         let mut tar = Command::new("tar");
-        tar.arg("-xf")
-            .arg(&zip)
-            .arg("-C")
-            .arg(&unpack)
+        tar.current_dir(&dir)
+            .arg("-xf")
+            .arg(&zip_name)
+            .args(["-C", "unpack"])
             .stdin(Stdio::null());
         no_window(&mut tar);
         let unpacked = tar
