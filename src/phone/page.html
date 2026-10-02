@@ -1128,12 +1128,12 @@
     try { recStarted = Date.now(); rec.start(); }
     catch (e) { if (tries < 8) setTimeout(() => restartRecognition(tries + 1), 250); }
   }
-  // The player's voice over the phone's own: loud for about a third of a second.
+  // The player's voice over the phone's own: loud for almost half a second.
   let floorDb = -60, loudFor = 0;
   function talkingOver(db) {
     if (!speakingNow()) { floorDb = 0.95 * floorDb + 0.05 * db; loudFor = 0; return; }
-    loudFor = db > Math.max(-30, floorDb + 14) ? loudFor + 1 : 0;
-    if (loudFor >= 4) {
+    loudFor = db > Math.max(-27, floorDb + 14) ? loudFor + 1 : 0;
+    if (loudFor >= 5) {
       loudFor = 0;
       stopClips();
       postJson("/api/interrupt", {}).catch(() => {});
