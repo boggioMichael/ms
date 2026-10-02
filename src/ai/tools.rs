@@ -38,6 +38,8 @@ pub enum Effect {
     Fact(String),
     /// Something learned, forgotten or corrected: a line for the log.
     Note(String),
+    /// A command for the main loop: "mark", "mute" or "unmute".
+    Command(String),
 }
 
 /// Ask the vision model one of the teacher's questions.
@@ -117,6 +119,16 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
                 "remember_fact",
                 "Remember something the player told you about themselves or their game for good (their class, a key binding, a goal, a preference), or that they asked you to remember.",
                 json!({"fact": {"type": "string", "description": "One short sentence, in the third person (\"Their boss menu key is F10\")."}}),
+            ),
+            function(
+                "mark_moment",
+                "Mark this moment: MapleSyrup saves the screen and the time, for the player's video later.",
+                json!({}),
+            ),
+            function(
+                "set_muted",
+                "Stop speaking aloud (muted: true) or speak again (muted: false), when the player asks you to be quiet or to talk again.",
+                json!({"muted": {"type": "boolean"}}),
             ),
             function(
                 "look_closer",
@@ -237,6 +249,16 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
                     let _ = std::fs::write(&file, about);
                 }
                 ("Remembered for good.".into(), Some(Effect::Fact(fact)))
+            }
+            "mark_moment" => ("Marked.".into(), Some(Effect::Command("mark".into()))),
+            "set_muted" => {
+                let muted = args["muted"].as_bool().unwrap_or(true);
+                (
+                    if muted { "Muted." } else { "Speaking again." }.into(),
+                    Some(Effect::Command(
+                        if muted { "mute" } else { "unmute" }.into(),
+                    )),
+                )
             }
             "look_closer" => {
                 let Some(frame) = frame else {

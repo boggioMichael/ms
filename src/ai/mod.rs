@@ -20,6 +20,7 @@
 
 pub mod brain;
 pub mod images;
+pub mod language;
 pub mod openai;
 pub mod teaching;
 pub mod tools;
@@ -136,9 +137,20 @@ pub enum Job {
         speak: bool,
         /// The screen, when the game is in view.
         eyes: Option<Eyes>,
+        /// The player's language setting (a locale such as `he-IL`).
+        language: Option<String>,
     },
-    /// Say this line in the natural voice (a warning, a quick reply).
-    Speak { text: String },
+    /// Say one of MapleSyrup's own lines (a warning, a greeting) in the
+    /// natural voice, translated first when the player's language is not
+    /// English. With `show`, the line has not been shown yet: it comes back
+    /// as `Shown`, in the player's language, to be shown.
+    Speak {
+        text: String,
+        language: Option<String>,
+        show: Option<crate::companion::Kind>,
+        /// Whether to say it aloud too (a line can be only shown).
+        speak: bool,
+    },
 }
 
 /// What the worker did.
@@ -167,6 +179,13 @@ pub enum Done {
     /// A tool changed something: learned, forgot or corrected (a line for
     /// the log and the phone).
     Noted { line: String },
+    /// One of MapleSyrup's own lines, in the player's language, to show.
+    Shown {
+        kind: crate::companion::Kind,
+        text: String,
+    },
+    /// The model asked for a command (mark, mute, unmute) the main loop runs.
+    Command { word: String },
 }
 
 pub struct Worker {
@@ -202,6 +221,9 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
     let _ = std::thread::Builder::new()
         .name("ai".into())
         .spawn(move || {
+            // MapleSyrup's own lines come back often ("Level up!"): each is
+            // translated once.
+            let mut translations = std::collections::HashMap::new();
             while let Ok(first) = rx.recv() {
                 busy_flag.store(true, Ordering::Relaxed);
                 // Sentences that arrived while it was busy are answered together.
@@ -213,6 +235,7 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
                 let mut snapshot = String::new();
                 let mut speak = false;
                 let mut eyes = None;
+                let mut language = None;
                 for job in queue {
                     match job {
                         Job::Converse {
@@ -220,6 +243,7 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
                             snapshot: s,
                             speak: sp,
                             eyes: e,
+                            language: l,
                         } => {
                             heard.push(h);
                             snapshot = s;
@@ -227,9 +251,32 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
                             if e.is_some() {
                                 eyes = e;
                             }
+                            if l.is_some() {
+                                language = l;
+                            }
                         }
-                        Job::Speak { text } => {
+                        Job::Speak {
+                            text,
+                            language: l,
+                            show,
+                            speak: aloud,
+                        } => {
                             let asked = Instant::now();
+                            let text = match l.as_deref() {
+                                Some(l) if !language::is_english(l) => {
+                                    translate(&openai, &text, l, &mut translations)
+                                }
+                                _ => text,
+                            };
+                            if let Some(kind) = show {
+                                let _ = tx.send(Done::Shown {
+                                    kind,
+                                    text: text.clone(),
+                                });
+                            }
+                            if !aloud {
+                                continue;
+                            }
                             match openai.speech(&text, brain::VOICE_STYLE) {
                                 Ok(samples) => {
                                     let _ = tx.send(Done::Audio {
@@ -249,6 +296,12 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
                 if !heard.is_empty() {
                     let heard = heard.join(" ");
                     brain.heard(&heard);
+                    if let Some(l) = language.as_deref().filter(|l| !language::is_english(l)) {
+                        let name = language::name(l);
+                        snapshot.push_str(&format!(
+                            "\n(The player's language setting is {name}: answer in the language they speak to you; when it isn't clear, in {name}.)"
+                        ));
+                    }
                     converse(
                         &openai,
                         toolbox.as_ref(),
@@ -287,6 +340,7 @@ const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
 - When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
 - When the player tells you something about themselves or their game worth keeping (their class, a key binding, a goal), or asks you to remember something, call remember_fact.
 - forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
+- mark_moment when the player asks you to mark or save the moment (for their video); set_muted when they ask you to be quiet, or to talk again.
 After using a tool, confirm briefly in your own words.";
 
 /// How the model is told it can search the web.
@@ -295,6 +349,48 @@ on screen (how to get somewhere, boss or level requirements, job advancements, k
 training spots for their level): the current global version (GMS) changes often. Prefer maplestorywiki.net and \
 maplestory.nexon.net. Don't search for what is on screen or for small talk: searching takes the player's time. \
 Never put links, sources or citations in your answer: it is spoken aloud.";
+
+/// One of MapleSyrup's own lines in the player's language (as it is, when
+/// it can't be translated).
+fn translate(
+    openai: &OpenAi,
+    text: &str,
+    locale: &str,
+    cache: &mut std::collections::HashMap<(String, String), String>,
+) -> String {
+    // Already written in another script (a line the model made in the
+    // player's language, such as an alert they asked for).
+    if !text.chars().any(|c| c.is_ascii_alphabetic()) {
+        return text.to_string();
+    }
+    let key = (locale.to_string(), text.to_string());
+    if let Some(done) = cache.get(&key) {
+        return done.clone();
+    }
+    let name = language::name(locale);
+    let ask = Ask {
+        instructions: format!(
+            "Translate what a friendly companion app says out loud to someone playing MapleStory into {name}. \
+Keep it short, casual and natural, as a friend would say it; keep the numbers, and game words the way players \
+say them. Reply with the translation only."
+        ),
+        input: vec![json!({"role": "user", "content": text})],
+        max_output_tokens: 150,
+        timeout: Duration::from_secs(20),
+        ..Default::default()
+    };
+    match openai.ask(&ask, None) {
+        Ok(answer) if !answer.text.trim().is_empty() => {
+            let done = brain::for_speech(&answer.text);
+            if cache.len() > 200 {
+                cache.clear();
+            }
+            cache.insert(key, done.clone());
+            done
+        }
+        _ => text.to_string(),
+    }
+}
 
 /// What to say while the web is searched, in the player's language.
 fn searching_line(heard: &str) -> &'static str {
@@ -449,6 +545,9 @@ fn converse(
                     }
                     Some(Effect::Note(line)) => {
                         let _ = tx.send(Done::Noted { line });
+                    }
+                    Some(Effect::Command(word)) => {
+                        let _ = tx.send(Done::Command { word });
                     }
                     None => {}
                 }

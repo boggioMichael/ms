@@ -614,6 +614,9 @@ struct Outputs {
     plain: bool,
     start: Instant,
     replies: VoiceOn,
+    /// The player's language (from the phone), when it is not English:
+    /// MapleSyrup's own spoken lines are translated into it.
+    language: Option<String>,
 }
 
 impl Outputs {
@@ -641,6 +644,28 @@ impl Outputs {
         self.push(kind, text.to_string());
     }
 
+    /// One of MapleSyrup's own lines (not the model's): shown, and spoken
+    /// when `speak`, in the player's language: when that is not English it
+    /// is translated first and shown when ready (Done::Shown).
+    fn tell(&mut self, kind: Kind, text: &str, speak: bool, companion: &mut Companion) {
+        if self.language.is_some()
+            && let Some(worker) = &self.mouth.ai
+        {
+            let speak = speak && !companion.muted();
+            worker.send(Job::Speak {
+                text: text.to_string(),
+                language: self.language.clone(),
+                show: Some(kind),
+                speak,
+            });
+            return;
+        }
+        self.show(kind, text);
+        if speak {
+            self.speak(text, companion);
+        }
+    }
+
     /// Say `text` out loud, where replies are spoken.
     fn speak(&mut self, text: &str, companion: &mut Companion) {
         if companion.muted() {
@@ -651,6 +676,9 @@ impl Outputs {
         match &self.mouth.ai {
             Some(worker) => worker.send(Job::Speak {
                 text: text.to_string(),
+                language: self.language.clone(),
+                show: None,
+                speak: true,
             }),
             None => {
                 if self.voice_on().pc()
@@ -699,12 +727,8 @@ impl Outputs {
     ) {
         for action in actions {
             match action {
-                Action::Say(say) => {
-                    self.show(say.kind, &say.text);
-                    if say.speak {
-                        self.speak(&say.text, companion);
-                    }
-                }
+                Action::Say(say) if say.kind == Kind::Heard => self.show(say.kind, &say.text),
+                Action::Say(say) => self.tell(say.kind, &say.text, say.speak, companion),
                 Action::Mark => {
                     let elapsed = self.start.elapsed().as_secs_f64();
                     match self.session.mark(elapsed, companion.last(), frame.clone()) {
@@ -983,6 +1007,7 @@ fn run(options: Options) -> Result<(), String> {
         plain: !ansi,
         start,
         replies: options.replies,
+        language: None,
     };
     let hello = companion.hello();
     out.apply(hello, &mut companion, None);
@@ -1003,6 +1028,7 @@ fn run(options: Options) -> Result<(), String> {
     let mut dog = Dog::load();
     let mut ai_error_shown = String::new();
     let mut model_logged = false;
+    let mut player_language: Option<String> = None;
 
     let mut preview: Option<Preview> = None;
     let mut preview_failed = false;
@@ -1051,8 +1077,7 @@ fn run(options: Options) -> Result<(), String> {
             out.apply(actions, &mut companion, latest_image.clone());
             // The things the player taught: their alerts.
             for fired in tick.fired {
-                out.show(Kind::Alert, &fired.say);
-                out.speak(&fired.say, &mut companion);
+                out.tell(Kind::Alert, &fired.say, true, &mut companion);
             }
         } else if let Some(p) = preview.as_mut() {
             p.pump();
@@ -1118,6 +1143,7 @@ fn run(options: Options) -> Result<(), String> {
                                         snapshot,
                                         speak: true,
                                         eyes,
+                                        language: player_language.clone(),
                                     });
                                 }
                             }
@@ -1135,11 +1161,14 @@ fn run(options: Options) -> Result<(), String> {
                     Inbound::Hello(agent) => {
                         let device = device_of(&agent);
                         out.push(Kind::Info, format!("{device} connected"));
-                        hub.post(
-                            Kind::Info,
-                            &format!("Connected to MapleSyrup on this {device}."),
-                            false,
-                        );
+                        // (In another language the page says it itself.)
+                        if out.language.is_none() {
+                            hub.post(
+                                Kind::Info,
+                                &format!("Connected to MapleSyrup on this {device}."),
+                                false,
+                            );
+                        }
                         let greeting = if out.mouth.ai.is_some() {
                             "Hey! I'm here. Just talk to me."
                         } else {
@@ -1159,6 +1188,18 @@ fn run(options: Options) -> Result<(), String> {
                             out.mouth.hush();
                         }
                     }
+                    Inbound::Language(locale) => {
+                        let english = ai::language::is_english(&locale);
+                        let changed = out.language.as_deref() != Some(locale.as_str());
+                        out.language = (!english).then(|| locale.clone());
+                        player_language = Some(locale.clone());
+                        if changed {
+                            out.session.line(
+                                "info",
+                                &format!("language: {} ({locale})", ai::language::name(&locale)),
+                            );
+                        }
+                    }
                     Inbound::Forget(id) => {
                         if let Some(sight) = &sight {
                             let forgotten = sight
@@ -1167,19 +1208,26 @@ fn run(options: Options) -> Result<(), String> {
                                 .things
                                 .forget(&id);
                             if let Some(name) = forgotten {
-                                out.show(Kind::Info, &format!("forgot \"{name}\""));
+                                out.tell(
+                                    Kind::Info,
+                                    &format!("I forgot \"{name}\"."),
+                                    false,
+                                    &mut companion,
+                                );
                             }
                         }
                     }
                     Inbound::Listen(always) => {
                         companion.set_always_listen(always);
-                        out.show(
+                        out.tell(
                             Kind::Info,
                             if always {
                                 "I answer everything you say now."
                             } else {
                                 "I answer only when you say \"syrup\" now."
                             },
+                            false,
+                            &mut companion,
                         );
                     }
                 }
@@ -1210,6 +1258,17 @@ fn run(options: Options) -> Result<(), String> {
                     }
                 }
                 Done::Noted { line } => out.show(Kind::Info, &line),
+                Done::Shown { kind, text } => {
+                    // Its own line, translated: what the phone may hear back.
+                    companion.remember_spoken(now, &text);
+                    out.show(kind, &text);
+                }
+                Done::Command { word } => {
+                    if let Some(command) = Command::from_word(&word) {
+                        let actions = companion.command(now, command);
+                        out.apply(actions, &mut companion, latest_image.clone());
+                    }
+                }
                 Done::Audio {
                     samples,
                     after,
@@ -1271,9 +1330,11 @@ fn run(options: Options) -> Result<(), String> {
                 News::Found { line, picture } => {
                     out.session.line("sight", &format!("found the HUD: {line}"));
                     let _ = picture.save(session_dir.join("hud-found.png"));
-                    out.show(
+                    out.tell(
                         Kind::Info,
                         "I found your HUD: I measure HP, MP and EXP myself now, and check them every couple of minutes.",
+                        false,
+                        &mut companion,
                     );
                 }
                 News::Trouble(why) => {

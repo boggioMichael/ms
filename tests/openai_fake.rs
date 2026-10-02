@@ -191,6 +191,7 @@ fn the_worker_speaks_a_reply_a_sentence_at_a_time() {
         snapshot: "HP is about 80%.".into(),
         speak: true,
         eyes: None,
+        language: None,
     });
     let mut reply = None;
     let mut spoken = Vec::new();
@@ -209,6 +210,8 @@ fn the_worker_speaks_a_reply_a_sentence_at_a_time() {
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(Done::Silent { heard }) => panic!("silent: {heard}"),
             Ok(Done::Noted { line }) => panic!("noted: {line}"),
+            Ok(Done::Shown { text, .. }) => panic!("shown: {text}"),
+            Ok(Done::Command { word }) => panic!("command: {word}"),
             Err(e) => panic!("{e}: {reply:?} {spoken:?}"),
         }
     }
@@ -240,6 +243,75 @@ fn the_worker_speaks_a_reply_a_sentence_at_a_time() {
             .as_str()
             .unwrap()
             .contains("HP is about 80%.")
+    );
+}
+
+#[test]
+fn its_own_lines_are_translated_shown_and_spoken() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    worker.send(Job::Speak {
+        text: "Level up! Nice.".into(),
+        language: Some("he-IL".into()),
+        show: Some(ms::companion::Kind::Alert),
+        speak: true,
+    });
+    let mut shown = None;
+    let mut spoken = None;
+    while shown.is_none() || spoken.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, kind }) => {
+                assert_eq!(kind, ms::companion::Kind::Alert);
+                shown = Some(text);
+            }
+            Ok(Done::Audio { text, .. }) => spoken = Some(text),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    // The stand-in "translates" by saying it back; the plumbing is the point.
+    assert_eq!(
+        shown.as_deref(),
+        Some("(gpt-6.1-sol) you said: Level up! Nice.")
+    );
+    assert_eq!(spoken, shown);
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"] == "/v1/responses")
+        .cloned()
+        .unwrap();
+    assert!(
+        asked["body"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Hebrew")
+    );
+    // English needs no translation: straight to speech.
+    let before = seen.lock().unwrap().len();
+    worker.send(Job::Speak {
+        text: "Level up! Nice.".into(),
+        language: Some("en-US".into()),
+        show: None,
+        speak: true,
+    });
+    loop {
+        if let Ok(Done::Audio { text, .. }) = worker.done.recv_timeout(Duration::from_secs(30)) {
+            assert_eq!(text, "Level up! Nice.");
+            break;
+        }
+    }
+    let requests = seen.lock().unwrap();
+    assert!(
+        requests[before..]
+            .iter()
+            .all(|r| r["path"] == "/v1/audio/speech")
     );
 }
 

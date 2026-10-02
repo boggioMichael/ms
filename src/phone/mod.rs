@@ -100,6 +100,8 @@ pub enum Inbound {
     Listen(bool),
     /// Forget a thing it was taught (by its id).
     Forget(String),
+    /// The player's language (a locale such as `he-IL`).
+    Language(String),
 }
 
 /// A line on the phone's screen.
@@ -140,6 +142,14 @@ struct State {
     /// Pictures of the things it was taught: by id, with a tag that changes
     /// with the picture.
     thumbs: std::collections::HashMap<String, (String, Arc<Vec<u8>>)>,
+}
+
+/// A locale such as `en-US` or `zh-Hant` (letters, digits and dashes).
+fn plausible_locale(text: &str) -> bool {
+    (2..=16).contains(&text.len())
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// How many spoken lines the phone can still fetch.
@@ -405,11 +415,23 @@ impl Hub {
             },
             ("POST", "/api/hello") => {
                 let browser = text_field("agent").unwrap_or_else(|| "a browser".into());
+                let lang = text_field("lang").filter(|l| plausible_locale(l));
                 let mut state = self.lock();
                 state.browser = Some(browser.clone());
+                // The language first, so the greeting is in it.
+                if let Some(lang) = lang {
+                    state.inbox.push(Inbound::Language(lang));
+                }
                 state.inbox.push(Inbound::Hello(browser));
                 Response::json(200, &json!({"ok": true}))
             }
+            ("POST", "/api/lang") => match text_field("lang").filter(|l| plausible_locale(l)) {
+                Some(lang) => {
+                    self.lock().inbox.push(Inbound::Language(lang));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                None => Response::json(400, &json!({"error": "lang is a locale such as en-US"})),
+            },
             ("POST", "/api/voice") => match text_field("on").as_deref().and_then(VoiceOn::parse) {
                 Some(on) => {
                     let mut state = self.lock();
@@ -756,6 +778,26 @@ mod tests {
         assert_eq!((thumb.status, thumb.content_type), (200, "image/png"));
         hub.handle(&request("POST", "/api/forget?k=k1", r#"{"id":"rune"}"#));
         assert_eq!(hub.take_inbox(), vec![Inbound::Forget("rune".into())]);
+        // The player's language, also with the hello (before it).
+        hub.handle(&request("POST", "/api/lang?k=k1", r#"{"lang":"he-IL"}"#));
+        assert_eq!(hub.take_inbox(), vec![Inbound::Language("he-IL".into())]);
+        assert_eq!(
+            hub.handle(&request("POST", "/api/lang?k=k1", r#"{"lang":"<script>"}"#))
+                .status,
+            400
+        );
+        hub.handle(&request(
+            "POST",
+            "/api/hello?k=k1",
+            r#"{"agent":"iPhone","lang":"ko-KR"}"#,
+        ));
+        assert_eq!(
+            hub.take_inbox(),
+            vec![
+                Inbound::Language("ko-KR".into()),
+                Inbound::Hello("iPhone".into())
+            ]
+        );
     }
 
     #[test]

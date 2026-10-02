@@ -52,6 +52,14 @@ It sees your screen, and learns it
   It can also look things up on the web for MapleStory questions
   (start it with --no-web to stop that).
 
+Languages
+  The phone page speaks English, Hebrew, Spanish, Portuguese, French, German,
+  Korean, Japanese, Chinese (simplified and traditional), Thai, Vietnamese,
+  Indonesian and Russian. It follows the phone's language; pick another on the
+  page. That is also the language the phone listens in. MapleSyrup answers in
+  the language you speak to it and says its own lines (warnings, level ups) in
+  yours too. The installer speaks yours when Inno Setup has it.
+
 Recording or streaming it
   Start "MapleSyrup (recording and streaming)" from the Start menu (in the zip:
   double-click "MapleSyrup (recording).cmd"): the dog and the panel then show

@@ -45,6 +45,7 @@
   .gauge .row { font-size: 14px; }
   .gauge .name { font-weight: 700; width: 38px; }
   .gauge .val { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .bar, .gauge .val, .stats b, #fps { direction: ltr; unicode-bidi: isolate; }
   .bar { height: 10px; background: #120e0a; border-radius: 6px; overflow: hidden; margin-top: 3px; border: 1px solid #000; }
   .bar i { display: block; height: 100%; width: 0%; border-radius: 6px; transition: width .35s ease; }
   .hp i { background: linear-gradient(90deg, #c62828, var(--hp)); }
@@ -103,7 +104,7 @@
 <body>
 <header>
   <div class="brand">Maple<span>Syrup</span></div>
-  <div class="pill"><i class="dot" id="pcDot"></i><span id="pcText">connecting…</span></div>
+  <div class="pill"><i class="dot" id="pcDot"></i><span id="pcText" data-t="connecting">connecting…</span></div>
 </header>
 
 <div id="banner"></div>
@@ -112,14 +113,14 @@
   <canvas id="dog" width="128" height="160" aria-label="MapleSyrup's dog"></canvas>
   <div class="bubble" id="bubble">
     <div class="who">MapleSyrup</div>
-    <div id="bubbleText">Hi! Tap “Start listening” and just talk to me.</div>
+    <div id="bubbleText"></div>
   </div>
 </div>
 
 <section class="card mic">
   <button id="listen">🎙️ Start listening</button>
   <div class="meter"><i id="meter"></i></div>
-  <div id="micStatus">Tap, allow the microphone, and talk to me like you would to a friend.</div>
+  <div id="micStatus" data-t="mic_idle">Tap, allow the microphone, and talk to me like you would to a friend.</div>
   <div id="heard"></div>
   <div id="note"></div>
 </section>
@@ -136,55 +137,49 @@
   <div class="gauge mp"><div class="row"><span class="name">MP</span><span class="val" id="mpVal">—</span></div><div class="bar"><i id="mpBar"></i></div></div>
   <div class="gauge exp"><div class="row"><span class="name">EXP</span><span class="val" id="expVal">—</span></div><div class="bar"><i id="expBar"></i></div></div>
   <div class="stats">
-    <span>EXP/hour <b id="rate">—</b></span>
-    <span>Next level <b id="eta">—</b></span>
-    <span>Session <b id="session">—</b></span>
-    <span>Marks <b id="marks">0</b></span>
+    <span><span data-t="exp_hour">EXP/hour</span> <b id="rate">—</b></span>
+    <span><span data-t="next_level">Next level</span> <b id="eta">—</b></span>
+    <span><span data-t="session">Session</span> <b id="session">—</b></span>
+    <span><span data-t="marks">Marks</span> <b id="marks">0</b></span>
   </div>
 </section>
 
 <div class="buttons">
-  <button data-cmd="status">Status</button>
-  <button data-cmd="rate">Rate</button>
-  <button data-cmd="mark" class="mark">★ Mark</button>
+  <button data-cmd="status" data-t="b_status">Status</button>
+  <button data-cmd="rate" data-t="b_rate">Rate</button>
+  <button data-cmd="mark" class="mark" data-t="b_mark">★ Mark</button>
   <button data-cmd="mute" id="muteBtn">Mute</button>
-  <button data-cmd="help">Help</button>
+  <button data-cmd="help" data-t="b_help">Help</button>
 </div>
 
 <section class="card">
-  <h2>Conversation</h2>
+  <h2 data-t="h_conversation">Conversation</h2>
   <ul id="log"></ul>
 </section>
 
 <section class="card" id="learnedCard">
-  <h2>What I've learned</h2>
+  <h2 data-t="h_learned">What I've learned</h2>
   <div id="hudState">I'm still finding your HUD.</div>
   <ul id="learned"></ul>
-  <div id="learnedEmpty">Teach me by talking: “see that? that's an Orange Mushroom”, “that's the boss's HP, tell me when it's under 20%”, “I'm level 61”.</div>
+  <div id="learnedEmpty" data-t="teach_hint">Teach me by talking.</div>
 </section>
 
 <section class="card">
-  <h2>Settings</h2>
-  <div class="sub" style="margin-bottom:8px">Replies spoken on</div>
-  <div class="seg" id="voiceSeg">
-    <button data-on="pc">PC</button><button data-on="phone">Phone</button><button data-on="both">Both</button><button data-on="off">Off</button>
-  </div>
-  <label class="opt">Answer everything I say (off: only after “syrup”, for streaming) <input type="checkbox" id="always" checked></label>
-  <label class="opt">Speech language
-    <select id="lang">
-      <option value="en-US">English (US)</option>
-      <option value="en-GB">English (UK)</option>
-      <option value="he-IL">עברית</option>
-      <option value="es-ES">Español</option>
-      <option value="pt-BR">Português</option>
-    </select>
+  <h2 data-t="h_settings">Settings</h2>
+  <label class="opt"><span data-t="language">Language</span>
+    <select id="lang"></select>
   </label>
-  <label class="opt">Send the microphone's audio to the PC <input type="checkbox" id="sendAudio" checked></label>
+  <div class="sub" style="margin:12px 0 8px" data-t="replies_on">Replies spoken on</div>
+  <div class="seg" id="voiceSeg">
+    <button data-on="pc" data-t="v_pc">PC</button><button data-on="phone" data-t="v_phone">Phone</button><button data-on="both" data-t="v_both">Both</button><button data-on="off" data-t="v_off">Off</button>
+  </div>
+  <label class="opt"><span data-t="answer_all">Answer everything I say</span> <input type="checkbox" id="always" checked></label>
+  <label class="opt"><span data-t="send_audio">Send the microphone's audio to the PC</span> <input type="checkbox" id="sendAudio" checked></label>
 </section>
 
 <footer>
-  Talk to it like a friend: “how am I doing?”, “how long until I level?”, “mark that!”<br>
-  Keep this page open while you play; the screen stays on while listening.
+  <span data-t="footer1"></span><br>
+  <span data-t="footer2"></span>
 </footer>
 
 <script>
@@ -196,6 +191,452 @@
   const remember = (k, v) => { try { store && store.setItem("ms." + k, v); } catch (e) {} };
   const recall = (k) => { try { return store ? store.getItem("ms." + k) : null; } catch (e) { return null; } };
 
+  // ---- languages ------------------------------------------------------------
+  // The page's words in each language; anything missing falls back to English.
+  const WORDS = {
+    en: {
+      connecting: "connecting…", pc_connected: "PC connected", pc_unreachable: "PC not reachable", reconnecting: "reconnecting…", old_link: "old link",
+      need_link: "This page needs the link from MapleSyrup's window on the PC: scan its QR code.",
+      link_old: "This link is out of date. Scan the QR code in MapleSyrup's window on the PC again.",
+      hi: "Hi! Tap “Start listening” and just talk to me.",
+      start: "🎙️ Start listening", stop: "⏹ Stop listening",
+      mic_idle: "Tap, allow the microphone, and talk to me like you would to a friend.",
+      mic_starting: "Starting the microphone…", mic_listening: "Listening — just talk.", mic_audio_only: "Sending audio to the PC.",
+      mic_paused: "Paused. Tap to listen again.", mic_talking: "MapleSyrup is talking…",
+      waiting_game: "Waiting for the game…", looking_game: "MapleSyrup is looking for the MapleStory window", watching: "Watching",
+      cant_capture: "Can't capture the game:", no_game: "no game",
+      exp_hour: "EXP/hour", next_level: "Next level", session: "Session", marks: "Marks",
+      b_status: "Status", b_rate: "Rate", b_mark: "★ Mark", b_mute: "Mute", b_unmute: "Unmute", b_help: "Help",
+      h_conversation: "Conversation", h_learned: "What I've learned", h_settings: "Settings",
+      hud_known: "I know where your HUD is and measure it myself.", hud_finding: "I'm still finding your HUD.",
+      level_n: "Level {n}.", told_me: "(you told me)",
+      teach_hint: "Teach me by talking: “see that? that's an Orange Mushroom”, “that's the boss's HP, tell me when it's under 20%”, “I'm level 61”.",
+      forget: "Forget", sure: "Sure?", says: "says",
+      replies_on: "Replies spoken on", v_pc: "PC", v_phone: "Phone", v_both: "Both", v_off: "Off",
+      answer_all: "Answer everything I say (off: only after “syrup”, for streaming)",
+      language: "Language", send_audio: "Send the microphone's audio to the PC",
+      footer1: "Talk to it like a friend: “how am I doing?”, “how long until I level?”, “mark that!”",
+      footer2: "Keep this page open while you play; the screen stays on while listening.",
+      no_recognition: "This browser has no speech recognition, so use the buttons. (Safari on iPhone and Chrome on Android have it.)",
+      rec_not_allowed: "Speech recognition isn't allowed. On iPhone: Settings → Apps → Safari → Microphone: Allow, and Settings → Siri → turn on Siri (or Keyboard → Enable Dictation). Buttons still work.",
+      rec_offline: "Speech recognition needs the phone to be online.", rec_error: "Speech recognition:", rec_cant_start: "Speech recognition could not start:",
+      no_mic: "This browser has no microphone access.", need_https: "The microphone needs the secure (https) link from MapleSyrup's QR code.",
+      mic_failed: "The microphone could not start:", mic_refused: "permission was refused. Allow the microphone for this page in the browser's settings, then try again.",
+    },
+    he: {
+      connecting: "מתחבר…", pc_connected: "המחשב מחובר", pc_unreachable: "אין חיבור למחשב", reconnecting: "מתחבר מחדש…", old_link: "קישור ישן",
+      need_link: "הדף הזה צריך את הקישור מהחלון של MapleSyrup במחשב: סרוק את קוד ה-QR.",
+      link_old: "הקישור הזה כבר לא בתוקף. סרוק שוב את קוד ה-QR בחלון של MapleSyrup במחשב.",
+      hi: "היי! לחץ „התחל להקשיב” ופשוט דבר איתי.",
+      start: "🎙️ התחל להקשיב", stop: "⏹ הפסק להקשיב",
+      mic_idle: "לחץ, אשר את המיקרופון, ודבר איתי כמו עם חבר.",
+      mic_starting: "מפעיל את המיקרופון…", mic_listening: "מקשיב — פשוט דבר.", mic_audio_only: "שולח את הקול למחשב.",
+      mic_paused: "בהשהיה. לחץ כדי להקשיב שוב.", mic_talking: "MapleSyrup מדבר…",
+      waiting_game: "מחכה למשחק…", looking_game: "MapleSyrup מחפש את החלון של MapleStory", watching: "צופה ב-",
+      cant_capture: "אי אפשר לצלם את המשחק:", no_game: "אין משחק",
+      exp_hour: "EXP לשעה", next_level: "לרמה הבאה", session: "סשן", marks: "סימונים",
+      b_status: "מצב", b_rate: "קצב", b_mark: "★ סמן", b_mute: "השתק", b_unmute: "בטל השתקה", b_help: "עזרה",
+      h_conversation: "שיחה", h_learned: "מה שלמדתי", h_settings: "הגדרות",
+      hud_known: "אני יודע איפה ה-HUD שלך ומודד אותו בעצמי.", hud_finding: "אני עדיין מחפש את ה-HUD שלך.",
+      level_n: "רמה {n}.", told_me: "(אמרת לי)",
+      teach_hint: "למד אותי בדיבור: „רואה את זה? זה Orange Mushroom”, „זה ה-HP של הבוס, תגיד לי כשהוא מתחת ל-20%”, „אני ברמה 61”.",
+      forget: "שכח", sure: "בטוח?", says: "אומר",
+      replies_on: "איפה לשמוע את התשובות", v_pc: "מחשב", v_phone: "טלפון", v_both: "שניהם", v_off: "כבוי",
+      answer_all: "לענות על כל מה שאני אומר (כבוי: רק אחרי „syrup”, בשביל סטרים)",
+      language: "שפה", send_audio: "לשלוח את קול המיקרופון למחשב",
+      footer1: "דבר איתו כמו עם חבר: „מה המצב?”, „כמה זמן עד הרמה הבאה?”, „סמן את זה!”",
+      footer2: "השאר את הדף פתוח בזמן שאתה משחק; המסך נשאר דולק בזמן ההקשבה.",
+      no_recognition: "בדפדפן הזה אין זיהוי דיבור, אז השתמש בכפתורים. (יש את זה ב-Safari באייפון וב-Chrome באנדרואיד.)",
+      rec_not_allowed: "זיהוי הדיבור לא מאושר. באייפון: הגדרות ← אפליקציות ← Safari ← מיקרופון: אפשר, והגדרות ← Siri ← הפעל את Siri (או מקלדת ← הפעל הכתבה). הכפתורים עדיין עובדים.",
+      rec_offline: "זיהוי הדיבור צריך שהטלפון יהיה מחובר לאינטרנט.", rec_error: "זיהוי דיבור:", rec_cant_start: "זיהוי הדיבור לא הצליח להתחיל:",
+      no_mic: "לדפדפן הזה אין גישה למיקרופון.", need_https: "המיקרופון צריך את הקישור המאובטח (https) מקוד ה-QR של MapleSyrup.",
+      mic_failed: "המיקרופון לא הצליח להתחיל:", mic_refused: "ההרשאה נדחתה. אשר את המיקרופון לדף הזה בהגדרות הדפדפן ונסה שוב.",
+    },
+    es: {
+      connecting: "conectando…", pc_connected: "PC conectado", pc_unreachable: "PC no disponible", reconnecting: "reconectando…", old_link: "enlace antiguo",
+      need_link: "Esta página necesita el enlace de la ventana de MapleSyrup en el PC: escanea su código QR.",
+      link_old: "Este enlace ya no sirve. Vuelve a escanear el código QR de la ventana de MapleSyrup en el PC.",
+      hi: "¡Hola! Toca «Empezar a escuchar» y háblame.",
+      start: "🎙️ Empezar a escuchar", stop: "⏹ Dejar de escuchar",
+      mic_idle: "Toca, permite el micrófono y háblame como a un amigo.",
+      mic_starting: "Activando el micrófono…", mic_listening: "Escuchando — habla sin más.", mic_audio_only: "Enviando el audio al PC.",
+      mic_paused: "En pausa. Toca para volver a escuchar.", mic_talking: "MapleSyrup está hablando…",
+      waiting_game: "Esperando el juego…", looking_game: "MapleSyrup busca la ventana de MapleStory", watching: "Viendo",
+      cant_capture: "No se puede capturar el juego:", no_game: "sin juego",
+      exp_hour: "EXP/hora", next_level: "Siguiente nivel", session: "Sesión", marks: "Marcas",
+      b_status: "Estado", b_rate: "Ritmo", b_mark: "★ Marcar", b_mute: "Silenciar", b_unmute: "Activar voz", b_help: "Ayuda",
+      h_conversation: "Conversación", h_learned: "Lo que he aprendido", h_settings: "Ajustes",
+      hud_known: "Sé dónde está tu HUD y lo mido yo mismo.", hud_finding: "Todavía estoy buscando tu HUD.",
+      level_n: "Nivel {n}.", told_me: "(me lo dijiste)",
+      teach_hint: "Enséñame hablando: «¿ves eso? es un Orange Mushroom», «esa es la vida del jefe, avísame cuando baje del 20 %», «soy nivel 61».",
+      forget: "Olvidar", sure: "¿Seguro?", says: "dice",
+      replies_on: "Respuestas habladas en", v_pc: "PC", v_phone: "Móvil", v_both: "Ambos", v_off: "No",
+      answer_all: "Responder a todo lo que digo (desactivado: solo tras «syrup», para streams)",
+      language: "Idioma", send_audio: "Enviar el audio del micrófono al PC",
+      footer1: "Háblale como a un amigo: «¿qué tal voy?», «¿cuánto me falta para subir de nivel?», «¡marca eso!»",
+      footer2: "Deja esta página abierta mientras juegas; la pantalla sigue encendida mientras escucha.",
+      no_recognition: "Este navegador no reconoce la voz, así que usa los botones. (Safari en iPhone y Chrome en Android sí.)",
+      rec_not_allowed: "El reconocimiento de voz no está permitido. En iPhone: Ajustes → Apps → Safari → Micrófono: Permitir, y Ajustes → Siri → activa Siri (o Teclado → Activar dictado). Los botones siguen funcionando.",
+      rec_offline: "El reconocimiento de voz necesita conexión a internet.", rec_error: "Reconocimiento de voz:", rec_cant_start: "El reconocimiento de voz no pudo empezar:",
+      no_mic: "Este navegador no tiene acceso al micrófono.", need_https: "El micrófono necesita el enlace seguro (https) del código QR de MapleSyrup.",
+      mic_failed: "El micrófono no pudo empezar:", mic_refused: "se denegó el permiso. Permite el micrófono para esta página en los ajustes del navegador y vuelve a intentarlo.",
+    },
+    pt: {
+      connecting: "conectando…", pc_connected: "PC conectado", pc_unreachable: "PC fora de alcance", reconnecting: "reconectando…", old_link: "link antigo",
+      need_link: "Esta página precisa do link da janela do MapleSyrup no PC: escaneie o QR code.",
+      link_old: "Este link expirou. Escaneie de novo o QR code na janela do MapleSyrup no PC.",
+      hi: "Oi! Toque em “Começar a ouvir” e fale comigo.",
+      start: "🎙️ Começar a ouvir", stop: "⏹ Parar de ouvir",
+      mic_idle: "Toque, permita o microfone e fale comigo como falaria com um amigo.",
+      mic_starting: "Ligando o microfone…", mic_listening: "Ouvindo — é só falar.", mic_audio_only: "Enviando o áudio para o PC.",
+      mic_paused: "Pausado. Toque para ouvir de novo.", mic_talking: "O MapleSyrup está falando…",
+      waiting_game: "Esperando o jogo…", looking_game: "O MapleSyrup está procurando a janela do MapleStory", watching: "Assistindo",
+      cant_capture: "Não dá para capturar o jogo:", no_game: "sem jogo",
+      exp_hour: "EXP/hora", next_level: "Próximo nível", session: "Sessão", marks: "Marcações",
+      b_status: "Status", b_rate: "Ritmo", b_mark: "★ Marcar", b_mute: "Silenciar", b_unmute: "Ativar voz", b_help: "Ajuda",
+      h_conversation: "Conversa", h_learned: "O que aprendi", h_settings: "Configurações",
+      hud_known: "Sei onde está o seu HUD e meço sozinho.", hud_finding: "Ainda estou procurando o seu HUD.",
+      level_n: "Nível {n}.", told_me: "(você me disse)",
+      teach_hint: "Me ensine falando: “tá vendo? é um Orange Mushroom”, “esse é o HP do chefe, me avisa quando ficar abaixo de 20%”, “sou nível 61”.",
+      forget: "Esquecer", sure: "Certeza?", says: "diz",
+      replies_on: "Respostas faladas no", v_pc: "PC", v_phone: "Celular", v_both: "Ambos", v_off: "Nenhum",
+      answer_all: "Responder a tudo o que eu falo (desligado: só depois de “syrup”, para lives)",
+      language: "Idioma", send_audio: "Enviar o áudio do microfone para o PC",
+      footer1: "Fale com ele como com um amigo: “como estou indo?”, “quanto falta para upar?”, “marca isso!”",
+      footer2: "Deixe esta página aberta enquanto joga; a tela fica ligada enquanto ele ouve.",
+      no_recognition: "Este navegador não reconhece voz, então use os botões. (O Safari no iPhone e o Chrome no Android reconhecem.)",
+      rec_not_allowed: "O reconhecimento de voz não está permitido. No iPhone: Ajustes → Apps → Safari → Microfone: Permitir, e Ajustes → Siri → ative a Siri (ou Teclado → Ativar Ditado). Os botões continuam funcionando.",
+      rec_offline: "O reconhecimento de voz precisa de internet no celular.", rec_error: "Reconhecimento de voz:", rec_cant_start: "O reconhecimento de voz não conseguiu começar:",
+      no_mic: "Este navegador não tem acesso ao microfone.", need_https: "O microfone precisa do link seguro (https) do QR code do MapleSyrup.",
+      mic_failed: "O microfone não conseguiu começar:", mic_refused: "a permissão foi negada. Permita o microfone para esta página nas configurações do navegador e tente de novo.",
+    },
+    fr: {
+      connecting: "connexion…", pc_connected: "PC connecté", pc_unreachable: "PC injoignable", reconnecting: "reconnexion…", old_link: "ancien lien",
+      need_link: "Cette page a besoin du lien de la fenêtre de MapleSyrup sur le PC : scanne son QR code.",
+      link_old: "Ce lien n'est plus valable. Scanne à nouveau le QR code dans la fenêtre de MapleSyrup sur le PC.",
+      hi: "Salut ! Touche « Commencer l'écoute » et parle-moi.",
+      start: "🎙️ Commencer l'écoute", stop: "⏹ Arrêter l'écoute",
+      mic_idle: "Touche, autorise le micro et parle-moi comme à un ami.",
+      mic_starting: "Démarrage du micro…", mic_listening: "J'écoute — parle simplement.", mic_audio_only: "Envoi du son au PC.",
+      mic_paused: "En pause. Touche pour écouter à nouveau.", mic_talking: "MapleSyrup parle…",
+      waiting_game: "En attente du jeu…", looking_game: "MapleSyrup cherche la fenêtre de MapleStory", watching: "Regarde",
+      cant_capture: "Impossible de capturer le jeu :", no_game: "pas de jeu",
+      exp_hour: "EXP/heure", next_level: "Niveau suivant", session: "Session", marks: "Repères",
+      b_status: "État", b_rate: "Rythme", b_mark: "★ Marquer", b_mute: "Muet", b_unmute: "Son", b_help: "Aide",
+      h_conversation: "Conversation", h_learned: "Ce que j'ai appris", h_settings: "Réglages",
+      hud_known: "Je sais où est ton HUD et je le mesure moi-même.", hud_finding: "Je cherche encore ton HUD.",
+      level_n: "Niveau {n}.", told_me: "(tu me l'as dit)",
+      teach_hint: "Apprends-moi en parlant : « tu vois ça ? c'est un Orange Mushroom », « c'est la vie du boss, préviens-moi sous 20 % », « je suis niveau 61 ».",
+      forget: "Oublier", sure: "Sûr ?", says: "dit",
+      replies_on: "Réponses parlées sur", v_pc: "PC", v_phone: "Téléphone", v_both: "Les deux", v_off: "Aucun",
+      answer_all: "Répondre à tout ce que je dis (désactivé : seulement après « syrup », pour les streams)",
+      language: "Langue", send_audio: "Envoyer le son du micro au PC",
+      footer1: "Parle-lui comme à un ami : « ça se passe comment ? », « combien de temps avant le prochain niveau ? », « marque ça ! »",
+      footer2: "Garde cette page ouverte pendant que tu joues ; l'écran reste allumé pendant l'écoute.",
+      no_recognition: "Ce navigateur ne reconnaît pas la voix, utilise les boutons. (Safari sur iPhone et Chrome sur Android le font.)",
+      rec_not_allowed: "La reconnaissance vocale n'est pas autorisée. Sur iPhone : Réglages → Apps → Safari → Micro : Autoriser, et Réglages → Siri → active Siri (ou Clavier → Activer la dictée). Les boutons marchent toujours.",
+      rec_offline: "La reconnaissance vocale a besoin d'internet sur le téléphone.", rec_error: "Reconnaissance vocale :", rec_cant_start: "La reconnaissance vocale n'a pas pu démarrer :",
+      no_mic: "Ce navigateur n'a pas accès au micro.", need_https: "Le micro a besoin du lien sécurisé (https) du QR code de MapleSyrup.",
+      mic_failed: "Le micro n'a pas pu démarrer :", mic_refused: "l'autorisation a été refusée. Autorise le micro pour cette page dans les réglages du navigateur, puis réessaie.",
+    },
+    de: {
+      connecting: "verbinde…", pc_connected: "PC verbunden", pc_unreachable: "PC nicht erreichbar", reconnecting: "verbinde neu…", old_link: "alter Link",
+      need_link: "Diese Seite braucht den Link aus dem MapleSyrup-Fenster am PC: Scanne den QR-Code.",
+      link_old: "Dieser Link ist veraltet. Scanne den QR-Code im MapleSyrup-Fenster am PC noch einmal.",
+      hi: "Hi! Tippe auf „Zuhören starten“ und sprich einfach mit mir.",
+      start: "🎙️ Zuhören starten", stop: "⏹ Zuhören beenden",
+      mic_idle: "Tippe, erlaube das Mikrofon und sprich mit mir wie mit einem Freund.",
+      mic_starting: "Mikrofon startet…", mic_listening: "Ich höre zu — sprich einfach.", mic_audio_only: "Sende den Ton an den PC.",
+      mic_paused: "Pausiert. Tippe, um wieder zuzuhören.", mic_talking: "MapleSyrup spricht…",
+      waiting_game: "Warte auf das Spiel…", looking_game: "MapleSyrup sucht das MapleStory-Fenster", watching: "Sieht zu:",
+      cant_capture: "Das Spiel kann nicht aufgenommen werden:", no_game: "kein Spiel",
+      exp_hour: "EXP/Stunde", next_level: "Nächstes Level", session: "Sitzung", marks: "Markierungen",
+      b_status: "Status", b_rate: "Tempo", b_mark: "★ Markieren", b_mute: "Stumm", b_unmute: "Ton an", b_help: "Hilfe",
+      h_conversation: "Unterhaltung", h_learned: "Was ich gelernt habe", h_settings: "Einstellungen",
+      hud_known: "Ich weiß, wo dein HUD ist, und messe es selbst.", hud_finding: "Ich suche dein HUD noch.",
+      level_n: "Level {n}.", told_me: "(hast du mir gesagt)",
+      teach_hint: "Bring es mir im Gespräch bei: „Siehst du das? Das ist ein Orange Mushroom“, „das sind die HP vom Boss, sag mir unter 20 % Bescheid“, „ich bin Level 61“.",
+      forget: "Vergessen", sure: "Sicher?", says: "sagt",
+      replies_on: "Antworten gesprochen auf", v_pc: "PC", v_phone: "Handy", v_both: "Beiden", v_off: "Aus",
+      answer_all: "Auf alles antworten, was ich sage (aus: nur nach „syrup“, für Streams)",
+      language: "Sprache", send_audio: "Mikrofon-Ton an den PC senden",
+      footer1: "Sprich mit ihm wie mit einem Freund: „Wie läuft's?“, „Wie lange noch bis zum Level-up?“, „Markier das!“",
+      footer2: "Lass diese Seite beim Spielen offen; der Bildschirm bleibt beim Zuhören an.",
+      no_recognition: "Dieser Browser hat keine Spracherkennung, nutze die Knöpfe. (Safari auf dem iPhone und Chrome auf Android haben sie.)",
+      rec_not_allowed: "Spracherkennung ist nicht erlaubt. Auf dem iPhone: Einstellungen → Apps → Safari → Mikrofon: Erlauben, und Einstellungen → Siri → Siri einschalten (oder Tastatur → Diktierfunktion aktivieren). Die Knöpfe funktionieren weiter.",
+      rec_offline: "Die Spracherkennung braucht Internet auf dem Handy.", rec_error: "Spracherkennung:", rec_cant_start: "Die Spracherkennung konnte nicht starten:",
+      no_mic: "Dieser Browser hat keinen Zugriff aufs Mikrofon.", need_https: "Das Mikrofon braucht den sicheren (https-)Link aus dem QR-Code von MapleSyrup.",
+      mic_failed: "Das Mikrofon konnte nicht starten:", mic_refused: "die Erlaubnis wurde verweigert. Erlaube das Mikrofon für diese Seite in den Browser-Einstellungen und versuch es noch einmal.",
+    },
+    ko: {
+      connecting: "연결 중…", pc_connected: "PC 연결됨", pc_unreachable: "PC에 연결할 수 없음", reconnecting: "다시 연결 중…", old_link: "만료된 링크",
+      need_link: "이 페이지는 PC의 MapleSyrup 창에 있는 링크가 필요해요. QR 코드를 스캔하세요.",
+      link_old: "이 링크는 만료됐어요. PC의 MapleSyrup 창에서 QR 코드를 다시 스캔하세요.",
+      hi: "안녕! “듣기 시작”을 누르고 그냥 말해 줘.",
+      start: "🎙️ 듣기 시작", stop: "⏹ 듣기 중지",
+      mic_idle: "누르고 마이크를 허용한 다음, 친구한테 말하듯 말해 줘.",
+      mic_starting: "마이크 켜는 중…", mic_listening: "듣고 있어 — 그냥 말해.", mic_audio_only: "PC로 소리를 보내는 중.",
+      mic_paused: "일시 정지됨. 다시 들으려면 누르세요.", mic_talking: "MapleSyrup이 말하는 중…",
+      waiting_game: "게임을 기다리는 중…", looking_game: "MapleSyrup이 메이플스토리 창을 찾고 있어요", watching: "보는 중:",
+      cant_capture: "게임 화면을 캡처할 수 없어요:", no_game: "게임 없음",
+      exp_hour: "시간당 EXP", next_level: "다음 레벨까지", session: "세션", marks: "마크",
+      b_status: "상태", b_rate: "속도", b_mark: "★ 마크", b_mute: "음소거", b_unmute: "음소거 해제", b_help: "도움말",
+      h_conversation: "대화", h_learned: "내가 배운 것", h_settings: "설정",
+      hud_known: "네 HUD 위치를 알고 직접 측정하고 있어.", hud_finding: "아직 네 HUD를 찾는 중이야.",
+      level_n: "레벨 {n}.", told_me: "(네가 알려 줌)",
+      teach_hint: "말로 가르쳐 줘: “저거 보여? 주황버섯이야”, “저게 보스 HP야, 20% 아래로 떨어지면 알려 줘”, “나 61레벨이야”.",
+      forget: "잊기", sure: "확실해?", says: "말:",
+      replies_on: "대답을 들을 곳", v_pc: "PC", v_phone: "휴대폰", v_both: "둘 다", v_off: "끄기",
+      answer_all: "내가 하는 모든 말에 대답하기 (끄면 “syrup” 다음에만, 방송용)",
+      language: "언어", send_audio: "마이크 소리를 PC로 보내기",
+      footer1: "친구처럼 말해 봐: “나 어때?”, “다음 레벨까지 얼마나 걸려?”, “마크해!”",
+      footer2: "게임하는 동안 이 페이지를 열어 두세요. 듣는 동안 화면이 켜져 있어요.",
+      no_recognition: "이 브라우저는 음성 인식이 안 돼요. 버튼을 쓰세요. (아이폰의 Safari와 안드로이드의 Chrome은 돼요.)",
+      rec_not_allowed: "음성 인식이 허용되지 않았어요. 아이폰: 설정 → 앱 → Safari → 마이크: 허용, 그리고 설정 → Siri → Siri 켜기 (또는 키보드 → 받아쓰기 활성화). 버튼은 계속 쓸 수 있어요.",
+      rec_offline: "음성 인식은 휴대폰이 인터넷에 연결돼 있어야 해요.", rec_error: "음성 인식:", rec_cant_start: "음성 인식을 시작할 수 없어요:",
+      no_mic: "이 브라우저는 마이크에 접근할 수 없어요.", need_https: "마이크는 MapleSyrup QR 코드의 보안(https) 링크가 필요해요.",
+      mic_failed: "마이크를 시작할 수 없어요:", mic_refused: "권한이 거부됐어요. 브라우저 설정에서 이 페이지의 마이크를 허용한 뒤 다시 해 보세요.",
+    },
+    ja: {
+      connecting: "接続中…", pc_connected: "PCに接続済み", pc_unreachable: "PCにつながりません", reconnecting: "再接続中…", old_link: "古いリンク",
+      need_link: "このページにはPCのMapleSyrupウィンドウのリンクが必要です。QRコードを読み取ってください。",
+      link_old: "このリンクは古くなっています。PCのMapleSyrupウィンドウのQRコードをもう一度読み取ってください。",
+      hi: "やあ！「聞き取り開始」をタップして、話しかけてね。",
+      start: "🎙️ 聞き取り開始", stop: "⏹ 聞き取り停止",
+      mic_idle: "タップしてマイクを許可したら、友だちみたいに話しかけてね。",
+      mic_starting: "マイクを起動中…", mic_listening: "聞いてるよ — 話しかけてね。", mic_audio_only: "PCに音声を送信中。",
+      mic_paused: "一時停止中。タップするとまた聞くよ。", mic_talking: "MapleSyrupが話しています…",
+      waiting_game: "ゲームを待っています…", looking_game: "MapleSyrupがメイプルストーリーのウィンドウを探しています", watching: "観戦中:",
+      cant_capture: "ゲームをキャプチャできません:", no_game: "ゲームなし",
+      exp_hour: "EXP/時", next_level: "次のレベルまで", session: "セッション", marks: "マーク",
+      b_status: "状態", b_rate: "ペース", b_mark: "★ マーク", b_mute: "ミュート", b_unmute: "ミュート解除", b_help: "ヘルプ",
+      h_conversation: "会話", h_learned: "覚えたこと", h_settings: "設定",
+      hud_known: "君のHUDの場所がわかったから、自分で測ってるよ。", hud_finding: "まだ君のHUDを探してるところ。",
+      level_n: "レベル{n}。", told_me: "（君が教えてくれた）",
+      teach_hint: "話して教えてね:「あれ見える？オレンジマッシュルームだよ」「あれがボスのHP、20%を切ったら教えて」「僕はレベル61」。",
+      forget: "忘れる", sure: "本当に？", says: "セリフ:",
+      replies_on: "返事を話す場所", v_pc: "PC", v_phone: "スマホ", v_both: "両方", v_off: "オフ",
+      answer_all: "話したことに全部答える（オフ:「syrup」のあとだけ。配信向け）",
+      language: "言語", send_audio: "マイクの音声をPCに送る",
+      footer1: "友だちみたいに話しかけて:「調子どう？」「次のレベルまでどれくらい？」「マークして！」",
+      footer2: "プレイ中はこのページを開いたままにしてね。聞き取り中は画面がつきっぱなしになります。",
+      no_recognition: "このブラウザは音声認識に対応していないので、ボタンを使ってね。（iPhoneのSafariとAndroidのChromeは対応しています。）",
+      rec_not_allowed: "音声認識が許可されていません。iPhone: 設定 → アプリ → Safari → マイク: 許可、そして 設定 → Siri → Siriをオン（またはキーボード → 音声入力をオン）。ボタンは使えます。",
+      rec_offline: "音声認識にはスマホのインターネット接続が必要です。", rec_error: "音声認識:", rec_cant_start: "音声認識を開始できませんでした:",
+      no_mic: "このブラウザはマイクを使えません。", need_https: "マイクにはMapleSyrupのQRコードの安全な（https）リンクが必要です。",
+      mic_failed: "マイクを開始できませんでした:", mic_refused: "許可されませんでした。ブラウザの設定でこのページのマイクを許可して、もう一度試してね。",
+    },
+    "zh-Hans": {
+      connecting: "连接中…", pc_connected: "电脑已连接", pc_unreachable: "连不上电脑", reconnecting: "重新连接中…", old_link: "旧链接",
+      need_link: "这个页面需要电脑上 MapleSyrup 窗口里的链接：请扫描它的二维码。",
+      link_old: "这个链接已过期。请重新扫描电脑上 MapleSyrup 窗口里的二维码。",
+      hi: "嗨！点“开始收听”，直接跟我说话就好。",
+      start: "🎙️ 开始收听", stop: "⏹ 停止收听",
+      mic_idle: "点一下，允许麦克风，然后像跟朋友聊天一样跟我说话。",
+      mic_starting: "正在打开麦克风…", mic_listening: "正在听 — 直接说吧。", mic_audio_only: "正在把声音发送到电脑。",
+      mic_paused: "已暂停。点一下继续收听。", mic_talking: "MapleSyrup 正在说话…",
+      waiting_game: "等待游戏…", looking_game: "MapleSyrup 正在寻找冒险岛的窗口", watching: "正在观看",
+      cant_capture: "无法截取游戏画面：", no_game: "没有游戏",
+      exp_hour: "每小时经验", next_level: "距下一级", session: "本次时长", marks: "标记",
+      b_status: "状态", b_rate: "速度", b_mark: "★ 标记", b_mute: "静音", b_unmute: "取消静音", b_help: "帮助",
+      h_conversation: "对话", h_learned: "我学会的东西", h_settings: "设置",
+      hud_known: "我知道你的 HUD 在哪儿，会自己测量。", hud_finding: "我还在找你的 HUD。",
+      level_n: "{n} 级。", told_me: "（你告诉我的）",
+      teach_hint: "用说话来教我：“看到那个了吗？那是绿水灵”，“那是Boss的血条，低于 20% 时告诉我”，“我 61 级”。",
+      forget: "忘掉", sure: "确定？", says: "会说",
+      replies_on: "在哪里说出回答", v_pc: "电脑", v_phone: "手机", v_both: "都要", v_off: "关闭",
+      answer_all: "回答我说的每一句话（关闭：只在说“syrup”之后，适合直播）",
+      language: "语言", send_audio: "把麦克风的声音发送到电脑",
+      footer1: "像跟朋友一样跟它说话：“我现在怎么样？”“还要多久升级？”“标记一下！”",
+      footer2: "玩游戏时请保持这个页面打开；收听时屏幕会保持常亮。",
+      no_recognition: "这个浏览器不支持语音识别，请使用按钮。（iPhone 的 Safari 和安卓的 Chrome 支持。）",
+      rec_not_allowed: "语音识别未被允许。iPhone：设置 → App → Safari → 麦克风：允许，以及 设置 → Siri → 打开 Siri（或 键盘 → 启用听写）。按钮仍然可以用。",
+      rec_offline: "语音识别需要手机联网。", rec_error: "语音识别：", rec_cant_start: "语音识别无法启动：",
+      no_mic: "这个浏览器无法使用麦克风。", need_https: "麦克风需要 MapleSyrup 二维码里的安全（https）链接。",
+      mic_failed: "麦克风无法启动：", mic_refused: "权限被拒绝。请在浏览器设置中允许此页面使用麦克风，然后再试一次。",
+    },
+    "zh-Hant": {
+      connecting: "連線中…", pc_connected: "電腦已連線", pc_unreachable: "連不上電腦", reconnecting: "重新連線中…", old_link: "舊連結",
+      need_link: "這個頁面需要電腦上 MapleSyrup 視窗裡的連結：請掃描它的 QR 碼。",
+      link_old: "這個連結已經過期。請重新掃描電腦上 MapleSyrup 視窗裡的 QR 碼。",
+      hi: "嗨！點「開始聆聽」，直接跟我說話就好。",
+      start: "🎙️ 開始聆聽", stop: "⏹ 停止聆聽",
+      mic_idle: "點一下，允許麥克風，然後像跟朋友聊天一樣跟我說話。",
+      mic_starting: "正在開啟麥克風…", mic_listening: "正在聽 — 直接說吧。", mic_audio_only: "正在把聲音傳到電腦。",
+      mic_paused: "已暫停。點一下繼續聆聽。", mic_talking: "MapleSyrup 正在說話…",
+      waiting_game: "等待遊戲…", looking_game: "MapleSyrup 正在尋找新楓之谷的視窗", watching: "正在觀看",
+      cant_capture: "無法擷取遊戲畫面：", no_game: "沒有遊戲",
+      exp_hour: "每小時經驗", next_level: "距離下一級", session: "本次時長", marks: "標記",
+      b_status: "狀態", b_rate: "速度", b_mark: "★ 標記", b_mute: "靜音", b_unmute: "取消靜音", b_help: "說明",
+      h_conversation: "對話", h_learned: "我學會的東西", h_settings: "設定",
+      hud_known: "我知道你的 HUD 在哪裡，會自己測量。", hud_finding: "我還在找你的 HUD。",
+      level_n: "{n} 等。", told_me: "（你告訴我的）",
+      teach_hint: "用說話來教我：「看到那個了嗎？那是橘子菇菇」、「那是王的血條，低於 20% 時告訴我」、「我 61 等」。",
+      forget: "忘掉", sure: "確定？", says: "會說",
+      replies_on: "在哪裡說出回答", v_pc: "電腦", v_phone: "手機", v_both: "都要", v_off: "關閉",
+      answer_all: "回答我說的每一句話（關閉：只在說「syrup」之後，適合實況）",
+      language: "語言", send_audio: "把麥克風的聲音傳到電腦",
+      footer1: "像跟朋友一樣跟它說話：「我現在怎麼樣？」「還要多久升級？」「標記一下！」",
+      footer2: "玩遊戲時請保持這個頁面開著；聆聽時螢幕會保持亮著。",
+      no_recognition: "這個瀏覽器不支援語音辨識，請使用按鈕。（iPhone 的 Safari 和 Android 的 Chrome 支援。）",
+      rec_not_allowed: "語音辨識未被允許。iPhone：設定 → App → Safari → 麥克風：允許，以及 設定 → Siri → 開啟 Siri（或 鍵盤 → 啟用聽寫）。按鈕仍然可以用。",
+      rec_offline: "語音辨識需要手機連上網路。", rec_error: "語音辨識：", rec_cant_start: "語音辨識無法啟動：",
+      no_mic: "這個瀏覽器無法使用麥克風。", need_https: "麥克風需要 MapleSyrup QR 碼裡的安全（https）連結。",
+      mic_failed: "麥克風無法啟動：", mic_refused: "權限被拒絕。請在瀏覽器設定中允許此頁面使用麥克風，然後再試一次。",
+    },
+    th: {
+      connecting: "กำลังเชื่อมต่อ…", pc_connected: "เชื่อมต่อคอมแล้ว", pc_unreachable: "ติดต่อคอมไม่ได้", reconnecting: "กำลังเชื่อมต่อใหม่…", old_link: "ลิงก์เก่า",
+      need_link: "หน้านี้ต้องใช้ลิงก์จากหน้าต่าง MapleSyrup บนคอม: สแกน QR code ของมัน",
+      link_old: "ลิงก์นี้หมดอายุแล้ว สแกน QR code ในหน้าต่าง MapleSyrup บนคอมอีกครั้ง",
+      hi: "หวัดดี! แตะ “เริ่มฟัง” แล้วคุยกับฉันได้เลย",
+      start: "🎙️ เริ่มฟัง", stop: "⏹ หยุดฟัง",
+      mic_idle: "แตะ อนุญาตไมโครโฟน แล้วคุยกับฉันเหมือนคุยกับเพื่อน",
+      mic_starting: "กำลังเปิดไมโครโฟน…", mic_listening: "กำลังฟัง — พูดได้เลย", mic_audio_only: "กำลังส่งเสียงไปที่คอม",
+      mic_paused: "หยุดชั่วคราว แตะเพื่อฟังต่อ", mic_talking: "MapleSyrup กำลังพูด…",
+      waiting_game: "กำลังรอเกม…", looking_game: "MapleSyrup กำลังหาหน้าต่าง MapleStory", watching: "กำลังดู",
+      cant_capture: "จับภาพเกมไม่ได้:", no_game: "ไม่มีเกม",
+      exp_hour: "EXP/ชั่วโมง", next_level: "เลเวลถัดไป", session: "เซสชัน", marks: "มาร์ก",
+      b_status: "สถานะ", b_rate: "ความเร็ว", b_mark: "★ มาร์ก", b_mute: "ปิดเสียง", b_unmute: "เปิดเสียง", b_help: "ช่วยเหลือ",
+      h_conversation: "บทสนทนา", h_learned: "สิ่งที่ฉันเรียนรู้", h_settings: "ตั้งค่า",
+      hud_known: "ฉันรู้ว่า HUD ของคุณอยู่ตรงไหน และวัดเองได้แล้ว", hud_finding: "ฉันยังหา HUD ของคุณอยู่",
+      level_n: "เลเวล {n}", told_me: "(คุณบอกฉัน)",
+      teach_hint: "สอนฉันด้วยการพูด: “เห็นนั่นไหม? นั่นคือ Orange Mushroom”, “นั่นคือ HP ของบอส บอกฉันเมื่อต่ำกว่า 20%”, “ฉันเลเวล 61”",
+      forget: "ลืม", sure: "แน่ใจไหม?", says: "พูดว่า",
+      replies_on: "พูดคำตอบที่", v_pc: "คอม", v_phone: "มือถือ", v_both: "ทั้งสอง", v_off: "ปิด",
+      answer_all: "ตอบทุกอย่างที่ฉันพูด (ปิด: ตอบเฉพาะหลัง “syrup” สำหรับสตรีม)",
+      language: "ภาษา", send_audio: "ส่งเสียงไมโครโฟนไปที่คอม",
+      footer1: "คุยกับมันเหมือนเพื่อน: “เป็นไงบ้าง?”, “อีกนานไหมกว่าจะเลเวลอัป?”, “มาร์กไว้!”",
+      footer2: "เปิดหน้านี้ไว้ระหว่างเล่น หน้าจอจะเปิดค้างไว้ระหว่างฟัง",
+      no_recognition: "เบราว์เซอร์นี้ไม่รองรับการจดจำเสียง ใช้ปุ่มแทนนะ (Safari บน iPhone และ Chrome บน Android รองรับ)",
+      rec_not_allowed: "ไม่ได้อนุญาตการจดจำเสียง บน iPhone: การตั้งค่า → แอป → Safari → ไมโครโฟน: อนุญาต และ การตั้งค่า → Siri → เปิด Siri (หรือ แป้นพิมพ์ → เปิดใช้การป้อนตามคำบอก) ปุ่มยังใช้ได้",
+      rec_offline: "การจดจำเสียงต้องให้มือถือต่ออินเทอร์เน็ต", rec_error: "การจดจำเสียง:", rec_cant_start: "เริ่มการจดจำเสียงไม่ได้:",
+      no_mic: "เบราว์เซอร์นี้เข้าถึงไมโครโฟนไม่ได้", need_https: "ไมโครโฟนต้องใช้ลิงก์ที่ปลอดภัย (https) จาก QR code ของ MapleSyrup",
+      mic_failed: "เริ่มไมโครโฟนไม่ได้:", mic_refused: "ไม่ได้รับอนุญาต อนุญาตไมโครโฟนให้หน้านี้ในการตั้งค่าเบราว์เซอร์ แล้วลองอีกครั้ง",
+    },
+    vi: {
+      connecting: "đang kết nối…", pc_connected: "Đã kết nối PC", pc_unreachable: "Không kết nối được PC", reconnecting: "đang kết nối lại…", old_link: "liên kết cũ",
+      need_link: "Trang này cần liên kết từ cửa sổ MapleSyrup trên PC: hãy quét mã QR của nó.",
+      link_old: "Liên kết này đã cũ. Hãy quét lại mã QR trong cửa sổ MapleSyrup trên PC.",
+      hi: "Chào! Chạm “Bắt đầu nghe” rồi cứ nói chuyện với mình nhé.",
+      start: "🎙️ Bắt đầu nghe", stop: "⏹ Dừng nghe",
+      mic_idle: "Chạm, cho phép micro, rồi nói chuyện với mình như với một người bạn.",
+      mic_starting: "Đang bật micro…", mic_listening: "Đang nghe — cứ nói đi.", mic_audio_only: "Đang gửi âm thanh tới PC.",
+      mic_paused: "Đã tạm dừng. Chạm để nghe lại.", mic_talking: "MapleSyrup đang nói…",
+      waiting_game: "Đang chờ trò chơi…", looking_game: "MapleSyrup đang tìm cửa sổ MapleStory", watching: "Đang xem",
+      cant_capture: "Không chụp được màn hình game:", no_game: "không có game",
+      exp_hour: "EXP/giờ", next_level: "Cấp tiếp theo", session: "Phiên", marks: "Đánh dấu",
+      b_status: "Trạng thái", b_rate: "Tốc độ", b_mark: "★ Đánh dấu", b_mute: "Tắt tiếng", b_unmute: "Bật tiếng", b_help: "Trợ giúp",
+      h_conversation: "Trò chuyện", h_learned: "Những gì mình đã học", h_settings: "Cài đặt",
+      hud_known: "Mình biết HUD của bạn ở đâu và tự đo nó.", hud_finding: "Mình vẫn đang tìm HUD của bạn.",
+      level_n: "Cấp {n}.", told_me: "(bạn đã nói với mình)",
+      teach_hint: "Dạy mình bằng lời nói: “thấy cái đó không? đó là Orange Mushroom”, “đó là máu của boss, báo mình khi dưới 20%”, “mình cấp 61”.",
+      forget: "Quên", sure: "Chắc chưa?", says: "sẽ nói",
+      replies_on: "Đọc câu trả lời trên", v_pc: "PC", v_phone: "Điện thoại", v_both: "Cả hai", v_off: "Tắt",
+      answer_all: "Trả lời mọi điều mình nói (tắt: chỉ sau “syrup”, dành cho stream)",
+      language: "Ngôn ngữ", send_audio: "Gửi âm thanh micro tới PC",
+      footer1: "Nói chuyện như với bạn bè: “mình thế nào rồi?”, “bao lâu nữa thì lên cấp?”, “đánh dấu lại!”",
+      footer2: "Hãy để trang này mở khi chơi; màn hình luôn sáng khi đang nghe.",
+      no_recognition: "Trình duyệt này không nhận dạng giọng nói, hãy dùng các nút. (Safari trên iPhone và Chrome trên Android có hỗ trợ.)",
+      rec_not_allowed: "Nhận dạng giọng nói chưa được cho phép. Trên iPhone: Cài đặt → Ứng dụng → Safari → Micro: Cho phép, và Cài đặt → Siri → bật Siri (hoặc Bàn phím → Bật Đọc chính tả). Các nút vẫn dùng được.",
+      rec_offline: "Nhận dạng giọng nói cần điện thoại có mạng.", rec_error: "Nhận dạng giọng nói:", rec_cant_start: "Không bắt đầu được nhận dạng giọng nói:",
+      no_mic: "Trình duyệt này không truy cập được micro.", need_https: "Micro cần liên kết an toàn (https) từ mã QR của MapleSyrup.",
+      mic_failed: "Không bật được micro:", mic_refused: "quyền bị từ chối. Hãy cho phép micro cho trang này trong cài đặt trình duyệt rồi thử lại.",
+    },
+    id: {
+      connecting: "menghubungkan…", pc_connected: "PC terhubung", pc_unreachable: "PC tidak terjangkau", reconnecting: "menghubungkan ulang…", old_link: "tautan lama",
+      need_link: "Halaman ini perlu tautan dari jendela MapleSyrup di PC: pindai kode QR-nya.",
+      link_old: "Tautan ini sudah kedaluwarsa. Pindai lagi kode QR di jendela MapleSyrup di PC.",
+      hi: "Hai! Ketuk “Mulai mendengar” lalu ngobrol saja denganku.",
+      start: "🎙️ Mulai mendengar", stop: "⏹ Berhenti mendengar",
+      mic_idle: "Ketuk, izinkan mikrofon, lalu ngobrol denganku seperti dengan teman.",
+      mic_starting: "Menyalakan mikrofon…", mic_listening: "Mendengarkan — bicara saja.", mic_audio_only: "Mengirim suara ke PC.",
+      mic_paused: "Dijeda. Ketuk untuk mendengar lagi.", mic_talking: "MapleSyrup sedang bicara…",
+      waiting_game: "Menunggu game…", looking_game: "MapleSyrup sedang mencari jendela MapleStory", watching: "Menonton",
+      cant_capture: "Tidak bisa merekam layar game:", no_game: "tidak ada game",
+      exp_hour: "EXP/jam", next_level: "Level berikutnya", session: "Sesi", marks: "Tanda",
+      b_status: "Status", b_rate: "Laju", b_mark: "★ Tandai", b_mute: "Bisukan", b_unmute: "Suarakan", b_help: "Bantuan",
+      h_conversation: "Obrolan", h_learned: "Yang sudah kupelajari", h_settings: "Pengaturan",
+      hud_known: "Aku tahu di mana HUD-mu dan mengukurnya sendiri.", hud_finding: "Aku masih mencari HUD-mu.",
+      level_n: "Level {n}.", told_me: "(kamu yang bilang)",
+      teach_hint: "Ajari aku lewat obrolan: “lihat itu? itu Orange Mushroom”, “itu HP bos, kasih tahu aku kalau di bawah 20%”, “aku level 61”.",
+      forget: "Lupakan", sure: "Yakin?", says: "akan bilang",
+      replies_on: "Jawaban diucapkan di", v_pc: "PC", v_phone: "Ponsel", v_both: "Keduanya", v_off: "Mati",
+      answer_all: "Jawab semua yang kukatakan (mati: hanya setelah “syrup”, untuk streaming)",
+      language: "Bahasa", send_audio: "Kirim suara mikrofon ke PC",
+      footer1: "Ngobrol seperti dengan teman: “gimana aku sekarang?”, “berapa lama lagi naik level?”, “tandai itu!”",
+      footer2: "Biarkan halaman ini terbuka selama bermain; layar tetap menyala selama mendengar.",
+      no_recognition: "Browser ini tidak punya pengenal suara, jadi pakai tombolnya. (Safari di iPhone dan Chrome di Android punya.)",
+      rec_not_allowed: "Pengenal suara tidak diizinkan. Di iPhone: Pengaturan → App → Safari → Mikrofon: Izinkan, dan Pengaturan → Siri → nyalakan Siri (atau Papan Ketik → Aktifkan Dikte). Tombol tetap bisa dipakai.",
+      rec_offline: "Pengenal suara butuh ponsel tersambung ke internet.", rec_error: "Pengenal suara:", rec_cant_start: "Pengenal suara tidak bisa mulai:",
+      no_mic: "Browser ini tidak bisa mengakses mikrofon.", need_https: "Mikrofon perlu tautan aman (https) dari kode QR MapleSyrup.",
+      mic_failed: "Mikrofon tidak bisa mulai:", mic_refused: "izin ditolak. Izinkan mikrofon untuk halaman ini di pengaturan browser, lalu coba lagi.",
+    },
+    ru: {
+      connecting: "подключение…", pc_connected: "ПК подключён", pc_unreachable: "ПК недоступен", reconnecting: "переподключение…", old_link: "старая ссылка",
+      need_link: "Этой странице нужна ссылка из окна MapleSyrup на ПК: отсканируй его QR-код.",
+      link_old: "Эта ссылка устарела. Снова отсканируй QR-код в окне MapleSyrup на ПК.",
+      hi: "Привет! Нажми «Начать слушать» и просто говори со мной.",
+      start: "🎙️ Начать слушать", stop: "⏹ Перестать слушать",
+      mic_idle: "Нажми, разреши микрофон и говори со мной, как с другом.",
+      mic_starting: "Включаю микрофон…", mic_listening: "Слушаю — просто говори.", mic_audio_only: "Отправляю звук на ПК.",
+      mic_paused: "Пауза. Нажми, чтобы снова слушать.", mic_talking: "MapleSyrup говорит…",
+      waiting_game: "Жду игру…", looking_game: "MapleSyrup ищет окно MapleStory", watching: "Смотрю",
+      cant_capture: "Не получается захватить игру:", no_game: "нет игры",
+      exp_hour: "EXP/час", next_level: "До уровня", session: "Сессия", marks: "Метки",
+      b_status: "Статус", b_rate: "Темп", b_mark: "★ Метка", b_mute: "Без звука", b_unmute: "Со звуком", b_help: "Помощь",
+      h_conversation: "Разговор", h_learned: "Чему я научился", h_settings: "Настройки",
+      hud_known: "Я знаю, где твой HUD, и измеряю его сам.", hud_finding: "Я ещё ищу твой HUD.",
+      level_n: "Уровень {n}.", told_me: "(ты мне сказал)",
+      teach_hint: "Научи меня голосом: «видишь? это Orange Mushroom», «это HP босса, скажи, когда станет меньше 20%», «у меня 61 уровень».",
+      forget: "Забыть", sure: "Точно?", says: "скажет",
+      replies_on: "Где озвучивать ответы", v_pc: "ПК", v_phone: "Телефон", v_both: "Оба", v_off: "Нигде",
+      answer_all: "Отвечать на всё, что я говорю (выкл.: только после «syrup», для стримов)",
+      language: "Язык", send_audio: "Отправлять звук микрофона на ПК",
+      footer1: "Говори с ним, как с другом: «как я?», «сколько до следующего уровня?», «отметь это!»",
+      footer2: "Не закрывай эту страницу во время игры; пока он слушает, экран не гаснет.",
+      no_recognition: "Этот браузер не распознаёт речь, используй кнопки. (Safari на iPhone и Chrome на Android умеют.)",
+      rec_not_allowed: "Распознавание речи не разрешено. На iPhone: Настройки → Приложения → Safari → Микрофон: Разрешить, и Настройки → Siri → включи Siri (или Клавиатура → Включить диктовку). Кнопки работают.",
+      rec_offline: "Для распознавания речи телефону нужен интернет.", rec_error: "Распознавание речи:", rec_cant_start: "Не удалось запустить распознавание речи:",
+      no_mic: "У этого браузера нет доступа к микрофону.", need_https: "Микрофону нужна защищённая (https) ссылка из QR-кода MapleSyrup.",
+      mic_failed: "Не удалось включить микрофон:", mic_refused: "доступ запрещён. Разреши микрофон для этой страницы в настройках браузера и попробуй снова.",
+    },
+  };
+  // The language choices: speech recognition's locale, and the words above.
+  const LANGUAGES = [
+    ["en-US", "English (US)", "en"], ["en-GB", "English (UK)", "en"], ["he-IL", "עברית", "he"],
+    ["es-ES", "Español (España)", "es"], ["es-MX", "Español (Latinoamérica)", "es"], ["pt-BR", "Português (Brasil)", "pt"],
+    ["fr-FR", "Français", "fr"], ["de-DE", "Deutsch", "de"], ["ko-KR", "한국어", "ko"], ["ja-JP", "日本語", "ja"],
+    ["zh-CN", "简体中文", "zh-Hans"], ["zh-TW", "繁體中文", "zh-Hant"], ["th-TH", "ไทย", "th"], ["vi-VN", "Tiếng Việt", "vi"],
+    ["id-ID", "Bahasa Indonesia", "id"], ["ru-RU", "Русский", "ru"],
+  ];
+  const RTL = new Set(["he"]);
+  let words = WORDS.en;
+  function t(key, n) {
+    const s = (words && words[key]) || WORDS.en[key] || key;
+    return n == null ? s : s.replace("{n}", n);
+  }
+  // The phone's own language, matched to the choices.
+  function defaultLanguage() {
+    const want = (navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language || "en-US"]).map((l) => String(l));
+    for (const w of want) {
+      const exact = LANGUAGES.find((l) => l[0].toLowerCase() === w.toLowerCase());
+      if (exact) return exact[0];
+      const base = w.toLowerCase().split("-")[0];
+      if (base === "zh") return /tw|hk|mo|hant/i.test(w) ? "zh-TW" : "zh-CN";
+      if (base === "es" && !/es-es/i.test(w)) return "es-MX";
+      const loose = LANGUAGES.find((l) => l[0].toLowerCase().split("-")[0] === base);
+      if (loose) return loose[0];
+    }
+    return "en-US";
+  }
+  function applyLanguage(locale) {
+    const choice = LANGUAGES.find((l) => l[0] === locale) || LANGUAGES[0];
+    words = WORDS[choice[2]] || WORDS.en;
+    document.documentElement.lang = locale;
+    document.documentElement.dir = RTL.has(choice[2]) ? "rtl" : "ltr";
+    for (const el of document.querySelectorAll("[data-t]")) el.textContent = t(el.dataset.t);
+  }
+
   function api(path, options) {
     const sep = path.includes("?") ? "&" : "?";
     return fetch(path + sep + "k=" + encodeURIComponent(KEY), Object.assign({ cache: "no-store" }, options || {}));
@@ -205,7 +646,10 @@
   }
   function banner(text) { const b = $("banner"); b.textContent = text || ""; b.style.display = text ? "block" : "none"; }
   function note(text) { const n = $("note"); n.textContent = text || ""; n.style.display = text ? "block" : "none"; }
-  if (!KEY) banner("This page needs the link from MapleSyrup's window on the PC: scan its QR code.");
+  let locale = recall("lang") || defaultLanguage();
+  applyLanguage(locale);
+  $("bubbleText").textContent = t("hi");
+  if (!KEY) banner(t("need_link"));
 
   // ---- the dog ------------------------------------------------------------
   const dog = { img: new Image(), meta: null, phase: 0, last: 0, talking: false };
@@ -236,27 +680,32 @@
     if (g.read && g.current != null && g.max != null) return g.current.toLocaleString() + " / " + g.max.toLocaleString() + " · " + p + "%";
     return (g.read ? "" : "~") + p + "%";
   }
+  // Minutes and hours in the chosen language.
+  function unit(n, u) {
+    try { return new Intl.NumberFormat(locale, { style: "unit", unit: u, unitDisplay: "short" }).format(n); }
+    catch (e) { return n + (u === "hour" ? " h" : " min"); }
+  }
   function duration(s) {
     if (s == null) return "—";
     const m = Math.round(s / 60);
-    if (m < 1) return "<1 min";
+    if (m < 1) return "<" + unit(1, "minute");
     const h = Math.floor(m / 60);
-    return h ? h + " h " + (m % 60) + " min" : m + " min";
+    return h ? unit(h, "hour") + " " + unit(m % 60, "minute") : unit(m, "minute");
   }
   function render(state) {
     status = state.status || {};
     const game = status.game || {};
     const seen = game.state === "seen";
     $("gameDot").className = "dot " + (seen ? "on" : "bad");
-    $("fps").textContent = seen && status.fps ? status.fps.toFixed(1) + " fps" : "no game";
+    $("fps").textContent = seen && status.fps ? status.fps.toFixed(1) + " fps" : t("no_game");
     const who = [];
     if (status.level) who.push("Lv " + status.level);
     if (status.name) who.push(status.name);
     if (status.job) who.push(status.job);
-    $("who").textContent = seen ? (who.join(" · ") || "MapleStory") : "Waiting for the game…";
-    $("gameState").textContent = seen ? "Watching " + (game.detail || "MapleStory")
-      : game.state === "unavailable" ? "Can't capture the game: " + game.detail
-      : "MapleSyrup is looking for the MapleStory window";
+    $("who").textContent = seen ? (who.join(" · ") || "MapleStory") : t("waiting_game");
+    $("gameState").textContent = seen ? t("watching") + " " + (game.detail || "MapleStory")
+      : game.state === "unavailable" ? t("cant_capture") + " " + game.detail
+      : t("looking_game");
     for (const name of ["hp", "mp", "exp"]) {
       const g = seen ? status[name] : null;
       $(name + "Bar").style.width = pct(g) + "%";
@@ -269,7 +718,7 @@
     $("marks").textContent = p.marks || 0;
     const muted = !!status.muted;
     const mb = $("muteBtn");
-    mb.textContent = muted ? "Unmute" : "Mute";
+    mb.textContent = muted ? t("b_unmute") : t("b_mute");
     mb.dataset.cmd = muted ? "unmute" : "mute";
     voiceOn = state.voice_on || voiceOn;
     for (const b of $("voiceSeg").children) b.classList.toggle("sel", b.dataset.on === voiceOn);
@@ -295,15 +744,16 @@
     const card = $("learnedCard");
     if (!learned) { card.style.display = "none"; return; }
     card.style.display = "";
-    const level = learned.level ? " Level " + learned.level + (learned.level_from === "player" ? " (you told me)" : "") + "." : "";
-    $("hudState").textContent = (learned.hud ? "I know where your HUD is and measure it myself." : "I'm still finding your HUD.") + level;
+    const level = learned.level ? " " + t("level_n", learned.level) + (learned.level_from === "player" ? " " + t("told_me") : "") : "";
+    $("hudState").textContent = (learned.hud ? t("hud_known") : t("hud_finding")) + level;
     const things = learned.things || [];
     $("learnedEmpty").style.display = things.length ? "none" : "";
-    const key = JSON.stringify(things);
+    const key = locale + JSON.stringify(things);
     if (key === learnedKey) return;
     learnedKey = key;
     const list = $("learned");
     list.textContent = "";
+    const say = t("says"), forgetWord = t("forget"), sureWord = t("sure");
     for (const t of things) {
       const li = document.createElement("li");
       let pic;
@@ -321,15 +771,15 @@
       const name = document.createElement("b");
       name.textContent = t.name;
       const now = document.createElement("span");
-      now.textContent = (t.now || t.kind) + (t.alert ? " · says “" + t.alert + "”" : "");
+      now.textContent = (t.now || t.kind) + (t.alert ? " · " + say + " “" + t.alert + "”" : "");
       what.append(name, now);
       const forget = document.createElement("button");
-      forget.textContent = "Forget";
+      forget.textContent = forgetWord;
       forget.addEventListener("click", () => {
         if (forget.dataset.sure) { postJson("/api/forget", { id: t.id }).catch(() => {}); forget.disabled = true; return; }
         forget.dataset.sure = "1";
-        forget.textContent = "Sure?";
-        setTimeout(() => { delete forget.dataset.sure; forget.textContent = "Forget"; }, 3000);
+        forget.textContent = sureWord;
+        setTimeout(() => { delete forget.dataset.sure; forget.textContent = forgetWord; }, 3000);
       });
       li.append(pic, what, forget);
       list.append(li);
@@ -413,15 +863,15 @@
     try {
       const r = await api("/api/state?since=" + since);
       if (r.status === 403) {
-        banner("This link is out of date. Scan the QR code in MapleSyrup's window on the PC again.");
-        setPc(false, "old link");
+        banner(t("link_old"));
+        setPc(false, t("old_link"));
         setTimeout(poll, 4000);
         return;
       }
       const state = await r.json();
       failures = 0;
       banner("");
-      setPc(true, state.status && state.status.ai ? "PC · " + state.status.ai : "PC connected");
+      setPc(true, state.status && state.status.ai ? "PC · " + state.status.ai : t("pc_connected"));
       render(state);
       for (const m of state.messages || []) addMessage(m, !first);
       since = state.last_id || since;
@@ -429,7 +879,7 @@
       first = false;
     } catch (e) {
       failures++;
-      setPc(false, failures > 2 ? "PC not reachable" : "reconnecting…");
+      setPc(false, failures > 2 ? t("pc_unreachable") : t("reconnecting"));
     }
     setTimeout(poll, failures ? Math.min(5000, 600 * failures) : 450);
   }
@@ -451,8 +901,24 @@
   });
   $("always").addEventListener("change", () => postJson("/api/listen", { always: $("always").checked }).catch(() => {}));
   const lang = $("lang");
-  lang.value = recall("lang") || "en-US";
-  lang.addEventListener("change", () => { remember("lang", lang.value); if (listening) { stopRecognition(); startRecognition(); } });
+  for (const [value, label] of LANGUAGES) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    lang.append(option);
+  }
+  lang.value = locale;
+  lang.addEventListener("change", () => {
+    locale = lang.value;
+    remember("lang", locale);
+    applyLanguage(locale);
+    $("listen").textContent = listening ? t("stop") : t("start");
+    $("micStatus").textContent = listening ? t("mic_listening") : t("mic_idle");
+    learnedKey = "";
+    renderLearned(status.learned);
+    postJson("/api/lang", { lang: locale }).catch(() => {});
+    if (listening) { stopRecognition(); startRecognition(); }
+  });
   const sendAudio = $("sendAudio");
   sendAudio.checked = recall("sendAudio") !== "0";
   sendAudio.addEventListener("change", () => remember("sendAudio", sendAudio.checked ? "1" : "0"));
@@ -477,8 +943,7 @@
 
   async function startAudio() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      note(window.isSecureContext ? "This browser has no microphone access." :
-        "The microphone needs the secure (https) link from MapleSyrup's QR code.");
+      note(window.isSecureContext ? t("no_mic") : t("need_https"));
       return false;
     }
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -580,7 +1045,7 @@
   function setHeld(hold) {
     if (held === hold) return;
     held = hold;
-    if (listening && Recognition) $("micStatus").textContent = hold ? "MapleSyrup is talking…" : "Listening — just talk.";
+    if (listening && Recognition) $("micStatus").textContent = hold ? t("mic_talking") : t("mic_listening");
     if (!rec || !wantRec || !listening) return;
     if (hold) { try { rec.abort(); } catch (e) {} }
     else restartRecognition(0);
@@ -593,7 +1058,7 @@
 
   function startRecognition() {
     if (!Recognition) {
-      note("This browser has no speech recognition, so use the buttons. (Safari on iPhone and Chrome on Android have it.)");
+      note(t("no_recognition"));
       return;
     }
     wantRec = true;
@@ -615,11 +1080,11 @@
       if (e.error === "no-speech" || e.error === "aborted") return;
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         wantRec = false;
-        note("Speech recognition isn't allowed. On iPhone: Settings → Apps → Safari → Microphone: Allow, and Settings → Siri → turn on Siri (or Keyboard → Enable Dictation). Buttons still work.");
+        note(t("rec_not_allowed"));
       } else if (e.error === "network") {
-        note("Speech recognition needs the phone to be online.");
+        note(t("rec_offline"));
       } else {
-        note("Speech recognition: " + e.error);
+        note(t("rec_error") + " " + e.error);
       }
     };
     rec.onend = () => {
@@ -631,7 +1096,7 @@
         try { recStarted = Date.now(); rec.start(); } catch (e) {}
       }, quickEnds > 3 ? 3000 : 200);
     };
-    try { recStarted = Date.now(); rec.start(); } catch (e) { note("Speech recognition could not start: " + e.message); }
+    try { recStarted = Date.now(); rec.start(); } catch (e) { note(t("rec_cant_start") + " " + e.message); }
   }
 
   function stopRecognition() {
@@ -645,18 +1110,16 @@
     note("");
     listening = true;
     $("listen").classList.add("on");
-    $("listen").textContent = "⏹ Stop listening";
-    $("micStatus").textContent = "Starting the microphone…";
+    $("listen").textContent = t("stop");
+    $("micStatus").textContent = t("mic_starting");
     try {
       await startAudio();
     } catch (e) {
-      note("The microphone could not start: " + (e && e.name === "NotAllowedError"
-        ? "permission was refused. Allow the microphone for this page in the browser's settings, then try again."
-        : (e && e.message) || e));
+      note(t("mic_failed") + " " + (e && e.name === "NotAllowedError" ? t("mic_refused") : (e && e.message) || e));
     }
     startRecognition();
     keepAwake();
-    $("micStatus").textContent = Recognition ? "Listening — just talk." : "Sending audio to the PC.";
+    $("micStatus").textContent = Recognition ? t("mic_listening") : t("mic_audio_only");
   }
 
   function stop() {
@@ -665,8 +1128,8 @@
     stopAudio();
     if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
     $("listen").classList.remove("on");
-    $("listen").textContent = "🎙️ Start listening";
-    $("micStatus").textContent = "Paused. Tap to listen again.";
+    $("listen").textContent = t("start");
+    $("micStatus").textContent = t("mic_paused");
   }
 
   $("listen").addEventListener("click", () => (listening ? stop() : start()));
@@ -677,7 +1140,8 @@
     if (wantRec && rec && !held) { try { rec.start(); } catch (e) {} }
   });
 
-  if (KEY) postJson("/api/hello", { agent: navigator.userAgent }).catch(() => {});
+  $("listen").textContent = t("start");
+  if (KEY) postJson("/api/hello", { agent: navigator.userAgent, lang: locale }).catch(() => {});
   poll();
 })();
 </script>
