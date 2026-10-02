@@ -108,6 +108,15 @@ jobs:
           {
             echo "ffmpeg on the PATH: $(command -v ffmpeg || echo none)"
             ./target/release/maplesyrup.exe --record-test
+            status=$?
+            # What this machine's screen gives ffmpeg directly.
+            ff="$(cygpath -u "$APPDATA")/MapleSyrup/ffmpeg/ffmpeg.exe"
+            if [ -f "$ff" ]; then
+              "$ff" -version | head -1
+              echo "--- gdigrab"; "$ff" -hide_banner -loglevel info -f gdigrab -framerate 30 -t 2 -i desktop -y "$RUNNER_TEMP/gdi.mp4" 2>&1 | tail -6
+              echo "--- ddagrab"; "$ff" -hide_banner -loglevel info -f lavfi -t 2 -i "ddagrab=output_idx=0:framerate=30,hwdownload,format=bgra" -y "$RUNNER_TEMP/dda.mp4" 2>&1 | tail -6
+            fi
+            exit $status
           } 2>&1 | tee logs/record-test.log
       - name: Package
         run: |

@@ -576,8 +576,9 @@ impl Hub {
                 let samples = audio::samples_from_bytes(&request.body);
                 let (mic, played) = match channels {
                     2 => {
-                        let mic: Vec<i16> = samples.chunks_exact(2).map(|f| f[0]).collect();
-                        let played: Vec<i16> = samples.chunks_exact(2).map(|f| f[1]).collect();
+                        let frames = samples.as_chunks::<2>().0;
+                        let mic: Vec<i16> = frames.iter().map(|f| f[0]).collect();
+                        let played: Vec<i16> = frames.iter().map(|f| f[1]).collect();
                         (mic, Some(played))
                     }
                     _ => (samples, None),

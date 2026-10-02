@@ -859,7 +859,7 @@ impl Recorder {
             },
         };
         let (encoder, pixels) = encoder(ffmpeg);
-        let mut why = String::new();
+        let mut why = Vec::new();
         for grab in grabs {
             match launch(ffmpeg, &grab, encoder, pixels, &raw, &progress, &log) {
                 Ok((child, sound, start)) => {
@@ -871,10 +871,13 @@ impl Recorder {
                     };
                     return Ok(Recorder::running(ffmpeg, child, sound, start, &grab, files));
                 }
-                Err(e) => why = format!("{} ({e})", grab.name()),
+                Err(e) => why.push(format!("{}: {e}", grab.name())),
             }
         }
-        Err(format!("the screen could not be recorded: {why}"))
+        Err(format!(
+            "the screen could not be recorded ({})",
+            why.join("; ")
+        ))
     }
 
     fn running(
@@ -1028,6 +1031,13 @@ impl Drop for Recorder {
     }
 }
 
+/// The last `n` lines of a log, on one line.
+fn last_lines(path: &Path, n: usize) -> String {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join(" / ")
+}
+
 fn last_line(path: &Path) -> String {
     std::fs::read_to_string(path)
         .unwrap_or_default()
@@ -1074,7 +1084,7 @@ fn launch(
     let waiting = Instant::now();
     while waiting.elapsed() < Duration::from_secs(20) {
         if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!("ffmpeg stopped ({status}): {}", last_line(log)));
+            return Err(format!("ffmpeg stopped ({status}): {}", last_lines(log, 3)));
         }
         if let Ok(stream) = TcpStream::connect(("127.0.0.1", port)) {
             let _ = stream.set_nodelay(true);

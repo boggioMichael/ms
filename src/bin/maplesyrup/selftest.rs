@@ -299,6 +299,9 @@ pub fn record_test() -> i32 {
         Ok(recorder) => recorder,
         Err(e) => {
             r.fail("recording", e);
+            if let Ok(log) = std::fs::read_to_string(file.with_extension("log")) {
+                println!("ffmpeg said:\n{log}");
+            }
             return 1;
         }
     };
