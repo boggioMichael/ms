@@ -7,6 +7,17 @@ MapleSyrup is a real-time AI gaming companion that observes MapleStory entirely 
 
 It is non-invasive by design: no game-memory reads, code injection, or input automation. The current MVP captures a game window or uses a real image fixture, runs a confidence-scored vision pipeline, and produces inspectable world and game-state output.
 
+## Get MapleSyrup
+
+Download **`MapleSyrup-Setup-<version>.exe`** from [Releases](https://github.com/boggioMichael/ms/releases) and run it (Windows 10 1903 or later, 64-bit, no administrator needed). Start MapleSyrup and MapleStory, scan the QR code with your phone, tap **Start listening**, and talk to it.
+
+- **Talks like a friend sitting next to you.** With an OpenAI API key it answers in a natural voice, knowing what is on your screen. It answers as soon as you stop talking, and you can talk over it. Without a key it answers simple questions in the Windows voice.
+- **Sees your game and learns it.** It finds your HUD by itself (any resolution or layout), measures HP, MP and EXP on every frame, and learns what you teach it by talking: "that's an Orange Mushroom, tell me when one shows up".
+- **Watches your back.** Low HP and MP warnings, level-ups, EXP per hour and time to level, with MapleStory's sound turned down while it talks.
+- **Your phone is its microphone and a second screen**, in 14 languages.
+
+Everything it does, recording and streaming, and privacy: [package/README.txt](package/README.txt).
+
 ## Narrated MVP demo
 [![Watch MapleStory and MapleSyrup running together](https://img.youtube.com/vi/yXIR59gGKhE/maxresdefault.jpg)](https://youtu.be/yXIR59gGKhE)
 
@@ -70,8 +81,11 @@ For deeper design context, see `docs/vision-architecture.md`, `docs/perception-a
 
 ```powershell
 cargo build --release
-cargo run --release
+cargo run --release          # MapleSyrup itself (the maplesyrup binary)
+cargo run --release -- --help
 ```
+
+The [standalone workflow](.github/workflows/standalone.yml) builds `MapleSyrup.exe`, the portable zip and the installer (`installer/MapleSyrup.iss`, Inno Setup 6) on Windows, installs and self-tests them, and publishes them to the `build-output/<branch>` branch; a `v*` tag attaches them to a release.
 
 Run the structured perception demo against the real fixture:
 
@@ -152,11 +166,11 @@ cargo test --all-targets
 cargo bench --bench vision_pipeline
 ```
 
-The integrated MVP passes 122 unit tests, the real-image HP-bar integration test, the HUD accuracy regression tests, all target checks, and the Criterion vision benchmark. Benchmark latency depends heavily on frame size and OCR work; use the generated Criterion report and measured evidence rather than assuming a fixed real-time rate.
+The tree passes about 250 tests on Windows (the vision engine, the real-image HP-bar and HUD accuracy tests, the companion, the phone link, and the OpenAI client and conversation against a stand-in server), all target checks, and the Criterion vision benchmark. Benchmark latency depends heavily on frame size and OCR work; use the generated Criterion report and measured evidence rather than assuming a fixed real-time rate.
 
 ## Contributing
 
-1. Branch from the latest tested `mvp` branch.
+1. Branch from the latest `master`.
 2. Keep each change focused and preserve the non-invasive pixel-observation boundary.
 3. Add unit tests and a fixture-backed integration test when detector behavior changes.
 4. Document confidence semantics, reliability, and failure modes for new observations.

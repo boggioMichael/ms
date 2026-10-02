@@ -1,8 +1,8 @@
 name: MapleSyrup standalone
 
-# Builds and checks the standalone companion (MapleSyrup.exe) on a branch
-# under claude/ or a version tag, and publishes what it made where it can be
-# read with git:
+# Builds and checks the standalone companion (MapleSyrup.exe) on master, a
+# branch under claude/ or a version tag, and publishes what it made where it
+# can be read with git:
 #
 #   build-output/<branch>   the Windows package (MapleSyrup.zip), the
 #                           installer (MapleSyrup-Setup-<version>.exe) and
@@ -15,7 +15,7 @@ name: MapleSyrup standalone
 # A commit message with [vendor-only] runs the vendor job alone.
 on:
   push:
-    branches: ["claude/**"]
+    branches: ["master", "claude/**"]
     tags: ["v*"]
   workflow_dispatch:
 
