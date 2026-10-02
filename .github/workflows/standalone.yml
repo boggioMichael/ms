@@ -101,6 +101,14 @@ jobs:
         run: |
           set -o pipefail
           ./target/release/maplesyrup.exe --self-test 2>&1 | tee logs/self-test.log
+      - name: Recording test (fetches ffmpeg the way a first recording does)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          {
+            echo "ffmpeg on the PATH: $(command -v ffmpeg || echo none)"
+            ./target/release/maplesyrup.exe --record-test
+          } 2>&1 | tee logs/record-test.log
       - name: Package
         run: |
           pkg="$RUNNER_TEMP/MapleSyrup"
@@ -180,6 +188,9 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: ffmpeg and Xvfb (recording tests)
+        continue-on-error: true
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg xvfb > /dev/null
       - name: Checks
         continue-on-error: true
         run: |

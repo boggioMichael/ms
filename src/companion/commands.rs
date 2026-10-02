@@ -330,6 +330,53 @@ pub fn local_command(sentence: &str) -> Option<Command> {
     command_in(&text).filter(|c| matches!(c, Command::Mark | Command::Mute | Command::Unmute))
 }
 
+/// "Start recording" (true) or "stop recording" (false), said in a short
+/// sentence (in English or Hebrew; a model understands the rest).
+pub fn recording_request(sentence: &str) -> Option<bool> {
+    let text = normalize(sentence);
+    let text = match after_wake_word(&text) {
+        Some(end) => text[end..].trim().to_string(),
+        None => text,
+    };
+    if text.split(' ').filter(|w| !w.is_empty()).count() > 5 {
+        return None;
+    }
+    const STOP: &[&str] = &[
+        "stop recording",
+        "stop the recording",
+        "end the recording",
+        "end recording",
+        "תפסיק להקליט",
+        "תפסיק את ההקלטה",
+        "עצור הקלטה",
+        "תעצור הקלטה",
+        "תעצור את ההקלטה",
+        "סיים הקלטה",
+        "תסיים את ההקלטה",
+    ];
+    const START: &[&str] = &[
+        "start recording",
+        "start a recording",
+        "start the recording",
+        "record this",
+        "record the session",
+        "begin recording",
+        "תתחיל להקליט",
+        "התחל להקליט",
+        "התחל הקלטה",
+        "תתחיל הקלטה",
+        "תקליט את זה",
+        "תקליט",
+    ];
+    if STOP.iter().any(|p| has_phrase(&text, p)) {
+        Some(false)
+    } else if START.iter().any(|p| has_phrase(&text, p)) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 /// Read one heard sentence. `listening` is true when the wake word was said
 /// on its own a moment ago, so this sentence counts as addressed.
 pub fn interpret(sentence: &str, listening: bool) -> Heard {
@@ -468,5 +515,19 @@ mod tests {
         }
         assert_eq!(Command::from_word("STATUS"), Some(Command::Status));
         assert_eq!(Command::from_word("dance"), None);
+    }
+
+    #[test]
+    fn start_and_stop_recording_are_heard_in_short_sentences() {
+        assert_eq!(recording_request("start recording"), Some(true));
+        assert_eq!(recording_request("Syrup, start recording!"), Some(true));
+        assert_eq!(recording_request("ok stop the recording"), Some(false));
+        assert_eq!(recording_request("תתחיל להקליט"), Some(true));
+        assert_eq!(recording_request("סירופ תפסיק להקליט"), Some(false));
+        assert_eq!(recording_request("what's my hp"), None);
+        assert_eq!(
+            recording_request("yesterday I forgot to start recording my run on the stream"),
+            None
+        );
     }
 }

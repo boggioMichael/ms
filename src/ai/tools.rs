@@ -58,6 +58,10 @@ pub fn look(eyes: &OpenAi, look: &Look) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// The commands the recording tool hands the main loop.
+pub const RECORD_ON: &str = "record";
+pub const RECORD_OFF: &str = "stop recording";
+
 fn function(name: &str, description: &str, properties: Value) -> Value {
     let required: Vec<String> = properties
         .as_object()
@@ -129,6 +133,11 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
                 "set_muted",
                 "Stop speaking aloud (muted: true) or speak again (muted: false), when the player asks you to be quiet or to talk again.",
                 json!({"muted": {"type": "boolean"}}),
+            ),
+            function(
+                "set_recording",
+                "Start (on: true) or stop (on: false) recording the session as a video on the player's PC: the whole screen, the game's sound, your voice and theirs. Only when the player asks.",
+                json!({"on": {"type": "boolean"}}),
             ),
             function(
                 "look_closer",
@@ -251,6 +260,20 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
                 ("Remembered for good.".into(), Some(Effect::Fact(fact)))
             }
             "mark_moment" => ("Marked.".into(), Some(Effect::Command("mark".into()))),
+            "set_recording" => {
+                let on = args["on"].as_bool().unwrap_or(true);
+                (
+                    if on {
+                        "Starting the recording (the very first time it fetches the recorder, which takes a minute)."
+                    } else {
+                        "Stopping the recording; the video is saved in the session folder."
+                    }
+                    .into(),
+                    Some(Effect::Command(
+                        if on { RECORD_ON } else { RECORD_OFF }.into(),
+                    )),
+                )
+            }
             "set_muted" => {
                 let muted = args["muted"].as_bool().unwrap_or(true);
                 (

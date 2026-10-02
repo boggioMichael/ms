@@ -4,6 +4,7 @@
 //! are quiet stand-ins, so the rest of the program runs (and is tested)
 //! anywhere.
 
+pub mod loopback;
 pub mod overlay;
 pub mod sound;
 pub mod voice;

@@ -75,14 +75,30 @@ Languages
   the language you speak to it and says its own lines (warnings, level ups) in
   yours too. The installer speaks yours when Inno Setup has it.
 
-Recording or streaming it
+Recording the session
+  Tap "Record the session" on the phone (or just say "start recording"; tap
+  or say "stop recording" to stop). MapleSyrup records a video of the whole
+  screen with every sound: the game, MapleSyrup's voice (on the PC or on a
+  live call on the phone), and you from the phone's microphone. The dog and
+  the panel are in it. It is saved as "recording HH-MM-SS.mp4" in the session
+  folder; the phone says when it is saved. "MapleSyrup (recording and
+  streaming)" from the Start menu records from the start.
+  The first time, MapleSyrup downloads ffmpeg (about 150 MB, kept in
+  %APPDATA%\MapleSyrup\ffmpeg) to do the recording; it uses the graphics
+  card's video encoder when there is one. Each sound is put where it was
+  heard, so the voices match the picture. If MapleSyrup is closed while
+  recording, it finishes the file first; if it can't, the "(unfinished)" file
+  still plays.
+  To check recording on a PC: MapleSyrup.exe --record-test (a few seconds of
+  the screen with a flash and a tone, which must line up).
+
+Streaming it
   Start "MapleSyrup (recording and streaming)" from the Start menu (in the zip:
   double-click "MapleSyrup (recording).cmd"): the dog and the panel then show
-  up in recordings (normally they keep out of OBS and screenshots), and what
-  the phone's microphone hears is kept as mic.wav in the session folder.
-  Record the whole screen, not just the game: OBS "Display Capture" (OBS's
-  "Game Capture" and Windows' Win+Alt+R see only the game window), or the
-  Snipping Tool's video (Win+Shift+R) with Sound and Microphone on.
+  up in OBS (normally they keep out of captures, except while MapleSyrup
+  records), and what the phone's microphone hears is kept as mic.wav in the
+  session folder. In OBS use "Display Capture" ("Game Capture" sees only the
+  game window).
 
 If the phone cannot connect
   Start "MapleSyrup (phone over the internet)" from the Start menu (in the zip:
@@ -106,12 +122,14 @@ Privacy
   OpenAI bills your account: a live call costs more than the PC voice (very
   roughly a dollar or two per hour of play, depending on how much you talk). Without a key, nothing leaves your PC
   except the phone link on your own network.
+  Recordings are made and kept on your PC only, and only when you ask for one.
 
 Files
   Each session is kept in "MapleSyrup sessions" (in Documents when installed,
   next to MapleSyrup.exe from the zip):
-  log.txt (what was said and heard), markers.csv and mark-NNN.png, and
-  mic.wav when started with --record-mic.
+  log.txt (what was said and heard), markers.csv and mark-NNN.png, the
+  recordings (recording HH-MM-SS.mp4), and mic.wav when started with
+  --record-mic.
   Optional: write a few lines about yourself in %APPDATA%\MapleSyrup\about-me.txt
   (your name, your class, what you're working towards) and it will know them.
 

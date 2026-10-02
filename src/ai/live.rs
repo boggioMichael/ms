@@ -78,6 +78,7 @@ remember something, call remember_fact.
 - forget_thing when asked to forget something you learned; look_closer to read small text or details.
 - mark_moment when they ask you to mark or save the moment; set_muted when they ask you to be quiet or to \
 talk again.
+- set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
 After using a tool, say what happened in a few words.";
 
 /// The instructions for a call: who it is, what the player told it about

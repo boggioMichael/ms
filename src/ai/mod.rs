@@ -452,6 +452,7 @@ const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
 - When the player tells you something about themselves or their game worth keeping (their class, a key binding, a goal), or asks you to remember something, call remember_fact.
 - forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
 - mark_moment when the player asks you to mark or save the moment (for their video); set_muted when they ask you to be quiet, or to talk again.
+- set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
 After using a tool, confirm briefly in your own words.";
 
 /// How the model is told it can search the web.

@@ -16,6 +16,7 @@
 //!       └──── replies, voice clips, the dog ◀──── OpenAI (reply + voice) ──▶ PC speakers
 //! ```
 
+mod recording;
 mod selftest;
 
 use std::io::IsTerminal;
@@ -69,6 +70,9 @@ OPTIONS
                         mobile data, needs the internet
   --port N              the phone link's port (default 8443)
   --no-phone            no phone link
+  --record              record the session from the start: a video of the whole
+                        screen with every sound (the phone's Record button does
+                        the same any time)
   --record-mic          keep the phone's microphone in the session's mic.wav
   --replies WHERE       where replies are spoken: phone (a live call, like a
                         phone call: any language, talk over it), pc (the PC's
@@ -92,6 +96,8 @@ OPTIONS
                         keeps out of captures)
   --plain               no colours or redrawing in the console
   --self-test           check this PC: the engine, the phone link, the voice
+  --record-test         check recording on this PC: a few seconds of the screen
+                        with a flash and a tone, which must line up
   --help
 
 The OpenAI key is read from OPENAI_API_KEY, or from openai-key.txt next to
@@ -104,6 +110,7 @@ struct Options {
     phone: bool,
     tunnel: bool,
     port: u16,
+    record: bool,
     record_mic: bool,
     /// Where replies are spoken (None: a live call when there is a key).
     replies: Option<VoiceOn>,
@@ -126,6 +133,7 @@ struct Options {
     overlay_on_stream: bool,
     plain: bool,
     self_test: bool,
+    record_test: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -135,6 +143,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         phone: true,
         tunnel: false,
         port: 8443,
+        record: false,
         record_mic: false,
         replies: None,
         wake_word: false,
@@ -156,6 +165,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         overlay_on_stream: false,
         plain: false,
         self_test: false,
+        record_test: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -178,6 +188,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--tunnel" => o.tunnel = true,
             "--port" => o.port = number("--port", value("--port")?)? as u16,
             "--no-phone" => o.phone = false,
+            "--record" => o.record = true,
             "--record-mic" => o.record_mic = true,
             "--replies" => {
                 let text = value("--replies")?;
@@ -204,6 +215,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--overlay-on-stream" => o.overlay_on_stream = true,
             "--plain" => o.plain = true,
             "--self-test" => o.self_test = true,
+            "--record-test" => o.record_test = true,
             "-h" | "--help" | "/?" => return Err(String::new()),
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             path => o.input = Some(PathBuf::from(path)),
@@ -226,6 +238,9 @@ fn main() {
     };
     if options.self_test {
         std::process::exit(selftest::run());
+    }
+    if options.record_test {
+        std::process::exit(selftest::record_test());
     }
     if let Err(e) = run(options) {
         eprintln!("\nMapleSyrup stopped: {e}");
@@ -608,6 +623,11 @@ impl Mouth {
     fn speaking(&self) -> bool {
         let now = Instant::now();
         self.player.speaking() || now < self.sapi_until || now < self.phone_until
+    }
+
+    /// Speaking on the PC's speakers (not on the phone).
+    fn pc_speaking(&self) -> bool {
+        self.player.speaking() || Instant::now() < self.sapi_until
     }
 
     fn hush(&mut self) {
@@ -1402,6 +1422,12 @@ fn run(options: Options) -> Result<(), String> {
         None
     };
     let mut panel_failed = false;
+    // The session's recording (the phone's Record button, or --record).
+    let mut recording =
+        recording::Recording::new(&settings_dir, &session_dir, options.overlay_on_stream);
+    if options.record {
+        recording.start(&mut out);
+    }
     let mut dog = Dog::load();
     let mut ai_error_shown = String::new();
     let mut model_logged = false;
@@ -1508,6 +1534,15 @@ fn run(options: Options) -> Result<(), String> {
                                 rest
                             }
                         };
+                        if let Some(on) = commands::recording_request(&text) {
+                            out.show(Kind::Heard, &text);
+                            if on {
+                                recording.start(&mut out);
+                            } else {
+                                recording.stop(&mut out, panel_window.as_mut());
+                            }
+                            continue;
+                        }
                         if out.mouth.ai.is_some() {
                             out.show(Kind::Heard, &text);
                             if let Some(command) = commands::local_command(&text) {
@@ -1586,10 +1621,18 @@ fn run(options: Options) -> Result<(), String> {
                         }
                     }
                     Inbound::Talking(on) => out.phone_talking(on),
+                    Inbound::Record(true) => recording.start(&mut out),
+                    Inbound::Record(false) => recording.stop(&mut out, panel_window.as_mut()),
                     Inbound::Effect(effect) => match effect {
                         ai::Effect::Note(line) => out.show(Kind::Info, &line),
                         ai::Effect::Fact(fact) => {
                             out.show(Kind::Info, &format!("remembered: {fact}"))
+                        }
+                        ai::Effect::Command(word) if word == ai::tools::RECORD_ON => {
+                            recording.start(&mut out)
+                        }
+                        ai::Effect::Command(word) if word == ai::tools::RECORD_OFF => {
+                            recording.stop(&mut out, panel_window.as_mut())
                         }
                         ai::Effect::Command(word) => {
                             if let Some(command) = Command::from_word(&word) {
@@ -1683,6 +1726,8 @@ fn run(options: Options) -> Result<(), String> {
             }
         }
 
+        recording.tick(&mut out, panel_window.as_mut());
+
         // Words that waited for the rest of a sentence that never came.
         if let Some(text) = turns.overdue() {
             let job = conversation_job(
@@ -1728,6 +1773,10 @@ fn run(options: Options) -> Result<(), String> {
                     // Its own line, translated: what the phone may hear back.
                     companion.remember_spoken(now, &text);
                     out.show(kind, &text);
+                }
+                Done::Command { word } if word == ai::tools::RECORD_ON => recording.start(&mut out),
+                Done::Command { word } if word == ai::tools::RECORD_OFF => {
+                    recording.stop(&mut out, panel_window.as_mut())
                 }
                 Done::Command { word } => {
                     if let Some(command) = Command::from_word(&word) {
@@ -1915,12 +1964,13 @@ fn run(options: Options) -> Result<(), String> {
                     "always_listen": companion.settings.always_listen,
                     "speaking": out.mouth.speaking(),
                     // The PC's own voice (the phone keeps listening through it).
-                    "speaking_pc": out.mouth.player.speaking() || Instant::now() < out.mouth.sapi_until,
+                    "speaking_pc": out.mouth.pc_speaking(),
                     "thinking": out.mouth.ai.as_ref().is_some_and(|w| w.busy()),
                     "ai": out.mouth.ai.as_ref().map(|w| w.model.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "OpenAI".into())),
                     "learned": learned_status(sight.as_ref(), hub),
                     // Live calls can be made.
                     "live": out.live_ok,
+                    "recording": recording.status(),
                 }));
                 // What a live call can see: the screen only while the game is
                 // the window in front.
@@ -1934,6 +1984,7 @@ fn run(options: Options) -> Result<(), String> {
                 }
             }
             if ansi {
+                let recording_label = recording.label();
                 let view = screen::View {
                     obs: companion.last(),
                     fps,
@@ -1944,6 +1995,7 @@ fn run(options: Options) -> Result<(), String> {
                     voice_on: out.voice_on(),
                     muted: companion.muted(),
                     log: &out.log,
+                    recording: recording_label.as_deref(),
                 };
                 let right = screen::render(&view, true);
                 // The code stays until a phone has connected.
@@ -2016,6 +2068,7 @@ fn run(options: Options) -> Result<(), String> {
     if ansi {
         print!("\x1b[?7h");
     }
+    recording.finish();
     let progress = companion.progress();
     println!(
         "\nStopped after {}. {} mark{} saved in {}",

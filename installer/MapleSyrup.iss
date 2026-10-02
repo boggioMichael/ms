@@ -184,7 +184,7 @@ Name: "{userdocs}\MapleSyrup sessions"; Flags: uninsneveruninstall
 [Icons]
 Name: "{group}\MapleSyrup"; Filename: "{app}\MapleSyrup.exe"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
 Name: "{group}\{cm:PhoneOverInternet}"; Filename: "{app}\MapleSyrup.exe"; Parameters: "--tunnel"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
-Name: "{group}\{cm:Recording}"; Filename: "{app}\MapleSyrup.exe"; Parameters: "--overlay-on-stream --record-mic"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
+Name: "{group}\{cm:Recording}"; Filename: "{app}\MapleSyrup.exe"; Parameters: "--overlay-on-stream --record --record-mic"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
 Name: "{group}\{cm:Sessions}"; Filename: "{userdocs}\MapleSyrup sessions"
 Name: "{group}\{cm:ReadMe}"; Filename: "{app}\README.txt"
 Name: "{group}\{cm:UninstallProgram,MapleSyrup}"; Filename: "{uninstallexe}"

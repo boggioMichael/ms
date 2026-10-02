@@ -6,7 +6,8 @@
 //!
 //! By default it also keeps out of screen captures, so the vision engine
 //! never reads the panel back when it has to copy the screen; with
-//! `on_stream` it shows up in OBS and screenshots instead.
+//! `on_stream` (or while the session is recorded) it shows up in OBS,
+//! recordings and screenshots instead.
 
 #[cfg(not(windows))]
 use crate::app::panel::Panel;
@@ -36,6 +37,7 @@ impl Overlay {
         Err("the on-screen panel is only on Windows".into())
     }
     pub fn pump(&self) {}
+    pub fn set_on_stream(&mut self, _on: bool) {}
     pub fn show(&mut self, _panel: &Panel, _at: (i32, i32)) -> Result<(), String> {
         Ok(())
     }
@@ -67,9 +69,9 @@ mod win {
         CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetClientRect,
         GetForegroundWindow, GetWindowThreadProcessId, IsIconic, MSG, PM_REMOVE, PeekMessageW,
         RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE, SetWindowDisplayAffinity, ShowWindow,
-        TranslateMessage, ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WNDCLASSEXW,
-        WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-        WS_POPUP,
+        TranslateMessage, ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+        WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        WS_EX_TRANSPARENT, WS_POPUP,
     };
     use windows::core::{HSTRING, PCWSTR, w};
 
@@ -116,6 +118,7 @@ mod win {
         hwnd: HWND,
         visible: bool,
         shown: Option<(Panel, (i32, i32))>,
+        on_stream: bool,
     }
 
     impl Overlay {
@@ -159,7 +162,21 @@ mod win {
                     hwnd,
                     visible: false,
                     shown: None,
+                    on_stream,
                 })
+            }
+        }
+
+        /// Seen by captures (OBS, a recording) or kept out of them.
+        pub fn set_on_stream(&mut self, on: bool) {
+            if on != self.on_stream {
+                unsafe {
+                    let _ = SetWindowDisplayAffinity(
+                        self.hwnd,
+                        if on { WDA_NONE } else { WDA_EXCLUDEFROMCAPTURE },
+                    );
+                }
+                self.on_stream = on;
             }
         }
 

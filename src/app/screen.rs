@@ -41,6 +41,8 @@ pub struct View<'a> {
     pub voice_on: VoiceOn,
     pub muted: bool,
     pub log: &'a [LogLine],
+    /// The session's recording, when there is one ("● REC 03:21").
+    pub recording: Option<&'a str>,
 }
 
 struct Paint {
@@ -223,6 +225,9 @@ pub fn render(view: &View, ansi: bool) -> Vec<String> {
             }
         ));
     }
+    if let Some(recording) = view.recording {
+        session.push(format!("{}{recording}{}", p.c(RED), p.c(RESET)));
+    }
     lines.push(format!("{}{}", label("Session"), session.join(" · ")));
 
     lines.push(match view.phone {
@@ -314,6 +319,7 @@ mod tests {
             phone: None,
             voice: "Windows voice",
             voice_on: VoiceOn::Pc,
+            recording: None,
             muted: false,
             log,
         }

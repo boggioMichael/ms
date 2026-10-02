@@ -21,6 +21,11 @@
 //! was said (`/api/said`) and when MapleSyrup's voice is playing
 //! (`/api/talking`, to turn the game down).
 //!
+//! While the session is recorded ([`Recording`]), the phone's sound goes
+//! into the recording too: its microphone and what it plays (a live call's
+//! voice in a second channel of `/api/audio`, spoken lines told by
+//! `/api/playing`), each placed by how long ago it was heard.
+//!
 //! The page is served over HTTPS because phone browsers give the microphone
 //! only to secure pages: on the local network with a certificate made on
 //! this PC ([`tls`]), or through a Cloudflare quick tunnel ([`tunnel`]),
@@ -132,6 +137,8 @@ pub enum Inbound {
     /// A tool run for the call changed something: a line to show, or a
     /// command (mark, mute, unmute).
     Effect(crate::ai::Effect),
+    /// Start (true) or stop (false) recording the session.
+    Record(bool),
 }
 
 /// What the phone's live call asks the PC for.
@@ -148,6 +155,19 @@ pub trait Service: Send + Sync {
         arguments: &str,
         frame: Option<&RgbaImage>,
     ) -> (String, Option<crate::ai::Effect>);
+}
+
+/// Where the phone's sound goes while the session is recorded
+/// (`crate::app::recorder`). `age`: how many seconds ago the end of the
+/// sound (or the moment) was, as near as the phone can tell.
+pub trait Recording: Send + Sync {
+    /// The phone's microphone, and what the phone played meanwhile (a live
+    /// call's voice), as many samples of each.
+    fn phone(&self, rate: u32, mic: &[i16], played: Option<&[i16]>, age: f64);
+    /// A spoken line the phone started playing `age` ago.
+    fn played(&self, rate: u32, samples: &[i16], age: f64);
+    /// The phone stopped what it was playing, `age` ago.
+    fn stopped(&self, age: f64);
 }
 
 /// What the call's model can see: the frame (only while the game is the
@@ -243,6 +263,8 @@ pub struct Hub {
     changed: Condvar,
     /// What answers a live call's requests (with an OpenAI key).
     service: Mutex<Option<Arc<dyn Service>>>,
+    /// Where the phone's sound goes while the session is recorded.
+    recording: Mutex<Option<Arc<dyn Recording>>>,
 }
 
 impl Hub {
@@ -269,6 +291,7 @@ impl Hub {
             }),
             changed: Condvar::new(),
             service: Mutex::new(None),
+            recording: Mutex::new(None),
         })
     }
 
@@ -338,6 +361,18 @@ impl Hub {
 
     fn service(&self) -> Option<Arc<dyn Service>> {
         self.service.lock().ok().and_then(|s| s.clone())
+    }
+
+    /// The session is being recorded (Some): the phone's sound goes there
+    /// too. None: no longer.
+    pub fn set_recording(&self, recording: Option<Arc<dyn Recording>>) {
+        if let Ok(mut slot) = self.recording.lock() {
+            *slot = recording;
+        }
+    }
+
+    fn recording(&self) -> Option<Arc<dyn Recording>> {
+        self.recording.lock().ok().and_then(|r| r.clone())
     }
 
     /// What a call's model can see now: the frame (None while the game is
@@ -532,10 +567,63 @@ impl Hub {
                 if !(4_000..=96_000).contains(&rate) {
                     return Response::json(400, &json!({"error": "unsupported sample rate"}));
                 }
+                // Two channels: the microphone, and what the phone played
+                // meanwhile (a live call's voice, for the recording).
+                let channels: usize = request
+                    .param("channels")
+                    .and_then(|c| c.parse().ok())
+                    .unwrap_or(1);
                 let samples = audio::samples_from_bytes(&request.body);
-                self.lock().mic.ingest(&samples, rate, Instant::now());
+                let (mic, played) = match channels {
+                    2 => {
+                        let mic: Vec<i16> = samples.chunks_exact(2).map(|f| f[0]).collect();
+                        let played: Vec<i16> = samples.chunks_exact(2).map(|f| f[1]).collect();
+                        (mic, Some(played))
+                    }
+                    _ => (samples, None),
+                };
+                self.lock().mic.ingest(&mic, rate, Instant::now());
+                if let Some(recording) = self.recording() {
+                    recording.phone(rate, &mic, played.as_deref(), age_of(request));
+                }
                 Response::empty(204)
             }
+            ("POST", "/api/playing") => {
+                // The phone started (or stopped short) one of the spoken
+                // lines it was handed: for the recording.
+                let Some(recording) = self.recording() else {
+                    return Response::json(200, &json!({"ok": true, "recording": false}));
+                };
+                let body = body();
+                let age = body["age"].as_f64().unwrap_or(0.0) / 1000.0;
+                if body["on"].as_bool() == Some(false) {
+                    recording.stopped(age);
+                    return Response::json(200, &json!({"ok": true}));
+                }
+                let seq = body["seq"].as_u64().unwrap_or(0);
+                let clip = self
+                    .lock()
+                    .clips
+                    .iter()
+                    .find(|(n, _)| *n == seq)
+                    .map(|(_, wav)| Arc::clone(wav));
+                match clip.as_deref().and_then(|wav| audio::wav_samples(wav)) {
+                    Some((rate, samples)) => {
+                        recording.played(rate, &samples, age);
+                        Response::json(200, &json!({"ok": true}))
+                    }
+                    None => Response::json(404, &json!({"error": "no such clip"})),
+                }
+            }
+            ("POST", "/api/record") => match body().get("on").and_then(Value::as_bool) {
+                Some(on) => {
+                    let mut state = self.lock();
+                    state.inbox.retain(|i| !matches!(i, Inbound::Record(_)));
+                    state.inbox.push(Inbound::Record(on));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                None => Response::json(400, &json!({"error": "on must be true or false"})),
+            },
             ("POST", "/api/heard") => match text_field("text") {
                 Some(text) if !text.trim().is_empty() => {
                     self.lock()
@@ -669,6 +757,17 @@ impl Hub {
             _ => Response::json(404, &json!({"error": "no such call"})),
         }
     }
+}
+
+/// How long ago the end of a request's sound was heard, in seconds, as the
+/// phone tells it (`age=` milliseconds).
+fn age_of(request: &Request) -> f64 {
+    request
+        .param("age")
+        .and_then(|a| a.parse::<f64>().ok())
+        .filter(|a| a.is_finite())
+        .map(|a| a.clamp(0.0, 10_000.0) / 1000.0)
+        .unwrap_or(0.05)
 }
 
 /// Serve requests on one connection until it closes, errs or idles out.
@@ -1061,6 +1160,90 @@ mod tests {
         let mut bad = request("POST", "/api/audio?k=k1&rate=5", "");
         bad.body = vec![0, 0];
         assert_eq!(hub.handle(&bad).status, 400);
+    }
+
+    /// A stand-in recording: what it was handed.
+    #[derive(Default)]
+    struct FakeRecording(Mutex<Vec<String>>);
+
+    impl Recording for FakeRecording {
+        fn phone(&self, rate: u32, mic: &[i16], played: Option<&[i16]>, age: f64) {
+            self.0.lock().unwrap().push(format!(
+                "phone {rate} {} {:?} {age:.3}",
+                mic.len(),
+                played.map(|p| (p.len(), p[0]))
+            ));
+        }
+        fn played(&self, rate: u32, samples: &[i16], age: f64) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("played {rate} {} {age:.3}", samples.len()));
+        }
+        fn stopped(&self, age: f64) {
+            self.0.lock().unwrap().push(format!("stopped {age:.3}"));
+        }
+    }
+
+    #[test]
+    fn while_recording_the_phones_sound_goes_into_the_recording() {
+        let hub = hub();
+        let stereo: Vec<u8> = (0..2_400)
+            .flat_map(|i| {
+                let (mic, played) = ((i as i16) % 100, 7_000i16);
+                [mic.to_le_bytes(), played.to_le_bytes()].concat()
+            })
+            .collect();
+        let mut req = request("POST", "/api/audio?k=k1&rate=24000&channels=2&age=120", "");
+        req.body = stereo.clone();
+        // Not recording: only the meter.
+        assert_eq!(hub.handle(&req).status, 204);
+        let recording = Arc::new(FakeRecording::default());
+        hub.set_recording(Some(Arc::clone(&recording) as Arc<dyn Recording>));
+        assert_eq!(hub.handle(&req).status, 204);
+        // A spoken line the phone started playing a moment ago, then stopped.
+        let seq = hub.set_clip(crate::ai::wav_bytes(&[100; 2_400], 24_000));
+        let started = format!(r#"{{"seq": {seq}, "on": true, "age": 80}}"#);
+        assert_eq!(
+            hub.handle(&request("POST", "/api/playing?k=k1", &started))
+                .status,
+            200
+        );
+        assert_eq!(
+            hub.handle(&request(
+                "POST",
+                "/api/playing?k=k1",
+                r#"{"seq": 99, "on": true}"#
+            ))
+            .status,
+            404
+        );
+        hub.handle(&request(
+            "POST",
+            "/api/playing?k=k1",
+            r#"{"on": false, "age": 30}"#,
+        ));
+        assert_eq!(
+            *recording.0.lock().unwrap(),
+            [
+                "phone 24000 2400 Some((2400, 7000)) 0.120",
+                "played 24000 2400 0.080",
+                "stopped 0.030"
+            ]
+        );
+        // Stopped: nothing more goes there.
+        hub.set_recording(None);
+        assert_eq!(hub.handle(&req).status, 204);
+        assert_eq!(recording.0.lock().unwrap().len(), 3);
+        // The button.
+        hub.handle(&request("POST", "/api/record?k=k1", r#"{"on": true}"#));
+        hub.handle(&request("POST", "/api/record?k=k1", r#"{"on": false}"#));
+        assert_eq!(hub.take_inbox(), [Inbound::Record(false)]);
+        assert_eq!(
+            hub.handle(&request("POST", "/api/record?k=k1", "{}"))
+                .status,
+            400
+        );
     }
 
     #[test]
