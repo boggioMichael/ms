@@ -3,26 +3,28 @@
 //! in the session folder.
 //!
 //! ```text
-//!   the screen ──────────────────── ffmpeg (Desktop Duplication, or GDI) ─┐
+//!   the screen ─────────────────── ffmpeg (Desktop Duplication, or GDI) ──┐
 //!   what the PC plays (WASAPI loopback) ───┐                              ├─▶ recording.mp4
-//!   the phone: the player, and what it ────┴─▶ mixer ── TCP (PCM) ────────┘   H.264 + AAC
+//!   the phone: the player, and what it ────┴─▶ mixer ── TCP (Matroska) ───┘   H.264 + AAC
 //!   plays (a live call, spoken lines)
 //! ```
 //!
 //! Every sound is put where it was heard. What the phone sends arrives a
 //! moment late, so the mixer works [`DELAY`] behind and places each piece
 //! by when it was heard. ffmpeg stamps the screen with the time each frame
-//! is taken and the sound with the time it is written, so the two always
-//! keep pace (newer ffmpeg holds back whichever input runs ahead, which
-//! would make the picture stutter); when the recording stops, the sound is
-//! moved back by [`DELAY`] without encoding anything again.
+//! is taken, and the mixer stamps the sound with the time it is written
+//! (each block carries its time, in a live Matroska stream), so the two
+//! always keep pace (newer ffmpeg holds back whichever input runs ahead,
+//! which would make the picture stutter); when the recording stops, the
+//! sound is moved back by [`DELAY`] into an MP4, without encoding anything
+//! again.
 //!
 //! ffmpeg does the screen and the encoding (with the graphics card's encoder
 //! when there is one); it is fetched once, the first time a recording
-//! starts. The file is written in fragments, so it plays even if MapleSyrup
-//! is closed without finishing it. The phone's microphone also hears the
-//! PC's speakers, so it is let through only when it is louder than the room
-//! (the player talking).
+//! starts. While recording, the file is Matroska, which plays even if
+//! MapleSyrup is closed without finishing it. The phone's microphone also
+//! hears the PC's speakers, so it is let through only when it is louder than
+//! the room (the player talking).
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -322,18 +324,15 @@ fn has_duplication(ffmpeg: &Path) -> bool {
         .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("ddagrab"))
 }
 
-/// ffmpeg's arguments: the picture, the mixed sound from `port` (its first
-/// sample written at `start`, in seconds since 1970), the file.
+/// ffmpeg's arguments: the picture, the mixed sound from `port`, the file.
 fn arguments(
     grab: &Grab,
-    start: f64,
     port: u16,
     encoder: &[String],
     pixels: &str,
     file: &Path,
     progress: &Path,
 ) -> Vec<String> {
-    let start = format!("{start:.6}");
     let mut args: Vec<String> = Vec::new();
     let mut push = |items: &[&str]| args.extend(items.iter().map(|s| s.to_string()));
     push(&[
@@ -388,25 +387,11 @@ fn arguments(
             push(&["-f", "lavfi", "-i", "testsrc=size=640x360:rate=30,realtime"]);
         }
     }
-    // The sound: a sample's time is when it was written.
+    // The sound, each block stamped with when it was written.
     let sound = format!("tcp://127.0.0.1:{port}?listen=1");
     push(&[
-        "-itsoffset",
-        &start,
-        "-f",
-        "s16le",
-        "-ar",
-        "48000",
-        "-ac",
-        "2",
-        "-i",
-        &sound,
-        // Both on the same clock, as they are.
-        "-copyts",
-        "-map",
-        "0:v",
-        "-map",
-        "1:a",
+        "-f", "matroska", "-i", &sound, // Both on the same clock, as they are.
+        "-copyts", "-map", "0:v", "-map", "1:a",
     ]);
     // Thirty frames a second, each frame in the slot nearest to when it was
     // taken (a frame that could not be taken in time is repeated); at most
@@ -434,15 +419,19 @@ fn arguments(
     args.extend(encoder.iter().cloned());
     let mut push = |items: &[&str]| args.extend(items.iter().map(|s| s.to_string()));
     push(&[
+        // The blocks' times, rounded to the microsecond, made seamless.
+        "-af",
+        "aresample=async=1",
         "-c:a",
         "aac",
         "-b:a",
         "160k",
         "-avoid_negative_ts",
         "make_zero",
-        // In fragments: playable even if it is cut off.
-        "-movflags",
-        "+frag_keyframe+empty_moov+default_base_moof",
+        // Matroska keeps when each track starts, and plays even if it is
+        // cut off.
+        "-f",
+        "matroska",
         "-y",
     ]);
     args.push(file.display().to_string());
@@ -832,7 +821,7 @@ impl Recorder {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| "recording".into());
-        let raw = file.with_file_name(format!("{stem} (unfinished).mp4"));
+        let raw = file.with_file_name(format!("{stem} (unfinished).mkv"));
         let progress = file.with_file_name(format!("{stem}.progress"));
         let log = file.with_extension("log");
         let grabs = match picture {
@@ -1058,7 +1047,7 @@ fn launch(
         .port();
     let _ = std::fs::remove_file(progress);
     let start = unix_now();
-    let args = arguments(grab, start, port, encoder, pixels, raw, progress);
+    let args = arguments(grab, port, encoder, pixels, raw, progress);
     let mut command = Command::new(ffmpeg);
     command
         .args(&args)
@@ -1090,10 +1079,15 @@ fn launch(
 }
 
 /// The sound, mixed and handed to ffmpeg as it happens (it was due to start
-/// when ffmpeg did: what is behind is written at once).
+/// when ffmpeg did: what is behind is written at once), each block stamped
+/// with when it is written.
 fn write_sound(mix: Arc<Mutex<Mix>>, mut out: TcpStream) {
+    if out.write_all(&mkv::header(RATE, 2)).is_err() {
+        return;
+    }
     let mut bytes = Vec::new();
     loop {
+        let mut at = 0;
         {
             let mut mix = mix.lock().unwrap_or_else(|e| e.into_inner());
             let mut due = mix.due(unix_now());
@@ -1103,18 +1097,98 @@ fn write_sound(mix: Arc<Mutex<Mix>>, mut out: TcpStream) {
                     return;
                 }
             }
-            // At most five seconds at a time (after a long stall).
-            let frames = due.saturating_sub(mix.written).min(5 * RATE as u64);
+            // At most half a second at a time (after a stall).
+            let frames = due.saturating_sub(mix.written).min(RATE as u64 / 2);
+            bytes.clear();
             if frames > 0 {
+                at = ((mix.start + mix.written as f64 / RATE as f64) * 1e6).round() as u64;
                 mix.step(frames, &mut bytes);
-            } else {
-                bytes.clear();
             }
         }
-        if !bytes.is_empty() && out.write_all(&bytes).is_err() {
-            return;
+        if !bytes.is_empty() {
+            if out.write_all(&mkv::block(at, &bytes)).is_err() {
+                return;
+            }
+            continue;
         }
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// A live Matroska stream of 16-bit PCM, as much as ffmpeg needs: a header,
+/// then one cluster per block, stamped in microseconds since 1970.
+mod mkv {
+    fn id(out: &mut Vec<u8>, id: u32) {
+        let bytes = id.to_be_bytes();
+        let first = bytes.iter().position(|&b| b != 0).unwrap_or(3);
+        out.extend_from_slice(&bytes[first..]);
+    }
+
+    fn element(out: &mut Vec<u8>, element: u32, body: &[u8]) {
+        id(out, element);
+        // Sizes always in eight bytes.
+        out.push(0x01);
+        out.extend_from_slice(&(body.len() as u64).to_be_bytes()[1..]);
+        out.extend_from_slice(body);
+    }
+
+    fn uint(out: &mut Vec<u8>, element: u32, value: u64) {
+        let bytes = value.to_be_bytes();
+        let first = bytes.iter().position(|&b| b != 0).unwrap_or(7);
+        self::element(out, element, &bytes[first..]);
+    }
+
+    fn text(out: &mut Vec<u8>, element: u32, value: &str) {
+        self::element(out, element, value.as_bytes());
+    }
+
+    pub fn header(rate: u32, channels: u8) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut ebml = Vec::new();
+        uint(&mut ebml, 0x4286, 1); // EBMLVersion
+        uint(&mut ebml, 0x42F7, 1); // EBMLReadVersion
+        uint(&mut ebml, 0x42F2, 4); // EBMLMaxIDLength
+        uint(&mut ebml, 0x42F3, 8); // EBMLMaxSizeLength
+        text(&mut ebml, 0x4282, "matroska"); // DocType
+        uint(&mut ebml, 0x4287, 4); // DocTypeVersion
+        uint(&mut ebml, 0x4285, 2); // DocTypeReadVersion
+        element(&mut out, 0x1A45_DFA3, &ebml);
+        // The segment, of unknown size (it goes on as long as the recording).
+        id(&mut out, 0x1853_8067);
+        out.extend_from_slice(&[0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]);
+        let mut info = Vec::new();
+        uint(&mut info, 0x2A_D7B1, 1_000); // TimecodeScale: a microsecond
+        text(&mut info, 0x4D80, "MapleSyrup"); // MuxingApp
+        text(&mut info, 0x5741, "MapleSyrup"); // WritingApp
+        element(&mut out, 0x1549_A966, &info);
+        let mut audio = Vec::new();
+        element(&mut audio, 0xB5, &(rate as f64).to_be_bytes()); // SamplingFrequency
+        uint(&mut audio, 0x9F, channels as u64); // Channels
+        uint(&mut audio, 0x6264, 16); // BitDepth
+        let mut track = Vec::new();
+        uint(&mut track, 0xD7, 1); // TrackNumber
+        uint(&mut track, 0x73C5, 1); // TrackUID
+        uint(&mut track, 0x83, 2); // TrackType: audio
+        text(&mut track, 0x86, "A_PCM/INT/LIT"); // CodecID
+        element(&mut track, 0xE1, &audio);
+        let mut tracks = Vec::new();
+        element(&mut tracks, 0xAE, &track);
+        element(&mut out, 0x1654_AE6B, &tracks);
+        out
+    }
+
+    /// One block of samples, the first of them at `time` (microseconds).
+    pub fn block(time: u64, pcm: &[u8]) -> Vec<u8> {
+        let mut cluster = Vec::with_capacity(pcm.len() + 32);
+        uint(&mut cluster, 0xE7, time); // Timecode
+        let mut simple = Vec::with_capacity(pcm.len() + 4);
+        // Track 1, at the cluster's time, a key frame.
+        simple.extend_from_slice(&[0x81, 0x00, 0x00, 0x80]);
+        simple.extend_from_slice(pcm);
+        element(&mut cluster, 0xA3, &simple);
+        let mut out = Vec::with_capacity(cluster.len() + 12);
+        element(&mut out, 0x1F43_B675, &cluster);
+        out
     }
 }
 
@@ -1373,11 +1447,10 @@ mod tests {
     fn ffmpeg_is_told_to_record_the_screen_and_the_sound_on_one_clock() {
         let args = arguments(
             &Grab::Duplication,
-            1_700_000_000.25,
             4567,
             &["-c:v".into(), "h264_nvenc".into()],
             "nv12",
-            Path::new("s.mp4"),
+            Path::new("s.mkv"),
             Path::new("s.progress"),
         );
         let text = args.join(" ");
@@ -1386,17 +1459,14 @@ mod tests {
         ));
         // Newer ffmpeg takes a queue size only for outputs.
         assert!(!text.contains("thread_queue_size"));
-        assert!(text.contains("-itsoffset 1700000000.250000 -f s16le"));
-        assert!(text.contains("tcp://127.0.0.1:4567?listen=1"));
+        assert!(text.contains("-f matroska -i tcp://127.0.0.1:4567?listen=1"));
         assert!(text.contains("-copyts"));
         assert!(text.contains("format=nv12"));
         assert!(text.contains("-c:v h264_nvenc"));
         assert!(text.contains("-avoid_negative_ts make_zero"));
-        assert!(text.contains("+frag_keyframe+empty_moov"));
-        assert!(text.ends_with("s.mp4"));
+        assert!(text.ends_with("-f matroska -y s.mkv"));
         let gdi = arguments(
             &Grab::Gdi,
-            1.0,
             1,
             &[],
             "yuv420p",
@@ -1425,6 +1495,57 @@ mod tests {
         assert!((health.speed - 1.01).abs() < 1e-9);
     }
 
+    #[test]
+    fn the_sound_goes_to_ffmpeg_as_matroska_with_each_blocks_time() {
+        let mut stream = mkv::header(48_000, 2);
+        assert_eq!(&stream[..4], &[0x1A, 0x45, 0xDF, 0xA3]);
+        assert!(stream.windows(13).any(|w| w == b"A_PCM/INT/LIT"));
+        // Two blocks of 10 ms, the first at 1700000000.5 s.
+        let pcm: Vec<u8> = (0..480 * 2)
+            .flat_map(|i| (((i as f32 / 9.0).sin() * 9_000.0) as i16).to_le_bytes())
+            .collect();
+        stream.extend(mkv::block(1_700_000_000_500_000, &pcm));
+        stream.extend(mkv::block(1_700_000_000_510_000, &pcm));
+        let Some(ffmpeg) = find_ffmpeg(Path::new("/nonexistent")) else {
+            return;
+        };
+        let file = std::env::temp_dir().join(format!("ms-mkv-{}.mka", std::process::id()));
+        std::fs::write(&file, &stream).unwrap();
+        let probe = Command::new(ffmpeg.with_file_name(if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        }))
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_name,sample_rate,channels:packet=pts_time",
+            "-of",
+            "json",
+        ])
+        .arg(&file)
+        .output();
+        let _ = std::fs::remove_file(&file);
+        let Ok(probe) = probe else {
+            return;
+        };
+        let info: serde_json::Value = serde_json::from_slice(&probe.stdout).unwrap_or_default();
+        assert_eq!(info["streams"][0]["codec_name"], "pcm_s16le", "{info}");
+        assert_eq!(info["streams"][0]["sample_rate"], "48000");
+        assert_eq!(info["streams"][0]["channels"], 2);
+        let times: Vec<f64> = info["packets"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| p["pts_time"].as_str()?.parse().ok())
+            .collect();
+        assert_eq!(times.len(), 2, "{info}");
+        assert!(
+            (times[0] - 1_700_000_000.5).abs() < 1e-6 && (times[1] - times[0] - 0.01).abs() < 1e-6
+        );
+    }
+
     /// A real recording with the ffmpeg here (a test picture; sound from a
     /// stand-in phone), when there is one.
     #[test]
@@ -1449,7 +1570,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(400));
         let file = recorder.stop().expect("finished");
         assert!(file.ends_with("session.mp4"));
-        assert!(!dir.join("session (unfinished).mp4").exists());
+        assert!(!dir.join("session (unfinished).mkv").exists());
         let measured = measure(&ffmpeg, &file).expect("readable");
         assert!(measured.has_video && measured.has_audio, "{measured:?}");
         assert!(

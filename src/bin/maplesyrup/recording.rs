@@ -24,7 +24,12 @@ enum State {
     },
     On {
         recorder: Box<Recorder>,
+        /// When the encoding was last looked at, how many frames it had
+        /// then, how many looks in a row it was slow, and whether the player
+        /// was told.
         checked: Instant,
+        frames: u64,
+        slow: u32,
         warned: bool,
     },
     /// Finishing the file.
@@ -144,6 +149,8 @@ impl Recording {
         self.state = State::On {
             recorder: Box::new(recorder),
             checked: Instant::now(),
+            frames: 0,
+            slow: 0,
             warned: false,
         };
     }
@@ -167,6 +174,8 @@ impl Recording {
             State::On {
                 mut recorder,
                 mut checked,
+                mut frames,
+                mut slow,
                 mut warned,
             } => {
                 // The phone hears MapleSyrup's voice from the PC's speakers too.
@@ -184,24 +193,32 @@ impl Recording {
                     self.save(*recorder, out, panel);
                     return;
                 }
-                if checked.elapsed() >= Duration::from_secs(5) {
-                    checked = Instant::now();
-                    let health = recorder.health();
-                    if !warned
-                        && recorder.seconds() > 15.0
-                        && health.speed > 0.0
-                        && health.speed < 0.9
-                    {
+                // Every few seconds: is the encoding keeping up (thirty
+                // frames a second)?
+                let since = checked.elapsed().as_secs_f64();
+                if since >= 5.0 {
+                    let now = recorder.health().frames;
+                    let rate = now.saturating_sub(frames) as f64 / since;
+                    slow = if recorder.seconds() > 10.0 && now > 0 && rate < 25.0 {
+                        slow + 1
+                    } else {
+                        0
+                    };
+                    if slow >= 2 && !warned {
                         warned = true;
                         out.show(
                             Kind::Info,
                             "The recording can't keep up (the PC is busy): the video may stutter.",
                         );
                     }
+                    checked = Instant::now();
+                    frames = now;
                 }
                 self.state = State::On {
                     recorder,
                     checked,
+                    frames,
+                    slow,
                     warned,
                 };
             }
@@ -286,6 +303,8 @@ impl Recording {
                         self.state = State::On {
                             recorder: Box::new(recorder),
                             checked: Instant::now(),
+                            frames: 0,
+                            slow: 0,
                             warned: false,
                         };
                     }

@@ -337,8 +337,6 @@ pub fn record_test() -> i32 {
     wait(&screen, 1.5);
     drop(screen);
     std::thread::sleep(Duration::from_millis(500));
-    let health = recorder.health();
-    let seconds = recorder.seconds();
     let finished = recorder.stop();
     let file = match finished {
         Ok(file) => file,
@@ -366,20 +364,6 @@ pub fn record_test() -> i32 {
                 r.ok("frames", format!("{} ({fps:.1} a second)", m.frames));
             } else {
                 r.fail("frames", format!("{} in {:.1} s", m.frames, m.duration));
-            }
-            if health.speed > 0.0 && health.speed < 0.9 {
-                r.note(
-                    "speed",
-                    format!(
-                        "encoding ran at {:.2}x real time: this PC may record with stutters",
-                        health.speed
-                    ),
-                );
-            } else {
-                r.ok(
-                    "speed",
-                    format!("{:.2}x real time, {:.0} s recorded", health.speed, seconds),
-                );
             }
             match (m.bright_at, m.loud_at) {
                 (Some(bright), Some(loud)) => {
