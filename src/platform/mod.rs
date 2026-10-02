@@ -24,6 +24,19 @@ fn request_stop() {
     STOP.store(true, Ordering::Relaxed);
 }
 
+/// The console window's size in characters, (columns, rows), when known.
+pub fn console_size() -> Option<(usize, usize)> {
+    #[cfg(windows)]
+    {
+        windows_impl::console_size()
+    }
+    #[cfg(not(windows))]
+    {
+        let read = |name: &str| std::env::var(name).ok().and_then(|v| v.parse().ok());
+        Some((read("COLUMNS")?, read("LINES")?))
+    }
+}
+
 /// What `init` managed to set up.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ConsoleSetup {

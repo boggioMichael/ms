@@ -838,17 +838,31 @@ fn run(options: Options) -> Result<(), String> {
                 let show_qr = summary
                     .as_ref()
                     .is_some_and(|s| !s.connected && s.requests == 0);
-                let left: &[String] = if show_qr { &qr_lines } else { &[] };
-                let lines = screen::side_by_side(left, &right, block_height);
+                let (columns, _) = platform::console_size().unwrap_or((120, 30));
+                let qr_width = qr_lines
+                    .iter()
+                    .map(|l| l.chars().count())
+                    .max()
+                    .unwrap_or(0);
+                let lines = if !show_qr {
+                    screen::side_by_side(&[], &right, block_height)
+                } else if columns >= qr_width + 3 + 64 {
+                    screen::side_by_side(&qr_lines, &right, block_height)
+                } else {
+                    // Too narrow for both: the code alone until the phone is in.
+                    screen::side_by_side(&qr_lines, &[], block_height)
+                };
                 let mut frame = String::new();
                 if drawn_lines > 0 {
                     frame.push_str(&format!("\x1b[{drawn_lines}A"));
                 }
                 for line in &lines {
                     frame.push_str("\x1b[2K");
-                    frame.push_str(line);
+                    frame.push_str(&screen::fit_width(line, columns.saturating_sub(1)));
                     frame.push('\n');
                 }
+                // Anything left below from a taller block before.
+                frame.push_str("\x1b[J");
                 use std::io::Write;
                 let mut stdout = std::io::stdout();
                 let _ = stdout.write_all(frame.as_bytes());

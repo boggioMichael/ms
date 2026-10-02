@@ -2,9 +2,10 @@
 
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Console::{
-    CONSOLE_MODE, CTRL_BREAK_EVENT, CTRL_C_EVENT, ENABLE_PROCESSED_OUTPUT,
-    ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode, GetStdHandle, STD_OUTPUT_HANDLE,
-    SetConsoleCtrlHandler, SetConsoleMode, SetConsoleOutputCP, SetConsoleTitleW,
+    CONSOLE_MODE, CONSOLE_SCREEN_BUFFER_INFO, CTRL_BREAK_EVENT, CTRL_C_EVENT,
+    ENABLE_PROCESSED_OUTPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, GetConsoleMode,
+    GetConsoleScreenBufferInfo, GetStdHandle, STD_OUTPUT_HANDLE, SetConsoleCtrlHandler,
+    SetConsoleMode, SetConsoleOutputCP, SetConsoleTitleW,
 };
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
@@ -57,5 +58,20 @@ unsafe fn enable_vt(handle: HANDLE) -> bool {
             mode | ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING,
         )
         .is_ok()
+    }
+}
+
+/// The console window's size in characters: (columns, rows).
+pub fn console_size() -> Option<(usize, usize)> {
+    unsafe {
+        let handle = GetStdHandle(STD_OUTPUT_HANDLE).ok()?;
+        if handle.is_invalid() {
+            return None;
+        }
+        let mut info = CONSOLE_SCREEN_BUFFER_INFO::default();
+        GetConsoleScreenBufferInfo(handle, &mut info).ok()?;
+        let columns = (info.srWindow.Right - info.srWindow.Left + 1).max(0) as usize;
+        let rows = (info.srWindow.Bottom - info.srWindow.Top + 1).max(0) as usize;
+        (columns > 0 && rows > 0).then_some((columns, rows))
     }
 }

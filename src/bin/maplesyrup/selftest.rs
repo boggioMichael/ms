@@ -94,6 +94,19 @@ pub fn run() -> i32 {
         r.note("vision", "resources/maplestory.png is not here; skipped");
     }
 
+    // Text on the HUD (level, name, job, the printed HP/MP numbers).
+    match ms::vision::ocr::engine() {
+        Some(ms::vision::ocr::Engine::Tesseract) => r.ok("text reading", "Tesseract"),
+        Some(ms::vision::ocr::Engine::Windows) => r.ok(
+            "text reading",
+            "the OCR engine built into Windows (Tesseract is not installed)",
+        ),
+        None => r.note(
+            "text reading",
+            "no OCR engine: HP/MP/EXP come from the bars, level, name and job stay unknown",
+        ),
+    }
+
     // The phone link: a certificate, TLS, the API, and the companion behind it.
     let dir = std::env::temp_dir().join(format!("maplesyrup-selftest-{}", tls::random_hex(4)));
     match phone_link(&dir) {

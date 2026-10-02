@@ -371,6 +371,42 @@ mod tests {
     }
 }
 
+/// `line` cut to `width` visible characters, escape codes kept whole (and a
+/// reset added when something was cut), so a narrow console never wraps a
+/// line and spoils the redraw in place.
+pub fn fit_width(line: &str, width: usize) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut visible = 0;
+    let mut chars = line.chars().peekable();
+    let mut cut = false;
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            out.push(c);
+            // CSI: ESC [ parameters, then one final byte in @..~.
+            if chars.peek() == Some(&'[') {
+                out.push(chars.next().unwrap_or('['));
+                for c in chars.by_ref() {
+                    out.push(c);
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if visible >= width {
+            cut = true;
+            continue;
+        }
+        out.push(c);
+        visible += 1;
+    }
+    if cut && out.contains('\x1b') {
+        out.push_str(RESET);
+    }
+    out
+}
+
 /// The live block with the phone's QR code beside it: `left` (the code and
 /// a caption) on the left, `right` (the live lines) to its right, padded to
 /// `height` lines so the block can be redrawn in place whatever it shows.
@@ -393,6 +429,19 @@ pub fn side_by_side(left: &[String], right: &[String], height: usize) -> Vec<Str
 #[cfg(test)]
 mod layout_tests {
     use super::*;
+
+    #[test]
+    fn lines_are_cut_to_the_console_with_escape_codes_whole() {
+        assert_eq!(fit_width("abcdef", 4), "abcd");
+        assert_eq!(fit_width("ab", 4), "ab");
+        let coloured = format!("{GREEN}●{RESET} connected");
+        assert_eq!(
+            fit_width(&coloured, 5),
+            format!("{GREEN}●{RESET} con{RESET}")
+        );
+        assert_eq!(fit_width(&coloured, 50), coloured);
+        assert_eq!(fit_width("שלום עולם", 4), "שלום");
+    }
 
     #[test]
     fn columns_line_up_and_the_height_is_kept() {

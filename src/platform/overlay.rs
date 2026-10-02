@@ -8,6 +8,7 @@
 //! never reads the panel back when it has to copy the screen; with
 //! `on_stream` it shows up in OBS and screenshots instead.
 
+#[cfg(not(windows))]
 use crate::app::panel::Panel;
 
 /// Where the game's drawing area is on the desktop, in pixels.
