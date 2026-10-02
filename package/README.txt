@@ -51,6 +51,14 @@ It sees your screen, and learns it
   It can also look things up on the web for MapleStory questions
   (start it with --no-web to stop that).
 
+Recording or streaming it
+  Double-click "MapleSyrup (recording).cmd": the dog and the panel then show
+  up in recordings (normally they keep out of OBS and screenshots), and what
+  the phone's microphone hears is kept as mic.wav in the session folder.
+  Record the whole screen, not just the game: OBS "Display Capture" (OBS's
+  "Game Capture" and Windows' Win+Alt+R see only the game window), or the
+  Snipping Tool's video (Win+Shift+R) with Sound and Microphone on.
+
 If the phone cannot connect
   Double-click "MapleSyrup (phone over internet).cmd". It links the phone
   through a Cloudflare tunnel: no certificate warning, no firewall question,
