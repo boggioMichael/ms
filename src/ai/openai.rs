@@ -356,6 +356,8 @@ impl OpenAi {
         let has_images = ask.input.iter().any(has_image);
         let has_web = ask.tools.iter().any(|t| t["type"] != "function");
         let mut last = AiError::Parse("no model to try".into());
+        // A hiccup on OpenAI's side (a 5xx) is tried once more.
+        let mut retried = false;
         for mut choice in candidates {
             if ask.needs_images && !choice.images {
                 continue;
@@ -452,6 +454,11 @@ impl OpenAi {
                     AiError::Http(_, m) => m.to_ascii_lowercase(),
                     _ => String::new(),
                 };
+                if matches!(status, 500 | 502 | 503 | 504) && !retried {
+                    retried = true;
+                    std::thread::sleep(Duration::from_millis(700));
+                    continue;
+                }
                 if status == 400 {
                     // An older model without reasoning efforts: ask again without.
                     if choice.reasoning

@@ -287,8 +287,13 @@ const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
 - When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
 - When the player tells you something about themselves or their game worth keeping (their class, a key binding, a goal), or asks you to remember something, call remember_fact.
 - forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
-- Search the web for MapleStory facts you aren't sure of (how to get somewhere, boss or level requirements, key bindings, quests, events), preferring maplestory.nexon.net and maplestorywiki.net; then answer in a sentence or two.
 After using a tool, confirm briefly in your own words.";
+
+/// How the model is told it can search the web.
+const WEB_GUIDE: &str = "\n- Search the web before answering any MapleStory question you aren't sure of (how to get somewhere, \
+boss or level requirements, job advancements, key bindings, quests, events, training spots for their level): the \
+current global version (GMS) changes often. Prefer maplestory.nexon.net and maplestorywiki.net, and answer in a \
+sentence or two.";
 
 /// What to say while the web is searched, in the player's language.
 fn searching_line(heard: &str) -> &'static str {
@@ -342,8 +347,11 @@ fn converse(
     if eyes.is_some() {
         instructions.push_str(EYES_GUIDE);
     }
-    if toolbox.is_some() {
+    if let Some(toolbox) = toolbox {
         instructions.push_str(TOOLS_GUIDE);
+        if toolbox.web {
+            instructions.push_str(WEB_GUIDE);
+        }
     }
     let mut input = input_of(&brain.turns(), eyes);
     let tools = toolbox.map(|t| t.definitions()).unwrap_or_default();
