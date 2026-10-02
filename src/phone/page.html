@@ -173,6 +173,7 @@
   <div class="seg" id="voiceSeg">
     <button data-on="pc" data-t="v_pc">PC</button><button data-on="phone" data-t="v_phone">Phone</button><button data-on="both" data-t="v_both">Both</button><button data-on="off" data-t="v_off">Off</button>
   </div>
+  <div class="sub" id="liveHint" style="margin:8px 0 4px; display:none" data-t="live_hint">On the phone it's a live call: talk any time, in any language, and interrupt him. On the PC: his voice on the PC speakers.</div>
   <label class="opt"><span data-t="answer_all">Answer everything I say</span> <input type="checkbox" id="always" checked></label>
   <label class="opt"><span data-t="send_audio">Send the microphone's audio to the PC</span> <input type="checkbox" id="sendAudio" checked></label>
 </section>
@@ -202,6 +203,8 @@
       start: "🎙️ Start listening", stop: "⏹ Stop listening",
       mic_idle: "Tap, allow the microphone, and talk to me like you would to a friend.",
       mic_starting: "Starting the microphone…", mic_listening: "Listening — just talk.", mic_audio_only: "Sending audio to the PC.",
+      mic_live: "Live — talk any time, in any language.", live_connecting: "Connecting the live call…", live_failed: "The live call didn't start; using the regular mode:",
+      live_hint: "On the phone it's a live call: talk any time, in any language, and interrupt him. On the PC: his voice on the PC speakers.",
       mic_paused: "Paused. Tap to listen again.", mic_talking: "MapleSyrup is talking…",
       waiting_game: "Waiting for the game…", looking_game: "MapleSyrup is looking for the MapleStory window", watching: "Watching",
       cant_capture: "Can't capture the game:", no_game: "no game",
@@ -231,6 +234,8 @@
       start: "🎙️ התחל להקשיב", stop: "⏹ הפסק להקשיב",
       mic_idle: "לחץ, אשר את המיקרופון, ודבר איתי כמו עם חבר.",
       mic_starting: "מפעיל את המיקרופון…", mic_listening: "מקשיב — פשוט דבר.", mic_audio_only: "שולח את הקול למחשב.",
+      mic_live: "בשיחה חיה — דבר מתי שבא לך, בכל שפה.", live_connecting: "מתחבר לשיחה החיה…", live_failed: "השיחה החיה לא עלתה, עובר למצב הרגיל:",
+      live_hint: "בטלפון זו שיחה חיה: דבר מתי שבא לך, בכל שפה, ותקטע אותו כשבא לך. במחשב: הקול שלו ברמקולים של המחשב.",
       mic_paused: "בהשהיה. לחץ כדי להקשיב שוב.", mic_talking: "MapleSyrup מדבר…",
       waiting_game: "מחכה למשחק…", looking_game: "MapleSyrup מחפש את החלון של MapleStory", watching: "צופה ב-",
       cant_capture: "אי אפשר לצלם את המשחק:", no_game: "אין משחק",
@@ -260,6 +265,8 @@
       start: "🎙️ Empezar a escuchar", stop: "⏹ Dejar de escuchar",
       mic_idle: "Toca, permite el micrófono y háblame como a un amigo.",
       mic_starting: "Activando el micrófono…", mic_listening: "Escuchando — habla sin más.", mic_audio_only: "Enviando el audio al PC.",
+      mic_live: "En vivo — habla cuando quieras, en cualquier idioma.", live_connecting: "Conectando la llamada en vivo…", live_failed: "La llamada en vivo no arrancó; uso el modo normal:",
+      live_hint: "En el teléfono es una llamada en vivo: habla cuando quieras, en cualquier idioma, e interrúmpelo. En el PC: su voz por los altavoces del PC.",
       mic_paused: "En pausa. Toca para volver a escuchar.", mic_talking: "MapleSyrup está hablando…",
       waiting_game: "Esperando el juego…", looking_game: "MapleSyrup busca la ventana de MapleStory", watching: "Viendo",
       cant_capture: "No se puede capturar el juego:", no_game: "sin juego",
@@ -289,6 +296,8 @@
       start: "🎙️ Começar a ouvir", stop: "⏹ Parar de ouvir",
       mic_idle: "Toque, permita o microfone e fale comigo como falaria com um amigo.",
       mic_starting: "Ligando o microfone…", mic_listening: "Ouvindo — é só falar.", mic_audio_only: "Enviando o áudio para o PC.",
+      mic_live: "Ao vivo — fale quando quiser, em qualquer idioma.", live_connecting: "Conectando a chamada ao vivo…", live_failed: "A chamada ao vivo não começou; usando o modo normal:",
+      live_hint: "No celular é uma chamada ao vivo: fale quando quiser, em qualquer idioma, e interrompa ele. No PC: a voz dele nas caixas de som do PC.",
       mic_paused: "Pausado. Toque para ouvir de novo.", mic_talking: "O MapleSyrup está falando…",
       waiting_game: "Esperando o jogo…", looking_game: "O MapleSyrup está procurando a janela do MapleStory", watching: "Assistindo",
       cant_capture: "Não dá para capturar o jogo:", no_game: "sem jogo",
@@ -318,6 +327,8 @@
       start: "🎙️ Commencer l'écoute", stop: "⏹ Arrêter l'écoute",
       mic_idle: "Touche, autorise le micro et parle-moi comme à un ami.",
       mic_starting: "Démarrage du micro…", mic_listening: "J'écoute — parle simplement.", mic_audio_only: "Envoi du son au PC.",
+      mic_live: "En direct — parle quand tu veux, dans n'importe quelle langue.", live_connecting: "Connexion de l'appel en direct…", live_failed: "L'appel en direct n'a pas démarré ; mode normal :",
+      live_hint: "Sur le téléphone, c'est un appel en direct : parle quand tu veux, dans n'importe quelle langue, et coupe-le. Sur le PC : sa voix sur les haut-parleurs du PC.",
       mic_paused: "En pause. Touche pour écouter à nouveau.", mic_talking: "MapleSyrup parle…",
       waiting_game: "En attente du jeu…", looking_game: "MapleSyrup cherche la fenêtre de MapleStory", watching: "Regarde",
       cant_capture: "Impossible de capturer le jeu :", no_game: "pas de jeu",
@@ -347,6 +358,8 @@
       start: "🎙️ Zuhören starten", stop: "⏹ Zuhören beenden",
       mic_idle: "Tippe, erlaube das Mikrofon und sprich mit mir wie mit einem Freund.",
       mic_starting: "Mikrofon startet…", mic_listening: "Ich höre zu — sprich einfach.", mic_audio_only: "Sende den Ton an den PC.",
+      mic_live: "Live — sprich jederzeit, in jeder Sprache.", live_connecting: "Live-Gespräch wird verbunden…", live_failed: "Das Live-Gespräch ist nicht gestartet; normaler Modus:",
+      live_hint: "Auf dem Handy ist es ein Live-Gespräch: sprich jederzeit, in jeder Sprache, und unterbrich ihn. Auf dem PC: seine Stimme über die PC-Lautsprecher.",
       mic_paused: "Pausiert. Tippe, um wieder zuzuhören.", mic_talking: "MapleSyrup spricht…",
       waiting_game: "Warte auf das Spiel…", looking_game: "MapleSyrup sucht das MapleStory-Fenster", watching: "Sieht zu:",
       cant_capture: "Das Spiel kann nicht aufgenommen werden:", no_game: "kein Spiel",
@@ -376,6 +389,8 @@
       start: "🎙️ 듣기 시작", stop: "⏹ 듣기 중지",
       mic_idle: "누르고 마이크를 허용한 다음, 친구한테 말하듯 말해 줘.",
       mic_starting: "마이크 켜는 중…", mic_listening: "듣고 있어 — 그냥 말해.", mic_audio_only: "PC로 소리를 보내는 중.",
+      mic_live: "실시간 — 언제든, 어떤 언어로든 말해.", live_connecting: "실시간 통화 연결 중…", live_failed: "실시간 통화를 시작하지 못했어. 일반 모드로 바꿀게:",
+      live_hint: "휴대폰에서는 실시간 통화야: 언제든 어떤 언어로든 말하고, 중간에 끊어도 돼. PC에서는 PC 스피커로 말해.",
       mic_paused: "일시 정지됨. 다시 들으려면 누르세요.", mic_talking: "MapleSyrup이 말하는 중…",
       waiting_game: "게임을 기다리는 중…", looking_game: "MapleSyrup이 메이플스토리 창을 찾고 있어요", watching: "보는 중:",
       cant_capture: "게임 화면을 캡처할 수 없어요:", no_game: "게임 없음",
@@ -405,6 +420,8 @@
       start: "🎙️ 聞き取り開始", stop: "⏹ 聞き取り停止",
       mic_idle: "タップしてマイクを許可したら、友だちみたいに話しかけてね。",
       mic_starting: "マイクを起動中…", mic_listening: "聞いてるよ — 話しかけてね。", mic_audio_only: "PCに音声を送信中。",
+      mic_live: "ライブ中 — いつでも、どの言語でも話してね。", live_connecting: "ライブ通話に接続中…", live_failed: "ライブ通話を開始できませんでした。通常モードにします：",
+      live_hint: "スマホではライブ通話：いつでも、どの言語でも話せて、途中で割り込めます。PCでは：PCのスピーカーで話します。",
       mic_paused: "一時停止中。タップするとまた聞くよ。", mic_talking: "MapleSyrupが話しています…",
       waiting_game: "ゲームを待っています…", looking_game: "MapleSyrupがメイプルストーリーのウィンドウを探しています", watching: "観戦中:",
       cant_capture: "ゲームをキャプチャできません:", no_game: "ゲームなし",
@@ -434,6 +451,8 @@
       start: "🎙️ 开始收听", stop: "⏹ 停止收听",
       mic_idle: "点一下，允许麦克风，然后像跟朋友聊天一样跟我说话。",
       mic_starting: "正在打开麦克风…", mic_listening: "正在听 — 直接说吧。", mic_audio_only: "正在把声音发送到电脑。",
+      mic_live: "实时通话中 — 随时说，任何语言都行。", live_connecting: "正在连接实时通话…", live_failed: "实时通话没能开始，改用普通模式：",
+      live_hint: "在手机上是实时通话：随时说话、任何语言都行，还能打断他。在电脑上：他的声音从电脑音箱播放。",
       mic_paused: "已暂停。点一下继续收听。", mic_talking: "MapleSyrup 正在说话…",
       waiting_game: "等待游戏…", looking_game: "MapleSyrup 正在寻找冒险岛的窗口", watching: "正在观看",
       cant_capture: "无法截取游戏画面：", no_game: "没有游戏",
@@ -463,6 +482,8 @@
       start: "🎙️ 開始聆聽", stop: "⏹ 停止聆聽",
       mic_idle: "點一下，允許麥克風，然後像跟朋友聊天一樣跟我說話。",
       mic_starting: "正在開啟麥克風…", mic_listening: "正在聽 — 直接說吧。", mic_audio_only: "正在把聲音傳到電腦。",
+      mic_live: "即時通話中 — 隨時說，任何語言都行。", live_connecting: "正在連接即時通話…", live_failed: "即時通話沒能開始，改用一般模式：",
+      live_hint: "在手機上是即時通話：隨時說話、任何語言都行，還能打斷他。在電腦上：他的聲音從電腦喇叭播放。",
       mic_paused: "已暫停。點一下繼續聆聽。", mic_talking: "MapleSyrup 正在說話…",
       waiting_game: "等待遊戲…", looking_game: "MapleSyrup 正在尋找新楓之谷的視窗", watching: "正在觀看",
       cant_capture: "無法擷取遊戲畫面：", no_game: "沒有遊戲",
@@ -492,6 +513,8 @@
       start: "🎙️ เริ่มฟัง", stop: "⏹ หยุดฟัง",
       mic_idle: "แตะ อนุญาตไมโครโฟน แล้วคุยกับฉันเหมือนคุยกับเพื่อน",
       mic_starting: "กำลังเปิดไมโครโฟน…", mic_listening: "กำลังฟัง — พูดได้เลย", mic_audio_only: "กำลังส่งเสียงไปที่คอม",
+      mic_live: "สดอยู่ — พูดได้ทุกเมื่อ ภาษาอะไรก็ได้", live_connecting: "กำลังเชื่อมต่อการโทรสด…", live_failed: "เริ่มการโทรสดไม่ได้ ใช้โหมดปกติแทน:",
+      live_hint: "บนมือถือเป็นการโทรสด: พูดได้ทุกเมื่อ ภาษาอะไรก็ได้ และขัดจังหวะได้ บนคอม: เสียงของเขาออกลำโพงคอม",
       mic_paused: "หยุดชั่วคราว แตะเพื่อฟังต่อ", mic_talking: "MapleSyrup กำลังพูด…",
       waiting_game: "กำลังรอเกม…", looking_game: "MapleSyrup กำลังหาหน้าต่าง MapleStory", watching: "กำลังดู",
       cant_capture: "จับภาพเกมไม่ได้:", no_game: "ไม่มีเกม",
@@ -521,6 +544,8 @@
       start: "🎙️ Bắt đầu nghe", stop: "⏹ Dừng nghe",
       mic_idle: "Chạm, cho phép micro, rồi nói chuyện với mình như với một người bạn.",
       mic_starting: "Đang bật micro…", mic_listening: "Đang nghe — cứ nói đi.", mic_audio_only: "Đang gửi âm thanh tới PC.",
+      mic_live: "Trực tiếp — nói bất cứ lúc nào, bằng bất kỳ ngôn ngữ nào.", live_connecting: "Đang kết nối cuộc gọi trực tiếp…", live_failed: "Cuộc gọi trực tiếp không bắt đầu được; dùng chế độ thường:",
+      live_hint: "Trên điện thoại là cuộc gọi trực tiếp: nói bất cứ lúc nào, bằng bất kỳ ngôn ngữ nào, và ngắt lời cậu ấy. Trên PC: giọng cậu ấy phát qua loa PC.",
       mic_paused: "Đã tạm dừng. Chạm để nghe lại.", mic_talking: "MapleSyrup đang nói…",
       waiting_game: "Đang chờ trò chơi…", looking_game: "MapleSyrup đang tìm cửa sổ MapleStory", watching: "Đang xem",
       cant_capture: "Không chụp được màn hình game:", no_game: "không có game",
@@ -550,6 +575,8 @@
       start: "🎙️ Mulai mendengar", stop: "⏹ Berhenti mendengar",
       mic_idle: "Ketuk, izinkan mikrofon, lalu ngobrol denganku seperti dengan teman.",
       mic_starting: "Menyalakan mikrofon…", mic_listening: "Mendengarkan — bicara saja.", mic_audio_only: "Mengirim suara ke PC.",
+      mic_live: "Langsung — bicara kapan saja, dalam bahasa apa pun.", live_connecting: "Menghubungkan panggilan langsung…", live_failed: "Panggilan langsung tidak bisa dimulai; pakai mode biasa:",
+      live_hint: "Di ponsel ini panggilan langsung: bicara kapan saja, bahasa apa pun, dan potong omongannya. Di PC: suaranya lewat speaker PC.",
       mic_paused: "Dijeda. Ketuk untuk mendengar lagi.", mic_talking: "MapleSyrup sedang bicara…",
       waiting_game: "Menunggu game…", looking_game: "MapleSyrup sedang mencari jendela MapleStory", watching: "Menonton",
       cant_capture: "Tidak bisa merekam layar game:", no_game: "tidak ada game",
@@ -579,6 +606,8 @@
       start: "🎙️ Начать слушать", stop: "⏹ Перестать слушать",
       mic_idle: "Нажми, разреши микрофон и говори со мной, как с другом.",
       mic_starting: "Включаю микрофон…", mic_listening: "Слушаю — просто говори.", mic_audio_only: "Отправляю звук на ПК.",
+      mic_live: "В эфире — говори когда хочешь, на любом языке.", live_connecting: "Подключаю живой звонок…", live_failed: "Живой звонок не запустился; обычный режим:",
+      live_hint: "На телефоне это живой звонок: говори когда хочешь, на любом языке, и перебивай его. На ПК: его голос из колонок ПК.",
       mic_paused: "Пауза. Нажми, чтобы снова слушать.", mic_talking: "MapleSyrup говорит…",
       waiting_game: "Жду игру…", looking_game: "MapleSyrup ищет окно MapleStory", watching: "Смотрю",
       cant_capture: "Не получается захватить игру:", no_game: "нет игры",
@@ -725,7 +754,9 @@
     for (const b of $("voiceSeg").children) b.classList.toggle("sel", b.dataset.on === voiceOn);
     if (typeof status.always_listen === "boolean" && document.activeElement !== $("always")) $("always").checked = status.always_listen;
     // The dog talks while the PC (or this phone) speaks; dots while it thinks.
-    dog.talking = !!status.speaking || !player.paused;
+    dog.talking = !!status.speaking || !player.paused || liveCall.talking;
+    if (liveCall.audio) liveCall.audio.muted = !!status.muted;
+    $("liveHint").style.display = status.live ? "block" : "none";
     $("bubble").classList.toggle("talking", dog.talking);
     if (status.thinking) {
       $("bubbleText").innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
@@ -815,8 +846,11 @@
       lastReply = m.text;
       if (!status.thinking) $("bubbleText").textContent = m.text;
     }
-    // Without a natural voice, the phone speaks with its own.
-    if (live && m.speak && !status.muted && (voiceOn === "phone" || voiceOn === "both")) speakHere(m.text);
+    // On a live call, MapleSyrup's own lines (a warning, a level-up) are
+    // handed to the call to say. Without a natural voice, the phone speaks
+    // them with its own.
+    if (live && m.speak && !status.muted && liveCall.on && (m.kind === "alert" || m.kind === "info")) sayLive(m.text);
+    else if (live && m.speak && !status.muted && (voiceOn === "phone" || voiceOn === "both")) speakHere(m.text);
   }
 
   // ---- the natural voice, when it speaks on this phone --------------------------
@@ -868,7 +902,7 @@
   // ---- polling ---------------------------------------------------------------
   // The PC answers at once when there is something new (a line, a clip, a
   // reply cut short), else after a moment with the latest figures.
-  let since = 0, first = true, failures = 0, lastCut = null;
+  let since = 0, first = true, failures = 0, lastCut = null, uptimeAt = { uptime: 0, at: Date.now() };
   async function poll() {
     if (!KEY) return;
     try {
@@ -882,6 +916,7 @@
       }
       const state = await r.json();
       failures = 0;
+      if (typeof state.uptime === "number") uptimeAt = { uptime: state.uptime, at: Date.now() };
       banner("");
       setPc(true, state.status && state.status.ai ? "PC · " + state.status.ai : t("pc_connected"));
       render(state);
@@ -913,6 +948,8 @@
     voiceOn = b.dataset.on;
     for (const x of $("voiceSeg").children) x.classList.toggle("sel", x === b);
     postJson("/api/voice", { on: voiceOn }).catch(() => {});
+    // A live call on the phone, or the regular mode with the voice elsewhere.
+    if (listening && wantLive() !== (liveCall.on || liveCall.starting)) restartListening();
   });
   $("always").addEventListener("change", () => postJson("/api/listen", { always: $("always").checked }).catch(() => {}));
   const lang = $("lang");
@@ -932,7 +969,7 @@
     learnedKey = "";
     renderLearned(status.learned);
     postJson("/api/lang", { lang: locale }).catch(() => {});
-    if (listening) { stopRecognition(); startRecognition(); }
+    if (listening && !liveCall.on && !liveCall.starting) { stopRecognition(); startRecognition(); }
   });
   const sendAudio = $("sendAudio");
   sendAudio.checked = recall("sendAudio") !== "0";
@@ -1195,6 +1232,223 @@
     rec = null;
   }
 
+  // ---- the live call (OpenAI's realtime voice, like a phone call) ---------------------
+  // The phone talks to OpenAI itself over WebRTC, with a short-lived key the
+  // PC makes from the player's own key (which stays on the PC). It hears and
+  // speaks any language and follows the player when they switch; it hears
+  // them while it talks (the phone takes its own voice out of the
+  // microphone) and stops when talked over. The PC gives it the screen,
+  // MapleSyrup's tools, and MapleSyrup's own lines to say.
+  const liveCall = { pc: null, dc: null, audio: null, on: false, starting: false, userTalking: false, talking: false,
+    pending: [], eyesAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false };
+  function canLive() { return !!status.live && !!window.RTCPeerConnection && status.always_listen !== false; }
+  function wantLive() { return canLive() && (voiceOn === "phone" || voiceOn === "both"); }
+  function liveAudio() {
+    if (!liveCall.audio) {
+      const a = document.createElement("audio");
+      a.autoplay = true;
+      a.setAttribute("playsinline", "");
+      a.style.display = "none";
+      document.body.append(a);
+      liveCall.audio = a;
+    }
+    return liveCall.audio;
+  }
+  function liveSend(event) {
+    const dc = liveCall.dc;
+    if (!dc || dc.readyState !== "open") return false;
+    try { dc.send(JSON.stringify(event)); return true; } catch (e) { return false; }
+  }
+  function nowT() { return uptimeAt.uptime + (Date.now() - uptimeAt.at) / 1000; }
+
+  async function startLive(stream) {
+    liveCall.starting = true;
+    $("micStatus").textContent = t("live_connecting");
+    try {
+      const r = await postJson("/api/live", { recent: liveCall.recent.slice(-12), lang: locale });
+      const call = await r.json().catch(() => ({}));
+      if (!r.ok || !call.key) throw new Error(call.error || ("PC " + r.status));
+      const track = stream && stream.getAudioTracks()[0];
+      if (!track) throw new Error("no microphone");
+      const pc = new RTCPeerConnection();
+      liveCall.pc = pc;
+      const out = liveAudio();
+      pc.ontrack = (e) => { out.srcObject = e.streams[0]; out.play().catch(() => {}); };
+      pc.addTrack(track, stream);
+      const dc = pc.createDataChannel("oai-events");
+      liveCall.dc = dc;
+      dc.onmessage = (e) => { let ev; try { ev = JSON.parse(e.data); } catch (x) { return; } liveEvent(ev); };
+      dc.onopen = () => liveOpened();
+      dc.onclose = () => { if (liveCall.dc === dc) liveDropped("closed"); };
+      pc.onconnectionstatechange = () => {
+        if (liveCall.pc === pc && (pc.connectionState === "failed" || pc.connectionState === "closed")) liveDropped(pc.connectionState);
+      };
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      const answer = await fetch(call.url, {
+        method: "POST", body: offer.sdp,
+        headers: { Authorization: "Bearer " + call.key, "Content-Type": "application/sdp" },
+      });
+      const sdp = await answer.text();
+      if (!answer.ok) throw new Error("OpenAI " + answer.status + " " + sdp.slice(0, 160));
+      await pc.setRemoteDescription({ type: "answer", sdp });
+    } catch (e) {
+      stopLive();
+      throw e;
+    }
+  }
+
+  function liveOpened() {
+    liveCall.on = true;
+    liveCall.starting = false;
+    liveCall.retries = 0;
+    $("micStatus").textContent = t("mic_live");
+    postJson("/api/mode", { live: true }).catch(() => {});
+    if (!liveCall.greeted) {
+      liveCall.greeted = true;
+      liveSend({ type: "conversation.item.create", item: { type: "message", role: "system",
+        content: [{ type: "input_text", text: "[The player just opened the call. Say hi in one short line.]" }] } });
+      liveSend({ type: "response.create" });
+    }
+    flushSay();
+  }
+
+  function liveEvent(ev) {
+    switch (ev.type) {
+      case "input_audio_buffer.speech_started":
+        liveCall.userTalking = true;
+        $("heard").textContent = "…";
+        liveEyes();
+        break;
+      case "input_audio_buffer.speech_stopped":
+        liveCall.userTalking = false;
+        setTimeout(flushSay, 400);
+        break;
+      case "conversation.item.input_audio_transcription.completed":
+        liveLine("player", ev.transcript);
+        break;
+      case "response.output_audio_transcript.done":
+      case "response.audio_transcript.done":
+        liveLine("maplesyrup", ev.transcript);
+        break;
+      case "output_audio_buffer.started":
+        liveTalking(true);
+        break;
+      case "output_audio_buffer.stopped":
+      case "output_audio_buffer.cleared":
+        liveTalking(false);
+        break;
+      case "response.done":
+        liveCalls(ev.response);
+        break;
+      case "error":
+        if (ev.error && ev.error.message) note(ev.error.message);
+        break;
+    }
+  }
+
+  // What was said: shown here, and kept by the PC.
+  function liveLine(who, text) {
+    text = (text || "").trim();
+    if (!text) return;
+    liveCall.recent.push((who === "player" ? "Player: " : "MapleSyrup: ") + text);
+    if (liveCall.recent.length > 30) liveCall.recent.splice(0, liveCall.recent.length - 30);
+    addMessage({ kind: who === "player" ? "heard" : "reply", text, t: nowT() }, false);
+    if (who === "player") $("heard").textContent = "“" + text + "”";
+    postJson("/api/said", { who, text }).catch(() => {});
+  }
+
+  function liveTalking(on) {
+    if (liveCall.talking === on) return;
+    liveCall.talking = on;
+    postJson("/api/talking", { on }).catch(() => {});
+    if (!on) setTimeout(flushSay, 300);
+  }
+
+  // The screen, with what the vision engine reads off it, goes with what
+  // the player is saying (while the game is the window in front).
+  async function liveEyes() {
+    if (Date.now() - liveCall.eyesAt < 4000) return;
+    liveCall.eyesAt = Date.now();
+    try {
+      const r = await api("/api/eyes");
+      if (!r.ok) return;
+      const e = await r.json();
+      const content = [{ type: "input_text",
+        text: "[The game right now, read by your vision engine — not said by the player]\n" + (e.snapshot || "") }];
+      if (e.image) content.push({ type: "input_image", image_url: e.image });
+      liveSend({ type: "conversation.item.create", item: { type: "message", role: "user", content } });
+    } catch (x) {}
+  }
+
+  // The tools the model asked for run on the PC; the answers go back and it
+  // carries on.
+  async function liveCalls(response) {
+    const calls = ((response && response.output) || []).filter((o) => o && o.type === "function_call");
+    if (!calls.length) return;
+    const outputs = await Promise.all(calls.map(async (c) => {
+      try {
+        const r = await postJson("/api/tool", { name: c.name, arguments: c.arguments || "{}" });
+        const j = await r.json().catch(() => ({}));
+        return [c.call_id, String(j.output || j.error || "done")];
+      } catch (e) {
+        return [c.call_id, "That didn't work."];
+      }
+    }));
+    for (const [id, output] of outputs) {
+      liveSend({ type: "conversation.item.create", item: { type: "function_call_output", call_id: id, output } });
+    }
+    liveSend({ type: "response.create" });
+  }
+
+  // MapleSyrup's own lines, said by the call at the next quiet moment.
+  function sayLive(text) {
+    liveCall.pending.push(text);
+    flushSay();
+  }
+  function flushSay() {
+    if (!liveCall.on || !liveCall.pending.length || liveCall.userTalking || liveCall.talking) return;
+    const lines = liveCall.pending.splice(0);
+    liveSend({ type: "conversation.item.create", item: { type: "message", role: "system",
+      content: [{ type: "input_text", text: "[MapleSyrup's game watcher: " + lines.join(" ") +
+        "] Tell the player now, briefly, in your own words and in the language you're speaking with them." }] } });
+    liveSend({ type: "response.create" });
+  }
+  setInterval(flushSay, 1000);
+
+  function liveDropped(why) {
+    const wasOn = liveCall.on;
+    stopLive();
+    if (!listening || !wantLive()) return;
+    liveCall.retries++;
+    if (liveCall.retries > 3) {
+      note(t("live_failed") + " " + why);
+      startRecognition();
+      $("micStatus").textContent = Recognition ? t("mic_listening") : t("mic_audio_only");
+      return;
+    }
+    clearTimeout(liveCall.retryTimer);
+    liveCall.retryTimer = setTimeout(() => {
+      if (!listening || !wantLive() || liveCall.pc || !audio) return;
+      startLive(audio.stream).catch((e) => liveDropped((e && e.message) || "error"));
+    }, wasOn ? 500 : 2000 * liveCall.retries);
+  }
+
+  function stopLive() {
+    clearTimeout(liveCall.retryTimer);
+    const { pc, dc } = liveCall;
+    liveCall.pc = null;
+    liveCall.dc = null;
+    if (dc) { try { dc.close(); } catch (e) {} }
+    if (pc) { try { pc.close(); } catch (e) {} }
+    if (liveCall.on) postJson("/api/mode", { live: false }).catch(() => {});
+    liveCall.on = false;
+    liveCall.starting = false;
+    liveCall.userTalking = false;
+    if (liveCall.talking) liveTalking(false);
+    if (liveCall.audio) liveCall.audio.srcObject = null;
+  }
+
   async function start() {
     unlockSpeech(); unlockAudio();
     note("");
@@ -1207,13 +1461,30 @@
     } catch (e) {
       note(t("mic_failed") + " " + (e && e.name === "NotAllowedError" ? t("mic_refused") : (e && e.message) || e));
     }
-    startRecognition();
     keepAwake();
+    if (wantLive() && audio) {
+      try { await startLive(audio.stream); return; }
+      catch (e) { note(t("live_failed") + " " + ((e && e.message) || e)); }
+    }
+    startRecognition();
+    $("micStatus").textContent = Recognition ? t("mic_listening") : t("mic_audio_only");
+  }
+
+  // Switch between a live call and the regular mode while listening.
+  async function restartListening() {
+    stopLive();
+    stopRecognition();
+    if (wantLive() && audio) {
+      try { await startLive(audio.stream); return; }
+      catch (e) { note(t("live_failed") + " " + ((e && e.message) || e)); }
+    }
+    startRecognition();
     $("micStatus").textContent = Recognition ? t("mic_listening") : t("mic_audio_only");
   }
 
   function stop() {
     listening = false;
+    stopLive();
     stopRecognition();
     stopAudio();
     if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }

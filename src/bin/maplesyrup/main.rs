@@ -70,7 +70,11 @@ OPTIONS
   --port N              the phone link's port (default 8443)
   --no-phone            no phone link
   --record-mic          keep the phone's microphone in the session's mic.wav
-  --replies WHERE       where replies are spoken: pc, phone, both, off (default pc)
+  --replies WHERE       where replies are spoken: phone (a live call, like a
+                        phone call: any language, talk over it), pc (the PC's
+                        speakers), both, off (default phone with an OpenAI
+                        key, else pc)
+  --no-live             no live call on the phone: replies on the PC instead
   --wake-word           answer only sentences that say \"syrup\" (for streams)
   --no-ai               no OpenAI, even with a key
   --no-web              don't let it search the web for MapleStory facts
@@ -101,9 +105,12 @@ struct Options {
     tunnel: bool,
     port: u16,
     record_mic: bool,
-    replies: VoiceOn,
+    /// Where replies are spoken (None: a live call when there is a key).
+    replies: Option<VoiceOn>,
     wake_word: bool,
     ai: bool,
+    /// Live calls on the phone (OpenAI's realtime voice).
+    live: bool,
     web: bool,
     forget_key: bool,
     model: Option<String>,
@@ -129,9 +136,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
         tunnel: false,
         port: 8443,
         record_mic: false,
-        replies: VoiceOn::Pc,
+        replies: None,
         wake_word: false,
         ai: true,
+        live: true,
         web: true,
         forget_key: false,
         model: None,
@@ -173,12 +181,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--record-mic" => o.record_mic = true,
             "--replies" => {
                 let text = value("--replies")?;
-                o.replies = VoiceOn::parse(&text)
-                    .ok_or(format!("--replies is pc, phone, both or off, not {text:?}"))?
+                o.replies = Some(
+                    VoiceOn::parse(&text)
+                        .ok_or(format!("--replies is pc, phone, both or off, not {text:?}"))?,
+                )
             }
             "--wake-word" => o.wake_word = true,
             "--no-ai" => o.ai = false,
             "--no-web" => o.web = false,
+            "--no-live" => o.live = false,
             "--forget-key" => o.forget_key = true,
             "--model" => o.model = Some(value("--model")?),
             "--voice" => o.voice_name = value("--voice")?,
@@ -246,12 +257,13 @@ struct PhoneLink {
 
 fn start_phone(
     options: &Options,
+    replies: VoiceOn,
     settings: &Path,
     session_dir: &Path,
 ) -> Result<PhoneLink, String> {
     let key = tls::link_key(settings);
     let record_to = options.record_mic.then(|| session_dir.join("mic.wav"));
-    let hub = Hub::new(key.clone(), record_to, options.replies);
+    let hub = Hub::new(key.clone(), record_to, replies);
 
     let lan_ip = phone::net::lan_ipv4();
     let mut names = vec!["localhost".to_string(), "127.0.0.1".to_string()];
@@ -586,6 +598,8 @@ struct Mouth {
     /// When it was last heard speaking (the phone may still hand its last
     /// words back for a moment).
     last_voice: Instant,
+    /// The game was turned down for the phone's live voice.
+    phone_ducked: bool,
     /// The game's process, turned down while the PC speaks.
     game_pid: Option<u32>,
 }
@@ -607,6 +621,48 @@ impl Mouth {
     /// Roughly how long the Windows voice takes to say `text`.
     fn estimate(text: &str) -> Duration {
         Duration::from_secs_f64(0.6 + text.chars().count() as f64 / 14.0)
+    }
+}
+
+/// Answers the phone's live calls: a short-lived key for OpenAI's realtime
+/// voice, MapleSyrup's tools, a web search.
+struct LiveService {
+    live: ai::live::Live,
+    toolbox: Toolbox,
+    /// For the web search (the call's model can't search itself).
+    chat: Arc<OpenAi>,
+    settings: PathBuf,
+}
+
+impl phone::Service for LiveService {
+    fn live(&self, recent: &[String], language: Option<&str>) -> Result<serde_json::Value, String> {
+        let about = std::fs::read_to_string(self.settings.join("about-me.txt")).unwrap_or_default();
+        let instructions = ai::live::instructions(&about, recent, language);
+        let tools = ai::live::tools(self.toolbox.definitions(), self.toolbox.web);
+        self.live
+            .session(&instructions, &tools)
+            .map_err(|e| e.to_string())
+    }
+
+    fn tool(
+        &self,
+        name: &str,
+        arguments: &str,
+        frame: Option<&RgbaImage>,
+    ) -> (String, Option<ai::Effect>) {
+        if name == "search_web" {
+            let query = serde_json::from_str::<serde_json::Value>(arguments)
+                .ok()
+                .and_then(|v| v["query"].as_str().map(String::from))
+                .unwrap_or_default();
+            return (ai::live::search(&self.chat, &query), None);
+        }
+        let call = ai::openai::Call {
+            call_id: String::new(),
+            name: name.to_string(),
+            arguments: arguments.to_string(),
+        };
+        self.toolbox.run(&call, frame)
     }
 }
 
@@ -774,6 +830,20 @@ fn heard_of(line: &str, played: Duration) -> String {
     heard
 }
 
+/// What is on screen, as a few lines for a model: what the vision engine
+/// reads, and what MapleSyrup learned about this screen.
+fn snapshot_text(companion: &Companion, sight: Option<&Arc<Mutex<Sight>>>) -> String {
+    let mut snapshot = ai::brain::snapshot(companion.last(), &companion.progress());
+    if let Some(sight) = sight {
+        let sight = sight.lock().unwrap_or_else(|e| e.into_inner());
+        for line in sight.describe() {
+            snapshot.push('\n');
+            snapshot.push_str(&line);
+        }
+    }
+    snapshot
+}
+
 /// What the player said, for the model: with what is on screen, and the
 /// screen itself while the game is the window in front.
 fn conversation_job(
@@ -784,16 +854,14 @@ fn conversation_job(
     in_view: bool,
     language: Option<String>,
 ) -> Job {
-    let mut snapshot = ai::brain::snapshot(companion.last(), &companion.progress());
-    let mut status = None;
-    if let Some(sight) = sight {
-        let sight = sight.lock().unwrap_or_else(|e| e.into_inner());
-        for line in sight.describe() {
-            snapshot.push('\n');
-            snapshot.push_str(&line);
-        }
-        status = sight.layout.as_ref().and_then(|l| l.status);
-    }
+    let snapshot = snapshot_text(companion, sight);
+    let status = sight.and_then(|s| {
+        s.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .layout
+            .as_ref()
+            .and_then(|l| l.status)
+    });
     let eyes = frame
         .filter(|_| in_view && companion.last().is_some_and(|o| o.game.is_seen()))
         .map(|frame| Eyes { frame, status });
@@ -803,6 +871,16 @@ fn conversation_job(
         speak: true,
         eyes,
         language,
+    }
+}
+
+/// How a line is labelled in the session log.
+fn kind_label(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Heard => "heard",
+        Kind::Alert => "alert",
+        Kind::Reply => "reply",
+        Kind::Info => "info",
     }
 }
 
@@ -818,6 +896,11 @@ struct Outputs {
     /// The player's language (from the phone), when it is not English:
     /// MapleSyrup's own spoken lines are translated into it.
     language: Option<String>,
+    /// Live calls can be made (an OpenAI key).
+    live_ok: bool,
+    /// A live call is on: MapleSyrup's own lines are handed to the call to
+    /// say (in its voice and the language being spoken), not to the PC.
+    live: bool,
 }
 
 impl Outputs {
@@ -830,13 +913,7 @@ impl Outputs {
 
     /// Show a line everywhere (console, phone, session log).
     fn show(&mut self, kind: Kind, text: &str) {
-        let who = match kind {
-            Kind::Heard => "heard",
-            Kind::Alert => "alert",
-            Kind::Reply => "reply",
-            Kind::Info => "info",
-        };
-        self.session.line(who, text);
+        self.session.line(kind_label(kind), text);
         if let Some(hub) = &self.phone {
             // The phone speaks a line itself only without a natural voice.
             let phone_speaks = self.mouth.ai.is_none() && matches!(kind, Kind::Alert | Kind::Reply);
@@ -849,6 +926,15 @@ impl Outputs {
     /// when `speak`, in the player's language: when that is not English it
     /// is translated first and shown when ready (Done::Shown).
     fn tell(&mut self, kind: Kind, text: &str, speak: bool, companion: &mut Companion) {
+        if self.live
+            && let Some(hub) = self.phone.clone()
+        {
+            // The call says it, in its voice and the language being spoken.
+            self.session.line(kind_label(kind), text);
+            self.push(kind, text.to_string());
+            hub.post(kind, text, speak && !companion.muted());
+            return;
+        }
         if self.language.is_some()
             && let Some(worker) = &self.mouth.ai
         {
@@ -870,6 +956,12 @@ impl Outputs {
     /// Say `text` out loud, where replies are spoken.
     fn speak(&mut self, text: &str, companion: &mut Companion) {
         if companion.muted() {
+            return;
+        }
+        if self.live
+            && let Some(hub) = &self.phone
+        {
+            hub.post(Kind::Info, text, true);
             return;
         }
         let now = self.start.elapsed().as_secs_f64();
@@ -931,6 +1023,26 @@ impl Outputs {
                     .max(Instant::now() + Duration::from_millis(300));
                 self.mouth.phone_end = begins + length;
                 self.mouth.phone_until = self.mouth.phone_end + Duration::from_millis(600);
+            }
+        }
+    }
+
+    /// MapleSyrup's voice on a live call started or stopped: the game is
+    /// turned down while it talks, and the dog talks on the PC too.
+    fn phone_talking(&mut self, on: bool) {
+        if on {
+            // Until the phone says it stopped (with a limit, in case it never does).
+            self.mouth.phone_until = Instant::now() + Duration::from_secs(20);
+            if !self.mouth.phone_ducked
+                && let Some(pid) = self.mouth.game_pid
+            {
+                self.mouth.phone_ducked = ms::platform::sound::duck(pid);
+            }
+        } else {
+            self.mouth.phone_until = Instant::now() + Duration::from_millis(250);
+            if self.mouth.phone_ducked {
+                ms::platform::sound::restore();
+                self.mouth.phone_ducked = false;
             }
         }
     }
@@ -1051,6 +1163,7 @@ fn run(options: Options) -> Result<(), String> {
     let latest = Arc::new(Latest::default());
     let (news_tx, news_rx) = mpsc::channel::<News>();
     let mut sight: Option<Arc<Mutex<Sight>>> = None;
+    let mut live_service: Option<Arc<LiveService>> = None;
     let worker = match openai_key(&options, &settings_dir) {
         Some(key) => {
             println!("Connecting to OpenAI…");
@@ -1097,6 +1210,25 @@ fn run(options: Options) -> Result<(), String> {
                         Arc::clone(&latest),
                         news_tx.clone(),
                     );
+                    if options.live {
+                        let chat = Arc::new(OpenAi::new(
+                            &key,
+                            &options.openai_base,
+                            &options.voice_name,
+                            options.model.as_deref(),
+                        ));
+                        live_service = Some(Arc::new(LiveService {
+                            live: ai::live::Live::new(Arc::clone(&chat), &options.voice_name),
+                            toolbox: Toolbox {
+                                sight: Arc::clone(&learned),
+                                eyes: Arc::clone(&eyes),
+                                settings: settings_dir.clone(),
+                                web: options.web,
+                            },
+                            chat,
+                            settings: settings_dir.clone(),
+                        }));
+                    }
                     let toolbox = Toolbox {
                         sight: Arc::clone(&learned),
                         eyes,
@@ -1126,9 +1258,21 @@ fn run(options: Options) -> Result<(), String> {
         (None, true) => "no PC voice".to_string(),
     };
 
+    // A live call on the phone when it can be made, unless asked otherwise.
+    let replies = options.replies.unwrap_or(if live_service.is_some() {
+        VoiceOn::Phone
+    } else {
+        VoiceOn::Pc
+    });
     let phone = if options.phone {
-        match start_phone(&options, &settings_dir, &session_dir) {
-            Ok(link) => Some(link),
+        match start_phone(&options, replies, &settings_dir, &session_dir) {
+            Ok(link) => {
+                if let Some(service) = &live_service {
+                    link.hub
+                        .set_service(Arc::clone(service) as Arc<dyn phone::Service>);
+                }
+                Some(link)
+            }
             Err(e) => {
                 eprintln!("The phone link could not start: {e}\nMapleSyrup carries on without it.");
                 None
@@ -1229,6 +1373,7 @@ fn run(options: Options) -> Result<(), String> {
             phone_end: Instant::now(),
             phone_line: Vec::new(),
             last_voice: Instant::now() - Duration::from_secs(60),
+            phone_ducked: false,
             game_pid: None,
         },
         phone: phone.as_ref().map(|p| Arc::clone(&p.hub)),
@@ -1236,8 +1381,10 @@ fn run(options: Options) -> Result<(), String> {
         log: Vec::new(),
         plain: !ansi,
         start,
-        replies: options.replies,
+        replies,
         language: None,
+        live_ok: live_service.is_some(),
+        live: false,
     };
     let hello = companion.hello();
     out.apply(hello, &mut companion, None);
@@ -1319,6 +1466,11 @@ fn run(options: Options) -> Result<(), String> {
         out.mouth.player.tick();
         if out.mouth.speaking() {
             out.mouth.last_voice = Instant::now();
+        }
+        // The phone never said its voice stopped (it went away): the game
+        // comes back up.
+        if out.mouth.phone_ducked && Instant::now() > out.mouth.phone_until {
+            out.phone_talking(false);
         }
 
         // What the phone sent.
@@ -1402,6 +1554,50 @@ fn run(options: Options) -> Result<(), String> {
                             out.session.line("turn", "talked over (heard by the phone)");
                         }
                     }
+                    Inbound::Said { who, text } => {
+                        // On a live call: shown here and kept in the log (the
+                        // phone shows it itself).
+                        let kind = if who == "player" {
+                            Kind::Heard
+                        } else {
+                            companion.remember_spoken(now, &text);
+                            Kind::Reply
+                        };
+                        out.session.line(kind_label(kind), &text);
+                        out.push(kind, text);
+                    }
+                    Inbound::Live(on) => {
+                        if on != out.live {
+                            out.live = on;
+                            out.session.line(
+                                "info",
+                                if on {
+                                    "live call on the phone: talking in real time"
+                                } else {
+                                    "live call ended"
+                                },
+                            );
+                            if on {
+                                // The PC's own voice gives way to the call.
+                                turns.interrupt(&mut out);
+                            } else {
+                                out.phone_talking(false);
+                            }
+                        }
+                    }
+                    Inbound::Talking(on) => out.phone_talking(on),
+                    Inbound::Effect(effect) => match effect {
+                        ai::Effect::Note(line) => out.show(Kind::Info, &line),
+                        ai::Effect::Fact(fact) => {
+                            out.show(Kind::Info, &format!("remembered: {fact}"))
+                        }
+                        ai::Effect::Command(word) => {
+                            if let Some(command) = Command::from_word(&word) {
+                                let actions = companion.command(now, command);
+                                out.apply(actions, &mut companion, latest_image.clone());
+                            }
+                        }
+                    },
                     Inbound::Command(word) => {
                         if let Some(command) = Command::from_word(&word) {
                             let actions = companion.command(now, command);
@@ -1419,12 +1615,15 @@ fn run(options: Options) -> Result<(), String> {
                                 false,
                             );
                         }
-                        let greeting = if out.mouth.ai.is_some() {
-                            "Hey! I'm here. Just talk to me."
-                        } else {
-                            "Phone connected."
-                        };
-                        out.speak(greeting, &mut companion);
+                        // (On a live call the call itself says hello.)
+                        if !(out.live_ok && out.voice_on().phone()) {
+                            let greeting = if out.mouth.ai.is_some() {
+                                "Hey! I'm here. Just talk to me."
+                            } else {
+                                "Phone connected."
+                            };
+                            out.speak(greeting, &mut companion);
+                        }
                     }
                     Inbound::Voice(on) => {
                         let place = match on {
@@ -1720,7 +1919,19 @@ fn run(options: Options) -> Result<(), String> {
                     "thinking": out.mouth.ai.as_ref().is_some_and(|w| w.busy()),
                     "ai": out.mouth.ai.as_ref().map(|w| w.model.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "OpenAI".into())),
                     "learned": learned_status(sight.as_ref(), hub),
+                    // Live calls can be made.
+                    "live": out.live_ok,
                 }));
+                // What a live call can see: the screen only while the game is
+                // the window in front.
+                if out.live_ok {
+                    let in_view = in_front.load(Ordering::Relaxed)
+                        && companion.last().is_some_and(|o| o.game.is_seen());
+                    hub.set_sight(
+                        latest_image.clone().filter(|_| in_view),
+                        snapshot_text(&companion, sight.as_ref()),
+                    );
+                }
             }
             if ansi {
                 let view = screen::View {

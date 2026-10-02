@@ -25,6 +25,7 @@
 pub mod brain;
 pub mod images;
 pub mod language;
+pub mod live;
 pub mod openai;
 pub mod teaching;
 pub mod tools;

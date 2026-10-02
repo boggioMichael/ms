@@ -22,6 +22,17 @@ Start
   If Windows asks whether MapleSyrup may use the network, allow private networks.
 
 How it talks
+  With an OpenAI key, talking to it is a live call, like ChatGPT's voice mode:
+  its voice comes from the phone (or earbuds on the phone), and the phone
+  listens while it talks. Speak any language, switch or mix languages
+  mid-sentence (Hebrew and English, say) and it follows you, with no setting.
+  Talk over it and it stops and goes with what you said. It sees your screen
+  while MapleStory is the window in front, and says its own warnings (low HP,
+  level up) on the call too, in the language you're speaking. While it talks,
+  MapleStory's sound is turned down.
+  Prefer its voice on the PC speakers? Choose "PC" under "Replies spoken on"
+  on the phone: then it works as below.
+
   Like talking to a friend: it answers everything you say, knowing what is on
   your screen (HP, MP, EXP, level, your EXP per hour). If you talk to your
   stream's chat instead, it stays quiet.
@@ -88,9 +99,12 @@ organization's Device Guard policy")
   MapleSyrup is then blocked again.)
 
 Privacy
-  Your OpenAI key stays on this PC. With a key, what you say to MapleSyrup and
-  pictures of your game window are sent to OpenAI to answer you (OpenAI bills
-  your account: roughly cents per hour). Without a key, nothing leaves your PC
+  Your OpenAI key stays on this PC (a live call uses a key that works for a few
+  minutes only, made for it). With a key, what you say to MapleSyrup (on a
+  live call, your voice itself) and pictures of your game window are sent to
+  OpenAI to answer you; pictures only while MapleStory is the window in front.
+  OpenAI bills your account: a live call costs more than the PC voice (very
+  roughly a dollar or two per hour of play, depending on how much you talk). Without a key, nothing leaves your PC
   except the phone link on your own network.
 
 Files
