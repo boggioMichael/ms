@@ -24,18 +24,33 @@ pub fn new_dir(base: &Path) -> PathBuf {
     base.join(stamp)
 }
 
-/// Where sessions go: next to MapleSyrup if it can write there, else in its
-/// settings folder.
+/// Where sessions go: where `sessions-folder.txt` next to MapleSyrup says
+/// (the installer points it at Documents), else next to MapleSyrup if it can
+/// write there, else in its settings folder.
 pub fn sessions_base(settings: &Path) -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
+        if let Some(chosen) = chosen_folder(&dir.join("sessions-folder.txt"))
+            && fs::create_dir_all(&chosen).is_ok()
+            && writable(&chosen)
+        {
+            return chosen;
+        }
         let base = dir.join("MapleSyrup sessions");
         if fs::create_dir_all(&base).is_ok() && writable(&base) {
             return base;
         }
     }
     settings.join("sessions")
+}
+
+/// The folder named on the first line of `file` (UTF-8, with or without a
+/// byte-order mark).
+fn chosen_folder(file: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(file).ok()?;
+    let line = text.trim_start_matches('\u{feff}').lines().next()?.trim();
+    (!line.is_empty()).then(|| PathBuf::from(line))
 }
 
 fn writable(dir: &Path) -> bool {
@@ -149,6 +164,28 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(shot.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_installer_can_choose_the_sessions_folder() {
+        let dir = std::env::temp_dir().join(format!("ms-sessions-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let file = dir.join("sessions-folder.txt");
+        fs::write(
+            &file,
+            "\u{feff}C:\\Users\\מיכאל\\Documents\\MapleSyrup sessions\r\n",
+        )
+        .unwrap();
+        assert_eq!(
+            chosen_folder(&file),
+            Some(PathBuf::from(
+                "C:\\Users\\מיכאל\\Documents\\MapleSyrup sessions"
+            ))
+        );
+        fs::write(&file, "\n").unwrap();
+        assert_eq!(chosen_folder(&file), None);
+        assert_eq!(chosen_folder(&dir.join("missing.txt")), None);
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -2,12 +2,13 @@ MapleSyrup - the MapleStory companion
 =====================================
 
 Start
-  1. Double-click MapleSyrup.exe.
+  1. Start MapleSyrup: from the Start menu or the desktop icon if you used the
+     installer, or double-click MapleSyrup.exe from the zip.
      The first time, it asks for an OpenAI API key (platform.openai.com/api-keys)
-     so it can talk like ChatGPT in a natural voice. Paste it and press Enter
-     (it is kept on this PC only, in %APPDATA%\MapleSyrup), or press Enter to
-     go without (simple answers, Windows voice). A key can also be put in a
-     file called openai-key.txt next to MapleSyrup.exe.
+     so it can talk like ChatGPT in a natural voice and see your screen. Paste
+     it and press Enter (it is kept on this PC only, in %APPDATA%\MapleSyrup), or
+     press Enter to go without (simple answers, Windows voice). A key can also
+     be put in a file called openai-key.txt next to MapleSyrup.exe.
   2. Start MapleStory (windowed or borderless windowed). Yohai's dog and a
      small HP/MP/EXP panel appear at the top right of the game.
   3. On your phone (same Wi-Fi as the PC), scan the QR code in MapleSyrup's window.
@@ -52,7 +53,8 @@ It sees your screen, and learns it
   (start it with --no-web to stop that).
 
 Recording or streaming it
-  Double-click "MapleSyrup (recording).cmd": the dog and the panel then show
+  Start "MapleSyrup (recording and streaming)" from the Start menu (in the zip:
+  double-click "MapleSyrup (recording).cmd"): the dog and the panel then show
   up in recordings (normally they keep out of OBS and screenshots), and what
   the phone's microphone hears is kept as mic.wav in the session folder.
   Record the whole screen, not just the game: OBS "Display Capture" (OBS's
@@ -60,7 +62,8 @@ Recording or streaming it
   Snipping Tool's video (Win+Shift+R) with Sound and Microphone on.
 
 If the phone cannot connect
-  Double-click "MapleSyrup (phone over internet).cmd". It links the phone
+  Start "MapleSyrup (phone over the internet)" from the Start menu (in the zip:
+  double-click "MapleSyrup (phone over internet).cmd"). It links the phone
   through a Cloudflare tunnel: no certificate warning, no firewall question,
   works on mobile data too.
 
@@ -72,8 +75,15 @@ organization's Device Guard policy")
   (Since the April 2026 update it can be turned on again from the same place;
   MapleSyrup is then blocked again.)
 
+Privacy
+  Your OpenAI key stays on this PC. With a key, what you say to MapleSyrup and
+  pictures of your game window are sent to OpenAI to answer you (OpenAI bills
+  your account: roughly cents per hour). Without a key, nothing leaves your PC
+  except the phone link on your own network.
+
 Files
-  Each session is kept in "MapleSyrup sessions" next to MapleSyrup.exe:
+  Each session is kept in "MapleSyrup sessions" (in Documents when installed,
+  next to MapleSyrup.exe from the zip):
   log.txt (what was said and heard), markers.csv and mark-NNN.png, and
   mic.wav when started with --record-mic.
   Optional: write a few lines about yourself in %APPDATA%\MapleSyrup\about-me.txt
