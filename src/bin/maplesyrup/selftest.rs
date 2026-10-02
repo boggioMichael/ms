@@ -401,15 +401,18 @@ pub fn record_test() -> i32 {
 /// A window over the whole screen, black, then white (Windows).
 #[cfg(windows)]
 mod flash {
-    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::Graphics::Dwm::DwmFlush;
     use windows::Win32::Graphics::Gdi::{
-        BLACK_BRUSH, GET_STOCK_OBJECT_FLAGS, GetStockObject, HBRUSH, UpdateWindow, WHITE_BRUSH,
+        BLACK_BRUSH, FillRect, GET_STOCK_OBJECT_FLAGS, GdiFlush, GetDC, GetStockObject, HBRUSH,
+        ReleaseDC, UpdateWindow, WHITE_BRUSH,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetSystemMetrics, MSG,
-        PM_REMOVE, PeekMessageW, RegisterClassExW, SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, ShowWindow,
-        TranslateMessage, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GCLP_HBRBACKGROUND,
+        GetClientRect, GetSystemMetrics, MSG, PM_REMOVE, PeekMessageW, RegisterClassExW,
+        SM_CXSCREEN, SM_CYSCREEN, SW_SHOW, SetClassLongPtrW, ShowWindow, TranslateMessage,
+        WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
     };
     use windows::core::{PCWSTR, w};
 
@@ -465,13 +468,26 @@ mod flash {
     impl Screen {
         pub fn black() -> Result<Screen, String> {
             Ok(Screen {
-                windows: vec![window(w!("MapleSyrupTestBlack"), BLACK_BRUSH)?],
+                windows: vec![window(w!("MapleSyrupTestFlash"), BLACK_BRUSH)?],
             })
         }
 
+        /// White at once (painted over, no window opening animation), and
+        /// on the screen when this returns.
         pub fn white(&mut self) -> Result<(), String> {
-            self.windows
-                .push(window(w!("MapleSyrupTestWhite"), WHITE_BRUSH)?);
+            let hwnd = *self.windows.first().ok_or("no window")?;
+            unsafe {
+                let white = HBRUSH(GetStockObject(WHITE_BRUSH).0);
+                SetClassLongPtrW(hwnd, GCLP_HBRBACKGROUND, white.0 as isize);
+                let mut rect = RECT::default();
+                GetClientRect(hwnd, &mut rect).map_err(|e| e.to_string())?;
+                let dc = GetDC(Some(hwnd));
+                FillRect(dc, &rect, white);
+                ReleaseDC(Some(hwnd), dc);
+                let _ = GdiFlush();
+                // Until the screen has been put together with it.
+                let _ = DwmFlush();
+            }
             Ok(())
         }
 
