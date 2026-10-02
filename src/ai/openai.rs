@@ -24,6 +24,15 @@ pub const CHAT_MODELS: &[&str] = &[
     "gpt-4.1-mini",
     "gpt-4o-mini",
 ];
+/// Models tried for looking at the screen (finding the HUD, reading small
+/// print): the sharpest eyes first; these calls are few.
+pub const VISION_MODELS: &[&str] = &[
+    "gpt-6.1-sol",
+    "gpt-6-luna",
+    "gpt-5-mini",
+    "gpt-4.1-mini",
+    "gpt-4o-mini",
+];
 pub const SPEECH_MODEL: &str = "gpt-4o-mini-tts";
 /// Raw PCM from `/audio/speech` is 24 kHz, 16-bit, mono.
 pub const SPEECH_RATE: u32 = 24_000;
@@ -61,11 +70,70 @@ pub struct Turn {
     pub text: String,
 }
 
-/// The chosen model, and whether it takes `reasoning.effort`.
+/// The chosen model, and what it turned out to take.
 #[derive(Debug, Clone)]
 struct Choice {
     model: String,
+    /// `reasoning.effort` (newer models).
     reasoning: bool,
+    /// Pictures in the input.
+    images: bool,
+    /// The hosted web search tool.
+    web: bool,
+}
+
+impl Choice {
+    fn new(model: &str) -> Choice {
+        Choice {
+            model: model.to_string(),
+            reasoning: true,
+            images: true,
+            web: true,
+        }
+    }
+}
+
+/// One request to the Responses API.
+#[derive(Debug, Clone, Default)]
+pub struct Ask {
+    pub instructions: String,
+    /// Input items: messages (text and pictures), function calls and their
+    /// outputs.
+    pub input: Vec<Value>,
+    /// Function tools, and hosted ones (`{"type": "web_search"}`).
+    pub tools: Vec<Value>,
+    /// A JSON schema the answer must follow: its name and the schema.
+    pub schema: Option<(String, Value)>,
+    pub max_output_tokens: u32,
+    pub timeout: Duration,
+    /// Pictures are the point of the question: a model that cannot take
+    /// them is skipped rather than asked without them.
+    pub needs_images: bool,
+}
+
+/// A function the model wants called.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Call {
+    pub call_id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+/// What came back from a request.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Answer {
+    pub text: String,
+    pub calls: Vec<Call>,
+    /// The answer's output items, to send back with the calls' outputs.
+    pub items: Vec<Value>,
+}
+
+/// What arrives while a reply streams in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Piece<'a> {
+    Text(&'a str),
+    /// The model started searching the web.
+    Searching,
 }
 
 pub struct OpenAi {
@@ -81,6 +149,19 @@ pub struct OpenAi {
 impl OpenAi {
     /// `base`: `https://api.openai.com/v1`, or a stand-in for tests.
     pub fn new(key: &str, base: &str, voice: &str, model: Option<&str>) -> Self {
+        Self::with_models(
+            key,
+            base,
+            voice,
+            match model {
+                Some(m) => vec![m.to_string()],
+                None => CHAT_MODELS.iter().map(|m| m.to_string()).collect(),
+            },
+        )
+    }
+
+    /// A client that tries `models` in order.
+    pub fn with_models(key: &str, base: &str, voice: &str, models: Vec<String>) -> Self {
         Self {
             key: key.trim().to_string(),
             base: base.trim_end_matches('/').to_string(),
@@ -91,10 +172,7 @@ impl OpenAi {
                 "curl".into()
             },
             choice: Mutex::new(None),
-            models: match model {
-                Some(m) => vec![m.to_string()],
-                None => CHAT_MODELS.iter().map(|m| m.to_string()).collect(),
-            },
+            models,
         }
     }
 
@@ -239,7 +317,9 @@ impl OpenAi {
 
     /// The model's reply to the conversation so far.
     pub fn respond(&self, instructions: &str, turns: &[Turn]) -> Result<String, AiError> {
-        self.converse(instructions, turns, None)
+        Ok(self
+            .ask(&Ask::conversation(instructions, turns), None)?
+            .text)
     }
 
     /// The model's reply, streamed: `on_text` gets each piece as it is
@@ -250,100 +330,153 @@ impl OpenAi {
         turns: &[Turn],
         on_text: &mut dyn FnMut(&str),
     ) -> Result<String, AiError> {
-        self.converse(instructions, turns, Some(on_text))
+        let mut on_piece = |piece: Piece| {
+            if let Piece::Text(t) = piece {
+                on_text(t)
+            }
+        };
+        Ok(self
+            .ask(&Ask::conversation(instructions, turns), Some(&mut on_piece))?
+            .text)
     }
 
-    fn converse(
+    /// One request, streamed to `on_piece` when given. The first model the
+    /// key can use is kept; what a model turns out not to take (reasoning
+    /// effort, pictures, web search) is left out and the request sent again.
+    pub fn ask(
         &self,
-        instructions: &str,
-        turns: &[Turn],
-        mut on_text: Option<&mut dyn FnMut(&str)>,
-    ) -> Result<String, AiError> {
-        let input: Vec<Value> = turns
-            .iter()
-            .map(|t| json!({"role": t.role, "content": t.text}))
-            .collect();
+        ask: &Ask,
+        mut on_piece: Option<&mut dyn FnMut(Piece)>,
+    ) -> Result<Answer, AiError> {
         let known = self.choice.lock().ok().and_then(|c| c.clone());
         let candidates: Vec<Choice> = match known {
             Some(choice) => vec![choice],
-            None => self
-                .models
-                .iter()
-                .map(|m| Choice {
-                    model: m.clone(),
-                    reasoning: true,
-                })
-                .collect(),
+            None => self.models.iter().map(|m| Choice::new(m)).collect(),
         };
+        let has_images = ask.input.iter().any(has_image);
+        let has_web = ask.tools.iter().any(|t| t["type"] != "function");
         let mut last = AiError::Parse("no model to try".into());
         for mut choice in candidates {
+            if ask.needs_images && !choice.images {
+                continue;
+            }
             loop {
+                let input: Vec<Value> = if choice.images {
+                    ask.input.clone()
+                } else {
+                    ask.input.iter().map(without_images).collect()
+                };
+                let tools: Vec<&Value> = ask
+                    .tools
+                    .iter()
+                    .filter(|t| choice.web || t["type"] == "function")
+                    .collect();
                 let mut body = json!({
                     "model": choice.model,
-                    "instructions": instructions,
+                    "instructions": ask.instructions,
                     "input": input,
-                    "max_output_tokens": 400,
+                    "max_output_tokens": ask.max_output_tokens.max(16),
                     "store": false,
                 });
+                if !tools.is_empty() {
+                    body["tools"] = json!(tools);
+                }
+                if let Some((name, schema)) = &ask.schema {
+                    body["text"] = json!({"format": {
+                        "type": "json_schema", "name": name, "schema": schema, "strict": true
+                    }});
+                }
                 if choice.reasoning {
                     body["reasoning"] = json!({"effort": "none"});
                 }
-                let mut events = EventStream::default();
-                let status = match on_text.as_mut() {
-                    Some(on_text) => {
-                        body["stream"] = json!(true);
-                        self.call_with(
-                            "POST",
-                            "/responses",
-                            Some(&body),
-                            Duration::from_secs(40),
-                            &mut |chunk| {
-                                for piece in events.feed(chunk) {
-                                    on_text(&piece);
-                                }
-                            },
-                        )?
-                    }
-                    None => self.call_with(
-                        "POST",
-                        "/responses",
-                        Some(&body),
-                        Duration::from_secs(40),
-                        &mut |chunk| events.keep(chunk),
-                    )?,
+                let timeout = if ask.timeout.is_zero() {
+                    Duration::from_secs(40)
+                } else {
+                    ask.timeout
                 };
-                let raw = &events.raw;
+                let mut events = EventStream::default();
+                let status = match on_piece.as_mut() {
+                    Some(on_piece) => {
+                        body["stream"] = json!(true);
+                        self.call_with("POST", "/responses", Some(&body), timeout, &mut |chunk| {
+                            for piece in events.feed(chunk) {
+                                match piece {
+                                    Event::Text(t) => on_piece(Piece::Text(&t)),
+                                    Event::Searching => on_piece(Piece::Searching),
+                                }
+                            }
+                        })?
+                    }
+                    None => {
+                        self.call_with("POST", "/responses", Some(&body), timeout, &mut |chunk| {
+                            events.keep(chunk)
+                        })?
+                    }
+                };
                 if status == 200 {
                     if let Some(message) = events.error {
                         return Err(AiError::Http(500, message));
                     }
-                    let text = if events.text.trim().is_empty() {
+                    let answer = if events.items.is_empty() && events.text.trim().is_empty() {
                         // A whole answer (not streamed, or buffered on the way).
-                        let text = output_text(raw)?;
-                        if let Some(on_text) = on_text.as_mut() {
-                            on_text(&text);
+                        let answer = match &events.completed {
+                            Some(response) => answer_of(response),
+                            None => answer_of(
+                                &serde_json::from_slice::<Value>(&events.raw)
+                                    .map_err(|e| AiError::Parse(e.to_string()))?,
+                            ),
+                        };
+                        if let Some(on_piece) = on_piece.as_mut()
+                            && !answer.text.is_empty()
+                        {
+                            on_piece(Piece::Text(&answer.text));
                         }
-                        text
+                        answer
                     } else {
-                        events.text.trim().to_string()
+                        Answer {
+                            text: events.text.trim().to_string(),
+                            calls: events.calls,
+                            items: events.items,
+                        }
                     };
+                    if answer.text.trim().is_empty() && answer.calls.is_empty() {
+                        return Err(AiError::Parse("the answer had no text".into()));
+                    }
                     if let Ok(mut slot) = self.choice.lock() {
                         *slot = Some(choice.clone());
                     }
-                    return Ok(text);
+                    return Ok(answer);
                 }
-                let error = Self::error_of(status, raw);
+                let error = Self::error_of(status, &events.raw);
                 let message = match &error {
                     AiError::Http(_, m) => m.to_ascii_lowercase(),
                     _ => String::new(),
                 };
-                // An older model without reasoning efforts: ask again without.
-                if status == 400
-                    && choice.reasoning
-                    && (message.contains("reasoning") || message.contains("effort"))
-                {
-                    choice.reasoning = false;
-                    continue;
+                if status == 400 {
+                    // An older model without reasoning efforts: ask again without.
+                    if choice.reasoning
+                        && (message.contains("reasoning") || message.contains("effort"))
+                    {
+                        choice.reasoning = false;
+                        continue;
+                    }
+                    // No web search for this model or key.
+                    if has_web
+                        && choice.web
+                        && (message.contains("web_search") || message.contains("tool"))
+                    {
+                        choice.web = false;
+                        continue;
+                    }
+                    // No pictures for this model.
+                    if has_images && choice.images && message.contains("image") {
+                        choice.images = false;
+                        if ask.needs_images {
+                            last = error;
+                            break;
+                        }
+                        continue;
+                    }
                 }
                 last = error;
                 // A model this key cannot use: try the next one.
@@ -396,6 +529,108 @@ impl OpenAi {
     }
 }
 
+impl Ask {
+    /// A plain conversation: the turns as messages.
+    pub fn conversation(instructions: &str, turns: &[Turn]) -> Ask {
+        Ask {
+            instructions: instructions.to_string(),
+            input: turns
+                .iter()
+                .map(|t| json!({"role": t.role, "content": t.text}))
+                .collect(),
+            max_output_tokens: 400,
+            timeout: Duration::from_secs(40),
+            ..Default::default()
+        }
+    }
+}
+
+fn has_image(item: &Value) -> bool {
+    item["content"]
+        .as_array()
+        .is_some_and(|parts| parts.iter().any(|p| p["type"] == "input_image"))
+}
+
+fn without_images(item: &Value) -> Value {
+    let mut item = item.clone();
+    if let Some(parts) = item["content"].as_array_mut() {
+        parts.retain(|p| p["type"] != "input_image");
+    }
+    item
+}
+
+/// The answer's items as they go back in, with the outputs of the calls it
+/// asked for: what the model said, the calls, and its reasoning when it is
+/// carried along (encrypted).
+pub fn follow_up(answer: &Answer) -> Vec<Value> {
+    let mut out = Vec::new();
+    for item in &answer.items {
+        match item["type"].as_str() {
+            Some("function_call") => out.push(json!({
+                "type": "function_call",
+                "call_id": item["call_id"],
+                "name": item["name"],
+                "arguments": item["arguments"],
+            })),
+            Some("message") => {
+                let text: String = item["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|p| p["text"].as_str())
+                    .collect();
+                if !text.is_empty() {
+                    out.push(json!({"role": "assistant", "content": text}));
+                }
+            }
+            Some("reasoning") if item.get("encrypted_content").is_some_and(|e| e.is_string()) => {
+                out.push(item.clone())
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A whole Responses API answer (the JSON of a response).
+pub fn answer_of(response: &Value) -> Answer {
+    let mut answer = Answer::default();
+    for item in response["output"].as_array().into_iter().flatten() {
+        match item["type"].as_str() {
+            Some("message") => {
+                for part in item["content"].as_array().into_iter().flatten() {
+                    if matches!(part["type"].as_str(), Some("output_text" | "refusal"))
+                        && let Some(t) = part["text"].as_str().or(part["refusal"].as_str())
+                    {
+                        answer.text.push_str(t);
+                    }
+                }
+            }
+            Some("function_call") => answer.calls.push(Call {
+                call_id: item["call_id"].as_str().unwrap_or_default().to_string(),
+                name: item["name"].as_str().unwrap_or_default().to_string(),
+                arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
+            }),
+            _ => {}
+        }
+        answer.items.push(item.clone());
+    }
+    if answer.text.trim().is_empty()
+        && let Some(t) = response["output_text"].as_str()
+    {
+        answer.text = t.to_string();
+    }
+    answer.text = answer.text.trim().to_string();
+    answer
+}
+
+/// One thing a stream said.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    Text(String),
+    Searching,
+}
+
 /// A Responses API answer as it arrives: the events of a stream
 /// (server-sent events, one `data:` line each), or a whole JSON answer kept
 /// as it is.
@@ -405,48 +640,71 @@ pub struct EventStream {
     pub raw: Vec<u8>,
     /// The reply's text so far.
     pub text: String,
+    /// Output items as they completed.
+    pub items: Vec<Value>,
+    /// Functions the model asked for.
+    pub calls: Vec<Call>,
+    /// The whole response, from the stream's last event.
+    pub completed: Option<Value>,
     /// An error reported in the stream.
     pub error: Option<String>,
+    searching: bool,
     line: Vec<u8>,
 }
 
 impl EventStream {
     fn keep(&mut self, chunk: &[u8]) {
-        if self.raw.len() < (1 << 20) {
+        if self.raw.len() < (16 << 20) {
             self.raw.extend_from_slice(chunk);
         }
     }
 
-    /// Bytes as they arrive. Returns the pieces of text in the lines they
-    /// completed.
-    pub fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
+    /// Bytes as they arrive. Returns what the lines they completed said.
+    pub fn feed(&mut self, chunk: &[u8]) -> Vec<Event> {
         self.keep(chunk);
-        let mut pieces = Vec::new();
+        let mut events = Vec::new();
         for &byte in chunk {
             if byte == b'\n' {
                 let line = std::mem::take(&mut self.line);
-                if let Some(piece) = self.event(&line) {
-                    pieces.push(piece);
+                if let Some(event) = self.event(&line) {
+                    events.push(event);
                 }
             } else {
                 self.line.push(byte);
             }
         }
-        pieces
+        events
     }
 
-    fn event(&mut self, line: &[u8]) -> Option<String> {
+    fn event(&mut self, line: &[u8]) -> Option<Event> {
         let line = String::from_utf8_lossy(line);
         let data = line
             .trim_end_matches('\r')
             .strip_prefix("data:")?
             .trim_start();
         let event: Value = serde_json::from_str(data).ok()?;
-        match event["type"].as_str()? {
+        let kind = event["type"].as_str()?;
+        match kind {
             "response.output_text.delta" | "response.refusal.delta" => {
                 let piece = event["delta"].as_str()?.to_string();
                 self.text.push_str(&piece);
-                Some(piece)
+                Some(Event::Text(piece))
+            }
+            "response.output_item.done" => {
+                let item = event["item"].clone();
+                if item["type"] == "function_call" {
+                    self.calls.push(Call {
+                        call_id: item["call_id"].as_str().unwrap_or_default().to_string(),
+                        name: item["name"].as_str().unwrap_or_default().to_string(),
+                        arguments: item["arguments"].as_str().unwrap_or("{}").to_string(),
+                    });
+                }
+                self.items.push(item);
+                None
+            }
+            "response.completed" | "response.incomplete" => {
+                self.completed = Some(event["response"].clone());
+                None
             }
             "response.failed" => {
                 self.error = Some(
@@ -466,6 +724,10 @@ impl EventStream {
                         .to_string(),
                 );
                 None
+            }
+            k if k.starts_with("response.web_search_call.") && !self.searching => {
+                self.searching = true;
+                Some(Event::Searching)
             }
             _ => None,
         }
@@ -523,7 +785,14 @@ event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{
             for chunk in stream.as_bytes().chunks(size) {
                 pieces.extend(events.feed(chunk));
             }
-            assert_eq!(pieces, ["Hey! ", "עלית רמה 🎉"], "{size}");
+            assert_eq!(
+                pieces,
+                [
+                    Event::Text("Hey! ".into()),
+                    Event::Text("עלית רמה 🎉".into())
+                ],
+                "{size}"
+            );
             assert_eq!(events.text, "Hey! עלית רמה 🎉");
             assert!(events.error.is_none());
         }

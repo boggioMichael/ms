@@ -21,11 +21,13 @@ mod selftest;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
-use ms::ai::{self, AiError, Brain, Done, Job, OpenAi};
+use ms::ai::teaching::{self, Latest, News};
+use ms::ai::{self, AiError, Brain, Done, Eyes, Job, OpenAi, Toolbox};
 use ms::app::dog::Dog;
 use ms::app::panel;
 use ms::app::screen::{self, LogLine};
@@ -39,6 +41,8 @@ use ms::phone::{self, Hub, Inbound, VoiceOn, qr, tls, tunnel};
 use ms::platform::overlay::{self, Overlay};
 use ms::platform::sound::Player;
 use ms::platform::{self, voice::Voice};
+use ms::sight::Sight;
+use ms::sight::things::Fired;
 use ms::util::timing::FPSCounter;
 use ms::vision::snapshot::PerceptionPipeline;
 use serde_json::json;
@@ -69,6 +73,7 @@ OPTIONS
   --replies WHERE       where replies are spoken: pc, phone, both, off (default pc)
   --wake-word           answer only sentences that say \"syrup\" (for streams)
   --no-ai               no OpenAI, even with a key
+  --no-web              don't let it search the web for MapleStory facts
   --forget-key          delete the saved OpenAI key and ask again
   --model NAME          the OpenAI model (default: the fastest the key can use)
   --voice NAME          the OpenAI voice: cedar, marin, ash, coral, sage… (default cedar)
@@ -99,6 +104,7 @@ struct Options {
     replies: VoiceOn,
     wake_word: bool,
     ai: bool,
+    web: bool,
     forget_key: bool,
     model: Option<String>,
     voice_name: String,
@@ -126,6 +132,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         replies: VoiceOn::Pc,
         wake_word: false,
         ai: true,
+        web: true,
         forget_key: false,
         model: None,
         voice_name: "cedar".into(),
@@ -171,6 +178,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--wake-word" => o.wake_word = true,
             "--no-ai" => o.ai = false,
+            "--no-web" => o.web = false,
             "--forget-key" => o.forget_key = true,
             "--model" => o.model = Some(value("--model")?),
             "--voice" => o.voice_name = value("--voice")?,
@@ -292,6 +300,8 @@ struct Tick {
     at: f64,
     obs: Observation,
     frame: Option<VisionFrameResult>,
+    /// Alerts of things the player taught, that fired on this frame.
+    fired: Vec<Fired>,
 }
 
 /// The newest tick; an unread one is replaced (the main loop is never
@@ -403,6 +413,8 @@ fn watch(
     running: Arc<AtomicBool>,
     start: Instant,
     fps: f64,
+    sight: Option<Arc<Mutex<Sight>>>,
+    latest: Arc<Latest>,
 ) {
     let mut pipeline = PerceptionPipeline::new();
     let mut counter = FPSCounter::new(30);
@@ -417,8 +429,19 @@ fn watch(
                 frame_id += 1;
                 let vision_start = Instant::now();
                 let world = pipeline.detect_frame(&image, frame_id);
+                let image = Arc::new(image);
+                latest.put(Arc::clone(&image));
+                let mut obs = Observation::from_world(&title, &world);
+                // What MapleSyrup learned about this screen replaces the
+                // old HUD reader's guesses.
+                let mut fired = Vec::new();
+                if let Some(sight) = &sight {
+                    let mut sight = sight.lock().unwrap_or_else(|e| e.into_inner());
+                    let seen = sight.observe(&image, Instant::now());
+                    sight.apply(&mut obs, &seen);
+                    fired = seen.fired;
+                }
                 let vision = vision_start.elapsed();
-                let obs = Observation::from_world(&title, &world);
                 let now = Instant::now();
                 let interval = now.duration_since(previous);
                 previous = now;
@@ -427,7 +450,7 @@ fn watch(
                     frame_id,
                     elapsed_ms: start.elapsed().as_millis() as u64,
                     source: title,
-                    image: Arc::new(image),
+                    image,
                     world: Arc::new(world),
                     timings: FrameTimings {
                         capture,
@@ -440,29 +463,72 @@ fn watch(
                     at: start.elapsed().as_secs_f64(),
                     obs,
                     frame: Some(frame),
+                    fired,
                 });
                 if let Some(rest) = period.checked_sub(began.elapsed()) {
                     std::thread::sleep(rest);
                 }
             }
             Captured::NotFound => {
+                latest.clear();
                 slot.put(Tick {
                     at: start.elapsed().as_secs_f64(),
                     obs: Observation::unseen(GameView::NotFound),
                     frame: None,
+                    fired: Vec::new(),
                 });
                 std::thread::sleep(Duration::from_millis(500));
             }
             Captured::Unavailable(why) => {
+                latest.clear();
                 slot.put(Tick {
                     at: start.elapsed().as_secs_f64(),
                     obs: Observation::unseen(GameView::Unavailable(why)),
                     frame: None,
+                    fired: Vec::new(),
                 });
                 std::thread::sleep(Duration::from_millis(500));
             }
         }
     }
+}
+
+/// What the player taught, for the phone: each thing and what it shows
+/// now (its picture handed to the phone link when new), and what is known
+/// about the HUD.
+fn learned_status(sight: Option<&Arc<Mutex<Sight>>>, hub: &Hub) -> serde_json::Value {
+    let Some(sight) = sight else {
+        return serde_json::Value::Null;
+    };
+    let sight = sight.lock().unwrap_or_else(|e| e.into_inner());
+    let things: Vec<serde_json::Value> = sight
+        .things
+        .list
+        .iter()
+        .map(|t| {
+            let tag = t.pictures.first().cloned().unwrap_or_default();
+            if !tag.is_empty()
+                && hub.thumb_tag(&t.id).as_deref() != Some(tag.as_str())
+                && let Some(png) = sight.things.thumbnail(&t.id)
+            {
+                hub.set_thumb(&t.id, &tag, png);
+            }
+            json!({
+                "id": t.id,
+                "name": t.name,
+                "kind": t.kind.label(),
+                "now": t.live.reading.as_ref().map(|r| r.describe()),
+                "alert": t.alert.as_ref().map(|a| a.say.clone()),
+                "picture": !tag.is_empty(),
+            })
+        })
+        .collect();
+    json!({
+        "things": things,
+        "hud": sight.layout.is_some(),
+        "level": sight.facts.level,
+        "level_from": sight.facts.level_from,
+    })
 }
 
 /// "iPhone", "Android phone", "iPad"… from a browser's user agent.
@@ -703,8 +769,12 @@ fn run(options: Options) -> Result<(), String> {
     let session_dir = session::new_dir(&session::sessions_base(&settings_dir));
     let session = Session::open(session_dir.clone());
 
-    // The brain: OpenAI when there is a key that works.
+    // The brain: OpenAI when there is a key that works. With it come the
+    // eyes: a vision model that teaches MapleSyrup the player's screen.
     let mut ai_note = String::from("no OpenAI key: simple answers, Windows voice");
+    let latest = Arc::new(Latest::default());
+    let (news_tx, news_rx) = mpsc::channel::<News>();
+    let mut sight: Option<Arc<Mutex<Sight>>> = None;
     let worker = match openai_key(&options, &settings_dir) {
         Some(key) => {
             println!("Connecting to OpenAI…");
@@ -731,7 +801,34 @@ fn run(options: Options) -> Result<(), String> {
                     if let Ok(about) = std::fs::read_to_string(settings_dir.join("about-me.txt")) {
                         brain.about_player = about;
                     }
-                    Some(ai::spawn(client, brain))
+                    let learned = Arc::new(Mutex::new(Sight::load(&settings_dir.join("learned"))));
+                    let eye_models: Vec<String> = match &options.model {
+                        Some(m) => vec![m.clone()],
+                        None => ai::openai::VISION_MODELS
+                            .iter()
+                            .map(|m| m.to_string())
+                            .collect(),
+                    };
+                    let eyes = Arc::new(OpenAi::with_models(
+                        &key,
+                        &options.openai_base,
+                        &options.voice_name,
+                        eye_models,
+                    ));
+                    teaching::spawn(
+                        Arc::clone(&eyes),
+                        Arc::clone(&learned),
+                        Arc::clone(&latest),
+                        news_tx.clone(),
+                    );
+                    let toolbox = Toolbox {
+                        sight: Arc::clone(&learned),
+                        eyes,
+                        settings: settings_dir.clone(),
+                        web: options.web,
+                    };
+                    sight = Some(learned);
+                    Some(ai::spawn_with(client, brain, Some(toolbox)))
                 }
             }
         }
@@ -824,9 +921,10 @@ fn run(options: Options) -> Result<(), String> {
     let running = Arc::new(AtomicBool::new(true));
     let vision = {
         let (slot, running, fps) = (Arc::clone(&slot), Arc::clone(&running), options.fps);
+        let (sight, latest) = (sight.clone(), Arc::clone(&latest));
         std::thread::Builder::new()
             .name("vision".into())
-            .spawn(move || watch(source, slot, running, start, fps))
+            .spawn(move || watch(source, slot, running, start, fps, sight, latest))
             .map_err(|e| e.to_string())?
     };
 
@@ -873,6 +971,7 @@ fn run(options: Options) -> Result<(), String> {
     let mut panel_failed = false;
     let mut dog = Dog::load();
     let mut ai_error_shown = String::new();
+    let mut model_logged = false;
 
     let mut preview: Option<Preview> = None;
     let mut preview_failed = false;
@@ -919,6 +1018,11 @@ fn run(options: Options) -> Result<(), String> {
             }
             let actions = companion.observe(tick.at, tick.obs);
             out.apply(actions, &mut companion, latest_image.clone());
+            // The things the player taught: their alerts.
+            for fired in tick.fired {
+                out.show(Kind::Alert, &fired.say);
+                out.speak(&fired.say, &mut companion);
+            }
         } else if let Some(p) = preview.as_mut() {
             p.pump();
         }
@@ -957,13 +1061,31 @@ fn run(options: Options) -> Result<(), String> {
                                 && let Some(worker) = &out.mouth.ai
                             {
                                 {
+                                    let mut snapshot = ai::brain::snapshot(
+                                        companion.last(),
+                                        &companion.progress(),
+                                    );
+                                    let mut status = None;
+                                    if let Some(sight) = &sight {
+                                        let sight = sight.lock().unwrap_or_else(|e| e.into_inner());
+                                        for line in sight.describe() {
+                                            snapshot.push('\n');
+                                            snapshot.push_str(&line);
+                                        }
+                                        status = sight.layout.as_ref().and_then(|l| l.status);
+                                    }
+                                    // The screen goes with the sentence while the game is in view.
+                                    let eyes = latest_image
+                                        .clone()
+                                        .filter(|_| {
+                                            companion.last().is_some_and(|o| o.game.is_seen())
+                                        })
+                                        .map(|frame| Eyes { frame, status });
                                     worker.send(Job::Converse {
                                         heard: text,
-                                        snapshot: ai::brain::snapshot(
-                                            companion.last(),
-                                            &companion.progress(),
-                                        ),
+                                        snapshot,
                                         speak: true,
+                                        eyes,
                                     });
                                 }
                             }
@@ -1005,6 +1127,18 @@ fn run(options: Options) -> Result<(), String> {
                             out.mouth.hush();
                         }
                     }
+                    Inbound::Forget(id) => {
+                        if let Some(sight) = &sight {
+                            let forgotten = sight
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .things
+                                .forget(&id);
+                            if let Some(name) = forgotten {
+                                out.show(Kind::Info, &format!("forgot \"{name}\""));
+                            }
+                        }
+                    }
                     Inbound::Listen(always) => {
                         companion.set_always_listen(always);
                         out.show(
@@ -1032,7 +1166,18 @@ fn run(options: Options) -> Result<(), String> {
                     out.show(Kind::Reply, &text);
                     out.session
                         .line("timing", &format!("reply in {:.1} s", took.as_secs_f64()));
+                    if !model_logged
+                        && let Some(model) = out
+                            .mouth
+                            .ai
+                            .as_ref()
+                            .and_then(|w| w.model.lock().ok().and_then(|m| m.clone()))
+                    {
+                        model_logged = true;
+                        out.session.line("info", &format!("OpenAI model: {model}"));
+                    }
                 }
+                Done::Noted { line } => out.show(Kind::Info, &line),
                 Done::Audio {
                     samples,
                     after,
@@ -1080,6 +1225,28 @@ fn run(options: Options) -> Result<(), String> {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // What the teacher found out about the screen.
+        while let Ok(news) = news_rx.try_recv() {
+            match news {
+                News::Line(line) => {
+                    out.session.line("sight", &line);
+                    out.push(Kind::Info, format!("sight: {line}"));
+                }
+                News::Found { line, picture } => {
+                    out.session.line("sight", &format!("found the HUD: {line}"));
+                    let _ = picture.save(session_dir.join("hud-found.png"));
+                    out.show(
+                        Kind::Info,
+                        "I found your HUD: I measure HP, MP and EXP myself now, and check them every couple of minutes.",
+                    );
+                }
+                News::Trouble(why) => {
+                    out.session.line("sight", &why);
+                    out.push(Kind::Info, format!("sight: {why}"));
                 }
             }
         }
@@ -1165,6 +1332,7 @@ fn run(options: Options) -> Result<(), String> {
                     "speaking": out.mouth.speaking(),
                     "thinking": out.mouth.ai.as_ref().is_some_and(|w| w.busy()),
                     "ai": out.mouth.ai.as_ref().map(|w| w.model.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "OpenAI".into())),
+                    "learned": learned_status(sight.as_ref(), hub),
                 }));
             }
             if ansi {

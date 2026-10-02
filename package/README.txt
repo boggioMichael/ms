@@ -32,6 +32,25 @@ How it talks
   On the phone you can choose where replies are spoken (PC, phone, both, off)
   and switch to "only after 'syrup'" for streaming.
 
+It sees your screen, and learns it
+  With each thing you say, the model gets a picture of the game, so you can
+  ask about anything on screen. When MapleStory first shows up, MapleSyrup
+  asks a vision model where your level, HP, MP and EXP bars and minimap are
+  (any resolution or UI layout), then measures the bars itself on every
+  frame and checks them against the game's numbers every couple of minutes.
+  You can see what it found in hud-found.png in the session folder.
+
+  Teach it by talking:
+    "see that? that's an Orange Mushroom - tell me when one shows up"
+    "that's the boss's HP bar, warn me when it's under 20%"
+    "I'm level 61" / "that's not my HP"      (corrections)
+    "remember that my boss menu key is F10"  (kept for good)
+  Each thing it learns keeps a picture (and gets more as it sees it in other
+  poses). The phone lists what it has learned, with a Forget button.
+  It all lives in %APPDATA%\MapleSyrup\learned (about-me.txt next to it).
+  It can also look things up on the web for MapleStory questions
+  (start it with --no-web to stop that).
+
 If the phone cannot connect
   Double-click "MapleSyrup (phone over internet).cmd". It links the phone
   through a Cloudflare tunnel: no certificate warning, no firewall question,

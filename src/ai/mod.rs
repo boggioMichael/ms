@@ -19,16 +19,26 @@
 //! to its own answers and the Windows voice.
 
 pub mod brain;
+pub mod images;
 pub mod openai;
+pub mod teaching;
+pub mod tools;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use image::RgbaImage;
+use serde_json::{Value, json};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 pub use brain::Brain;
+pub use images::NBox;
 pub use openai::{AiError, OpenAi};
+pub use tools::{Effect, Toolbox};
+
+use openai::{Ask, Piece};
 
 /// The API key's file in MapleSyrup's settings folder.
 pub fn key_file(settings: &Path) -> PathBuf {
@@ -88,6 +98,35 @@ pub fn save_key(settings: &Path, key: &str) -> std::io::Result<()> {
     std::fs::write(key_file(settings), clean_key(key))
 }
 
+/// What the model sees with a sentence: the frame the player was looking
+/// at, and where its HUD is (when known).
+#[derive(Clone)]
+pub struct Eyes {
+    pub frame: Arc<RgbaImage>,
+    pub status: Option<NBox>,
+}
+
+impl Eyes {
+    /// The pictures for the model: the whole frame with rulers (to point at
+    /// things), and the HUD at full size (to read small numbers).
+    pub fn pictures(&self) -> Vec<Value> {
+        let frame = images::with_rulers(&images::fit(&self.frame, 1280, 800));
+        let status = self
+            .status
+            .map(|s| s.grown(0.02, 0.3))
+            .unwrap_or(NBox::new(0.0, 0.78, 1.0, 1.0));
+        let mut hud = images::crop(&self.frame, &status);
+        if hud.height() < 90 {
+            hud = images::enlarged(&hud, 2);
+        }
+        let hud = images::fit(&hud, 1600, 400);
+        vec![
+            images::input_image(images::jpeg_url(&frame, 80), "high"),
+            images::input_image(images::png_url(&hud), "high"),
+        ]
+    }
+}
+
 /// Something for the worker to do.
 pub enum Job {
     /// Answer what the player said, given what is on screen.
@@ -95,6 +134,8 @@ pub enum Job {
         heard: String,
         snapshot: String,
         speak: bool,
+        /// The screen, when the game is in view.
+        eyes: Option<Eyes>,
     },
     /// Say this line in the natural voice (a warning, a quick reply).
     Speak { text: String },
@@ -123,6 +164,9 @@ pub enum Done {
         heard: Option<String>,
         error: AiError,
     },
+    /// A tool changed something: learned, forgot or corrected (a line for
+    /// the log and the phone).
+    Noted { line: String },
 }
 
 pub struct Worker {
@@ -143,8 +187,13 @@ impl Worker {
     }
 }
 
-/// Start the worker thread.
-pub fn spawn(openai: OpenAi, mut brain: Brain) -> Worker {
+/// Start the worker thread (no tools).
+pub fn spawn(openai: OpenAi, brain: Brain) -> Worker {
+    spawn_with(openai, brain, None)
+}
+
+/// Start the worker thread, with the tools the model may use.
+pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) -> Worker {
     let (jobs, rx) = channel::<Job>();
     let (tx, done) = channel::<Done>();
     let busy = Arc::new(AtomicBool::new(false));
@@ -163,16 +212,21 @@ pub fn spawn(openai: OpenAi, mut brain: Brain) -> Worker {
                 let mut heard = Vec::new();
                 let mut snapshot = String::new();
                 let mut speak = false;
+                let mut eyes = None;
                 for job in queue {
                     match job {
                         Job::Converse {
                             heard: h,
                             snapshot: s,
                             speak: sp,
+                            eyes: e,
                         } => {
                             heard.push(h);
                             snapshot = s;
                             speak |= sp;
+                            if e.is_some() {
+                                eyes = e;
+                            }
                         }
                         Job::Speak { text } => {
                             let asked = Instant::now();
@@ -196,7 +250,15 @@ pub fn spawn(openai: OpenAi, mut brain: Brain) -> Worker {
                     let heard = heard.join(" ");
                     brain.heard(&heard);
                     converse(
-                        &openai, &mut brain, heard, &snapshot, speak, &tx, &busy_flag,
+                        &openai,
+                        toolbox.as_ref(),
+                        &mut brain,
+                        heard,
+                        &snapshot,
+                        eyes.as_ref(),
+                        speak,
+                        &tx,
+                        &busy_flag,
                     );
                     if let Ok(mut slot) = model_slot.lock() {
                         *slot = openai.model();
@@ -213,21 +275,78 @@ pub fn spawn(openai: OpenAi, mut brain: Brain) -> Worker {
     }
 }
 
+/// How the model is told it can see the game.
+const EYES_GUIDE: &str = "\n\nYou can see the game: the first picture is the whole game window as it is now, with \
+rulers on its edges (0 to 1000 across and down) for pointing at things; the second is the HUD at full size, for \
+reading small numbers. Use what you see, like a friend looking at the same screen. If the numbers listed above \
+disagree with the pictures, trust the pictures (and say so if it matters).";
+
+/// How the model is told about its tools.
+const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
+- When the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with a tight box around it in the first picture's 0-1000 coordinates. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language).
+- When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
+- When the player tells you something about themselves or their game worth keeping (their class, a key binding, a goal), or asks you to remember something, call remember_fact.
+- forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
+- Search the web for MapleStory facts you aren't sure of (how to get somewhere, boss or level requirements, key bindings, quests, events), preferring maplestory.nexon.net and maplestorywiki.net; then answer in a sentence or two.
+After using a tool, confirm briefly in your own words.";
+
+/// What to say while the web is searched, in the player's language.
+fn searching_line(heard: &str) -> &'static str {
+    if heard
+        .chars()
+        .any(|c| ('\u{0590}'..='\u{05FF}').contains(&c))
+    {
+        "רגע, אני בודק."
+    } else {
+        "Let me check that real quick."
+    }
+}
+
+/// The conversation as input items, the screen with the player's last
+/// sentence.
+fn input_of(turns: &[openai::Turn], eyes: Option<&Eyes>) -> Vec<Value> {
+    let last_user = turns.iter().rposition(|t| t.role == "user");
+    turns
+        .iter()
+        .enumerate()
+        .map(|(i, t)| match (eyes, Some(i) == last_user) {
+            (Some(eyes), true) => {
+                let mut content = vec![json!({"type": "input_text", "text": t.text})];
+                content.extend(eyes.pictures());
+                json!({"role": "user", "content": content})
+            }
+            _ => json!({"role": t.role, "content": t.text}),
+        })
+        .collect()
+}
+
 /// Answer the player. The reply is streamed and cut into sentences; each
 /// sentence is turned into speech (on a second thread) as soon as it is
 /// complete, so the first is heard while the rest is still being written.
+/// When the model calls tools, they are run and their results handed back
+/// for it to go on, up to a few rounds.
+#[allow(clippy::too_many_arguments)]
 fn converse(
     openai: &OpenAi,
+    toolbox: Option<&Toolbox>,
     brain: &mut Brain,
     heard: String,
     snapshot: &str,
+    eyes: Option<&Eyes>,
     speak: bool,
     tx: &Sender<Done>,
     busy: &AtomicBool,
 ) {
     let started = Instant::now();
-    let instructions = brain.instructions(snapshot);
-    let turns = brain.turns();
+    let mut instructions = brain.instructions(snapshot);
+    if eyes.is_some() {
+        instructions.push_str(EYES_GUIDE);
+    }
+    if toolbox.is_some() {
+        instructions.push_str(TOOLS_GUIDE);
+    }
+    let mut input = input_of(&brain.turns(), eyes);
+    let tools = toolbox.map(|t| t.definitions()).unwrap_or_default();
     std::thread::scope(|scope| {
         let (lines, to_say) = channel::<String>();
         if speak {
@@ -254,33 +373,101 @@ fn converse(
             });
         }
         let mut sentences = brain::Sentences::default();
-        let result = openai.respond_stream(&instructions, &turns, &mut |piece| {
-            if speak {
-                for sentence in sentences.push(piece) {
-                    let _ = lines.send(brain::for_speech(&sentence));
+        let mut said = String::new();
+        let mut failed = None;
+        for round in 0..4 {
+            let ask = Ask {
+                instructions: instructions.clone(),
+                input: input.clone(),
+                tools: if round < 3 { tools.clone() } else { Vec::new() },
+                max_output_tokens: 500,
+                timeout: Duration::from_secs(60),
+                ..Default::default()
+            };
+            let answer = openai.ask(
+                &ask,
+                Some(&mut |piece| match piece {
+                    Piece::Text(t) => {
+                        said.push_str(t);
+                        if speak {
+                            for sentence in sentences.push(t) {
+                                let _ = lines.send(brain::for_speech(&sentence));
+                            }
+                        }
+                    }
+                    Piece::Searching => {
+                        if speak && said.trim().is_empty() {
+                            let _ = lines.send(searching_line(&heard).to_string());
+                        }
+                    }
+                }),
+            );
+            let answer = match answer {
+                Ok(answer) => answer,
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
+            };
+            if answer.calls.is_empty() {
+                break;
+            }
+            // What was said so far ends a sentence before the next round.
+            if !said.trim().is_empty() && !said.ends_with(' ') {
+                said.push(' ');
+                if speak {
+                    for sentence in sentences.push(" ") {
+                        let _ = lines.send(brain::for_speech(&sentence));
+                    }
                 }
             }
-        });
-        match result {
-            Ok(reply) if brain::is_silent(&reply) => {
+            let mut outputs = Vec::new();
+            for call in &answer.calls {
+                let (output, effect) = match toolbox {
+                    Some(toolbox) => toolbox.run(call, eyes.map(|e| e.frame.as_ref())),
+                    None => ("No tools here.".to_string(), None),
+                };
+                match effect {
+                    Some(Effect::Fact(fact)) => {
+                        let about = &mut brain.about_player;
+                        if !about.is_empty() && !about.ends_with('\n') {
+                            about.push('\n');
+                        }
+                        about.push_str(&format!("- {fact}"));
+                        let _ = tx.send(Done::Noted {
+                            line: format!("remembered: {fact}"),
+                        });
+                    }
+                    Some(Effect::Note(line)) => {
+                        let _ = tx.send(Done::Noted { line });
+                    }
+                    None => {}
+                }
+                outputs.push(json!({"type": "function_call_output", "call_id": call.call_id, "output": output}));
+            }
+            input.extend(openai::follow_up(&answer));
+            input.extend(outputs);
+        }
+        match failed {
+            Some(error) => {
+                let _ = tx.send(Done::Failed {
+                    heard: Some(heard),
+                    error,
+                });
+            }
+            None if brain::is_silent(&said) => {
                 let _ = tx.send(Done::Silent { heard });
             }
-            Ok(reply) => {
+            None => {
                 if speak && let Some(rest) = sentences.finish() {
                     let _ = lines.send(brain::for_speech(&rest));
                 }
-                let text = brain::for_speech(&reply);
+                let text = brain::for_speech(&said);
                 brain.said(&text);
                 let _ = tx.send(Done::Reply {
                     heard,
                     text,
                     took: started.elapsed(),
-                });
-            }
-            Err(error) => {
-                let _ = tx.send(Done::Failed {
-                    heard: Some(heard),
-                    error,
                 });
             }
         }

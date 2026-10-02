@@ -86,6 +86,17 @@
   select { background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px; font-size: 14px; }
   input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--syrup); flex: none; }
   footer { color: var(--faint); font-size: 12px; text-align: center; margin-top: 16px; line-height: 1.6; }
+  /* What it learned */
+  #learned { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  #learned li { display: flex; align-items: center; gap: 10px; background: var(--card2); border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; }
+  #learned img, #learned .pic { width: 40px; height: 40px; object-fit: contain; border-radius: 8px; background: #120e0a; flex: none; image-rendering: pixelated; }
+  #learned .pic { display: grid; place-items: center; color: var(--faint); font-size: 18px; }
+  #learned .what { flex: 1; min-width: 0; }
+  #learned .what b { display: block; }
+  #learned .what span { color: var(--dim); font-size: 13px; }
+  #learned button { border: 1px solid var(--line); background: none; color: var(--faint); border-radius: 10px; padding: 6px 10px; font-size: 13px; }
+  #learnedEmpty { color: var(--dim); font-size: 14px; }
+  #hudState { color: var(--dim); font-size: 13px; margin-bottom: 10px; }
   #banner { display: none; background: #4a1f1f; border: 1px solid #7a3030; color: #ffd6d6; border-radius: 14px; padding: 12px; margin-bottom: 12px; font-size: 14px; }
 </style>
 </head>
@@ -143,6 +154,13 @@
 <section class="card">
   <h2>Conversation</h2>
   <ul id="log"></ul>
+</section>
+
+<section class="card" id="learnedCard">
+  <h2>What I've learned</h2>
+  <div id="hudState">I'm still finding your HUD.</div>
+  <ul id="learned"></ul>
+  <div id="learnedEmpty">Teach me by talking: “see that? that's an Orange Mushroom”, “that's the boss's HP, tell me when it's under 20%”, “I'm level 61”.</div>
 </section>
 
 <section class="card">
@@ -267,8 +285,56 @@
       $("bubbleText").textContent = lastReply || "…";
     }
     updateHold();
+    renderLearned(status.learned);
   }
   let thinkingShown = false, lastReply = "", quietUntil = 0;
+
+  // ---- what it learned ------------------------------------------------------
+  let learnedKey = "";
+  function renderLearned(learned) {
+    const card = $("learnedCard");
+    if (!learned) { card.style.display = "none"; return; }
+    card.style.display = "";
+    const level = learned.level ? " Level " + learned.level + (learned.level_from === "player" ? " (you told me)" : "") + "." : "";
+    $("hudState").textContent = (learned.hud ? "I know where your HUD is and measure it myself." : "I'm still finding your HUD.") + level;
+    const things = learned.things || [];
+    $("learnedEmpty").style.display = things.length ? "none" : "";
+    const key = JSON.stringify(things);
+    if (key === learnedKey) return;
+    learnedKey = key;
+    const list = $("learned");
+    list.textContent = "";
+    for (const t of things) {
+      const li = document.createElement("li");
+      let pic;
+      if (t.picture) {
+        pic = document.createElement("img");
+        pic.src = "/api/thumb?k=" + encodeURIComponent(KEY) + "&id=" + encodeURIComponent(t.id);
+        pic.alt = "";
+      } else {
+        pic = document.createElement("div");
+        pic.className = "pic";
+        pic.textContent = t.kind === "gauge" ? "▭" : "Aa";
+      }
+      const what = document.createElement("div");
+      what.className = "what";
+      const name = document.createElement("b");
+      name.textContent = t.name;
+      const now = document.createElement("span");
+      now.textContent = (t.now || t.kind) + (t.alert ? " · says “" + t.alert + "”" : "");
+      what.append(name, now);
+      const forget = document.createElement("button");
+      forget.textContent = "Forget";
+      forget.addEventListener("click", () => {
+        if (forget.dataset.sure) { postJson("/api/forget", { id: t.id }).catch(() => {}); forget.disabled = true; return; }
+        forget.dataset.sure = "1";
+        forget.textContent = "Sure?";
+        setTimeout(() => { delete forget.dataset.sure; forget.textContent = "Forget"; }, 3000);
+      });
+      li.append(pic, what, forget);
+      list.append(li);
+    }
+  }
 
   // ---- the conversation ------------------------------------------------------
   const log = $("log");

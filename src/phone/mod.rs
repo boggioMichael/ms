@@ -98,6 +98,8 @@ pub enum Inbound {
     Voice(VoiceOn),
     /// Answer everything said (true), or only after "syrup" (false).
     Listen(bool),
+    /// Forget a thing it was taught (by its id).
+    Forget(String),
 }
 
 /// A line on the phone's screen.
@@ -135,6 +137,9 @@ struct State {
     /// their numbers.
     clips: VecDeque<(u64, Arc<Vec<u8>>)>,
     last_clip: u64,
+    /// Pictures of the things it was taught: by id, with a tag that changes
+    /// with the picture.
+    thumbs: std::collections::HashMap<String, (String, Arc<Vec<u8>>)>,
 }
 
 /// How many spoken lines the phone can still fetch.
@@ -166,6 +171,7 @@ impl Hub {
                 requests: 0,
                 clips: VecDeque::new(),
                 last_clip: 0,
+                thumbs: std::collections::HashMap::new(),
             }),
         })
     }
@@ -221,6 +227,17 @@ impl Hub {
             state.clips.pop_front();
         }
         seq
+    }
+
+    /// The picture of a thing it was taught, for the phone's list.
+    pub fn set_thumb(&self, id: &str, tag: &str, png: Vec<u8>) {
+        self.lock()
+            .thumbs
+            .insert(id.to_string(), (tag.to_string(), Arc::new(png)));
+    }
+
+    pub fn thumb_tag(&self, id: &str) -> Option<String> {
+        self.lock().thumbs.get(id).map(|(tag, _)| tag.clone())
     }
 
     pub fn voice_on(&self) -> VoiceOn {
@@ -335,6 +352,22 @@ impl Hub {
                     None => Response::json(404, &json!({"error": "no such clip"})),
                 }
             }
+            ("GET", "/api/thumb") => {
+                let id = request.param("id").unwrap_or_default();
+                let thumb = self.lock().thumbs.get(id).map(|(_, png)| Arc::clone(png));
+                match thumb {
+                    Some(png) => Response::new(200, "image/png", png.as_slice())
+                        .with_header("Cache-Control", "max-age=60"),
+                    None => Response::json(404, &json!({"error": "no such picture"})),
+                }
+            }
+            ("POST", "/api/forget") => match body().get("id").and_then(Value::as_str) {
+                Some(id) if !id.is_empty() => {
+                    self.lock().inbox.push(Inbound::Forget(id.to_string()));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                _ => Response::json(400, &json!({"error": "which thing?"})),
+            },
             ("POST", "/api/listen") => match body().get("always").and_then(Value::as_bool) {
                 Some(always) => {
                     self.lock().inbox.push(Inbound::Listen(always));
@@ -711,6 +744,18 @@ mod tests {
         assert_eq!(&dog.body[1..4], b"PNG");
         hub.handle(&request("POST", "/api/listen?k=k1", r#"{"always":false}"#));
         assert_eq!(hub.take_inbox(), vec![Inbound::Listen(false)]);
+        // Taught things: their pictures, and forgetting one.
+        assert_eq!(
+            hub.handle(&request("GET", "/api/thumb?k=k1&id=rune", ""))
+                .status,
+            404
+        );
+        hub.set_thumb("rune", "rune-1.png", b"\x89PNG....".to_vec());
+        assert_eq!(hub.thumb_tag("rune").as_deref(), Some("rune-1.png"));
+        let thumb = hub.handle(&request("GET", "/api/thumb?k=k1&id=rune", ""));
+        assert_eq!((thumb.status, thumb.content_type), (200, "image/png"));
+        hub.handle(&request("POST", "/api/forget?k=k1", r#"{"id":"rune"}"#));
+        assert_eq!(hub.take_inbox(), vec![Inbound::Forget("rune".into())]);
     }
 
     #[test]

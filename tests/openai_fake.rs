@@ -190,6 +190,7 @@ fn the_worker_speaks_a_reply_a_sentence_at_a_time() {
         heard: "can you see my game".into(),
         snapshot: "HP is about 80%.".into(),
         speak: true,
+        eyes: None,
     });
     let mut reply = None;
     let mut spoken = Vec::new();
@@ -207,6 +208,7 @@ fn the_worker_speaks_a_reply_a_sentence_at_a_time() {
             }
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(Done::Silent { heard }) => panic!("silent: {heard}"),
+            Ok(Done::Noted { line }) => panic!("noted: {line}"),
             Err(e) => panic!("{e}: {reply:?} {spoken:?}"),
         }
     }

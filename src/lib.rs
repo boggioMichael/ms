@@ -12,6 +12,8 @@
 //! - **phone**: The phone link — the page that makes a phone the companion's microphone and second screen.
 //! - **platform**: The console, DPI awareness and the voice (Windows; quiet stand-ins elsewhere).
 //! - **app**: The standalone companion's screen and session files (`maplesyrup` binary).
+//! - **sight**: What MapleSyrup learned about the player's own screen (from a vision model and from
+//!   the player): where the HUD is, the character's facts, and things it was taught to recognise.
 
 pub mod ai;
 pub mod app;
@@ -26,5 +28,6 @@ pub mod logging;
 pub mod observe;
 pub mod phone;
 pub mod platform;
+pub mod sight;
 pub mod util;
 pub mod vision;
