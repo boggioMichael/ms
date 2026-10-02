@@ -111,8 +111,6 @@ jobs:
           (cd "$RUNNER_TEMP" && 7z a -tzip MapleSyrup.zip MapleSyrup > /dev/null)
           ls -l "$RUNNER_TEMP/MapleSyrup.zip" | tee logs/package.log
           sha256sum "$RUNNER_TEMP/MapleSyrup.zip" | tee -a logs/package.log
-          # What the program needs besides Windows itself (no VCRUNTIME).
-          (dumpbin //dependents target/release/maplesyrup.exe 2>/dev/null || true) | grep -i '\.dll' | tee -a logs/package.log
       - name: Installer
         run: |
           set -o pipefail
