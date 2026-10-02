@@ -128,7 +128,8 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
             ),
         ];
         if self.web {
-            tools.push(json!({"type": "web_search"}));
+            // Low context: quicker, and a sentence or two is all it says.
+            tools.push(json!({"type": "web_search", "search_context_size": "low"}));
         }
         tools
     }

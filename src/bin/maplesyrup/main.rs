@@ -406,6 +406,14 @@ impl Source {
     }
 }
 
+/// What the vision thread shares with the rest: the learned sight, the
+/// newest frame (for the teacher), and whether the game is in front.
+struct Shared {
+    sight: Option<Arc<Mutex<Sight>>>,
+    latest: Arc<Latest>,
+    in_front: Arc<AtomicBool>,
+}
+
 /// Capture and the vision engine, on a thread of their own.
 fn watch(
     mut source: Source,
@@ -413,9 +421,13 @@ fn watch(
     running: Arc<AtomicBool>,
     start: Instant,
     fps: f64,
-    sight: Option<Arc<Mutex<Sight>>>,
-    latest: Arc<Latest>,
+    shared: Shared,
 ) {
+    let Shared {
+        sight,
+        latest,
+        in_front,
+    } = shared;
     let mut pipeline = PerceptionPipeline::new();
     let mut counter = FPSCounter::new(30);
     let mut frame_id: u64 = 0;
@@ -430,14 +442,26 @@ fn watch(
                 let vision_start = Instant::now();
                 let world = pipeline.detect_frame(&image, frame_id);
                 let image = Arc::new(image);
-                latest.put(Arc::clone(&image));
                 let mut obs = Observation::from_world(&title, &world);
                 // What MapleSyrup learned about this screen replaces the
-                // old HUD reader's guesses.
+                // old HUD reader's guesses. Only while the game is the window
+                // in front: the capture is of the screen where the game is,
+                // so another window over it would be measured (and sent to
+                // OpenAI) instead.
                 let mut fired = Vec::new();
+                let in_view = in_front.load(Ordering::Relaxed);
+                if in_view {
+                    latest.put(Arc::clone(&image));
+                } else {
+                    latest.clear();
+                }
                 if let Some(sight) = &sight {
                     let mut sight = sight.lock().unwrap_or_else(|e| e.into_inner());
-                    let seen = sight.observe(&image, Instant::now());
+                    let seen = if in_view {
+                        sight.observe(&image, Instant::now())
+                    } else {
+                        Default::default()
+                    };
                     sight.apply(&mut obs, &seen);
                     fired = seen.fired;
                 }
@@ -919,12 +943,19 @@ fn run(options: Options) -> Result<(), String> {
     let source = Source::open(&options)?;
     let slot = Arc::new(TickSlot::default());
     let running = Arc::new(AtomicBool::new(true));
+    // Whether the game is the window in front (a screenshot given on the
+    // command line always is).
+    let in_front = Arc::new(AtomicBool::new(options.input.is_some()));
     let vision = {
         let (slot, running, fps) = (Arc::clone(&slot), Arc::clone(&running), options.fps);
-        let (sight, latest) = (sight.clone(), Arc::clone(&latest));
+        let shared = Shared {
+            sight: sight.clone(),
+            latest: Arc::clone(&latest),
+            in_front: Arc::clone(&in_front),
+        };
         std::thread::Builder::new()
             .name("vision".into())
-            .spawn(move || watch(source, slot, running, start, fps, sight, latest))
+            .spawn(move || watch(source, slot, running, start, fps, shared))
             .map_err(|e| e.to_string())?
     };
 
@@ -1079,6 +1110,7 @@ fn run(options: Options) -> Result<(), String> {
                                         .clone()
                                         .filter(|_| {
                                             companion.last().is_some_and(|o| o.game.is_seen())
+                                                && in_front.load(Ordering::Relaxed)
                                         })
                                         .map(|frame| Eyes { frame, status });
                                     worker.send(Job::Converse {
@@ -1258,6 +1290,10 @@ fn run(options: Options) -> Result<(), String> {
                 _ => None,
             };
             out.mouth.game_pid = game_area.map(|a| a.pid).filter(|pid| *pid != 0);
+            in_front.store(
+                options.input.is_some() || game_area.is_some_and(|a| a.foreground),
+                Ordering::Relaxed,
+            );
         }
 
         // The panel and the dog, about twelve times a second.

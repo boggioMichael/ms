@@ -27,6 +27,7 @@ How you talk:
 - When you have pictures of their screen, look at them yourself: never ask the player to read out what is on screen (a quest name, a number, a dialogue); read it.
 - Don't guess MapleStory facts (where a place is, level requirements, quests, bosses, key bindings, events): a confident wrong answer sends them the wrong way. Look it up if you can; otherwise say plainly you're not sure.
 - If you got something wrong, own it in a few words and move on; don't keep apologising.
+- Trust your eyes: if the screen clearly shows something other than what the player says (a number, a name), tell them what you see instead of just agreeing.
 - You can't press keys or play for them; you watch and talk.
 - If the player is clearly talking to someone else (their stream chat, a friend, a call) and not to you, reply with exactly: [silent]";
 
@@ -246,9 +247,68 @@ fn sentence_end(text: &str, min: usize) -> Option<usize> {
     None
 }
 
-/// The reply as it should be spoken: no markdown, no emoji.
+/// Links out of a reply: a web search's citations ("([site.com](https://…))")
+/// go entirely, another link keeps its words, a bare address goes.
+pub fn without_links(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    // The `)` that closes the `(` at `open`, counting nested pairs.
+    let closing = |open: usize| {
+        let mut depth = 0;
+        for (j, c) in chars.iter().enumerate().skip(open) {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(j);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '['
+            && let Some(close) = chars[i..].iter().position(|&c| c == ']').map(|p| p + i)
+            && chars.get(close + 1) == Some(&'(')
+            && let Some(end) = closing(close + 1)
+        {
+            let label: String = chars[i + 1..close].iter().collect();
+            let is_source = label.contains('.') && !label.trim().contains(' ');
+            if !is_source {
+                out.push_str(&label);
+            }
+            i = end + 1;
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    let words: Vec<&str> = out
+        .split_whitespace()
+        .filter(|w| {
+            let w = w.trim_start_matches('(');
+            !(w.starts_with("http://") || w.starts_with("https://") || w.starts_with("www."))
+        })
+        .collect();
+    words
+        .join(" ")
+        .replace("()", "")
+        .replace(" .", ".")
+        .replace(" ,", ",")
+        .replace(" !", "!")
+        .replace(" ?", "?")
+        .trim()
+        .to_string()
+}
+
+/// The reply as it should be spoken (and shown): no links, no markdown, no
+/// emoji.
 pub fn for_speech(reply: &str) -> String {
-    reply
+    without_links(reply)
         .chars()
         .filter(|c| !matches!(c, '*' | '#' | '`' | '_' | '~' | '>'))
         .filter(|c| (*c as u32) < 0x1F000)
@@ -312,6 +372,32 @@ mod tests {
         }
         assert_eq!(brain.turns().len(), KEEP_TURNS * 2);
         assert!(brain.instructions("x").contains("[silent]"));
+    }
+
+    #[test]
+    fn citations_and_links_are_not_read_out() {
+        assert_eq!(
+            for_speech(
+                "You're in the Azwan ruins now.([maplestorywiki.net](https://maplestorywiki.net/w/AzwanQuests?utm_source=openai))"
+            ),
+            "You're in the Azwan ruins now."
+        );
+        assert_eq!(
+            for_speech(
+                "Talk to Gardin. ([maplestorywiki.net](https://maplestorywiki.net/w/(Azwan)_The_False_Elixir)) Then go right."
+            ),
+            "Talk to Gardin. Then go right."
+        );
+        assert_eq!(
+            for_speech(
+                "Check [the event page](https://maplestory.nexon.net/news) or https://x.com/a today."
+            ),
+            "Check the event page or today."
+        );
+        assert_eq!(
+            for_speech("Level 61 (nice) [silent]"),
+            "Level 61 (nice) [silent]"
+        );
     }
 
     #[test]

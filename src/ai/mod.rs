@@ -283,17 +283,18 @@ disagree with the pictures, trust the pictures (and say so if it matters).";
 
 /// How the model is told about its tools.
 const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
-- When the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with a tight box around it in the first picture's 0-1000 coordinates. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language).
+- Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with a tight box around it in the first picture's 0-1000 coordinates. Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language).
 - When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
 - When the player tells you something about themselves or their game worth keeping (their class, a key binding, a goal), or asks you to remember something, call remember_fact.
 - forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
 After using a tool, confirm briefly in your own words.";
 
 /// How the model is told it can search the web.
-const WEB_GUIDE: &str = "\n- Search the web before answering any MapleStory question you aren't sure of (how to get somewhere, \
-boss or level requirements, job advancements, key bindings, quests, events, training spots for their level): the \
-current global version (GMS) changes often. Prefer maplestory.nexon.net and maplestorywiki.net, and answer in a \
-sentence or two.";
+const WEB_GUIDE: &str = "\n- Search the web (once) before answering a MapleStory question you aren't sure of and can't see \
+on screen (how to get somewhere, boss or level requirements, job advancements, key bindings, quests, events, \
+training spots for their level): the current global version (GMS) changes often. Prefer maplestorywiki.net and \
+maplestory.nexon.net. Don't search for what is on screen or for small talk: searching takes the player's time. \
+Never put links, sources or citations in your answer: it is spoken aloud.";
 
 /// What to say while the web is searched, in the player's language.
 fn searching_line(heard: &str) -> &'static str {
