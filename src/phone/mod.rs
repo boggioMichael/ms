@@ -6,9 +6,14 @@
 //!   ─────────────────────                        ───────
 //!   microphone ── 16 kHz samples ─ POST /api/audio ──▶ Mic: level, speaking, WAV
 //!   speech recognition ─ sentence ─ POST /api/heard ──▶ inbox ─▶ companion
+//!          └── words so far ─ POST /api/hearing ───────▶ inbox ─▶ talked over?
 //!   buttons ───────────── command ─ POST /api/command ▶ inbox ─▶ companion
 //!   screen ◀──────── HP/MP/EXP, replies ─ GET /api/state ◀── status, messages
 //! ```
+//!
+//! `/api/state` can wait (`wait=` milliseconds) until there is something
+//! new — a line, a spoken clip, a reply cut short — so the phone hears of
+//! it at once instead of at its next look.
 //!
 //! The page is served over HTTPS because phone browsers give the microphone
 //! only to secure pages: on the local network with a certificate made on
@@ -29,7 +34,7 @@ use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -90,6 +95,13 @@ impl VoiceOn {
 pub enum Inbound {
     /// A sentence its speech recognition heard.
     Heard(String),
+    /// What it is hearing right now, not yet a whole sentence (the words
+    /// since the last sentence it sent): whether the player is talking over
+    /// MapleSyrup, or still talking.
+    Hearing(String),
+    /// The player talked over MapleSyrup's voice on the phone (heard by the
+    /// phone itself): stop talking.
+    Interrupt,
     /// A button: a command's word.
     Command(String),
     /// The page opened, from this browser.
@@ -139,6 +151,8 @@ struct State {
     /// their numbers.
     clips: VecDeque<(u64, Arc<Vec<u8>>)>,
     last_clip: u64,
+    /// How many times a reply was cut short: the phone stops its clips.
+    cut: u64,
     /// Pictures of the things it was taught: by id, with a tag that changes
     /// with the picture.
     thumbs: std::collections::HashMap<String, (String, Arc<Vec<u8>>)>,
@@ -161,6 +175,8 @@ pub struct Hub {
     key: String,
     started: Instant,
     state: Mutex<State>,
+    /// Told when there is something new for the phone.
+    changed: Condvar,
 }
 
 impl Hub {
@@ -181,8 +197,10 @@ impl Hub {
                 requests: 0,
                 clips: VecDeque::new(),
                 last_clip: 0,
+                cut: 0,
                 thumbs: std::collections::HashMap::new(),
             }),
+            changed: Condvar::new(),
         })
     }
 
@@ -218,6 +236,8 @@ impl Hub {
         while state.messages.len() > KEEP_MESSAGES {
             state.messages.pop_front();
         }
+        drop(state);
+        self.changed.notify_all();
         id
     }
 
@@ -236,7 +256,20 @@ impl Hub {
         while state.clips.len() > CLIPS_KEPT {
             state.clips.pop_front();
         }
+        drop(state);
+        self.changed.notify_all();
         seq
+    }
+
+    /// The reply was cut short (the player talked over it): the phone stops
+    /// what it is playing and skips the clips it has not played.
+    pub fn cut(&self) {
+        let mut state = self.lock();
+        state.cut += 1;
+        // Clips not fetched yet are not to be played.
+        state.clips.clear();
+        drop(state);
+        self.changed.notify_all();
     }
 
     /// The picture of a thing it was taught, for the phone's list.
@@ -317,12 +350,32 @@ impl Hub {
         };
         match (method, path) {
             ("GET", "/api/state") => {
-                let since: u64 = request
-                    .param("since")
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
+                let number = |name: &str| -> u64 {
+                    request
+                        .param(name)
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0)
+                };
+                let since = number("since");
+                let mut state = self.lock();
+                // Wait for something new, up to `wait` milliseconds.
+                let wait = Duration::from_millis(number("wait").min(1500));
+                if !wait.is_zero() {
+                    let (clip, cut) = (number("clip"), number("cut"));
+                    let deadline = Instant::now() + wait;
+                    while state.next_id - 1 <= since && state.last_clip <= clip && state.cut <= cut
+                    {
+                        let left = deadline.saturating_duration_since(Instant::now());
+                        if left.is_zero() {
+                            break;
+                        }
+                        state = match self.changed.wait_timeout(state, left) {
+                            Ok((guard, _)) => guard,
+                            Err(poisoned) => poisoned.into_inner().0,
+                        };
+                    }
+                }
                 let now = Instant::now();
-                let state = self.lock();
                 let skip = if since == 0 {
                     state.messages.len().saturating_sub(FIRST_MESSAGES)
                 } else {
@@ -344,6 +397,7 @@ impl Hub {
                         "last_id": state.next_id - 1,
                         "uptime": self.started.elapsed().as_secs_f64(),
                         "clip": state.last_clip,
+                        "cut": state.cut,
                     }),
                 )
             }
@@ -406,6 +460,20 @@ impl Hub {
                 }
                 _ => Response::json(400, &json!({"error": "no text"})),
             },
+            ("POST", "/api/hearing") => match text_field("text") {
+                Some(text) if !text.trim().is_empty() => {
+                    let mut state = self.lock();
+                    // Only the latest matters.
+                    state.inbox.retain(|i| !matches!(i, Inbound::Hearing(_)));
+                    state.inbox.push(Inbound::Hearing(text.trim().to_string()));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                _ => Response::json(400, &json!({"error": "no text"})),
+            },
+            ("POST", "/api/interrupt") => {
+                self.lock().inbox.push(Inbound::Interrupt);
+                Response::json(200, &json!({"ok": true}))
+            }
             ("POST", "/api/command") => match text_field("command") {
                 Some(command) => {
                     self.lock().inbox.push(Inbound::Command(command));

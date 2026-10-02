@@ -141,10 +141,14 @@ pub struct Companion {
     ever_seen: bool,
     hp_warning: Warning,
     mp_warning: Warning,
-    /// Consecutive frames below the HP / MP threshold (one frame can be a
-    /// bar half-covered by a dialog).
+    /// Consecutive frames below the HP / MP threshold, and since when (a
+    /// frame or two can be a bar half-covered by a dialog, or misread).
     hp_low_frames: u32,
     mp_low_frames: u32,
+    hp_low_since: f64,
+    mp_low_since: f64,
+    /// Counts warnings, to vary how they are said.
+    warnings: u32,
     zero_hp_frames: u32,
     dead: bool,
     listening_until: f64,
@@ -166,9 +170,116 @@ pub struct Companion {
 /// How long a new level reading must hold before it is believed, in seconds.
 const LEVEL_HOLD_SECS: f64 = 3.0;
 
+/// How long HP or MP must stay low before it is said, in seconds (and at
+/// least three frames): a moment's misread is not worth a warning.
+const LOW_HOLD_SECS: f64 = 0.6;
+
 /// How long after a line was said the phone may still hand it back as heard,
 /// in seconds: the line, its playing, and the phone's recognition finishing.
 const ECHO_WINDOW: f64 = 30.0;
+
+/// Words that stop MapleSyrup on their own when the player says them over it.
+const STOP_WORDS: &[&str] = &[
+    "stop",
+    "wait",
+    "mute",
+    "השתק",
+    "hold",
+    "shush",
+    "shh",
+    "quiet",
+    "enough",
+    "cancel",
+    "nevermind",
+    "רגע",
+    "די",
+    "עצור",
+    "תפסיק",
+    "שקט",
+    "חכה",
+    "סטופ",
+    "para",
+    "espera",
+    "basta",
+    "chega",
+    "attends",
+    "arrête",
+    "arrete",
+    "stopp",
+    "warte",
+    "halt",
+    "잠깐",
+    "그만",
+    "멈춰",
+    "待って",
+    "ストップ",
+    "やめて",
+    "等等",
+    "停",
+    "别说了",
+    "別說了",
+    "стоп",
+    "подожди",
+    "хватит",
+];
+
+/// Sounds that are not words.
+const FILLERS: &[&str] = &[
+    "uh", "um", "uhm", "umm", "hmm", "mm", "mmm", "ah", "oh", "eh", "er", "אה", "אמ", "הממ", "אממ",
+];
+
+/// How numbers sound: the phone may write "sixty percent" for MapleSyrup's
+/// "60%".
+const NUMBER_WORDS: &[&str] = &[
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+    "hundred",
+    "thousand",
+    "million",
+    "point",
+    "percent",
+    "per",
+    "cent",
+];
+
+/// Writing without spaces between words (Chinese, Japanese, Thai): a run of
+/// three letters or more counts as two words.
+fn unspaced(word: &str) -> bool {
+    word.chars()
+        .filter(|c| {
+            ('\u{3040}'..='\u{30FF}').contains(c)
+                || ('\u{4E00}'..='\u{9FFF}').contains(c)
+                || ('\u{0E00}'..='\u{0E7F}').contains(c)
+        })
+        .count()
+        >= 3
+}
 
 impl Companion {
     pub fn new(settings: Settings) -> Self {
@@ -182,6 +293,9 @@ impl Companion {
             mp_warning: Warning::Armed,
             hp_low_frames: 0,
             mp_low_frames: 0,
+            hp_low_since: 0.0,
+            mp_low_since: 0.0,
+            warnings: 0,
             zero_hp_frames: 0,
             dead: false,
             listening_until: f64::NEG_INFINITY,
@@ -295,6 +409,104 @@ impl Companion {
         })
     }
 
+    /// What the phone is hearing right now, while MapleSyrup may be
+    /// talking: the player's own words in it, when there are enough to stop
+    /// talking for — two or more among the last few words, or a word such as
+    /// "stop" or "wait". `None` when it is only MapleSyrup's own voice
+    /// coming back (or a sound or two).
+    pub fn barge_in(&self, now: f64, hearing: &str) -> Option<String> {
+        self.players_words(now, hearing, 2)
+    }
+
+    /// Whether the player is still talking (`hearing`, while their last
+    /// sentence is being answered and nothing has been said yet): one word
+    /// of theirs is enough.
+    pub fn still_talking(&self, now: f64, hearing: &str) -> bool {
+        self.players_words(now, hearing, 1).is_some()
+    }
+
+    /// The player's words in `hearing` when there are at least `enough`
+    /// of them among the last few (or a stop word).
+    fn players_words(&self, now: f64, hearing: &str, enough: usize) -> Option<String> {
+        let tokens: Vec<&str> = hearing.split_whitespace().collect();
+        let mut words: Vec<(String, usize)> = Vec::new();
+        for (i, token) in tokens.iter().enumerate() {
+            for word in commands::normalize(token)
+                .split(' ')
+                .filter(|w| !w.is_empty())
+            {
+                words.push((word.to_string(), i));
+            }
+        }
+        if words.is_empty() {
+            return None;
+        }
+        let lines: Vec<&str> = self
+            .spoken
+            .iter()
+            .filter(|(t, _)| (-1.0..=ECHO_WINDOW).contains(&(now - t)))
+            .map(|(_, said)| said.as_str())
+            .collect();
+        let said: std::collections::HashSet<&str> =
+            lines.iter().flat_map(|line| line.split(' ')).collect();
+        let numbers = lines
+            .iter()
+            .any(|line| line.chars().any(|c| c.is_ascii_digit()));
+        let theirs: Vec<bool> = words
+            .iter()
+            .map(|(w, _)| {
+                w.chars().count() >= 2
+                    && !said.contains(w.as_str())
+                    && !FILLERS.contains(&w.as_str())
+                    && !(numbers
+                        && (w.chars().all(|c| c.is_ascii_digit())
+                            || NUMBER_WORDS.contains(&w.as_str())))
+            })
+            .collect();
+        let stop_word = |w: &str| {
+            STOP_WORDS.contains(&w) || (unspaced(w) && STOP_WORDS.iter().any(|s| w.contains(s)))
+        };
+        let tail = words.len().saturating_sub(3);
+        let stop = words[tail..]
+            .iter()
+            .zip(&theirs[tail..])
+            .any(|((w, _), &t)| t && stop_word(w));
+        let recent = words.len().saturating_sub(6);
+        let count: usize = words[recent..]
+            .iter()
+            .zip(&theirs[recent..])
+            .filter(|(_, t)| **t)
+            .map(|((w, _), _)| if unspaced(w) { 2 } else { 1 })
+            .sum();
+        if !stop && count < enough.max(1) {
+            return None;
+        }
+        // From the player's first word to their last (a word of theirs that
+        // MapleSyrup also used stays in).
+        let theirs_at: Vec<usize> = words
+            .iter()
+            .zip(&theirs)
+            .filter(|(_, t)| **t)
+            .map(|((_, token), _)| *token)
+            .collect();
+        let (first, last) = (*theirs_at.first()?, *theirs_at.last()?);
+        Some(tokens[first..=last].join(" "))
+    }
+
+    /// The player's words in a sentence the phone heard, with MapleSyrup's
+    /// own voice taken out (`strip_echo`). Heard while MapleSyrup talks or
+    /// just after, what is left must also have at least `need` words it did
+    /// not just say (or a stop word): a word or two of its own voice that the
+    /// phone wrote differently is not the player's. (Two while it talks;
+    /// one just after, so a quick "yes" to its question still counts.)
+    pub fn own_words(&self, now: f64, heard: &str, need: usize) -> Option<String> {
+        let rest = self.strip_echo(now, heard)?;
+        if need == 0 {
+            return Some(rest);
+        }
+        self.players_words(now, &rest, need).map(|_| rest)
+    }
+
     pub fn set_always_listen(&mut self, on: bool) {
         self.settings.always_listen = on;
     }
@@ -391,6 +603,9 @@ impl Companion {
             self.hp_warning = Warning::Armed;
         }
         if hp.percent < self.settings.hp_low {
+            if self.hp_low_frames == 0 {
+                self.hp_low_since = now;
+            }
             self.hp_low_frames += 1;
         } else {
             self.hp_low_frames = 0;
@@ -402,12 +617,16 @@ impl Companion {
             Warning::Armed => true,
             Warning::Warned(at) => now - at >= self.settings.warning_cooldown * 3.0,
         };
-        if self.hp_low_frames >= 2 && due {
+        if self.hp_low_frames >= 3 && now - self.hp_low_since >= LOW_HOLD_SECS && due {
             self.hp_warning = Warning::Warned(now);
-            out.push(Action::Say(Say::alert(format!(
-                "HP low, {}. Drink a potion.",
-                percent_words(hp)
-            ))));
+            let amount = low_words(hp);
+            let line = match self.warnings % 3 {
+                0 => format!("Careful, your HP's down to {amount}. Drink a potion!"),
+                1 => format!("HP's at {amount}, potion time!"),
+                _ => format!("Whoa, {amount} HP. Drink something!"),
+            };
+            self.warnings += 1;
+            out.push(Action::Say(Say::alert(line)));
         }
     }
 
@@ -416,6 +635,9 @@ impl Companion {
             return;
         };
         if mp.percent < self.settings.mp_low {
+            if self.mp_low_frames == 0 {
+                self.mp_low_since = now;
+            }
             self.mp_low_frames += 1;
         } else {
             self.mp_low_frames = 0;
@@ -427,12 +649,17 @@ impl Companion {
             Warning::Armed => true,
             Warning::Warned(at) => now - at >= self.settings.warning_cooldown * 3.0,
         };
-        if self.mp_low_frames >= 2 && due && !self.dead {
+        if self.mp_low_frames >= 3 && now - self.mp_low_since >= LOW_HOLD_SECS && due && !self.dead
+        {
             self.mp_warning = Warning::Warned(now);
-            out.push(Action::Say(Say::alert(format!(
-                "MP low, {}.",
-                percent_words(mp)
-            ))));
+            let amount = low_words(mp);
+            let line = match self.warnings % 3 {
+                0 => format!("Your MP's down to {amount}."),
+                1 => format!("MP's at {amount}, might want a potion."),
+                _ => format!("Heads up, only {amount} MP left."),
+            };
+            self.warnings += 1;
+            out.push(Action::Say(Say::alert(line)));
         }
     }
 
@@ -590,6 +817,17 @@ impl Companion {
 }
 
 /// "82 percent", or "about 82 percent" for a bar estimate.
+/// A low bar the way a person says it: "about 12 percent" (whole numbers;
+/// "about" when it was measured from the bar rather than read).
+fn low_words(gauge: Gauge) -> String {
+    let amount = format!("{} percent", (gauge.percent.round() as i64).max(1));
+    if gauge.read {
+        amount
+    } else {
+        format!("about {amount}")
+    }
+}
+
 fn percent_words(gauge: Gauge) -> String {
     let amount = percent_amount(gauge.percent as f64);
     if gauge.read {
@@ -708,26 +946,33 @@ mod tests {
     fn low_hp_is_said_once_until_it_recovers() {
         let mut c = Companion::new(Settings::default());
         c.observe(0.0, frame(90.0, 90.0, 10.0));
-        // One low frame is not enough (a dialog over the bar).
+        // A moment low is not enough (a dialog over the bar, a misread).
         assert!(said(&c.observe(1.0, frame(20.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(1.1, frame(20.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(1.3, frame(20.0, 90.0, 10.0))).is_empty());
         assert_eq!(
-            said(&c.observe(1.1, frame(20.0, 90.0, 10.0))),
-            ["HP low, about 20 percent. Drink a potion."]
+            said(&c.observe(1.7, frame(20.0, 90.0, 10.0))),
+            ["Careful, your HP's down to about 20 percent. Drink a potion!"]
         );
         for i in 0..20 {
-            assert!(said(&c.observe(1.2 + i as f64, frame(18.0, 90.0, 10.0))).is_empty());
+            assert!(said(&c.observe(1.8 + i as f64, frame(18.0, 90.0, 10.0))).is_empty());
         }
-        // Recovered, then low again: warned again.
+        // Recovered, then low again: warned again, put another way.
         c.observe(30.0, frame(80.0, 90.0, 10.0));
         c.observe(31.0, frame(20.0, 90.0, 10.0));
-        assert_eq!(said(&c.observe(31.1, frame(20.0, 90.0, 10.0))).len(), 1);
+        c.observe(31.3, frame(20.0, 90.0, 10.0));
+        assert_eq!(
+            said(&c.observe(31.7, frame(20.0, 90.0, 10.0))),
+            ["HP's at about 20 percent, potion time!"]
+        );
     }
 
     #[test]
     fn staying_low_is_repeated_only_after_a_long_while() {
         let mut c = Companion::new(Settings::default());
         c.observe(0.0, frame(20.0, 90.0, 10.0));
-        assert_eq!(said(&c.observe(0.1, frame(20.0, 90.0, 10.0))).len(), 1);
+        c.observe(0.3, frame(20.0, 90.0, 10.0));
+        assert_eq!(said(&c.observe(0.7, frame(20.0, 90.0, 10.0))).len(), 1);
         assert!(said(&c.observe(30.0, frame(20.0, 90.0, 10.0))).is_empty());
         assert_eq!(said(&c.observe(61.0, frame(20.0, 90.0, 10.0))).len(), 1);
     }
@@ -735,10 +980,83 @@ mod tests {
     #[test]
     fn low_mp_is_its_own_warning() {
         let mut c = Companion::new(Settings::default());
-        c.observe(0.0, frame(90.0, 10.0, 10.0));
+        c.observe(0.0, frame(90.0, 3.1, 10.0));
+        c.observe(0.3, frame(90.0, 3.1, 10.0));
         assert_eq!(
-            said(&c.observe(0.1, frame(90.0, 10.0, 10.0))),
-            ["MP low, about 10 percent."]
+            said(&c.observe(0.7, frame(90.0, 3.1, 10.0))),
+            ["Your MP's down to about 3 percent."]
+        );
+    }
+
+    #[test]
+    fn talking_over_it_is_told_from_its_own_voice_coming_back() {
+        let mut c = Companion::new(Settings::default());
+        c.remember_spoken(
+            10.0,
+            "You're at 60.23% EXP, about twenty minutes to the next level.",
+        );
+        // Only its own voice, as the phone writes it (numbers its own way).
+        assert_eq!(
+            c.barge_in(11.0, "you're at sixty point two three percent EXP"),
+            None
+        );
+        assert_eq!(c.barge_in(11.0, "about twenty minutes to the"), None);
+        // A sound or a single word is not enough…
+        assert_eq!(c.barge_in(11.5, "minutes to the next level um"), None);
+        assert_eq!(c.barge_in(11.5, "minutes to the next level okay"), None);
+        // …two words of the player's are, and so is "wait".
+        assert_eq!(
+            c.barge_in(11.5, "to the next level what about my HP"),
+            Some("what about my HP".to_string())
+        );
+        assert_eq!(
+            c.barge_in(11.5, "twenty minutes wait"),
+            Some("wait".to_string())
+        );
+        assert_eq!(c.barge_in(11.5, "רגע"), Some("רגע".to_string()));
+        assert_eq!(
+            c.barge_in(11.5, "等等，我想问"),
+            Some("等等，我想问".to_string())
+        );
+        // Nothing said lately: any two words are the player's.
+        let quiet = Companion::new(Settings::default());
+        assert_eq!(
+            quiet.barge_in(5.0, "with the quest"),
+            Some("with the quest".to_string())
+        );
+        assert_eq!(quiet.barge_in(5.0, "uh"), None);
+        // Still talking while the answer is being made: one word will do.
+        assert!(quiet.still_talking(5.0, "now"));
+        assert!(!quiet.still_talking(5.0, "um"));
+        assert!(!c.still_talking(11.5, "next level"));
+    }
+
+    #[test]
+    fn what_was_heard_over_it_needs_enough_of_the_players_own_words() {
+        let mut c = Companion::new(Settings::default());
+        c.remember_spoken(10.0, "Take the Strange Bottle of Water to the blue pillar.");
+        // Its own words, garbled a little: not the player.
+        assert_eq!(
+            c.own_words(
+                12.0,
+                "take the strange bottles of water to the blue pillar",
+                2
+            ),
+            None
+        );
+        // The player's question after its words: theirs.
+        assert_eq!(
+            c.own_words(12.0, "to the blue pillar where is that pillar", 2),
+            Some("where is that pillar".to_string())
+        );
+        // Just after it spoke, a quick answer is the player's…
+        assert_eq!(c.own_words(13.0, "yes", 1), Some("yes".to_string()));
+        // …but not the tail of its own line coming back late.
+        assert_eq!(c.own_words(13.0, "the blue pillars", 1), None);
+        // Not over it: a short answer stands.
+        assert_eq!(
+            c.own_words(20.0, "okay thanks", 0),
+            Some("okay thanks".to_string())
         );
     }
 

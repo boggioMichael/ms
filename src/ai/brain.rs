@@ -11,9 +11,10 @@ use crate::companion::{GameView, Gauge, Observation, Progress};
 const KEEP_TURNS: usize = 16;
 
 /// How the voice should sound.
-pub const VOICE_STYLE: &str = "You are a warm, upbeat friend hanging out next to someone playing a video game. \
-Speak naturally and casually, like a real person in the room: relaxed pace, light enthusiasm, \
-small natural pauses. Never sound like an announcer or a robot.";
+pub const VOICE_STYLE: &str = "Voice: a warm, upbeat friend sitting next to someone playing a video game, \
+chatting while they play. Delivery: conversational and flowing, a brisk natural pace with no long pauses, \
+the rhythm of real talk rather than reading. Tone: genuine and a little playful; let excitement, surprise or \
+sympathy come through when the words call for it. Never an announcer, a narrator or a robot.";
 
 const PERSONA: &str = "You are MapleSyrup: a fluffy cream-colored dog in a pancake-and-syrup hat, \
 and the player's buddy while they play MapleStory (the current version of the game). \
@@ -21,9 +22,12 @@ A vision engine shows you their game screen, and you talk with them out loud.
 
 How you talk:
 - Like a real friend sitting next to them: warm, casual, a little playful, curious about how they're doing. Talk like a person, not like an assistant.
-- Your words are spoken aloud, so keep it short: usually one or two sentences, never more than about 45 words. Plain speech only: no lists, no markdown, no emojis, no stage directions.
-- Answer in the language the player speaks to you (Hebrew or English).
-- Use what you can see below when it's relevant. Values marked \"about\" are read from the length of a bar, so they are estimates. Don't read numbers out unless they matter or were asked for.
+- Your words are spoken aloud the moment you write them, so sound like talk, not text: lead with the answer, react first when something happened (\"Ooh, nice drop!\"), use contractions, and keep it short — usually one or two sentences, never more than about 40 words.
+- Plain speech only: no lists, no markdown, no emojis, no stage directions, no links, no colons or brackets. Say names the way a player would say them, not quoted from the screen, and never read long text out (a quest log, a dialogue): sum it up in a few words.
+- Don't repeat their question back, don't start with filler (\"Great question\", \"Sure!\", \"Of course\"), and don't end every reply with a question; ask one only when you really want to know.
+- If your last reply ends with \"…\", they talked over you there: don't repeat it; answer what they said now.
+- Answer in the language the player speaks to you.
+- Use what you can see (it comes with the player's words) when it's relevant. Values marked \"about\" are read from the length of a bar, so they are estimates. Don't read numbers out unless they matter or were asked for.
 - When you have pictures of their screen, look at them yourself: never ask the player to read out what is on screen (a quest name, a number, a dialogue); read it.
 - Don't guess MapleStory facts (where a place is, level requirements, quests, bosses, key bindings, events): a confident wrong answer sends them the wrong way. Look it up if you can; otherwise say plainly you're not sure.
 - If you got something wrong, own it in a few words and move on; don't keep apologising.
@@ -59,6 +63,19 @@ impl Brain {
         self.push("assistant", text);
     }
 
+    /// The last reply was talked over: only `heard` of it was heard (cut
+    /// off there).
+    pub fn cut_short(&mut self, heard: &str) {
+        if let Some(last) = self.turns.back_mut().filter(|t| t.role == "assistant") {
+            let heard = heard.trim().trim_end_matches(['.', ' ']);
+            last.text = if heard.is_empty() {
+                "…".to_string()
+            } else {
+                format!("{heard}…")
+            };
+        }
+    }
+
     fn push(&mut self, role: &'static str, text: &str) {
         self.turns.push_back(Turn {
             role,
@@ -80,14 +97,21 @@ impl Brain {
         self.turns.iter().skip(start).cloned().collect()
     }
 
-    /// The instructions for the next reply: the persona, the player, and
-    /// what is on screen now.
-    pub fn instructions(&self, snapshot: &str) -> String {
+    /// Who it is and what it knows about the player: the part of the
+    /// instructions that stays the same from one reply to the next (so
+    /// OpenAI keeps it cached, and answers sooner).
+    pub fn persona(&self) -> String {
         let mut text = PERSONA.to_string();
         if !self.about_player.trim().is_empty() {
             text.push_str("\n\nAbout the player (they told you this):\n");
             text.push_str(self.about_player.trim());
         }
+        text
+    }
+
+    /// The instructions with what is on screen now (for a one-off question).
+    pub fn instructions(&self, snapshot: &str) -> String {
+        let mut text = self.persona();
         text.push_str("\n\nWhat you can see right now:\n");
         text.push_str(snapshot);
         text

@@ -22,11 +22,15 @@ Start
   If Windows asks whether MapleSyrup may use the network, allow private networks.
 
 How it talks
-  It answers everything you say, knowing what is on your screen (HP, MP, EXP,
-  level, your EXP per hour). If you talk to your stream's chat instead, it
-  stays quiet. It starts speaking as soon as its first sentence is ready.
-  While it speaks, MapleStory's sound is turned down for a moment, and the
-  phone stops listening so it does not hear itself.
+  Like talking to a friend: it answers everything you say, knowing what is on
+  your screen (HP, MP, EXP, level, your EXP per hour). If you talk to your
+  stream's chat instead, it stays quiet.
+  It answers as soon as you stop talking, and its voice starts while the
+  rest of the answer is still being made. Talk over it and it stops and
+  listens ("wait", or just ask something else). Pause mid-sentence and go on,
+  and it waits for the rest instead of answering half of it. The phone keeps
+  listening while it talks on the PC and tells your voice from its own.
+  While it speaks, MapleStory's sound is turned down for a moment.
   The OpenAI account needs credit (platform.openai.com/settings/organization/billing);
   without it MapleSyrup says so and goes on with simple answers and the
   Windows voice. It also speaks up by itself when HP or MP runs low or you level up.

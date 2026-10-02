@@ -1,14 +1,16 @@
 //! The OpenAI client against a stand-in server on this machine, through the
 //! same `curl` the real calls use: model fallback, the reasoning retry,
-//! streamed replies, speech, refused keys, and the worker speaking a reply
-//! a sentence at a time.
+//! streamed replies, speech (streamed too), refused keys, calling a request
+//! off, and the worker speaking a reply line by line.
 
+use std::io::Write;
 use std::net::TcpListener;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ms::ai::openai::Turn;
-use ms::ai::{AiError, Brain, Done, Job, OpenAi};
+use ms::ai::{AiError, Brain, Done, Job, OpenAi, Stop};
 use ms::phone::http::{Conn, Response};
 use serde_json::{Value, json};
 
@@ -30,6 +32,37 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                     log.lock()
                         .unwrap()
                         .push(json!({"path": req.path, "body": body}));
+                    let input = body["input"].as_str().unwrap_or_default().to_string();
+                    // Speech made slowly: sent as it is made, in odd-sized
+                    // pieces (a sample split between two of them).
+                    if req.path == "/v1/audio/speech" && input.contains("slowly") {
+                        let out = conn.get_mut();
+                        let _ = out.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n");
+                        let mut pcm = Vec::new();
+                        for i in 0..6000i16 {
+                            pcm.extend_from_slice(&(i % 300).to_le_bytes());
+                        }
+                        for piece in pcm.chunks(2001) {
+                            let _ = write!(out, "{:x}\r\n", piece.len());
+                            let _ = out.write_all(piece);
+                            let _ = out.write_all(b"\r\n");
+                            let _ = out.flush();
+                            std::thread::sleep(Duration::from_millis(60));
+                        }
+                        let _ = out.write_all(b"0\r\n\r\n");
+                        let _ = out.flush();
+                        continue;
+                    }
+                    // A request that takes forever (to be called off).
+                    let last_said = body["input"]
+                        .as_array()
+                        .and_then(|a| a.last())
+                        .map(|l| l["content"].to_string())
+                        .unwrap_or_default();
+                    if input.contains("forever") || last_said.contains("forever") {
+                        std::thread::sleep(Duration::from_secs(20));
+                        return;
+                    }
                     let response = if auth != "Bearer sk-test-key-0123456789abcdef" {
                         Response::json(
                             401,
@@ -55,7 +88,16 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                                         .and_then(|a| a.last())
                                         .cloned()
                                         .unwrap_or_default();
-                                    let said = last["content"].as_str().unwrap_or("");
+                                    // The words, or the last text part (after
+                                    // what is on screen).
+                                    let said = last["content"].as_str().unwrap_or_else(|| {
+                                        last["content"]
+                                            .as_array()
+                                            .and_then(|parts| {
+                                                parts.iter().rev().find_map(|p| p["text"].as_str())
+                                            })
+                                            .unwrap_or("")
+                                    });
                                     let reply = format!(
                                         "Hello there, my friend! ({model}) you said: {said}."
                                     );
@@ -179,14 +221,14 @@ fn a_streamed_reply_arrives_in_pieces_after_the_same_fallbacks() {
 }
 
 #[test]
-fn the_worker_speaks_a_reply_a_sentence_at_a_time() {
+fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
     if !have_curl() {
         return;
     }
     let (base, seen) = fake();
     let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
     let worker = ms::ai::spawn(ai, Brain::new());
-    worker.send(Job::Converse {
+    let id = worker.send(Job::Converse {
         heard: "can you see my game".into(),
         snapshot: "HP is about 80%.".into(),
         speak: true,
@@ -194,42 +236,60 @@ fn the_worker_speaks_a_reply_a_sentence_at_a_time() {
         language: None,
     });
     let mut reply = None;
-    let mut spoken = Vec::new();
-    while reply.is_none() || spoken.len() < 2 {
+    // Each line: its words, whether it was the first, its samples, closed.
+    let mut lines: Vec<(String, bool, usize, bool)> = Vec::new();
+    while reply.is_none() || lines.len() < 2 || !lines.iter().all(|l| l.3) {
         match worker.done.recv_timeout(Duration::from_secs(30)) {
-            Ok(Done::Reply { text, .. }) => reply = Some(text),
+            Ok(Done::Reply { id: of, text, .. }) => {
+                assert_eq!(of, id);
+                reply = Some(text)
+            }
             Ok(Done::Audio {
+                id: of,
                 text,
                 samples,
                 first,
+                start,
+                end,
                 ..
             }) => {
-                assert_eq!(samples.len(), 2400);
-                spoken.push((text, first));
+                assert_eq!(of, id);
+                if start {
+                    lines.push((text, first, 0, false));
+                }
+                let line = lines.last_mut().expect("a piece before its line");
+                line.2 += samples.len();
+                if end {
+                    line.3 = true;
+                }
             }
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
-            Ok(Done::Silent { heard }) => panic!("silent: {heard}"),
+            Ok(Done::Silent { heard, .. }) => panic!("silent: {heard}"),
             Ok(Done::Noted { line }) => panic!("noted: {line}"),
             Ok(Done::Shown { text, .. }) => panic!("shown: {text}"),
             Ok(Done::Command { word }) => panic!("command: {word}"),
-            Err(e) => panic!("{e}: {reply:?} {spoken:?}"),
+            Err(e) => panic!("{e}: {reply:?} {lines:?}"),
         }
     }
     assert_eq!(
         reply.as_deref(),
         Some("Hello there, my friend! (gpt-6.1-sol) you said: can you see my game.")
     );
+    // The first sentence alone (heard soonest), then the rest together.
     assert_eq!(
-        spoken,
+        lines,
         [
-            ("Hello there, my friend!".to_string(), true),
+            ("Hello there, my friend!".to_string(), true, 2400, true),
             (
                 "(gpt-6.1-sol) you said: can you see my game.".to_string(),
-                false
+                false,
+                2400,
+                true
             )
         ]
     );
-    // The model was told what is on screen.
+    // The model was told what is on screen, with the player's words (the
+    // instructions stay the same from reply to reply, for the cache).
     let asked = seen
         .lock()
         .unwrap()
@@ -238,11 +298,126 @@ fn the_worker_speaks_a_reply_a_sentence_at_a_time() {
         .find(|r| r["path"] == "/v1/responses")
         .cloned()
         .unwrap();
+    let last = asked["body"]["input"].as_array().unwrap().last().unwrap();
+    let parts: Vec<&str> = last["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["text"].as_str())
+        .collect();
+    assert!(parts[0].contains("HP is about 80%."), "{parts:?}");
+    assert_eq!(parts.last(), Some(&"can you see my game"));
     assert!(
-        asked["body"]["instructions"]
+        !asked["body"]["instructions"]
             .as_str()
             .unwrap()
             .contains("HP is about 80%.")
+    );
+}
+
+#[test]
+fn speech_arrives_in_pieces_while_it_is_made() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let started = Instant::now();
+    let mut pieces: Vec<(Duration, Vec<i16>)> = Vec::new();
+    let count = ai
+        .speech_stream("say this slowly", "warm", None, &mut |samples| {
+            pieces.push((started.elapsed(), samples.to_vec()))
+        })
+        .unwrap();
+    assert_eq!(count, 6000);
+    // Several pieces, the first long before the last: it can play already.
+    assert!(pieces.len() >= 3, "{}", pieces.len());
+    let (first, last) = (pieces[0].0, pieces.last().unwrap().0);
+    assert!(
+        last - first >= Duration::from_millis(200),
+        "{first:?} {last:?}"
+    );
+    // Samples split between pieces come out whole and in order.
+    let all: Vec<i16> = pieces.into_iter().flat_map(|(_, s)| s).collect();
+    assert!(all.iter().enumerate().all(|(i, s)| *s == (i % 300) as i16));
+}
+
+#[test]
+fn a_request_is_called_off_at_once() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let mark = Arc::new(AtomicU64::new(0));
+    let stop = Stop::new(Arc::clone(&mark), 7);
+    let caller = {
+        let mark = Arc::clone(&mark);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            mark.store(7, std::sync::atomic::Ordering::SeqCst);
+        })
+    };
+    let started = Instant::now();
+    let result = ai.speech_stream("take forever", "warm", Some(&stop), &mut |_| {});
+    assert_eq!(result, Err(AiError::Cancelled));
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    caller.join().unwrap();
+    // Already called off: not even sent.
+    assert_eq!(
+        ai.speech_stream("hello", "warm", Some(&stop), &mut |_| {}),
+        Err(AiError::Cancelled)
+    );
+}
+
+#[test]
+fn a_reply_talked_over_stops_and_the_next_is_answered() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let slow = worker.send(Job::Converse {
+        heard: "think about this forever".into(),
+        snapshot: String::new(),
+        speak: true,
+        eyes: None,
+        language: None,
+    });
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(worker.busy());
+    let started = Instant::now();
+    worker.cancel_all();
+    assert!(worker.cancelled(slow));
+    let next = worker.send(Job::Converse {
+        heard: "how am I doing".into(),
+        snapshot: String::new(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    assert!(!worker.cancelled(next));
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(10)) {
+            Ok(Done::Reply { id, text, .. }) => {
+                assert_eq!(id, next, "the call-off reply came back: {text}");
+                assert!(text.ends_with("you said: how am I doing."), "{text}");
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
     );
 }
 
@@ -268,7 +443,9 @@ fn its_own_lines_are_translated_shown_and_spoken() {
                 assert_eq!(kind, ms::companion::Kind::Alert);
                 shown = Some(text);
             }
-            Ok(Done::Audio { text, .. }) => spoken = Some(text),
+            Ok(Done::Audio {
+                text, start: true, ..
+            }) => spoken = Some(text),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
             Err(e) => panic!("{e}"),
@@ -302,7 +479,10 @@ fn its_own_lines_are_translated_shown_and_spoken() {
         speak: true,
     });
     loop {
-        if let Ok(Done::Audio { text, .. }) = worker.done.recv_timeout(Duration::from_secs(30)) {
+        if let Ok(Done::Audio {
+            text, start: true, ..
+        }) = worker.done.recv_timeout(Duration::from_secs(30))
+        {
             assert_eq!(text, "Level up! Nice.");
             break;
         }

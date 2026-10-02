@@ -4,6 +4,8 @@ MapleSyrup watches your MapleStory window and talks with you through your phone 
 
 With an OpenAI API key it talks like ChatGPT in a natural voice, **sees your screen**, finds your HUD by itself (any resolution or layout) and **learns what you teach it** by talking: "see that? that's an Orange Mushroom — tell me when one shows up", "warn me when the boss is under 20%", "I'm level 70", "remember that my boss key is F10". It looks MapleStory questions up on the web instead of guessing.
 
+It talks like a person: it answers as soon as you stop talking, you can talk over it and it stops and listens, and if you pause mid-sentence it waits for the rest.
+
 It speaks your language: the phone page comes in 14 languages (English, עברית, Español, Português, Français, Deutsch, 한국어, 日本語, 简体中文, 繁體中文, ไทย, Tiếng Việt, Bahasa Indonesia, Русский), it listens in the one you pick, and it answers in the language you talk to it.
 
 ### Install

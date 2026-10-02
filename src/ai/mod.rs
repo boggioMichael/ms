@@ -5,15 +5,19 @@
 //!   phone: "can you see my game?"
 //!      │
 //!      ▼            snapshot of the game (HP, MP, EXP, level, EXP/h)
-//!   Worker: respond_stream(persona + snapshot + conversation)
+//!   Worker: ask(persona + snapshot + conversation + the screen)
 //!      │  the reply arrives a few words at a time and is cut into sentences
-//!      ├──▶ each sentence ──▶ speech ──▶ the PC's speakers (the game
-//!      │                                  ducked) and/or the phone, in turn
-//!      ▼
+//!      ├──▶ the first sentence ──▶ speech, streamed ──▶ the PC's speakers
+//!      ├──▶ the rest, together ──▶ speech, streamed     (the game ducked)
+//!      ▼                                                and/or the phone
 //!   Text ──▶ phone screen, console (once the reply is complete)
 //! ```
 //!
-//! The first sentence is spoken while the rest is still being written.
+//! The first words are heard while the rest is still being written, and
+//! the voice plays while it is still being made. Every job has a number;
+//! the player talking over MapleSyrup calls its work off (`Worker::cancel`):
+//! the request in flight is stopped at once, and only what was already
+//! said stays in the conversation.
 //!
 //! Without a key, or when OpenAI cannot be reached, MapleSyrup falls back
 //! to its own answers and the Windows voice.
@@ -30,7 +34,7 @@ use std::sync::Arc;
 
 use image::RgbaImage;
 use serde_json::{Value, json};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
@@ -39,7 +43,8 @@ pub use images::NBox;
 pub use openai::{AiError, OpenAi};
 pub use tools::{Effect, Toolbox};
 
-use openai::{Ask, Piece};
+pub use openai::Stop;
+use openai::{Ask, Piece, Turn};
 
 /// The API key's file in MapleSyrup's settings folder.
 pub fn key_file(settings: &Path) -> PathBuf {
@@ -151,28 +156,40 @@ pub enum Job {
         /// Whether to say it aloud too (a line can be only shown).
         speak: bool,
     },
+    /// The last reply was talked over after it was written: only `heard`
+    /// of it reached the player, and the conversation keeps only that.
+    Cut { heard: String },
 }
 
-/// What the worker did.
+/// What the worker did. Each carries the number of the job it came from
+/// (`Worker::send`), so the work of a job called off can be dropped.
 pub enum Done {
-    /// The reply's text (its audio follows as `Audio`).
+    /// The reply's text (its audio comes as `Audio`).
     Reply {
+        id: u64,
         heard: String,
         text: String,
         took: Duration,
     },
     /// The model judged the sentence was not for it.
-    Silent { heard: String },
-    /// Speech for a line (a reply comes a sentence at a time): 24 kHz mono
-    /// samples. `after`: since the player's sentence came in (or since the
-    /// line was asked for); `first`: the first sentence of a reply.
+    Silent { id: u64, heard: String },
+    /// Speech, a piece at a time as it is made: 24 kHz mono samples. A
+    /// reply is spoken in a few lines (the first sentence alone, so it
+    /// starts soon; then what was written meanwhile, together, so it
+    /// flows). `start` opens a line (its words are in `text`), `end`
+    /// closes it (no samples). `after`: since the job was handed over;
+    /// `first`: the first line of a reply.
     Audio {
+        id: u64,
         text: String,
         samples: Vec<i16>,
         after: Duration,
         first: bool,
+        start: bool,
+        end: bool,
     },
     Failed {
+        id: u64,
         heard: Option<String>,
         error: AiError,
     },
@@ -189,15 +206,39 @@ pub enum Done {
 }
 
 pub struct Worker {
-    jobs: Sender<Job>,
+    jobs: Sender<(u64, Job)>,
     pub done: Receiver<Done>,
     busy: Arc<AtomicBool>,
     pub model: Arc<std::sync::Mutex<Option<String>>>,
+    /// The number the next job gets (from 1).
+    next: AtomicU64,
+    /// Jobs numbered up to this are called off.
+    mark: Arc<AtomicU64>,
 }
 
 impl Worker {
-    pub fn send(&self, job: Job) {
-        let _ = self.jobs.send(job);
+    /// Hand it a job. Returns the job's number, which its `Done`s carry.
+    pub fn send(&self, job: Job) -> u64 {
+        let id = self.next.fetch_add(1, Ordering::SeqCst);
+        let _ = self.jobs.send((id, job));
+        id
+    }
+
+    /// Call off job `id` and every job before it: a request in flight is
+    /// stopped, speech being made stops, what waits is skipped.
+    pub fn cancel(&self, id: u64) {
+        self.mark.fetch_max(id, Ordering::SeqCst);
+    }
+
+    /// Call off everything handed over so far.
+    pub fn cancel_all(&self) {
+        let last = self.next.load(Ordering::SeqCst).saturating_sub(1);
+        self.cancel(last);
+    }
+
+    /// Whether job `id` was called off.
+    pub fn cancelled(&self, id: u64) -> bool {
+        self.mark.load(Ordering::SeqCst) >= id
     }
 
     /// Whether it is working on something (the phone shows "thinking").
@@ -213,11 +254,12 @@ pub fn spawn(openai: OpenAi, brain: Brain) -> Worker {
 
 /// Start the worker thread, with the tools the model may use.
 pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) -> Worker {
-    let (jobs, rx) = channel::<Job>();
+    let (jobs, rx) = channel::<(u64, Job)>();
     let (tx, done) = channel::<Done>();
     let busy = Arc::new(AtomicBool::new(false));
     let model = Arc::new(std::sync::Mutex::new(None));
-    let (busy_flag, model_slot) = (Arc::clone(&busy), Arc::clone(&model));
+    let mark = Arc::new(AtomicU64::new(0));
+    let (busy_flag, model_slot, marks) = (Arc::clone(&busy), Arc::clone(&model), Arc::clone(&mark));
     let _ = std::thread::Builder::new()
         .name("ai".into())
         .spawn(move || {
@@ -226,95 +268,74 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
             let mut translations = std::collections::HashMap::new();
             while let Ok(first) = rx.recv() {
                 busy_flag.store(true, Ordering::Relaxed);
-                // Sentences that arrived while it was busy are answered together.
                 let mut queue = vec![first];
                 while let Ok(more) = rx.try_recv() {
                     queue.push(more);
                 }
-                let mut heard = Vec::new();
-                let mut snapshot = String::new();
-                let mut speak = false;
-                let mut eyes = None;
-                let mut language = None;
-                for job in queue {
+                // Only the newest of the player's sentences is answered: the
+                // main loop folds what came before into it.
+                let newest = queue
+                    .iter()
+                    .rposition(|(_, job)| matches!(job, Job::Converse { .. }));
+                for (i, (id, job)) in queue.into_iter().enumerate() {
+                    let stop = Stop::new(Arc::clone(&marks), id);
+                    if stop.stopped() {
+                        continue;
+                    }
                     match job {
-                        Job::Converse {
-                            heard: h,
-                            snapshot: s,
-                            speak: sp,
-                            eyes: e,
-                            language: l,
-                        } => {
-                            heard.push(h);
-                            snapshot = s;
-                            speak |= sp;
-                            if e.is_some() {
-                                eyes = e;
-                            }
-                            if l.is_some() {
-                                language = l;
-                            }
-                        }
                         Job::Speak {
                             text,
-                            language: l,
+                            language,
                             show,
-                            speak: aloud,
+                            speak,
+                        } => say_line(
+                            &openai,
+                            id,
+                            &stop,
+                            &text,
+                            language.as_deref(),
+                            show,
+                            speak,
+                            &mut translations,
+                            &tx,
+                        ),
+                        Job::Cut { heard } => brain.cut_short(&heard),
+                        Job::Converse { .. } if Some(i) != newest => {}
+                        Job::Converse {
+                            heard,
+                            mut snapshot,
+                            speak,
+                            eyes,
+                            language,
                         } => {
-                            let asked = Instant::now();
-                            let text = match l.as_deref() {
-                                Some(l) if !language::is_english(l) => {
-                                    translate(&openai, &text, l, &mut translations)
-                                }
-                                _ => text,
-                            };
-                            if let Some(kind) = show {
-                                let _ = tx.send(Done::Shown {
-                                    kind,
-                                    text: text.clone(),
-                                });
+                            if let Some(l) =
+                                language.as_deref().filter(|l| !language::is_english(l))
+                            {
+                                let name = language::name(l);
+                                snapshot.push_str(&format!(
+                                    "\n(The player's language setting is {name}: answer in the language they speak to you; when it isn't clear, in {name}.)"
+                                ));
                             }
-                            if !aloud {
-                                continue;
-                            }
-                            match openai.speech(&text, brain::VOICE_STYLE) {
-                                Ok(samples) => {
-                                    let _ = tx.send(Done::Audio {
-                                        text,
-                                        samples,
-                                        after: asked.elapsed(),
-                                        first: false,
-                                    });
-                                }
-                                Err(error) => {
-                                    let _ = tx.send(Done::Failed { heard: None, error });
-                                }
+                            converse(
+                                &openai,
+                                toolbox.as_ref(),
+                                &mut brain,
+                                Talk {
+                                    id,
+                                    stop: &stop,
+                                    heard,
+                                    snapshot: &snapshot,
+                                    eyes: eyes.as_ref(),
+                                    speak,
+                                    language: language.as_deref(),
+                                },
+                                &tx,
+                                &busy_flag,
+                            );
+                            if let Ok(mut slot) = model_slot.lock() {
+                                *slot = openai.model();
                             }
                         }
-                    }
-                }
-                if !heard.is_empty() {
-                    let heard = heard.join(" ");
-                    brain.heard(&heard);
-                    if let Some(l) = language.as_deref().filter(|l| !language::is_english(l)) {
-                        let name = language::name(l);
-                        snapshot.push_str(&format!(
-                            "\n(The player's language setting is {name}: answer in the language they speak to you; when it isn't clear, in {name}.)"
-                        ));
-                    }
-                    converse(
-                        &openai,
-                        toolbox.as_ref(),
-                        &mut brain,
-                        heard,
-                        &snapshot,
-                        eyes.as_ref(),
-                        speak,
-                        &tx,
-                        &busy_flag,
-                    );
-                    if let Ok(mut slot) = model_slot.lock() {
-                        *slot = openai.model();
                     }
                 }
                 busy_flag.store(false, Ordering::Relaxed);
@@ -325,14 +346,103 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
         done,
         busy,
         model,
+        next: AtomicU64::new(1),
+        mark,
+    }
+}
+
+/// One of MapleSyrup's own lines: translated into the player's language
+/// when it is not English, shown when `show`, said when `aloud`.
+#[allow(clippy::too_many_arguments)]
+fn say_line(
+    openai: &OpenAi,
+    id: u64,
+    stop: &Stop,
+    text: &str,
+    language: Option<&str>,
+    show: Option<crate::companion::Kind>,
+    aloud: bool,
+    translations: &mut std::collections::HashMap<(String, String), String>,
+    tx: &Sender<Done>,
+) {
+    let asked = Instant::now();
+    let text = match language {
+        Some(l) if !language::is_english(l) => translate(openai, text, l, stop, translations),
+        _ => text.to_string(),
+    };
+    if stop.stopped() {
+        return;
+    }
+    if let Some(kind) = show {
+        let _ = tx.send(Done::Shown {
+            kind,
+            text: text.clone(),
+        });
+    }
+    if !aloud {
+        return;
+    }
+    if let Err(error) = speak_line(openai, id, stop, &text, asked, false, tx) {
+        let _ = tx.send(Done::Failed {
+            id,
+            heard: None,
+            error,
+        });
+    }
+}
+
+/// Say `text` in the natural voice, handing it over a piece at a time as it
+/// is made. Returns whether any of it was made (it may be called off).
+fn speak_line(
+    openai: &OpenAi,
+    id: u64,
+    stop: &Stop,
+    text: &str,
+    asked: Instant,
+    first: bool,
+    tx: &Sender<Done>,
+) -> Result<bool, AiError> {
+    let mut start = true;
+    let result = openai.speech_stream(text, brain::VOICE_STYLE, Some(stop), &mut |samples| {
+        let _ = tx.send(Done::Audio {
+            id,
+            text: if start {
+                text.to_string()
+            } else {
+                String::new()
+            },
+            samples: samples.to_vec(),
+            after: asked.elapsed(),
+            first: first && start,
+            start,
+            end: false,
+        });
+        start = false;
+    });
+    let made = !start;
+    if made {
+        let _ = tx.send(Done::Audio {
+            id,
+            text: String::new(),
+            samples: Vec::new(),
+            after: asked.elapsed(),
+            first: false,
+            start: false,
+            end: true,
+        });
+    }
+    match result {
+        Ok(_) | Err(AiError::Cancelled) => Ok(made),
+        Err(error) => Err(error),
     }
 }
 
 /// How the model is told it can see the game.
-const EYES_GUIDE: &str = "\n\nYou can see the game: the first picture is the whole game window as it is now, with \
-rulers on its edges (0 to 1000 across and down) for pointing at things; the second is the HUD at full size, for \
-reading small numbers. Use what you see, like a friend looking at the same screen. If the numbers listed above \
-disagree with the pictures, trust the pictures (and say so if it matters).";
+const EYES_GUIDE: &str = "\n\nWith the player's words comes what your vision engine reads off the game right now \
+(not said by the player) and, while the game is in view, two pictures: the whole game window as it is now, with \
+rulers on its edges (0 to 1000 across and down) for pointing at things, and the HUD at full size, for reading \
+small numbers. Use what you see, like a friend looking at the same screen. If the numbers disagree with the \
+pictures, trust the pictures (and say so if it matters). Without pictures you can't see the game right now.";
 
 /// How the model is told about its tools.
 const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
@@ -356,6 +466,7 @@ fn translate(
     openai: &OpenAi,
     text: &str,
     locale: &str,
+    stop: &Stop,
     cache: &mut std::collections::HashMap<(String, String), String>,
 ) -> String {
     // Already written in another script (a line the model made in the
@@ -377,6 +488,7 @@ say them. Reply with the translation only."
         input: vec![json!({"role": "user", "content": text})],
         max_output_tokens: 150,
         timeout: Duration::from_secs(20),
+        stop: Some(stop.clone()),
         ..Default::default()
     };
     match openai.ask(&ask, None) {
@@ -392,91 +504,175 @@ say them. Reply with the translation only."
     }
 }
 
-/// What to say while the web is searched, in the player's language.
-fn searching_line(heard: &str) -> &'static str {
-    if heard
-        .chars()
-        .any(|c| ('\u{0590}'..='\u{05FF}').contains(&c))
-    {
-        "רגע, אני בודק."
+/// What to say while the web is searched, in the player's language (the
+/// one they spoke in, else their setting).
+fn searching_line(heard: &str, language: Option<&str>) -> &'static str {
+    let script = |range: std::ops::RangeInclusive<char>| heard.chars().any(|c| range.contains(&c));
+    let code = if script('\u{0590}'..='\u{05FF}') {
+        "he"
+    } else if script('\u{AC00}'..='\u{D7AF}') {
+        "ko"
+    } else if script('\u{3040}'..='\u{30FF}') {
+        "ja"
+    } else if script('\u{0E00}'..='\u{0E7F}') {
+        "th"
+    } else if script('\u{0400}'..='\u{04FF}') {
+        "ru"
+    } else if script('\u{4E00}'..='\u{9FFF}') {
+        match language {
+            Some(l) if l.starts_with("ja") => "ja",
+            Some(l) if l.contains("TW") || l.contains("HK") || l.contains("Hant") => "zh-Hant",
+            _ => "zh",
+        }
     } else {
-        "Let me check that real quick."
+        match language.map(|l| l.split(['-', '_']).next().unwrap_or("")) {
+            Some("es") => "es",
+            Some("pt") => "pt",
+            Some("fr") => "fr",
+            Some("de") => "de",
+            Some("vi") => "vi",
+            Some("id" | "in") => "id",
+            _ => "en",
+        }
+    };
+    match code {
+        "he" => "רגע, בודק.",
+        "ko" => "잠깐, 찾아볼게.",
+        "ja" => "ちょっと調べるね。",
+        "th" => "แป๊บนึง ขอเช็กก่อนนะ",
+        "ru" => "Секунду, гляну.",
+        "zh" => "等一下，我查查。",
+        "zh-Hant" => "等一下，我查查。",
+        "es" => "Espera, lo busco.",
+        "pt" => "Peraí, vou ver.",
+        "fr" => "Attends, je regarde.",
+        "de" => "Moment, ich schau nach.",
+        "vi" => "Đợi chút, để mình xem.",
+        "id" => "Bentar, aku cek dulu.",
+        _ => "Hang on, let me check.",
     }
 }
 
-/// The conversation as input items, the screen with the player's last
-/// sentence.
-fn input_of(turns: &[openai::Turn], eyes: Option<&Eyes>) -> Vec<Value> {
+/// The conversation as input items. With the player's last sentence goes
+/// what is on screen now (and the screen itself), so everything before it
+/// stays the same from one reply to the next and OpenAI keeps it cached.
+fn input_of(turns: &[openai::Turn], snapshot: &str, eyes: Option<&Eyes>) -> Vec<Value> {
     let last_user = turns.iter().rposition(|t| t.role == "user");
     turns
         .iter()
         .enumerate()
-        .map(|(i, t)| match (eyes, Some(i) == last_user) {
-            (Some(eyes), true) => {
-                let mut content = vec![json!({"type": "input_text", "text": t.text})];
-                content.extend(eyes.pictures());
-                json!({"role": "user", "content": content})
+        .map(|(i, t)| {
+            if Some(i) != last_user {
+                return json!({"role": t.role, "content": t.text});
             }
-            _ => json!({"role": t.role, "content": t.text}),
+            let mut content = vec![json!({
+                "type": "input_text",
+                "text": format!("[The game right now, read by your vision engine — not said by the player]\n{snapshot}"),
+            })];
+            if let Some(eyes) = eyes {
+                content.extend(eyes.pictures());
+            }
+            content.push(json!({"type": "input_text", "text": t.text}));
+            json!({"role": "user", "content": content})
         })
         .collect()
 }
 
-/// Answer the player. The reply is streamed and cut into sentences; each
-/// sentence is turned into speech (on a second thread) as soon as it is
-/// complete, so the first is heard while the rest is still being written.
-/// When the model calls tools, they are run and their results handed back
-/// for it to go on, up to a few rounds.
-#[allow(clippy::too_many_arguments)]
+/// What the player said, and what goes with it.
+struct Talk<'a> {
+    id: u64,
+    stop: &'a Stop,
+    heard: String,
+    snapshot: &'a str,
+    eyes: Option<&'a Eyes>,
+    speak: bool,
+    language: Option<&'a str>,
+}
+
+/// Answer the player. The reply is streamed and cut into sentences; they
+/// are turned into speech (on a second thread) as soon as they are complete:
+/// the first sentence alone, so it is heard soon, then whatever was written
+/// meanwhile in one piece, so it flows. When the model calls tools, they
+/// are run and their results handed back for it to go on, up to a few
+/// rounds. Called off (the player talked over it), it stops at once and
+/// keeps in the conversation only what was said.
 fn converse(
     openai: &OpenAi,
     toolbox: Option<&Toolbox>,
     brain: &mut Brain,
-    heard: String,
-    snapshot: &str,
-    eyes: Option<&Eyes>,
-    speak: bool,
+    talk: Talk,
     tx: &Sender<Done>,
     busy: &AtomicBool,
 ) {
+    let Talk {
+        id,
+        stop,
+        heard,
+        snapshot,
+        eyes,
+        speak,
+        language,
+    } = talk;
     let started = Instant::now();
-    let mut instructions = brain.instructions(snapshot);
-    if eyes.is_some() {
-        instructions.push_str(EYES_GUIDE);
-    }
+    let mut instructions = brain.persona();
+    instructions.push_str(EYES_GUIDE);
     if let Some(toolbox) = toolbox {
         instructions.push_str(TOOLS_GUIDE);
         if toolbox.web {
             instructions.push_str(WEB_GUIDE);
         }
     }
-    let mut input = input_of(&brain.turns(), eyes);
+    // The player's sentence joins the conversation once it is answered (or
+    // was talked over after part of the answer was said).
+    let mut turns = brain.turns();
+    turns.push(Turn {
+        role: "user",
+        text: heard.clone(),
+    });
+    let mut input = input_of(&turns, snapshot, eyes);
     let tools = toolbox.map(|t| t.definitions()).unwrap_or_default();
     std::thread::scope(|scope| {
         let (lines, to_say) = channel::<String>();
-        if speak {
+        let voice = speak.then(|| {
             let tx = tx.clone();
             scope.spawn(move || {
+                // What was said aloud, for the conversation.
+                let mut spoken = String::new();
                 let mut first = true;
-                for text in to_say {
-                    match openai.speech(&text, brain::VOICE_STYLE) {
-                        Ok(samples) => {
-                            let _ = tx.send(Done::Audio {
-                                text,
-                                samples,
-                                after: started.elapsed(),
-                                first,
-                            });
+                while let Ok(line) = to_say.recv() {
+                    // The first sentence goes alone, so it is heard soon;
+                    // after it, what was written while the last line was
+                    // being said goes in one piece, so it flows.
+                    let mut text = line;
+                    while !first && let Ok(more) = to_say.try_recv() {
+                        text.push(' ');
+                        text.push_str(&more);
+                    }
+                    if stop.stopped() {
+                        break;
+                    }
+                    match speak_line(openai, id, stop, &text, started, first, &tx) {
+                        Ok(true) => {
                             first = false;
+                            if !spoken.is_empty() {
+                                spoken.push(' ');
+                            }
+                            spoken.push_str(&text);
                         }
+                        Ok(false) => {}
                         Err(error) => {
-                            let _ = tx.send(Done::Failed { heard: None, error });
+                            let _ = tx.send(Done::Failed {
+                                id,
+                                heard: None,
+                                error,
+                            });
                             break;
                         }
                     }
                 }
-            });
-        }
+                spoken
+            })
+        });
         let mut sentences = brain::Sentences::default();
         let mut said = String::new();
         let mut failed = None;
@@ -487,6 +683,7 @@ fn converse(
                 tools: if round < 3 { tools.clone() } else { Vec::new() },
                 max_output_tokens: 500,
                 timeout: Duration::from_secs(60),
+                stop: Some(stop.clone()),
                 ..Default::default()
             };
             let answer = openai.ask(
@@ -502,7 +699,7 @@ fn converse(
                     }
                     Piece::Searching => {
                         if speak && said.trim().is_empty() {
-                            let _ = lines.send(searching_line(&heard).to_string());
+                            let _ = lines.send(searching_line(&heard, language).to_string());
                         }
                     }
                 }),
@@ -555,32 +752,54 @@ fn converse(
             }
             input.extend(openai::follow_up(&answer));
             input.extend(outputs);
+            if stop.stopped() {
+                failed = Some(AiError::Cancelled);
+                break;
+            }
+        }
+        if stop.stopped() {
+            failed = Some(AiError::Cancelled);
         }
         match failed {
+            Some(AiError::Cancelled) => {
+                // Talked over: what was said aloud stays, cut off where it was.
+                drop(lines);
+                let spoken = voice
+                    .map(|v| v.join().unwrap_or_default())
+                    .unwrap_or_default();
+                if !spoken.trim().is_empty() {
+                    brain.heard(&heard);
+                    brain.said(&format!("{}…", spoken.trim_end_matches(['.', ' '])));
+                }
+            }
             Some(error) => {
+                brain.heard(&heard);
                 let _ = tx.send(Done::Failed {
+                    id,
                     heard: Some(heard),
                     error,
                 });
             }
             None if brain::is_silent(&said) => {
-                let _ = tx.send(Done::Silent { heard });
+                brain.heard(&heard);
+                let _ = tx.send(Done::Silent { id, heard });
             }
             None => {
                 if speak && let Some(rest) = sentences.finish() {
                     let _ = lines.send(brain::for_speech(&rest));
                 }
                 let text = brain::for_speech(&said);
+                brain.heard(&heard);
                 brain.said(&text);
                 let _ = tx.send(Done::Reply {
+                    id,
                     heard,
                     text,
                     took: started.elapsed(),
                 });
             }
         }
-        // The words are out; the voice may still be on its last sentences.
-        drop(lines);
+        // The words are out; the voice may still be on its last lines.
         busy.store(false, Ordering::Relaxed);
     });
 }

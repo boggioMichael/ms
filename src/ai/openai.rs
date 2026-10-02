@@ -10,7 +10,8 @@
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -47,6 +48,8 @@ pub enum AiError {
     Http(u16, String),
     /// The answer could not be read.
     Parse(String),
+    /// Called off before it was done (the player talked over it).
+    Cancelled,
 }
 
 impl std::fmt::Display for AiError {
@@ -58,6 +61,72 @@ impl std::fmt::Display for AiError {
             AiError::Http(429, m) => write!(f, "OpenAI says slow down or add credit ({m})"),
             AiError::Http(code, m) => write!(f, "OpenAI error {code}: {m}"),
             AiError::Parse(e) => write!(f, "unexpected answer from OpenAI ({e})"),
+            AiError::Cancelled => write!(f, "called off"),
+        }
+    }
+}
+
+/// Calls a piece of work off from another thread: everything numbered up
+/// to the shared mark is called off, and a request running for it has its
+/// curl stopped at once.
+#[derive(Debug, Clone)]
+pub struct Stop {
+    mark: Arc<AtomicU64>,
+    id: u64,
+}
+
+impl Stop {
+    /// Work number `id`, called off once `mark` reaches it.
+    pub fn new(mark: Arc<AtomicU64>, id: u64) -> Stop {
+        Stop { mark, id }
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.mark.load(Ordering::SeqCst) >= self.id
+    }
+}
+
+/// How a request is made.
+#[derive(Default, Clone, Copy)]
+struct Via<'a> {
+    stop: Option<&'a Stop>,
+    /// The status line and headers come before the body (curl's `-i`), so a
+    /// streamed body can be told from an error before it is used.
+    headers: bool,
+}
+
+/// The status and headers in front of a body (curl's `-i`), skipping an
+/// interim answer (100 Continue) or a proxy's.
+#[derive(Default)]
+struct Head {
+    buf: Vec<u8>,
+    status: Option<u16>,
+}
+
+impl Head {
+    /// Bytes as they arrive: the part of them that is the body.
+    fn feed(&mut self, chunk: &[u8]) -> Vec<u8> {
+        if self.status.is_some() {
+            return chunk.to_vec();
+        }
+        self.buf.extend_from_slice(chunk);
+        loop {
+            let Some(end) = self.buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                return Vec::new();
+            };
+            let head = String::from_utf8_lossy(&self.buf[..end]).to_ascii_lowercase();
+            self.buf.drain(..end + 4);
+            let first = head.lines().next().unwrap_or_default();
+            let code = first
+                .split_whitespace()
+                .nth(1)
+                .and_then(|c| c.parse::<u16>().ok())
+                .unwrap_or(0);
+            if (100..200).contains(&code) || first.contains("connection established") {
+                continue;
+            }
+            self.status = Some(code);
+            return std::mem::take(&mut self.buf);
         }
     }
 }
@@ -109,6 +178,8 @@ pub struct Ask {
     /// Pictures are the point of the question: a model that cannot take
     /// them is skipped rather than asked without them.
     pub needs_images: bool,
+    /// Lets it be called off (the player talked over the reply).
+    pub stop: Option<Stop>,
 }
 
 /// A function the model wants called.
@@ -190,22 +261,27 @@ impl OpenAi {
         timeout: Duration,
     ) -> Result<(u16, Vec<u8>), AiError> {
         let mut all = Vec::new();
-        let status = self.call_with(method, path, body, timeout, &mut |chunk| {
+        let status = self.call_with(method, path, body, timeout, Via::default(), &mut |chunk| {
             all.extend_from_slice(chunk)
         })?;
         Ok((status, all))
     }
 
     /// One HTTP request, its answer handed to `on_body` piece by piece as it
-    /// arrives (curl's `--no-buffer`). Returns the HTTP status.
+    /// arrives (curl's `--no-buffer`). Returns the HTTP status. A request
+    /// with a `stop` that is called off ends at once, as `Cancelled`.
     fn call_with(
         &self,
         method: &str,
         path: &str,
         body: Option<&Value>,
         timeout: Duration,
+        via: Via,
         on_body: &mut dyn FnMut(&[u8]),
     ) -> Result<u16, AiError> {
+        if via.stop.is_some_and(Stop::stopped) {
+            return Err(AiError::Cancelled);
+        }
         let url = format!("{}{path}", self.base);
         let mut command = Command::new(&self.curl);
         command
@@ -221,6 +297,9 @@ impl OpenAi {
             .args(["-X", method])
             .args(["-H", &format!("Authorization: Bearer {}", self.key)])
             .args(["-w", "%{stderr}HTTPSTATUS:%{http_code}"]);
+        if via.headers {
+            command.args(["-i", "--suppress-connect-headers"]);
+        }
         if body.is_some() {
             command.args([
                 "-H",
@@ -262,19 +341,57 @@ impl OpenAi {
             }
             bytes
         });
-        if let Some(mut stdout) = child.stdout.take() {
+        let stdout = child.stdout.take();
+        // Called off: curl is stopped from the side, which ends the reading.
+        let child = Arc::new(Mutex::new(child));
+        let finished = Arc::new(AtomicBool::new(false));
+        let watcher = via.stop.cloned().map(|stop| {
+            let child = Arc::clone(&child);
+            let finished = Arc::clone(&finished);
+            std::thread::spawn(move || {
+                while !finished.load(Ordering::SeqCst) {
+                    if stop.stopped() {
+                        if let Ok(mut child) = child.lock() {
+                            let _ = child.kill();
+                        }
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(15));
+                }
+            })
+        });
+        if let Some(mut stdout) = stdout {
             let mut buffer = [0u8; 8192];
             loop {
                 match stdout.read(&mut buffer) {
                     Ok(0) => break,
-                    Ok(n) => on_body(&buffer[..n]),
+                    Ok(n) => {
+                        if via.stop.is_some_and(Stop::stopped) {
+                            break;
+                        }
+                        on_body(&buffer[..n])
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }
             }
         }
+        finished.store(true, Ordering::SeqCst);
+        if let Some(watcher) = watcher {
+            let _ = watcher.join();
+        }
+        if via.stop.is_some_and(Stop::stopped)
+            && let Ok(mut child) = child.lock()
+        {
+            let _ = child.kill();
+        }
         let stderr_bytes = error_reader.join().unwrap_or_default();
-        let _ = child.wait();
+        if let Ok(mut child) = child.lock() {
+            let _ = child.wait();
+        }
+        if via.stop.is_some_and(Stop::stopped) {
+            return Err(AiError::Cancelled);
+        }
         let stderr = String::from_utf8_lossy(&stderr_bytes);
         let status = stderr
             .rsplit("HTTPSTATUS:")
@@ -397,23 +514,37 @@ impl OpenAi {
                     ask.timeout
                 };
                 let mut events = EventStream::default();
+                let via = Via {
+                    stop: ask.stop.as_ref(),
+                    headers: false,
+                };
                 let status = match on_piece.as_mut() {
                     Some(on_piece) => {
                         body["stream"] = json!(true);
-                        self.call_with("POST", "/responses", Some(&body), timeout, &mut |chunk| {
-                            for piece in events.feed(chunk) {
-                                match piece {
-                                    Event::Text(t) => on_piece(Piece::Text(&t)),
-                                    Event::Searching => on_piece(Piece::Searching),
+                        self.call_with(
+                            "POST",
+                            "/responses",
+                            Some(&body),
+                            timeout,
+                            via,
+                            &mut |chunk| {
+                                for piece in events.feed(chunk) {
+                                    match piece {
+                                        Event::Text(t) => on_piece(Piece::Text(&t)),
+                                        Event::Searching => on_piece(Piece::Searching),
+                                    }
                                 }
-                            }
-                        })?
+                            },
+                        )?
                     }
-                    None => {
-                        self.call_with("POST", "/responses", Some(&body), timeout, &mut |chunk| {
-                            events.keep(chunk)
-                        })?
-                    }
+                    None => self.call_with(
+                        "POST",
+                        "/responses",
+                        Some(&body),
+                        timeout,
+                        via,
+                        &mut |chunk| events.keep(chunk),
+                    )?,
                 };
                 if status == 200 {
                     if let Some(message) = events.error {
@@ -457,6 +588,9 @@ impl OpenAi {
                 if matches!(status, 500 | 502 | 503 | 504) && !retried {
                     retried = true;
                     std::thread::sleep(Duration::from_millis(700));
+                    if ask.stop.as_ref().is_some_and(Stop::stopped) {
+                        return Err(AiError::Cancelled);
+                    }
                     continue;
                 }
                 if status == 400 {
@@ -500,6 +634,23 @@ impl OpenAi {
     /// `text` spoken in the chosen voice, as 24 kHz mono samples. `style`
     /// tells the voice how to sound.
     pub fn speech(&self, text: &str, style: &str) -> Result<Vec<i16>, AiError> {
+        let mut all = Vec::new();
+        self.speech_stream(text, style, None, &mut |samples| {
+            all.extend_from_slice(samples)
+        })?;
+        Ok(all)
+    }
+
+    /// `text` spoken, handed to `on_samples` a piece at a time as the voice
+    /// is made (24 kHz mono), so it can be played before it is complete.
+    /// Returns how many samples there were.
+    pub fn speech_stream(
+        &self,
+        text: &str,
+        style: &str,
+        stop: Option<&Stop>,
+        on_samples: &mut dyn FnMut(&[i16]),
+    ) -> Result<usize, AiError> {
         let mut voice = self.voice.clone();
         for attempt in 0..2 {
             let body = json!({
@@ -509,21 +660,53 @@ impl OpenAi {
                 "instructions": style,
                 "response_format": "pcm",
             });
-            let (status, raw) = self.call(
+            let mut head = Head::default();
+            let mut error = Vec::new();
+            let mut odd: Option<u8> = None;
+            let mut count = 0;
+            let status = self.call_with(
                 "POST",
                 "/audio/speech",
                 Some(&body),
                 Duration::from_secs(40),
+                Via {
+                    stop,
+                    headers: true,
+                },
+                &mut |chunk| {
+                    let bytes = head.feed(chunk);
+                    if bytes.is_empty() {
+                        return;
+                    }
+                    if head.status != Some(200) {
+                        if error.len() < 4096 {
+                            error.extend_from_slice(&bytes);
+                        }
+                        return;
+                    }
+                    // A sample can be split between two pieces.
+                    let mut joined = Vec::with_capacity(bytes.len() + 1);
+                    joined.extend(odd.take());
+                    joined.extend_from_slice(&bytes);
+                    if joined.len() % 2 == 1 {
+                        odd = joined.pop();
+                    }
+                    let samples: Vec<i16> = joined
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|b| i16::from_le_bytes(*b))
+                        .collect();
+                    count += samples.len();
+                    if !samples.is_empty() {
+                        on_samples(&samples);
+                    }
+                },
             )?;
-            if status == 200 {
-                return Ok(raw
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .map(|b| i16::from_le_bytes(*b))
-                    .collect());
+            if status == 200 && head.status.is_none_or(|s| s == 200) {
+                return Ok(count);
             }
-            let error = Self::error_of(status, &raw);
+            let error = Self::error_of(status, &error);
             // A voice this account does not have: fall back to a standard one.
             if attempt == 0 && status == 400 && format!("{error}").to_lowercase().contains("voice")
             {

@@ -694,6 +694,7 @@
   }
   function render(state) {
     status = state.status || {};
+    if (status.speaking_pc) pcSpokeAt = Date.now();
     const game = status.game || {};
     const seen = game.state === "seen";
     $("gameDot").className = "dot " + (seen ? "on" : "bad");
@@ -852,16 +853,27 @@
     player.src = "/api/clip?k=" + encodeURIComponent(KEY) + "&seq=" + seq;
     player.play().catch(() => {});
   }
+  // Talked over: stop now and skip what was still to come.
+  function stopClips() {
+    if (lastClip !== null) nextClip = lastClip + 1;
+    if (!player.paused) { try { player.pause(); } catch (e) {} }
+    player.removeAttribute("src");
+    quietUntil = 0;
+    updateHold();
+  }
   player.addEventListener("playing", () => updateHold());
   player.addEventListener("ended", () => { quietUntil = Date.now() + 500; playNextClip(); updateHold(); });
   player.addEventListener("error", () => { playNextClip(); updateHold(); });
 
   // ---- polling ---------------------------------------------------------------
-  let since = 0, first = true, failures = 0;
+  // The PC answers at once when there is something new (a line, a clip, a
+  // reply cut short), else after a moment with the latest figures.
+  let since = 0, first = true, failures = 0, lastCut = null;
   async function poll() {
     if (!KEY) return;
     try {
-      const r = await api("/api/state?since=" + since);
+      const r = await api("/api/state?since=" + since + "&wait=" + (first ? 0 : 450) +
+        "&clip=" + (lastClip || 0) + "&cut=" + (lastCut || 0));
       if (r.status === 403) {
         banner(t("link_old"));
         setPc(false, t("old_link"));
@@ -875,13 +887,16 @@
       render(state);
       for (const m of state.messages || []) addMessage(m, !first);
       since = state.last_id || since;
+      const cut = state.cut || 0;
+      if (lastCut !== null && cut > lastCut) stopClips();
+      lastCut = cut;
       maybePlayClip(state.clip || 0);
       first = false;
     } catch (e) {
       failures++;
       setPc(false, failures > 2 ? t("pc_unreachable") : t("reconnecting"));
     }
-    setTimeout(poll, failures ? Math.min(5000, 600 * failures) : 450);
+    setTimeout(poll, failures ? Math.min(5000, 600 * failures) : 30);
   }
   function setPc(ok, text) {
     $("pcDot").className = "dot " + (ok ? "on" : "bad");
@@ -965,6 +980,7 @@
       const rms = Math.sqrt(sum / input.length);
       const db = rms > 1e-5 ? 20 * Math.log10(rms) : -100;
       $("meter").style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%";
+      talkingOver(db);
       if (!sendAudio.checked) return;
       const a = audio, out = [];
       let pos = a.pos;
@@ -1007,15 +1023,24 @@
   }
 
   // ---- speech recognition --------------------------------------------------------------
+  // Like talking to a person: the phone keeps listening while MapleSyrup
+  // talks on the PC, and tells the PC what it hears as it is said
+  // (/api/hearing), so the PC stops talking when the player talks over it
+  // (it tells its own voice from the player's). A sentence is sent as soon
+  // as the words stop for a moment, without waiting for the phone's
+  // recognition to close it; if the player goes on, only the rest is sent.
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   let rec = null, wantRec = false, recStarted = 0, quickEnds = 0, lastSent = "", lastSentAt = 0;
   const plain = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
+  const wordsOf = (s) => (s || "").trim().split(/\s+/).filter(Boolean);
+  // How long the words must stop before the sentence is taken as said.
+  const SETTLE_MS = 700;
 
   function sendHeard(text) {
     text = (text || "").trim();
     if (!text) return;
-    // While MapleSyrup speaks, the microphone mostly hears MapleSyrup.
-    if (held || speakingNow() || Date.now() < quietUntil) return;
+    // While this phone speaks, its microphone mostly hears itself.
+    if (held) return;
     const now = Date.now(), p = plain(text);
     if (!p) return;
     // Safari sometimes hands the same words over twice, or a piece of them again.
@@ -1025,12 +1050,60 @@
     postJson("/api/heard", { text }).catch(() => {});
   }
 
-  // While MapleSyrup speaks (on the PC or on this phone) recognition is
-  // stopped, and what it caught of MapleSyrup is thrown away; it starts again
-  // right after. Otherwise its last words and the player's answer end up in
-  // one sentence.
+  // The sentence being said: which result it is, how many of its words were
+  // sent already, and the words since.
+  let current = -1, sentWords = 0, sentAll = "", settleTimer = 0, pending = "";
+  let hearingSent = "", hearingAt = 0, hearingTimer = 0, pcSpokeAt = 0;
+  const squash = (s) => plain(s).replace(/ /g, "");
+  function restOf(index, transcript) {
+    if (index !== current) return transcript.trim();
+    // The words sent already, written again a little differently.
+    if (sentAll && squash(transcript) === sentAll) return "";
+    return wordsOf(transcript).slice(sentWords).join(" ");
+  }
+  function hearing(text) {
+    // At most every 150 ms, the latest words last.
+    clearTimeout(hearingTimer);
+    if (!text || text === hearingSent) return;
+    const wait = 150 - (Date.now() - hearingAt);
+    if (wait > 0) { hearingTimer = setTimeout(() => hearing(text), wait); return; }
+    hearingSent = text; hearingAt = Date.now();
+    postJson("/api/hearing", { text }).catch(() => {});
+  }
+  function interim(index, transcript) {
+    if (index !== current) { current = index; sentWords = 0; sentAll = ""; }
+    const rest = restOf(index, transcript);
+    pending = rest;
+    if (!rest) return;
+    hearing(rest);
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      // While the PC talks (and just after), what the phone hears is mostly
+      // its voice: wait for the phone to close the sentence (the PC sorts
+      // out whose words they are).
+      if (status.speaking_pc || Date.now() - pcSpokeAt < 1200) return;
+      if (index !== current || pending !== rest) return;
+      sendHeard(rest);
+      sentWords = wordsOf(transcript).length;
+      sentAll = squash(transcript);
+      pending = "";
+    }, SETTLE_MS);
+  }
+  function final(index, transcript) {
+    clearTimeout(settleTimer);
+    const rest = restOf(index, transcript);
+    if (index === current) { current = -1; sentWords = 0; sentAll = ""; }
+    pending = "";
+    hearingSent = "";
+    if (rest) sendHeard(rest);
+  }
+
+  // While MapleSyrup speaks on this phone, recognition is stopped (the
+  // phone would hear itself) and started again right after; the player can
+  // still talk over it: a loud voice (the phone's echo cancelling takes its
+  // own sound out) stops it.
   let held = false, holdTimer = 0;
-  function speakingNow() { return !!status.speaking || !player.paused; }
+  function speakingNow() { return !player.paused; }
   function updateHold() {
     clearTimeout(holdTimer);
     if (speakingNow()) {
@@ -1055,6 +1128,17 @@
     try { recStarted = Date.now(); rec.start(); }
     catch (e) { if (tries < 8) setTimeout(() => restartRecognition(tries + 1), 250); }
   }
+  // The player's voice over the phone's own: loud for about a third of a second.
+  let floorDb = -60, loudFor = 0;
+  function talkingOver(db) {
+    if (!speakingNow()) { floorDb = 0.95 * floorDb + 0.05 * db; loudFor = 0; return; }
+    loudFor = db > Math.max(-30, floorDb + 14) ? loudFor + 1 : 0;
+    if (loudFor >= 4) {
+      loudFor = 0;
+      stopClips();
+      postJson("/api/interrupt", {}).catch(() => {});
+    }
+  }
 
   function startRecognition() {
     if (!Recognition) {
@@ -1067,14 +1151,15 @@
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
+    current = -1; sentWords = 0; sentAll = ""; pending = "";
     rec.onresult = (e) => {
-      let interim = "";
+      let shown = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const r = e.results[i];
-        if (r.isFinal) sendHeard(r[0].transcript);
-        else interim += r[0].transcript;
+        if (r.isFinal) final(i, r[0].transcript);
+        else { interim(i, r[0].transcript); shown += r[0].transcript; }
       }
-      if (interim) $("heard").textContent = interim + "…";
+      if (shown) $("heard").textContent = shown + "…";
     };
     rec.onerror = (e) => {
       if (e.error === "no-speech" || e.error === "aborted") return;
@@ -1088,19 +1173,24 @@
       }
     };
     rec.onend = () => {
+      // Words still waiting when recognition stopped are sent as they are.
+      clearTimeout(settleTimer);
+      if (pending && !held) sendHeard(pending);
+      current = -1; sentWords = 0; sentAll = ""; pending = "";
       // While held, it is started again when MapleSyrup stops talking.
       if (!wantRec || !listening || held) return;
       quickEnds = Date.now() - recStarted < 1500 ? quickEnds + 1 : 0;
       setTimeout(() => {
         if (!wantRec || !listening || held) return;
         try { recStarted = Date.now(); rec.start(); } catch (e) {}
-      }, quickEnds > 3 ? 3000 : 200);
+      }, quickEnds > 3 ? 3000 : 120);
     };
     try { recStarted = Date.now(); rec.start(); } catch (e) { note(t("rec_cant_start") + " " + e.message); }
   }
 
   function stopRecognition() {
     wantRec = false;
+    clearTimeout(settleTimer);
     if (rec) { try { rec.abort(); } catch (e) {} }
     rec = null;
   }

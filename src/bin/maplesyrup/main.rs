@@ -581,6 +581,11 @@ struct Mouth {
     phone_until: Instant,
     /// When the phone is expected to finish the clips it was handed.
     phone_end: Instant,
+    /// The line being made for the phone (it gets a line at a time).
+    phone_line: Vec<i16>,
+    /// When it was last heard speaking (the phone may still hand its last
+    /// words back for a moment).
+    last_voice: Instant,
     /// The game's process, turned down while the PC speaks.
     game_pid: Option<u32>,
 }
@@ -602,6 +607,202 @@ impl Mouth {
     /// Roughly how long the Windows voice takes to say `text`.
     fn estimate(text: &str) -> Duration {
         Duration::from_secs_f64(0.6 + text.chars().count() as f64 / 14.0)
+    }
+}
+
+/// Whose turn it is, so talking to MapleSyrup works like talking to a
+/// person: talk over it and it stops and listens; keep talking after a
+/// pause and it waits for the rest of the sentence instead of answering
+/// half of it.
+#[derive(Default)]
+struct Turns {
+    /// The latest reply asked for.
+    reply: Option<Asked>,
+    /// What the player said before they kept talking (its reply was called
+    /// off before a word of it was said): answered together with what they
+    /// say next, or alone after a moment.
+    held: Option<(String, Instant)>,
+}
+
+struct Asked {
+    /// The worker's job.
+    id: u64,
+    /// What it answers.
+    heard: String,
+    /// Some of it has been said.
+    spoke: bool,
+    /// Its text is complete (its voice may still be playing).
+    done: bool,
+    /// Its lines, and when each starts to be heard.
+    lines: Vec<(Instant, String)>,
+}
+
+/// How long the player's words wait for the rest of their sentence.
+const HOLD_FOR: Duration = Duration::from_millis(1600);
+
+impl Turns {
+    /// Stop talking and call off what is being made (the player talked over
+    /// it, or the phone heard them over its own voice).
+    fn interrupt(&mut self, out: &mut Outputs) {
+        let talking = out.mouth.speaking();
+        out.cut();
+        let Some(worker) = &out.mouth.ai else {
+            return;
+        };
+        worker.cancel_all();
+        if let Some(reply) = self.reply.as_mut() {
+            if !reply.spoke && !reply.done {
+                // Nothing of it was said: the player's words still count.
+                self.held = Some((reply.heard.clone(), Instant::now()));
+            } else if reply.done && talking {
+                // Written in full but cut off while said: the conversation
+                // keeps what was heard.
+                let now = Instant::now();
+                let heard: Vec<String> = reply
+                    .lines
+                    .iter()
+                    .filter(|(at, _)| *at <= now)
+                    .map(|(at, line)| heard_of(line, now.duration_since(*at)))
+                    .collect();
+                worker.send(Job::Cut {
+                    heard: heard.join(" "),
+                });
+            }
+            reply.done = true;
+        }
+    }
+
+    /// The phone hears the player now. Returns what happened, for the log.
+    fn hearing(
+        &mut self,
+        out: &mut Outputs,
+        companion: &Companion,
+        now: f64,
+        text: &str,
+    ) -> Option<String> {
+        if out.mouth.speaking() {
+            let words = companion.barge_in(now, text)?;
+            self.interrupt(out);
+            return Some(format!("talked over: {words}"));
+        }
+        let waiting = self.reply.as_ref().is_some_and(|r| !r.spoke && !r.done);
+        if waiting && companion.still_talking(now, text) {
+            // Still talking: the answer waits for the rest.
+            self.interrupt(out);
+            return Some(format!("still talking: {text}"));
+        }
+        None
+    }
+
+    /// The player said `text`: what to answer (with words of theirs still
+    /// waiting, if any). Whatever is being said or made is stopped.
+    fn heard(&mut self, out: &mut Outputs, text: String) -> String {
+        let busy = self.reply.as_ref().is_some_and(|r| !r.done);
+        if out.mouth.speaking() || busy {
+            self.interrupt(out);
+        }
+        match self.held.take() {
+            Some((before, _)) => fold(&before, text),
+            None => text,
+        }
+    }
+
+    fn asked(&mut self, id: u64, heard: &str) {
+        self.reply = Some(Asked {
+            id,
+            heard: heard.to_string(),
+            spoke: false,
+            done: false,
+            lines: Vec::new(),
+        });
+    }
+
+    /// A line of reply `id` starts to be made, to be heard from `at`.
+    fn spoke(&mut self, id: u64, at: Instant, line: &str) {
+        if let Some(reply) = self.reply.as_mut().filter(|r| r.id == id) {
+            reply.spoke = true;
+            reply.lines.push((at, line.to_string()));
+        }
+    }
+
+    fn finished(&mut self, id: u64) {
+        if let Some(reply) = self.reply.as_mut().filter(|r| r.id == id) {
+            reply.done = true;
+        }
+    }
+
+    /// Words that waited long enough for more: to be answered now.
+    fn overdue(&mut self) -> Option<String> {
+        if self
+            .held
+            .as_ref()
+            .is_some_and(|(_, since)| since.elapsed() >= HOLD_FOR)
+        {
+            return self.held.take().map(|(text, _)| text);
+        }
+        None
+    }
+}
+
+/// The start of a sentence and its rest, as one (the phone sometimes sends
+/// the whole sentence again instead of the rest).
+fn fold(before: &str, text: String) -> String {
+    if commands::normalize(&text).starts_with(&commands::normalize(before)) {
+        text
+    } else {
+        format!("{before} {text}")
+    }
+}
+
+/// How much of `line` was heard after it had played for `played`: speech
+/// runs at about fourteen letters a second; cut at a word.
+fn heard_of(line: &str, played: Duration) -> String {
+    let letters = (played.as_secs_f64() * 14.0) as usize;
+    if letters >= line.chars().count() {
+        return line.to_string();
+    }
+    let mut heard = String::new();
+    for word in line.split_whitespace() {
+        if heard.chars().count() + word.chars().count() > letters {
+            break;
+        }
+        if !heard.is_empty() {
+            heard.push(' ');
+        }
+        heard.push_str(word);
+    }
+    heard
+}
+
+/// What the player said, for the model: with what is on screen, and the
+/// screen itself while the game is the window in front.
+fn conversation_job(
+    text: String,
+    companion: &Companion,
+    sight: Option<&Arc<Mutex<Sight>>>,
+    frame: Option<Arc<RgbaImage>>,
+    in_view: bool,
+    language: Option<String>,
+) -> Job {
+    let mut snapshot = ai::brain::snapshot(companion.last(), &companion.progress());
+    let mut status = None;
+    if let Some(sight) = sight {
+        let sight = sight.lock().unwrap_or_else(|e| e.into_inner());
+        for line in sight.describe() {
+            snapshot.push('\n');
+            snapshot.push_str(&line);
+        }
+        status = sight.layout.as_ref().and_then(|l| l.status);
+    }
+    let eyes = frame
+        .filter(|_| in_view && companion.last().is_some_and(|o| o.game.is_seen()))
+        .map(|frame| Eyes { frame, status });
+    Job::Converse {
+        heard: text,
+        snapshot,
+        speak: true,
+        eyes,
+        language,
     }
 }
 
@@ -674,12 +875,14 @@ impl Outputs {
         let now = self.start.elapsed().as_secs_f64();
         companion.remember_spoken(now, text);
         match &self.mouth.ai {
-            Some(worker) => worker.send(Job::Speak {
-                text: text.to_string(),
-                language: self.language.clone(),
-                show: None,
-                speak: true,
-            }),
+            Some(worker) => {
+                worker.send(Job::Speak {
+                    text: text.to_string(),
+                    language: self.language.clone(),
+                    show: None,
+                    speak: true,
+                });
+            }
             None => {
                 if self.voice_on().pc()
                     && let Some(voice) = &self.mouth.sapi
@@ -691,31 +894,56 @@ impl Outputs {
         }
     }
 
-    /// Play a natural-voice clip where replies are spoken, after the ones
-    /// before it (a reply comes a sentence at a time).
-    fn play(&mut self, samples: Vec<i16>, companion: &Companion) {
+    /// A piece of natural-voice speech, played as it comes where replies
+    /// are spoken: on the PC at once (a new line after a short pause), on
+    /// the phone a line at a time, once the line is complete.
+    fn play_piece(&mut self, samples: &[i16], start: bool, end: bool, companion: &Companion) {
         if companion.muted() {
             return;
         }
         let voice_on = self.voice_on();
+        let rate = ai::openai::SPEECH_RATE;
+        if voice_on.pc() {
+            let pid = self.mouth.game_pid;
+            if start {
+                self.mouth.player.gap(pid);
+            }
+            self.mouth.player.push(samples, rate, pid);
+            if end {
+                self.mouth.player.flush(pid);
+            }
+        }
         if voice_on.phone()
             && let Some(hub) = &self.phone
         {
-            hub.set_clip(ai::wav_bytes(&samples, ai::openai::SPEECH_RATE));
-            let length =
-                Duration::from_secs_f64(samples.len() as f64 / ai::openai::SPEECH_RATE as f64);
-            // The phone fetches it within a poll and plays it after the last.
-            let begins = self
-                .mouth
-                .phone_end
-                .max(Instant::now() + Duration::from_millis(500));
-            self.mouth.phone_end = begins + length;
-            self.mouth.phone_until = self.mouth.phone_end + Duration::from_millis(800);
+            if start {
+                self.mouth.phone_line.clear();
+            }
+            self.mouth.phone_line.extend_from_slice(samples);
+            if end && !self.mouth.phone_line.is_empty() {
+                let line = std::mem::take(&mut self.mouth.phone_line);
+                hub.set_clip(ai::wav_bytes(&line, rate));
+                let length = Duration::from_secs_f64(line.len() as f64 / rate as f64);
+                // The phone fetches it at once and plays it after the last.
+                let begins = self
+                    .mouth
+                    .phone_end
+                    .max(Instant::now() + Duration::from_millis(300));
+                self.mouth.phone_end = begins + length;
+                self.mouth.phone_until = self.mouth.phone_end + Duration::from_millis(600);
+            }
         }
-        if voice_on.pc() {
-            self.mouth
-                .player
-                .enqueue(samples, ai::openai::SPEECH_RATE, self.mouth.game_pid);
+    }
+
+    /// Stop talking at once (the player talked over it), here and on the
+    /// phone.
+    fn cut(&mut self) {
+        self.mouth.hush();
+        self.mouth.phone_line.clear();
+        self.mouth.phone_until = Instant::now();
+        self.mouth.phone_end = Instant::now();
+        if let Some(hub) = &self.phone {
+            hub.cut();
         }
     }
 
@@ -999,6 +1227,8 @@ fn run(options: Options) -> Result<(), String> {
             sapi_until: Instant::now(),
             phone_until: Instant::now(),
             phone_end: Instant::now(),
+            phone_line: Vec::new(),
+            last_voice: Instant::now() - Duration::from_secs(60),
             game_pid: None,
         },
         phone: phone.as_ref().map(|p| Arc::clone(&p.hub)),
@@ -1029,6 +1259,7 @@ fn run(options: Options) -> Result<(), String> {
     let mut ai_error_shown = String::new();
     let mut model_logged = false;
     let mut player_language: Option<String> = None;
+    let mut turns = Turns::default();
 
     let mut preview: Option<Preview> = None;
     let mut preview_failed = false;
@@ -1086,6 +1317,9 @@ fn run(options: Options) -> Result<(), String> {
             window.pump();
         }
         out.mouth.player.tick();
+        if out.mouth.speaking() {
+            out.mouth.last_voice = Instant::now();
+        }
 
         // What the phone sent.
         if let Some(hub) = out.phone.clone() {
@@ -1093,8 +1327,23 @@ fn run(options: Options) -> Result<(), String> {
                 match inbound {
                     Inbound::Heard(heard) => {
                         // MapleSyrup's own voice, heard back by the phone, is
-                        // taken out; what is left is the player's.
-                        let text = match companion.strip_echo(now, &heard) {
+                        // taken out; what is left is the player's. Heard while
+                        // it was talking, there must be enough of the player's
+                        // own words in it.
+                        let need = if out.mouth.speaking() {
+                            2
+                        } else if out.mouth.last_voice.elapsed() < Duration::from_millis(2500) {
+                            1
+                        } else {
+                            0
+                        };
+                        // ("mute" or "mark that" said over it still counts.)
+                        let own = companion.own_words(now, &heard, need).or_else(|| {
+                            companion
+                                .own_words(now, &heard, 0)
+                                .filter(|t| commands::local_command(t).is_some())
+                        });
+                        let text = match own {
                             None => {
                                 out.session.line("echo", &heard);
                                 continue;
@@ -1112,44 +1361,45 @@ fn run(options: Options) -> Result<(), String> {
                             if let Some(command) = commands::local_command(&text) {
                                 let actions = companion.command(now, command);
                                 out.apply(actions, &mut companion, latest_image.clone());
-                            } else if (companion.settings.always_listen
-                                || !matches!(commands::interpret(&text, false), Heard::NotForUs))
-                                && let Some(worker) = &out.mouth.ai
+                            } else if companion.settings.always_listen
+                                || !matches!(commands::interpret(&text, false), Heard::NotForUs)
                             {
-                                {
-                                    let mut snapshot = ai::brain::snapshot(
-                                        companion.last(),
-                                        &companion.progress(),
-                                    );
-                                    let mut status = None;
-                                    if let Some(sight) = &sight {
-                                        let sight = sight.lock().unwrap_or_else(|e| e.into_inner());
-                                        for line in sight.describe() {
-                                            snapshot.push('\n');
-                                            snapshot.push_str(&line);
-                                        }
-                                        status = sight.layout.as_ref().and_then(|l| l.status);
-                                    }
-                                    // The screen goes with the sentence while the game is in view.
-                                    let eyes = latest_image
-                                        .clone()
-                                        .filter(|_| {
-                                            companion.last().is_some_and(|o| o.game.is_seen())
-                                                && in_front.load(Ordering::Relaxed)
-                                        })
-                                        .map(|frame| Eyes { frame, status });
-                                    worker.send(Job::Converse {
-                                        heard: text,
-                                        snapshot,
-                                        speak: true,
-                                        eyes,
-                                        language: player_language.clone(),
-                                    });
+                                let text = turns.heard(&mut out, text);
+                                let job = conversation_job(
+                                    text.clone(),
+                                    &companion,
+                                    sight.as_ref(),
+                                    latest_image.clone(),
+                                    in_front.load(Ordering::Relaxed),
+                                    player_language.clone(),
+                                );
+                                if let Some(worker) = &out.mouth.ai {
+                                    let id = worker.send(job);
+                                    turns.asked(id, &text);
                                 }
                             }
                         } else {
                             let actions = companion.heard(now, &text);
                             out.apply(actions, &mut companion, latest_image.clone());
+                        }
+                    }
+                    Inbound::Hearing(text) => {
+                        // Words as they are said: talked over, or still
+                        // talking. (Without a natural voice there is nothing
+                        // to stop.)
+                        if out.mouth.ai.is_some()
+                            && (companion.settings.always_listen
+                                || !matches!(commands::interpret(&text, false), Heard::NotForUs)
+                                || commands::local_command(&text).is_some())
+                            && let Some(what) = turns.hearing(&mut out, &companion, now, &text)
+                        {
+                            out.session.line("turn", &what);
+                        }
+                    }
+                    Inbound::Interrupt => {
+                        if out.mouth.speaking() {
+                            turns.interrupt(&mut out);
+                            out.session.line("turn", "talked over (heard by the phone)");
                         }
                     }
                     Inbound::Command(word) => {
@@ -1234,6 +1484,22 @@ fn run(options: Options) -> Result<(), String> {
             }
         }
 
+        // Words that waited for the rest of a sentence that never came.
+        if let Some(text) = turns.overdue() {
+            let job = conversation_job(
+                text.clone(),
+                &companion,
+                sight.as_ref(),
+                latest_image.clone(),
+                in_front.load(Ordering::Relaxed),
+                player_language.clone(),
+            );
+            if let Some(worker) = &out.mouth.ai {
+                let id = worker.send(job);
+                turns.asked(id, &text);
+            }
+        }
+
         // What the brain came back with.
         let finished: Vec<Done> = match &out.mouth.ai {
             Some(worker) => worker.done.try_iter().collect(),
@@ -1241,7 +1507,8 @@ fn run(options: Options) -> Result<(), String> {
         };
         for done in finished {
             match done {
-                Done::Reply { text, took, .. } => {
+                Done::Reply { id, text, took, .. } => {
+                    turns.finished(id);
                     companion.remember_spoken(now, &text);
                     out.show(Kind::Reply, &text);
                     out.session
@@ -1270,21 +1537,42 @@ fn run(options: Options) -> Result<(), String> {
                     }
                 }
                 Done::Audio {
+                    id,
+                    text,
                     samples,
                     after,
                     first,
-                    ..
+                    start,
+                    end,
                 } => {
-                    if first {
-                        out.session.line(
-                            "timing",
-                            &format!("first words after {:.1} s", after.as_secs_f64()),
-                        );
+                    // A reply that was talked over: its last pieces are dropped.
+                    if out.mouth.ai.as_ref().is_some_and(|w| w.cancelled(id)) {
+                        continue;
                     }
-                    out.play(samples, &companion);
+                    if start {
+                        companion.remember_spoken(now, &text);
+                        // When it will be heard: after what is still to play.
+                        let at = if out.voice_on().pc() {
+                            Instant::now() + out.mouth.player.remaining()
+                        } else {
+                            out.mouth.phone_end.max(Instant::now())
+                        };
+                        turns.spoke(id, at, &text);
+                        if first {
+                            out.session.line(
+                                "timing",
+                                &format!("first words after {:.1} s", after.as_secs_f64()),
+                            );
+                        }
+                    }
+                    out.play_piece(&samples, start, end, &companion);
                 }
-                Done::Silent { heard } => out.session.line("silent", &heard),
-                Done::Failed { heard, error } => {
+                Done::Silent { id, heard } => {
+                    turns.finished(id);
+                    out.session.line("silent", &heard);
+                }
+                Done::Failed { id, heard, error } => {
+                    turns.finished(id);
                     let message = format!("OpenAI: {error}");
                     if message != ai_error_shown {
                         out.show(Kind::Info, &message);
@@ -1427,6 +1715,8 @@ fn run(options: Options) -> Result<(), String> {
                     "wake": "syrup",
                     "always_listen": companion.settings.always_listen,
                     "speaking": out.mouth.speaking(),
+                    // The PC's own voice (the phone keeps listening through it).
+                    "speaking_pc": out.mouth.player.speaking() || Instant::now() < out.mouth.sapi_until,
                     "thinking": out.mouth.ai.as_ref().is_some_and(|w| w.busy()),
                     "ai": out.mouth.ai.as_ref().map(|w| w.model.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "OpenAI".into())),
                     "learned": learned_status(sight.as_ref(), hub),
@@ -1524,4 +1814,43 @@ fn run(options: Options) -> Result<(), String> {
         session_dir.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_cut_short_keeps_the_words_heard() {
+        let line = "That's a great question, let me think about it for a while.";
+        assert_eq!(
+            heard_of(line, Duration::from_millis(1000)),
+            "That's a great"
+        );
+        assert_eq!(heard_of(line, Duration::from_secs(10)), line);
+        assert_eq!(heard_of(line, Duration::ZERO), "");
+    }
+
+    #[test]
+    fn words_held_for_the_rest_of_a_sentence_join_it() {
+        assert_eq!(
+            fold("what should I do", "with the quest".into()),
+            "what should I do with the quest"
+        );
+        assert_eq!(
+            fold(
+                "what should I do",
+                "What should I do with the quest?".into()
+            ),
+            "What should I do with the quest?"
+        );
+        let mut turns = Turns {
+            held: Some(("hello".into(), Instant::now())),
+            ..Default::default()
+        };
+        assert!(turns.overdue().is_none());
+        turns.held = Some(("hello".into(), Instant::now() - HOLD_FOR));
+        assert_eq!(turns.overdue().as_deref(), Some("hello"));
+        assert!(turns.held.is_none());
+    }
 }
