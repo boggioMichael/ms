@@ -1,6 +1,7 @@
 //! What the conversation model can do besides talking: learn to recognise
-//! what the player shows it, take corrections, remember what the player
-//! tells it, look closer at the screen, and search the web.
+//! what the player shows it, take corrections (and keep them for good),
+//! remember what the player tells it, change its warnings, look closer at
+//! the screen, and search the web.
 //!
 //! Each tool is a function the model calls with JSON arguments (strict
 //! schemas, so the arguments are always well formed); MapleSyrup runs it
@@ -15,6 +16,8 @@ use image::RgbaImage;
 use serde_json::{Value, json};
 
 use super::images::NBox;
+use super::knowledge::Source;
+use super::memory::Learning;
 use super::openai::{Ask, Call, OpenAi};
 use crate::sight::Sight;
 use crate::sight::teacher::{self, Look};
@@ -29,6 +32,8 @@ pub struct Toolbox {
     pub settings: PathBuf,
     /// Whether the model may search the web.
     pub web: bool,
+    /// Where the player's corrections are kept.
+    pub learning: Option<Learning>,
 }
 
 /// What running a tool changed, for the rest of MapleSyrup.
@@ -40,6 +45,9 @@ pub enum Effect {
     Note(String),
     /// A command for the main loop: "mark", "mute" or "unmute".
     Command(String),
+    /// Warn about low HP or MP (`what`: "hp" or "mp") below this percent:
+    /// 0 never, None the usual.
+    Warn { what: String, below: Option<f32> },
 }
 
 /// Ask the vision model one of the teacher's questions.
@@ -117,6 +125,22 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
                 json!({
                     "what": {"type": "string", "enum": ["level", "hp", "mp", "exp", "map", "name", "job"]},
                     "value": {"type": "string", "description": "The right value, as the player said it."},
+                }),
+            ),
+            function(
+                "note_correction",
+                "The player corrected you (a game fact, a name, how something works, or how you talk or behave): keep the right version for good, so you get it right from now on.",
+                json!({
+                    "about": {"type": "string", "description": "What it is about, in a few words (\"Easy Zakum level\")."},
+                    "right": {"type": "string", "description": "The right version in one short sentence, as the player put it."},
+                }),
+            ),
+            function(
+                "set_warnings",
+                "When to warn the player about low HP or MP, when they ask (\"warn me at 40%\", \"no more MP warnings\", \"warn me like before\").",
+                json!({
+                    "what": {"type": "string", "enum": ["hp", "mp"]},
+                    "below": {"type": ["number", "null"], "description": "Warn below this percent; 0 for never; null for the usual."},
                 }),
             ),
             function(
@@ -259,6 +283,36 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
                 }
                 ("Remembered for good.".into(), Some(Effect::Fact(fact)))
             }
+            "note_correction" => {
+                let (about, right) = (text("about"), text("right"));
+                if about.is_empty() || right.is_empty() {
+                    return ("Nothing to note.".into(), None);
+                }
+                if let Some(learning) = &self.learning {
+                    learning.knowledge().add(&about, &right, Source::Player);
+                }
+                (
+                    "Kept for good: you'll trust this over what you thought.".into(),
+                    Some(Effect::Note(format!("learned: {about}: {right}"))),
+                )
+            }
+            "set_warnings" => {
+                let what = text("what");
+                if what != "hp" && what != "mp" {
+                    return ("What to warn about: hp or mp.".into(), None);
+                }
+                let below = args["below"]
+                    .as_f64()
+                    .filter(|b| b.is_finite())
+                    .map(|b| (b as f32).clamp(0.0, 95.0));
+                let name = what.to_uppercase();
+                let done = match below {
+                    Some(b) if b <= 0.0 => format!("No more {name} warnings."),
+                    Some(b) => format!("You'll be warned when {name} is under {b:.0}%."),
+                    None => format!("{name} warnings are back to the usual."),
+                };
+                (done, Some(Effect::Warn { what, below }))
+            }
             "mark_moment" => ("Marked.".into(), Some(Effect::Command("mark".into()))),
             "set_recording" => {
                 let on = args["on"].as_bool().unwrap_or(true);
@@ -306,5 +360,117 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
             }
             other => (format!("There is no tool called {other}."), None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn toolbox(dir: &std::path::Path) -> Toolbox {
+        Toolbox {
+            sight: Arc::new(Mutex::new(Sight::load(&dir.join("learned")))),
+            eyes: Arc::new(OpenAi::new(
+                "sk-test-key-0123456789abcdef",
+                "http://127.0.0.1:9/v1",
+                "cedar",
+                None,
+            )),
+            settings: dir.to_path_buf(),
+            web: false,
+            learning: Some(Learning::load(dir)),
+        }
+    }
+
+    fn call(name: &str, arguments: Value) -> Call {
+        Call {
+            call_id: "c1".into(),
+            name: name.into(),
+            arguments: arguments.to_string(),
+        }
+    }
+
+    #[test]
+    fn a_correction_is_kept_for_good() {
+        let dir = std::env::temp_dir().join(format!("ms-tools-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let tools = toolbox(&dir);
+        let names: Vec<String> = tools
+            .definitions()
+            .iter()
+            .filter_map(|t| t["name"].as_str().map(String::from))
+            .collect();
+        assert!(names.contains(&"note_correction".to_string()));
+        assert!(names.contains(&"set_warnings".to_string()));
+        let (said, effect) = tools.run(
+            &call(
+                "note_correction",
+                json!({"about": "Easy Zakum level", "right": "Easy Zakum needs level 50."}),
+            ),
+            None,
+        );
+        assert!(said.starts_with("Kept for good"));
+        assert_eq!(
+            effect,
+            Some(Effect::Note(
+                "learned: Easy Zakum level: Easy Zakum needs level 50.".into()
+            ))
+        );
+        let learning = tools.learning.as_ref().unwrap();
+        assert_eq!(
+            learning.knowledge().lessons(5)[0].answer,
+            "Easy Zakum needs level 50."
+        );
+        // Kept on disk too.
+        assert_eq!(Learning::load(&dir).knowledge().lessons(5).len(), 1);
+        assert_eq!(
+            tools
+                .run(
+                    &call("note_correction", json!({"about": "", "right": "x"})),
+                    None
+                )
+                .1,
+            None
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn warnings_move_when_the_player_asks() {
+        let dir = std::env::temp_dir().join(format!("ms-tools-warn-{}", std::process::id()));
+        let tools = toolbox(&dir);
+        let warn = |what: &str, below: Value| {
+            tools.run(
+                &call("set_warnings", json!({"what": what, "below": below})),
+                None,
+            )
+        };
+        assert_eq!(
+            warn("hp", json!(40)),
+            (
+                "You'll be warned when HP is under 40%.".into(),
+                Some(Effect::Warn {
+                    what: "hp".into(),
+                    below: Some(40.0)
+                })
+            )
+        );
+        assert_eq!(warn("mp", json!(0)).0, "No more MP warnings.");
+        assert_eq!(
+            warn("hp", Value::Null).1,
+            Some(Effect::Warn {
+                what: "hp".into(),
+                below: None
+            })
+        );
+        assert_eq!(
+            warn("hp", json!(400)).1,
+            Some(Effect::Warn {
+                what: "hp".into(),
+                below: Some(95.0)
+            })
+        );
+        assert_eq!(warn("exp", json!(10)).1, None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

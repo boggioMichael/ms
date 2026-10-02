@@ -56,12 +56,15 @@ players say them.
 - React first when something happens (\"Ooh, nice!\"), lead with the answer, don't repeat their question back, \
 don't open with filler, and don't end every turn with a question.
 - When they speak you may also get a message that is not from them: what your vision engine reads off the game \
-right now (level, HP, MP, EXP; values marked \"about\" are estimates) and a picture of the screen with rulers \
-on its edges (0 to 1000 across and down, for pointing at things). Use it like a friend looking at the same \
-screen; never ask them to read the screen to you. If what they say clearly disagrees with what you see, say \
-what you see.
-- Don't guess MapleStory facts (where a place is, level requirements, quests, bosses, events): look them up \
-with search_web, or say plainly you're not sure. Never read links out.
+right now (level, HP, MP, EXP; values marked \"about\" are estimates) and, now and then, a small picture of the \
+screen with rulers on its edges (0 to 1000 across and down, for pointing at things). Use it like a friend \
+looking at the same screen; never ask them to read the screen to you (look_closer reads small print). If what \
+they say clearly disagrees with what you see, say what you see.
+- Be quick: answer right away from what you know; a fast best guess beats a pause (say you think so when you're \
+not sure). search_web is slow: use it only when they ask you to look something up, or when you truly have no \
+idea. Never read links out.
+- When they correct you (a game fact, a name, how something works, how you talk), call note_correction with the \
+right version and go on with it. What they corrected you on before beats what you think you know.
 - MapleSyrup's game watcher sometimes tells you something to say (low HP or MP, a level-up, something they \
 asked you to watch for): say it right away, briefly, in your own words and in the language you're speaking \
 with them.
@@ -75,16 +78,17 @@ boss is under 20%\"), set alert, threshold and say (what to say then, in their l
 - When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
 - When the player tells you something worth keeping (their class, a key binding, a goal) or asks you to \
 remember something, call remember_fact.
+- set_warnings when they want low HP or MP warnings at another percent, or no more of them, or back to the usual.
 - forget_thing when asked to forget something you learned; look_closer to read small text or details.
 - mark_moment when they ask you to mark or save the moment; set_muted when they ask you to be quiet or to \
 talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
 After using a tool, say what happened in a few words.";
 
-/// The instructions for a call: who it is, what the player told it about
-/// themselves, and the last things said (so a call picked up again keeps
-/// its thread).
-pub fn instructions(about: &str, recent: &[String], language: Option<&str>) -> String {
+/// The instructions for a call: who it is, what it learned about the
+/// player (`learned`: what they told it, the notebook, their corrections),
+/// and the last things said (so a call picked up again keeps its thread).
+pub fn instructions(learned: &str, recent: &[String], language: Option<&str>) -> String {
     let mut text = LIVE_PERSONA.to_string();
     if let Some(name) = language
         .filter(|l| !l.trim().is_empty())
@@ -94,9 +98,11 @@ pub fn instructions(about: &str, recent: &[String], language: Option<&str>) -> S
             "\n\nThe player's phone is set to {name}: start in {name} until they speak; then follow them."
         ));
     }
-    if !about.trim().is_empty() {
-        text.push_str("\n\nAbout the player (they told you this):\n");
-        text.push_str(about.trim());
+    if !learned.trim().is_empty() {
+        text.push_str(
+            "\n\nWhat you learned from playing together before (use it naturally; never recite it):\n",
+        );
+        text.push_str(learned.trim());
     }
     let recent: Vec<&String> = recent.iter().filter(|l| !l.trim().is_empty()).collect();
     if !recent.is_empty() {
@@ -107,6 +113,42 @@ pub fn instructions(about: &str, recent: &[String], language: Option<&str>) -> S
         }
     }
     text
+}
+
+/// How a call listens, as MapleSyrup adapted it to the player.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tuning {
+    /// How soon it answers when they pause: "high", "medium" or "low".
+    pub eagerness: String,
+    /// Names and words they use, so what they say is written down right.
+    pub words: Option<String>,
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Tuning {
+            eagerness: "high".into(),
+            words: None,
+        }
+    }
+}
+
+impl Tuning {
+    fn eagerness(&self) -> &str {
+        match self.eagerness.as_str() {
+            e @ ("low" | "medium" | "high" | "auto") => e,
+            _ => "high",
+        }
+    }
+
+    fn transcription(&self) -> Value {
+        let mut transcription = json!({"model": TRANSCRIBE_MODEL});
+        if let Some(words) = self.words.as_deref().filter(|w| !w.trim().is_empty()) {
+            let words: String = words.chars().take(800).collect();
+            transcription["prompt"] = json!(words);
+        }
+        transcription
+    }
 }
 
 /// MapleSyrup's tools as a call takes them: functions only (no hosted
@@ -193,7 +235,12 @@ impl Live {
 
     /// A call for the phone: `{key, url, model}`. The key works for a few
     /// minutes and only for this; the player's own key stays here.
-    pub fn session(&self, instructions: &str, tools: &[Value]) -> Result<Value, AiError> {
+    pub fn session(
+        &self,
+        instructions: &str,
+        tools: &[Value],
+        tuning: &Tuning,
+    ) -> Result<Value, AiError> {
         let mut last = AiError::Parse("no realtime model to try".into());
         for model in self.candidates() {
             let body = json!({
@@ -205,10 +252,10 @@ impl Live {
                     "audio": {
                         "input": {
                             "noise_reduction": {"type": "near_field"},
-                            "transcription": {"model": TRANSCRIBE_MODEL},
+                            "transcription": tuning.transcription(),
                             "turn_detection": {
                                 "type": "semantic_vad",
-                                "eagerness": "high",
+                                "eagerness": tuning.eagerness(),
                                 "create_response": true,
                                 "interrupt_response": true,
                             },
@@ -241,7 +288,7 @@ impl Live {
                 }
                 // An account still on the first version of the API.
                 Err(AiError::Http(404, _)) => {
-                    match self.beta_session(&model, instructions, tools) {
+                    match self.beta_session(&model, instructions, tools, tuning) {
                         Ok(call) => {
                             self.remember(&model);
                             return Ok(call);
@@ -260,15 +307,16 @@ impl Live {
         model: &str,
         instructions: &str,
         tools: &[Value],
+        tuning: &Tuning,
     ) -> Result<Value, AiError> {
         let body = json!({
             "model": model,
             "voice": self.voice,
             "instructions": instructions,
             "modalities": ["audio", "text"],
-            "input_audio_transcription": {"model": TRANSCRIBE_MODEL},
+            "input_audio_transcription": tuning.transcription(),
             "input_audio_noise_reduction": {"type": "near_field"},
-            "turn_detection": {"type": "semantic_vad", "eagerness": "high", "create_response": true, "interrupt_response": true},
+            "turn_detection": {"type": "semantic_vad", "eagerness": tuning.eagerness(), "create_response": true, "interrupt_response": true},
             "tools": tools,
             "tool_choice": "auto",
         });
@@ -293,7 +341,7 @@ impl Live {
 
 /// A short answer from the web, for the call's search_web (the call's model
 /// can't search itself).
-pub fn search(openai: &OpenAi, query: &str) -> String {
+pub fn search(openai: &OpenAi, query: &str) -> Result<String, String> {
     let ask = super::openai::Ask {
         instructions: "Look this MapleStory question up (the current global version, GMS; prefer \
 maplestorywiki.net and maplestory.nexon.net) and answer in two or three short sentences that will be read \
@@ -306,8 +354,15 @@ out loud: the facts only, no links."
         ..Default::default()
     };
     match openai.ask(&ask, None) {
-        Ok(answer) => super::brain::for_speech(&answer.text),
-        Err(e) => format!("The search didn't work ({e})."),
+        Ok(answer) => {
+            let text = super::brain::for_speech(&answer.text);
+            if text.is_empty() {
+                Err("The search found nothing.".into())
+            } else {
+                Ok(text)
+            }
+        }
+        Err(e) => Err(format!("The search didn't work ({e}).")),
     }
 }
 
@@ -318,16 +373,42 @@ mod tests {
     #[test]
     fn a_call_is_told_who_it_is_what_it_knows_and_what_was_said() {
         let text = instructions(
-            "- Their class is Night Lord.",
+            "About the player (they told you this):\n- Their class is Night Lord.",
             &["Player: hey".into(), "MapleSyrup: Hey! Ready?".into()],
             Some("he-IL"),
         );
         assert!(text.contains("switch with them"));
         assert!(text.contains("set to Hebrew"));
+        assert!(text.contains("learned from playing together"));
         assert!(text.contains("Night Lord"));
         assert!(text.contains("MapleSyrup: Hey! Ready?"));
         let fresh = instructions("", &[], None);
         assert!(!fresh.contains("conversation so far"));
+        assert!(!fresh.contains("learned from playing together"));
+    }
+
+    #[test]
+    fn a_call_listens_the_way_it_adapted_to() {
+        let usual = Tuning::default();
+        assert_eq!(usual.eagerness(), "high");
+        assert!(usual.transcription().get("prompt").is_none());
+        let tuned = Tuning {
+            eagerness: "medium".into(),
+            words: Some("MapleStory. Names and words the player uses: Zakum, MoonWalker77.".into()),
+        };
+        assert_eq!(tuned.eagerness(), "medium");
+        assert_eq!(tuned.transcription()["model"], TRANSCRIBE_MODEL);
+        assert!(
+            tuned.transcription()["prompt"]
+                .as_str()
+                .unwrap()
+                .contains("MoonWalker77")
+        );
+        let odd = Tuning {
+            eagerness: "very".into(),
+            words: None,
+        };
+        assert_eq!(odd.eagerness(), "high");
     }
 
     #[test]

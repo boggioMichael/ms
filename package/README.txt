@@ -37,7 +37,10 @@ How it talks
   your screen (HP, MP, EXP, level, your EXP per hour). If you talk to your
   stream's chat instead, it stays quiet.
   It answers as soon as you stop talking, and its voice starts while the
-  rest of the answer is still being made. Talk over it and it stops and
+  rest of the answer is still being made. It answers from what it knows
+  rather than stopping to look things up, even when it isn't completely
+  sure ("I think..."): when it gets something wrong, just correct it, and
+  it remembers (see "It learns as you play"). Talk over it and it stops and
   listens ("wait", or just ask something else). Pause mid-sentence and go on,
   and it waits for the rest instead of answering half of it. The phone keeps
   listening while it talks on the PC and tells your voice from its own.
@@ -64,8 +67,29 @@ It sees your screen, and learns it
   Each thing it learns keeps a picture (and gets more as it sees it in other
   poses). The phone lists what it has learned, with a Forget button.
   It all lives in %APPDATA%\MapleSyrup\learned (about-me.txt next to it).
-  It can also look things up on the web for MapleStory questions
-  (start it with --no-web to stop that).
+  It can also look MapleStory questions up on the web, when you ask it to
+  ("look it up") or when it has no idea (start it with --no-web to stop that).
+
+It learns as you play
+  The more you play together, the better it gets. Every few minutes, and when
+  it starts (for the sessions before), it looks back on what was said and
+  keeps a notebook: you and your characters, what you're working towards,
+  how you like it to talk, the names you use (so it hears them right), and
+  what you did lately, so next time it picks up from there.
+  Your corrections teach it: "no, Easy Zakum is level 50" is kept for good,
+  and it trusts that over what it thought. What it looked up is kept too, so
+  the same question is answered at once next time.
+  It adapts to how you talk: it answers quickly after you stop talking, and
+  waits a little longer if you often pause mid-sentence and go on; on a live
+  call it waits longer if it keeps jumping in before you finish; if you often
+  talk over long answers, it keeps them shorter.
+  Warnings too: "warn me at 40%", "no more MP warnings", "warn me like
+  before". If you die without a warning while your HP went down, it warns you
+  sooner from then on (up to half the bar).
+  The phone shows what it knows about you ("What I know about you"), with a
+  Forget button on each thing. It all stays on your PC, in
+  %APPDATA%\MapleSyrup\memory.json and knowledge.json: delete them to make it
+  forget everything.
 
 Languages
   The phone page speaks English, Hebrew, Spanish, Portuguese, French, German,
@@ -119,6 +143,9 @@ Privacy
   minutes only, made for it). With a key, what you say to MapleSyrup (on a
   live call, your voice itself) and pictures of your game window are sent to
   OpenAI to answer you; pictures only while MapleStory is the window in front.
+  To learn, every few minutes it sends the text of the conversation (not the
+  pictures) to OpenAI to update its notebook; what it learns is kept on your
+  PC only.
   OpenAI bills your account: a live call costs more than the PC voice (very
   roughly a dollar or two per hour of play, depending on how much you talk). Without a key, nothing leaves your PC
   except the phone link on your own network.

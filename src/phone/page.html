@@ -97,6 +97,15 @@
   #learned .what span { color: var(--dim); font-size: 13px; }
   #learned button { border: 1px solid var(--line); background: none; color: var(--faint); border-radius: 10px; padding: 6px 10px; font-size: 13px; }
   #learnedEmpty { color: var(--dim); font-size: 14px; }
+  /* What it knows about the player */
+  .memlist { list-style: none; margin: 4px 0 12px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .memlist li { display: flex; align-items: center; gap: 10px; background: var(--card2); border: 1px solid var(--line); border-radius: 12px; padding: 7px 10px; font-size: 14px; }
+  .memlist li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .memlist li small { color: var(--faint); }
+  .memlist button { border: 1px solid var(--line); background: none; color: var(--faint); border-radius: 10px; padding: 5px 9px; font-size: 13px; flex: none; }
+  #memLately { font-size: 14px; margin: 4px 0 12px; }
+  #memEmpty { font-size: 14px; }
+  #memTuning { margin-top: 4px; color: var(--faint); }
   #hudState { color: var(--dim); font-size: 13px; margin-bottom: 10px; }
   #banner { display: none; background: #4a1f1f; border: 1px solid #7a3030; color: #ffd6d6; border-radius: 14px; padding: 12px; margin-bottom: 12px; font-size: 14px; }
   /* Recording the session */
@@ -171,6 +180,16 @@
   <ul id="log"></ul>
 </section>
 
+<section class="card" id="memoryCard" style="display:none">
+  <h2 data-t="h_memory">What I know about you</h2>
+  <ul id="memFacts" class="memlist"></ul>
+  <div id="memStyleBox"><div class="sub" data-t="mem_style">How you like me to talk</div><ul id="memStyle" class="memlist"></ul></div>
+  <div id="memLatelyBox"><div class="sub" data-t="mem_lately">Lately</div><div id="memLately"></div></div>
+  <div id="memLessonsBox"><div class="sub" data-t="mem_lessons">What you corrected me on</div><ul id="memLessons" class="memlist"></ul></div>
+  <div id="memEmpty" class="sub" data-t="mem_empty"></div>
+  <div id="memTuning" class="sub"></div>
+</section>
+
 <section class="card" id="learnedCard">
   <h2 data-t="h_learned">What I've learned</h2>
   <div id="hudState">I'm still finding your HUD.</div>
@@ -229,6 +248,8 @@
       level_n: "Level {n}.", told_me: "(you told me)",
       teach_hint: "Teach me by talking: “see that? that's an Orange Mushroom”, “that's the boss's HP, tell me when it's under 20%”, “I'm level 61”.",
       forget: "Forget", sure: "Sure?", says: "says",
+      h_memory: "What I know about you", mem_told: "you told me", mem_style: "How you like me to talk", mem_lately: "Lately", mem_lessons: "What you corrected me on",
+      mem_empty: "Nothing yet. I learn as we play: what you're working on, how you like me to talk, and what you correct me on. It all stays on your PC.", mem_sessions: "learned from {n} sessions", mem_looked: "{n} answers I looked up, kept", mem_wait: "I answer {n} s after you stop talking",
       replies_on: "Replies spoken on", v_pc: "PC", v_phone: "Phone", v_both: "Both", v_off: "Off",
       answer_all: "Answer everything I say (off: only after “syrup”, for streaming)",
       language: "Language", send_audio: "Send the microphone's audio to the PC",
@@ -261,6 +282,8 @@
       level_n: "רמה {n}.", told_me: "(אמרת לי)",
       teach_hint: "למד אותי בדיבור: „רואה את זה? זה Orange Mushroom”, „זה ה-HP של הבוס, תגיד לי כשהוא מתחת ל-20%”, „אני ברמה 61”.",
       forget: "שכח", sure: "בטוח?", says: "אומר",
+      h_memory: "מה שאני יודע עליך", mem_told: "אמרת לי", mem_style: "איך אתה אוהב שאני מדבר", mem_lately: "לאחרונה", mem_lessons: "במה תיקנת אותי",
+      mem_empty: "עדיין כלום. אני לומד תוך כדי משחק: על מה אתה עובד, איך אתה אוהב שאדבר, ובמה אתה מתקן אותי. הכל נשאר במחשב שלך.", mem_sessions: "למדתי מ-{n} סשנים", mem_looked: "{n} תשובות שחיפשתי שמורות", mem_wait: "אני עונה {n} שניות אחרי שאתה מסיים לדבר",
       replies_on: "איפה לשמוע את התשובות", v_pc: "מחשב", v_phone: "טלפון", v_both: "שניהם", v_off: "כבוי",
       answer_all: "לענות על כל מה שאני אומר (כבוי: רק אחרי „syrup”, בשביל סטרים)",
       language: "שפה", send_audio: "לשלוח את קול המיקרופון למחשב",
@@ -293,6 +316,8 @@
       level_n: "Nivel {n}.", told_me: "(me lo dijiste)",
       teach_hint: "Enséñame hablando: «¿ves eso? es un Orange Mushroom», «esa es la vida del jefe, avísame cuando baje del 20 %», «soy nivel 61».",
       forget: "Olvidar", sure: "¿Seguro?", says: "dice",
+      h_memory: "Lo que sé de ti", mem_told: "me lo dijiste", mem_style: "Cómo te gusta que hable", mem_lately: "Últimamente", mem_lessons: "En qué me corregiste",
+      mem_empty: "Nada todavía. Aprendo mientras jugamos: en qué estás, cómo te gusta que hable y en qué me corriges. Todo se queda en tu PC.", mem_sessions: "aprendí de {n} sesiones", mem_looked: "{n} respuestas que busqué, guardadas", mem_wait: "Respondo {n} s después de que dejas de hablar",
       replies_on: "Respuestas habladas en", v_pc: "PC", v_phone: "Móvil", v_both: "Ambos", v_off: "No",
       answer_all: "Responder a todo lo que digo (desactivado: solo tras «syrup», para streams)",
       language: "Idioma", send_audio: "Enviar el audio del micrófono al PC",
@@ -325,6 +350,8 @@
       level_n: "Nível {n}.", told_me: "(você me disse)",
       teach_hint: "Me ensine falando: “tá vendo? é um Orange Mushroom”, “esse é o HP do chefe, me avisa quando ficar abaixo de 20%”, “sou nível 61”.",
       forget: "Esquecer", sure: "Certeza?", says: "diz",
+      h_memory: "O que eu sei sobre você", mem_told: "você me contou", mem_style: "Como você gosta que eu fale", mem_lately: "Ultimamente", mem_lessons: "Onde você me corrigiu",
+      mem_empty: "Nada ainda. Eu aprendo enquanto a gente joga: no que você está, como gosta que eu fale e onde você me corrige. Tudo fica no seu PC.", mem_sessions: "aprendi com {n} sessões", mem_looked: "{n} respostas que pesquisei, guardadas", mem_wait: "Respondo {n} s depois que você para de falar",
       replies_on: "Respostas faladas no", v_pc: "PC", v_phone: "Celular", v_both: "Ambos", v_off: "Nenhum",
       answer_all: "Responder a tudo o que eu falo (desligado: só depois de “syrup”, para lives)",
       language: "Idioma", send_audio: "Enviar o áudio do microfone para o PC",
@@ -357,6 +384,8 @@
       level_n: "Niveau {n}.", told_me: "(tu me l'as dit)",
       teach_hint: "Apprends-moi en parlant : « tu vois ça ? c'est un Orange Mushroom », « c'est la vie du boss, préviens-moi sous 20 % », « je suis niveau 61 ».",
       forget: "Oublier", sure: "Sûr ?", says: "dit",
+      h_memory: "Ce que je sais de toi", mem_told: "tu me l'as dit", mem_style: "Comment tu aimes que je parle", mem_lately: "Dernièrement", mem_lessons: "Ce sur quoi tu m'as corrigé",
+      mem_empty: "Rien pour l'instant. J'apprends en jouant : ce que tu fais, comment tu aimes que je parle et ce sur quoi tu me corriges. Tout reste sur ton PC.", mem_sessions: "appris de {n} sessions", mem_looked: "{n} réponses cherchées, gardées", mem_wait: "Je réponds {n} s après que tu as fini de parler",
       replies_on: "Réponses parlées sur", v_pc: "PC", v_phone: "Téléphone", v_both: "Les deux", v_off: "Aucun",
       answer_all: "Répondre à tout ce que je dis (désactivé : seulement après « syrup », pour les streams)",
       language: "Langue", send_audio: "Envoyer le son du micro au PC",
@@ -389,6 +418,8 @@
       level_n: "Level {n}.", told_me: "(hast du mir gesagt)",
       teach_hint: "Bring es mir im Gespräch bei: „Siehst du das? Das ist ein Orange Mushroom“, „das sind die HP vom Boss, sag mir unter 20 % Bescheid“, „ich bin Level 61“.",
       forget: "Vergessen", sure: "Sicher?", says: "sagt",
+      h_memory: "Was ich über dich weiß", mem_told: "hast du mir gesagt", mem_style: "Wie ich mit dir reden soll", mem_lately: "Zuletzt", mem_lessons: "Wo du mich korrigiert hast",
+      mem_empty: "Noch nichts. Ich lerne beim Spielen: woran du gerade bist, wie ich mit dir reden soll und wo du mich korrigierst. Alles bleibt auf deinem PC.", mem_sessions: "aus {n} Sitzungen gelernt", mem_looked: "{n} nachgeschlagene Antworten gespeichert", mem_wait: "Ich antworte {n} s, nachdem du aufhörst zu sprechen",
       replies_on: "Antworten gesprochen auf", v_pc: "PC", v_phone: "Handy", v_both: "Beiden", v_off: "Aus",
       answer_all: "Auf alles antworten, was ich sage (aus: nur nach „syrup“, für Streams)",
       language: "Sprache", send_audio: "Mikrofon-Ton an den PC senden",
@@ -421,6 +452,8 @@
       level_n: "레벨 {n}.", told_me: "(네가 알려 줌)",
       teach_hint: "말로 가르쳐 줘: “저거 보여? 주황버섯이야”, “저게 보스 HP야, 20% 아래로 떨어지면 알려 줘”, “나 61레벨이야”.",
       forget: "잊기", sure: "확실해?", says: "말:",
+      h_memory: "내가 너에 대해 아는 것", mem_told: "네가 말해 줬어", mem_style: "네가 좋아하는 말투", mem_lately: "최근", mem_lessons: "네가 고쳐 준 것",
+      mem_empty: "아직 없어. 같이 플레이하면서 배워: 네가 하고 있는 것, 좋아하는 말투, 네가 고쳐 준 것. 전부 네 PC에만 저장돼.", mem_sessions: "{n}개 세션에서 배움", mem_looked: "찾아본 답 {n}개 저장", mem_wait: "말이 끝나고 {n}초 뒤에 대답해",
       replies_on: "대답을 들을 곳", v_pc: "PC", v_phone: "휴대폰", v_both: "둘 다", v_off: "끄기",
       answer_all: "내가 하는 모든 말에 대답하기 (끄면 “syrup” 다음에만, 방송용)",
       language: "언어", send_audio: "마이크 소리를 PC로 보내기",
@@ -453,6 +486,8 @@
       level_n: "レベル{n}。", told_me: "（君が教えてくれた）",
       teach_hint: "話して教えてね:「あれ見える？オレンジマッシュルームだよ」「あれがボスのHP、20%を切ったら教えて」「僕はレベル61」。",
       forget: "忘れる", sure: "本当に？", says: "セリフ:",
+      h_memory: "きみについて知っていること", mem_told: "きみが教えてくれた", mem_style: "好きな話し方", mem_lately: "最近", mem_lessons: "きみが直してくれたこと",
+      mem_empty: "まだ何もないよ。一緒に遊びながら覚えるね：今やっていること、好きな話し方、直してくれたこと。全部きみのPCに保存されるよ。", mem_sessions: "{n}回のセッションから学習", mem_looked: "調べた答え{n}件を保存", mem_wait: "話し終わってから{n}秒で答えるよ",
       replies_on: "返事を話す場所", v_pc: "PC", v_phone: "スマホ", v_both: "両方", v_off: "オフ",
       answer_all: "話したことに全部答える（オフ:「syrup」のあとだけ。配信向け）",
       language: "言語", send_audio: "マイクの音声をPCに送る",
@@ -485,6 +520,8 @@
       level_n: "{n} 级。", told_me: "（你告诉我的）",
       teach_hint: "用说话来教我：“看到那个了吗？那是绿水灵”，“那是Boss的血条，低于 20% 时告诉我”，“我 61 级”。",
       forget: "忘掉", sure: "确定？", says: "会说",
+      h_memory: "我对你的了解", mem_told: "你告诉我的", mem_style: "你喜欢我怎么说话", mem_lately: "最近", mem_lessons: "你纠正过我的",
+      mem_empty: "还没有。我们一起玩的时候我会学：你在做什么、你喜欢我怎么说话、你纠正过我什么。全部只保存在你的电脑上。", mem_sessions: "从 {n} 次会话中学习", mem_looked: "已保存 {n} 个查到的答案", mem_wait: "你说完 {n} 秒后我就回答",
       replies_on: "在哪里说出回答", v_pc: "电脑", v_phone: "手机", v_both: "都要", v_off: "关闭",
       answer_all: "回答我说的每一句话（关闭：只在说“syrup”之后，适合直播）",
       language: "语言", send_audio: "把麦克风的声音发送到电脑",
@@ -517,6 +554,8 @@
       level_n: "{n} 等。", told_me: "（你告訴我的）",
       teach_hint: "用說話來教我：「看到那個了嗎？那是橘子菇菇」、「那是王的血條，低於 20% 時告訴我」、「我 61 等」。",
       forget: "忘掉", sure: "確定？", says: "會說",
+      h_memory: "我對你的了解", mem_told: "你告訴我的", mem_style: "你喜歡我怎麼說話", mem_lately: "最近", mem_lessons: "你糾正過我的",
+      mem_empty: "還沒有。我們一起玩的時候我會學：你在做什麼、你喜歡我怎麼說話、你糾正過我什麼。全部只存在你的電腦上。", mem_sessions: "從 {n} 次工作階段中學習", mem_looked: "已儲存 {n} 個查到的答案", mem_wait: "你說完 {n} 秒後我就回答",
       replies_on: "在哪裡說出回答", v_pc: "電腦", v_phone: "手機", v_both: "都要", v_off: "關閉",
       answer_all: "回答我說的每一句話（關閉：只在說「syrup」之後，適合實況）",
       language: "語言", send_audio: "把麥克風的聲音傳到電腦",
@@ -549,6 +588,8 @@
       level_n: "เลเวล {n}", told_me: "(คุณบอกฉัน)",
       teach_hint: "สอนฉันด้วยการพูด: “เห็นนั่นไหม? นั่นคือ Orange Mushroom”, “นั่นคือ HP ของบอส บอกฉันเมื่อต่ำกว่า 20%”, “ฉันเลเวล 61”",
       forget: "ลืม", sure: "แน่ใจไหม?", says: "พูดว่า",
+      h_memory: "สิ่งที่ฉันรู้เกี่ยวกับคุณ", mem_told: "คุณบอกฉัน", mem_style: "คุณชอบให้ฉันพูดแบบไหน", mem_lately: "ช่วงนี้", mem_lessons: "เรื่องที่คุณแก้ให้ฉัน",
+      mem_empty: "ยังไม่มีเลย ฉันเรียนรู้ระหว่างที่เราเล่นด้วยกัน: คุณกำลังทำอะไร ชอบให้ฉันพูดแบบไหน และเรื่องที่คุณแก้ให้ฉัน ทั้งหมดเก็บไว้ในพีซีของคุณเท่านั้น", mem_sessions: "เรียนรู้จาก {n} เซสชัน", mem_looked: "เก็บคำตอบที่ค้นมาแล้ว {n} ข้อ", mem_wait: "ฉันตอบหลังจากคุณหยุดพูด {n} วินาที",
       replies_on: "พูดคำตอบที่", v_pc: "คอม", v_phone: "มือถือ", v_both: "ทั้งสอง", v_off: "ปิด",
       answer_all: "ตอบทุกอย่างที่ฉันพูด (ปิด: ตอบเฉพาะหลัง “syrup” สำหรับสตรีม)",
       language: "ภาษา", send_audio: "ส่งเสียงไมโครโฟนไปที่คอม",
@@ -581,6 +622,8 @@
       level_n: "Cấp {n}.", told_me: "(bạn đã nói với mình)",
       teach_hint: "Dạy mình bằng lời nói: “thấy cái đó không? đó là Orange Mushroom”, “đó là máu của boss, báo mình khi dưới 20%”, “mình cấp 61”.",
       forget: "Quên", sure: "Chắc chưa?", says: "sẽ nói",
+      h_memory: "Những gì mình biết về bạn", mem_told: "bạn đã kể", mem_style: "Bạn thích mình nói chuyện thế nào", mem_lately: "Gần đây", mem_lessons: "Những điều bạn đã sửa cho mình",
+      mem_empty: "Chưa có gì. Mình học trong lúc chơi cùng bạn: bạn đang làm gì, bạn thích mình nói thế nào và những gì bạn sửa cho mình. Tất cả chỉ lưu trên PC của bạn.", mem_sessions: "học từ {n} phiên", mem_looked: "đã lưu {n} câu trả lời mình tra", mem_wait: "Mình trả lời {n} giây sau khi bạn ngừng nói",
       replies_on: "Đọc câu trả lời trên", v_pc: "PC", v_phone: "Điện thoại", v_both: "Cả hai", v_off: "Tắt",
       answer_all: "Trả lời mọi điều mình nói (tắt: chỉ sau “syrup”, dành cho stream)",
       language: "Ngôn ngữ", send_audio: "Gửi âm thanh micro tới PC",
@@ -613,6 +656,8 @@
       level_n: "Level {n}.", told_me: "(kamu yang bilang)",
       teach_hint: "Ajari aku lewat obrolan: “lihat itu? itu Orange Mushroom”, “itu HP bos, kasih tahu aku kalau di bawah 20%”, “aku level 61”.",
       forget: "Lupakan", sure: "Yakin?", says: "akan bilang",
+      h_memory: "Yang kutahu tentangmu", mem_told: "kamu yang bilang", mem_style: "Cara bicara yang kamu suka", mem_lately: "Belakangan ini", mem_lessons: "Yang kamu koreksi",
+      mem_empty: "Belum ada. Aku belajar sambil kita main: apa yang sedang kamu kejar, cara bicara yang kamu suka, dan apa yang kamu koreksi. Semuanya tetap di PC-mu.", mem_sessions: "belajar dari {n} sesi", mem_looked: "{n} jawaban yang kucari, disimpan", mem_wait: "Aku menjawab {n} dtk setelah kamu berhenti bicara",
       replies_on: "Jawaban diucapkan di", v_pc: "PC", v_phone: "Ponsel", v_both: "Keduanya", v_off: "Mati",
       answer_all: "Jawab semua yang kukatakan (mati: hanya setelah “syrup”, untuk streaming)",
       language: "Bahasa", send_audio: "Kirim suara mikrofon ke PC",
@@ -645,6 +690,8 @@
       level_n: "Уровень {n}.", told_me: "(ты мне сказал)",
       teach_hint: "Научи меня голосом: «видишь? это Orange Mushroom», «это HP босса, скажи, когда станет меньше 20%», «у меня 61 уровень».",
       forget: "Забыть", sure: "Точно?", says: "скажет",
+      h_memory: "Что я о тебе знаю", mem_told: "ты мне сказал", mem_style: "Как тебе нравится, чтобы я говорил", mem_lately: "В последнее время", mem_lessons: "В чём ты меня поправил",
+      mem_empty: "Пока ничего. Я учусь, пока мы играем: чем ты занят, как тебе нравится, чтобы я говорил, и в чём ты меня поправляешь. Всё остаётся на твоём ПК.", mem_sessions: "выучено за {n} сессий", mem_looked: "{n} найденных ответов сохранено", mem_wait: "Я отвечаю через {n} с после того, как ты замолчишь",
       replies_on: "Где озвучивать ответы", v_pc: "ПК", v_phone: "Телефон", v_both: "Оба", v_off: "Нигде",
       answer_all: "Отвечать на всё, что я говорю (выкл.: только после «syrup», для стримов)",
       language: "Язык", send_audio: "Отправлять звук микрофона на ПК",
@@ -795,7 +842,10 @@
     }
     updateHold();
     renderLearned(status.learned);
+    renderMemory(status.memory);
     renderRecording(status.recording);
+    // How long to wait after the words stop: adapted to how the player talks.
+    if (status.settle_ms) settleMs = Math.max(300, Math.min(1500, status.settle_ms));
   }
   let thinkingShown = false, lastReply = "", quietUntil = 0;
 
@@ -845,6 +895,66 @@
       li.append(pic, what, forget);
       list.append(li);
     }
+  }
+
+  // ---- what it knows about the player ------------------------------------------
+  // Learned as they play: what they told it, the notebook, how they like it
+  // to talk, what they corrected; each with Forget.
+  let memoryKey = "";
+  function forgetButton(id) {
+    const b = document.createElement("button");
+    const word = t("forget"), sure = t("sure");
+    b.textContent = word;
+    b.addEventListener("click", () => {
+      if (b.dataset.sure) { postJson("/api/forget", { id }).catch(() => {}); b.disabled = true; return; }
+      b.dataset.sure = "1";
+      b.textContent = sure;
+      setTimeout(() => { delete b.dataset.sure; b.textContent = word; }, 3000);
+    });
+    return b;
+  }
+  function memItem(text, id, note) {
+    const li = document.createElement("li");
+    const span = document.createElement("span");
+    span.textContent = text;
+    if (note) { const small = document.createElement("small"); small.textContent = " (" + note + ")"; span.append(small); }
+    li.append(span);
+    if (id) li.append(forgetButton(id));
+    return li;
+  }
+  function renderMemory(m) {
+    const card = $("memoryCard");
+    if (!m) { card.style.display = "none"; return; }
+    card.style.display = "";
+    const key = locale + JSON.stringify(m);
+    if (key === memoryKey) return;
+    memoryKey = key;
+    const told = m.told || [], facts = m.facts || [], style = m.style || [], lessons = m.lessons || [];
+    const list = $("memFacts");
+    list.textContent = "";
+    for (const f of told) list.append(memItem(f.text, f.id, t("mem_told")));
+    for (const f of facts) list.append(memItem(f.text, f.id));
+    list.style.display = told.length || facts.length ? "" : "none";
+    const styleList = $("memStyle");
+    styleList.textContent = "";
+    for (const s of style) styleList.append(memItem(s.text, s.id));
+    $("memStyleBox").style.display = style.length ? "" : "none";
+    $("memLately").textContent = m.lately || "";
+    $("memLatelyBox").style.display = m.lately ? "" : "none";
+    const lessonList = $("memLessons");
+    lessonList.textContent = "";
+    for (const l of lessons) lessonList.append(memItem(l.about + " — " + l.answer, l.id));
+    $("memLessonsBox").style.display = lessons.length ? "" : "none";
+    $("memEmpty").style.display = told.length || facts.length || style.length || m.lately || lessons.length ? "none" : "";
+    const notes = [];
+    if (m.settle_ms) {
+      let seconds = (m.settle_ms / 1000).toFixed(2);
+      try { seconds = new Intl.NumberFormat(locale, { maximumFractionDigits: 2 }).format(m.settle_ms / 1000); } catch (e) {}
+      notes.push(t("mem_wait", seconds));
+    }
+    if (m.sessions) notes.push(t("mem_sessions", m.sessions));
+    if (m.looked_up) notes.push(t("mem_looked", m.looked_up));
+    $("memTuning").textContent = notes.join(" · ");
   }
 
   // ---- recording the session ---------------------------------------------------
@@ -1051,6 +1161,8 @@
     $("micStatus").textContent = listening ? t("mic_listening") : t("mic_idle");
     learnedKey = "";
     renderLearned(status.learned);
+    memoryKey = "";
+    renderMemory(status.memory);
     postJson("/api/lang", { lang: locale }).catch(() => {});
     if (listening && !liveCall.on && !liveCall.starting) { stopRecognition(); startRecognition(); }
   });
@@ -1195,8 +1307,10 @@
   let rec = null, wantRec = false, recStarted = 0, quickEnds = 0, lastSent = "", lastSentAt = 0;
   const plain = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim();
   const wordsOf = (s) => (s || "").trim().split(/\s+/).filter(Boolean);
-  // How long the words must stop before the sentence is taken as said.
-  const SETTLE_MS = 700;
+  // How long the words must stop before the sentence is taken as said: short,
+  // to answer fast; the PC lengthens it if the player often goes on after a
+  // pause (status.settle_ms).
+  let settleMs = 550;
 
   function sendHeard(text) {
     text = (text || "").trim();
@@ -1249,7 +1363,7 @@
       sentWords = wordsOf(transcript).length;
       sentAll = squash(transcript);
       pending = "";
-    }, SETTLE_MS);
+    }, settleMs);
   }
   function final(index, transcript) {
     clearTimeout(settleTimer);
@@ -1365,7 +1479,7 @@
   // microphone) and stops when talked over. The PC gives it the screen,
   // MapleSyrup's tools, and MapleSyrup's own lines to say.
   const liveCall = { pc: null, dc: null, audio: null, on: false, starting: false, userTalking: false, talking: false,
-    pending: [], eyesAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false };
+    pending: [], eyesAt: 0, pictureAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false };
   function canLive() { return !!status.live && !!window.RTCPeerConnection && status.always_listen !== false; }
   function wantLive() { return canLive() && (voiceOn === "phone" || voiceOn === "both"); }
   function liveAudio() {
@@ -1432,7 +1546,7 @@
     if (!liveCall.greeted) {
       liveCall.greeted = true;
       liveSend({ type: "conversation.item.create", item: { type: "message", role: "system",
-        content: [{ type: "input_text", text: "[The player just opened the call. Say hi in one short line.]" }] } });
+        content: [{ type: "input_text", text: "[The player just opened the call. Say hi in one short line; if you know what they were up to lately, you may pick up from there.]" }] } });
       liveSend({ type: "response.create" });
     }
     flushSay();
@@ -1441,6 +1555,9 @@
   function liveEvent(ev) {
     switch (ev.type) {
       case "input_audio_buffer.speech_started":
+        // It started answering just before: the player hadn't finished (the
+        // PC counts these, and makes calls wait a little longer).
+        if (liveCall.talking && Date.now() - liveCall.talkingAt < 1000) postJson("/api/turn", { what: "jumped in" }).catch(() => {});
         liveCall.userTalking = true;
         $("heard").textContent = "…";
         liveEyes();
@@ -1486,22 +1603,25 @@
   function liveTalking(on) {
     if (liveCall.talking === on) return;
     liveCall.talking = on;
+    if (on) liveCall.talkingAt = Date.now();
     postJson("/api/talking", { on }).catch(() => {});
     if (!on) setTimeout(flushSay, 300);
   }
 
-  // The screen, with what the vision engine reads off it, goes with what
-  // the player is saying (while the game is the window in front).
+  // What the vision engine reads off the screen goes with what the player is
+  // saying, and a small picture of it now and then (while the game is the
+  // window in front): fewer pictures, quicker answers.
   async function liveEyes() {
     if (Date.now() - liveCall.eyesAt < 4000) return;
     liveCall.eyesAt = Date.now();
+    const picture = Date.now() - liveCall.pictureAt >= 10000;
     try {
-      const r = await api("/api/eyes");
+      const r = await api("/api/eyes" + (picture ? "" : "?image=0"));
       if (!r.ok) return;
       const e = await r.json();
       const content = [{ type: "input_text",
         text: "[The game right now, read by your vision engine — not said by the player]\n" + (e.snapshot || "") }];
-      if (e.image) content.push({ type: "input_image", image_url: e.image });
+      if (e.image) { content.push({ type: "input_image", image_url: e.image }); liveCall.pictureAt = Date.now(); }
       liveSend({ type: "conversation.item.create", item: { type: "message", role: "user", content } });
     } catch (x) {}
   }

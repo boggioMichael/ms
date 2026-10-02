@@ -24,8 +24,10 @@
 
 pub mod brain;
 pub mod images;
+pub mod knowledge;
 pub mod language;
 pub mod live;
+pub mod memory;
 pub mod openai;
 pub mod teaching;
 pub mod tools;
@@ -41,6 +43,7 @@ use std::time::{Duration, Instant};
 
 pub use brain::Brain;
 pub use images::NBox;
+pub use memory::Learning;
 pub use openai::{AiError, OpenAi};
 pub use tools::{Effect, Toolbox};
 
@@ -114,23 +117,13 @@ pub struct Eyes {
 }
 
 impl Eyes {
-    /// The pictures for the model: the whole frame with rulers (to point at
-    /// things), and the HUD at full size (to read small numbers).
+    /// The picture for the model: the whole frame, small and at low detail
+    /// (quick to send and to look at), with rulers to point at things. The
+    /// numbers come read already; `look_closer` reads small print.
     pub fn pictures(&self) -> Vec<Value> {
-        let frame = images::with_rulers(&images::fit(&self.frame, 1280, 800));
-        let status = self
-            .status
-            .map(|s| s.grown(0.02, 0.3))
-            .unwrap_or(NBox::new(0.0, 0.78, 1.0, 1.0));
-        let mut hud = images::crop(&self.frame, &status);
-        if hud.height() < 90 {
-            hud = images::enlarged(&hud, 2);
-        }
-        let hud = images::fit(&hud, 1600, 400);
-        vec![
-            images::input_image(images::jpeg_url(&frame, 80), "high"),
-            images::input_image(images::png_url(&hud), "high"),
-        ]
+        // (At low detail OpenAI looks at 512 pixels across at most.)
+        let frame = images::with_rulers(&images::fit(&self.frame, 640, 400));
+        vec![images::input_image(images::jpeg_url(&frame, 60), "low")]
     }
 }
 
@@ -160,6 +153,9 @@ pub enum Job {
     /// The last reply was talked over after it was written: only `heard`
     /// of it reached the player, and the conversation keeps only that.
     Cut { heard: String },
+    /// The phone just connected: say hi, picking up from what it knows of
+    /// the player (shown and spoken, in their language).
+    Greet { language: Option<String> },
 }
 
 /// What the worker did. Each carries the number of the job it came from
@@ -204,6 +200,9 @@ pub enum Done {
     },
     /// The model asked for a command (mark, mute, unmute) the main loop runs.
     Command { word: String },
+    /// The player asked to be warned at another HP or MP (`below`: the
+    /// percent, 0 for never, None for the usual).
+    Warn { what: String, below: Option<f32> },
 }
 
 pub struct Worker {
@@ -301,6 +300,9 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
                             &tx,
                         ),
                         Job::Cut { heard } => brain.cut_short(&heard),
+                        Job::Greet { language } => {
+                            greet(&openai, &mut brain, id, &stop, language.as_deref(), &tx)
+                        }
                         Job::Converse { .. } if Some(i) != newest => {}
                         Job::Converse {
                             heard,
@@ -440,27 +442,33 @@ fn speak_line(
 
 /// How the model is told it can see the game.
 const EYES_GUIDE: &str = "\n\nWith the player's words comes what your vision engine reads off the game right now \
-(not said by the player) and, while the game is in view, two pictures: the whole game window as it is now, with \
-rulers on its edges (0 to 1000 across and down) for pointing at things, and the HUD at full size, for reading \
-small numbers. Use what you see, like a friend looking at the same screen. If the numbers disagree with the \
-pictures, trust the pictures (and say so if it matters). Without pictures you can't see the game right now.";
+(not said by the player) and, while the game is in view, a small picture of the game window as it is now, with \
+rulers on its edges (0 to 1000 across and down) for pointing at things. The picture is low detail: take the \
+numbers from what your vision engine read, and use look_closer when a small detail really matters. Use what you \
+see, like a friend looking at the same screen. Without a picture you can't see the game right now.";
 
 /// How the model is told about its tools.
 const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
-- Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with a tight box around it in the first picture's 0-1000 coordinates. Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language).
+- Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with a tight box around it in the picture's 0-1000 coordinates. Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language).
 - When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
+- When the player corrects you on anything else (a game fact, a name, how something works, or how you talk or behave), call note_correction with the right version, then go on with it.
 - When the player tells you something about themselves or their game worth keeping (their class, a key binding, a goal), or asks you to remember something, call remember_fact.
+- set_warnings when they want low HP or MP warnings at another percent, or no more of them, or back to the usual.
 - forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
 - mark_moment when the player asks you to mark or save the moment (for their video); set_muted when they ask you to be quiet, or to talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
 After using a tool, confirm briefly in your own words.";
 
 /// How the model is told it can search the web.
-const WEB_GUIDE: &str = "\n- Search the web (once) before answering a MapleStory question you aren't sure of and can't see \
-on screen (how to get somewhere, boss or level requirements, job advancements, key bindings, quests, events, \
-training spots for their level): the current global version (GMS) changes often. Prefer maplestorywiki.net and \
-maplestory.nexon.net. Don't search for what is on screen or for small talk: searching takes the player's time. \
-Never put links, sources or citations in your answer: it is spoken aloud.";
+const WEB_GUIDE: &str = "\n- You can search the web, but it's slow (seconds of silence for the player): search only when they \
+ask you to look something up or check, or when you truly have no idea (a new event, a name you've never heard). \
+Otherwise answer from what you know. When you search, it's about the current global version (GMS): prefer \
+maplestorywiki.net and maplestory.nexon.net. Never put links, sources or citations in your answer: it is spoken \
+aloud.";
+
+/// How the model is told what it learned is there.
+const LEARNED_GUIDE: &str =
+    "\n\nWhat you learned from playing together before (use it naturally; never recite it):";
 
 /// One of MapleSyrup's own lines in the player's language (as it is, when
 /// it can't be translated).
@@ -558,7 +566,12 @@ fn searching_line(heard: &str, language: Option<&str>) -> &'static str {
 /// The conversation as input items. With the player's last sentence goes
 /// what is on screen now (and the screen itself), so everything before it
 /// stays the same from one reply to the next and OpenAI keeps it cached.
-fn input_of(turns: &[openai::Turn], snapshot: &str, eyes: Option<&Eyes>) -> Vec<Value> {
+fn input_of(
+    turns: &[openai::Turn],
+    snapshot: &str,
+    eyes: Option<&Eyes>,
+    helps: &str,
+) -> Vec<Value> {
     let last_user = turns.iter().rposition(|t| t.role == "user");
     turns
         .iter()
@@ -573,6 +586,12 @@ fn input_of(turns: &[openai::Turn], snapshot: &str, eyes: Option<&Eyes>) -> Vec<
             })];
             if let Some(eyes) = eyes {
                 content.extend(eyes.pictures());
+            }
+            if !helps.trim().is_empty() {
+                content.push(json!({
+                    "type": "input_text",
+                    "text": format!("[What you learned before that may help — not said by the player]\n{helps}"),
+                }));
             }
             content.push(json!({"type": "input_text", "text": t.text}));
             json!({"role": "user", "content": content})
@@ -616,6 +635,8 @@ fn converse(
         language,
     } = talk;
     let started = Instant::now();
+    // What never changes first, what changes now and then last: OpenAI
+    // keeps the start cached, and answers sooner.
     let mut instructions = brain.persona();
     instructions.push_str(EYES_GUIDE);
     if let Some(toolbox) = toolbox {
@@ -624,6 +645,12 @@ fn converse(
             instructions.push_str(WEB_GUIDE);
         }
     }
+    let learned = brain.learned();
+    if !learned.is_empty() {
+        instructions.push_str(LEARNED_GUIDE);
+        instructions.push('\n');
+        instructions.push_str(&learned);
+    }
     // The player's sentence joins the conversation once it is answered (or
     // was talked over after part of the answer was said).
     let mut turns = brain.turns();
@@ -631,7 +658,14 @@ fn converse(
         role: "user",
         text: heard.clone(),
     });
-    let mut input = input_of(&turns, snapshot, eyes);
+    let helps = brain
+        .learning
+        .as_ref()
+        .map(|l| l.helps(&heard))
+        .unwrap_or_default();
+    let mut input = input_of(&turns, snapshot, eyes, &helps);
+    // Whether it searched the web for this (what it found is kept).
+    let mut searched = false;
     let tools = toolbox.map(|t| t.definitions()).unwrap_or_default();
     std::thread::scope(|scope| {
         let (lines, to_say) = channel::<String>();
@@ -700,6 +734,7 @@ fn converse(
                         }
                     }
                     Piece::Searching => {
+                        searched = true;
                         if speak && said.trim().is_empty() {
                             let _ = lines.send(searching_line(&heard, language).to_string());
                         }
@@ -748,6 +783,9 @@ fn converse(
                     Some(Effect::Command(word)) => {
                         let _ = tx.send(Done::Command { word });
                     }
+                    Some(Effect::Warn { what, below }) => {
+                        let _ = tx.send(Done::Warn { what, below });
+                    }
                     None => {}
                 }
                 outputs.push(json!({"type": "function_call_output", "call_id": call.call_id, "output": output}));
@@ -791,6 +829,16 @@ fn converse(
                     let _ = lines.send(brain::for_speech(&rest));
                 }
                 let text = brain::for_speech(&said);
+                // Looked up: kept, so the same question is answered at once
+                // next time.
+                if searched
+                    && !text.is_empty()
+                    && let Some(learning) = &brain.learning
+                {
+                    learning
+                        .knowledge()
+                        .add(&heard, &text, knowledge::Source::Web);
+                }
                 brain.heard(&heard);
                 brain.said(&text);
                 let _ = tx.send(Done::Reply {
@@ -804,6 +852,78 @@ fn converse(
         // The words are out; the voice may still be on its last lines.
         busy.store(false, Ordering::Relaxed);
     });
+}
+
+/// The usual hello, when the model has nothing of its own to say.
+const HELLO: &str = "Hey! I'm here. Just talk to me.";
+
+/// Say hi when the phone connects: from the model when it knows the player
+/// (it may pick up from last time), else the usual line; shown, and said.
+fn greet(
+    openai: &OpenAi,
+    brain: &mut Brain,
+    id: u64,
+    stop: &Stop,
+    language: Option<&str>,
+    tx: &Sender<Done>,
+) {
+    let asked = Instant::now();
+    let learned = brain.learned();
+    let mut text = String::new();
+    if !learned.is_empty() {
+        let tongue = language
+            .map(language::name)
+            .map(|name| format!(" (their phone is set to {name})"))
+            .unwrap_or_default();
+        let ask = Ask {
+            instructions: format!("{}{LEARNED_GUIDE}\n{learned}", brain.persona()),
+            input: vec![json!({"role": "user", "content": format!(
+                "[The player just connected their phone to talk with you; not said by them.] Say hi in one short, \
+            natural line in their language{tongue}. If you know what they were up to lately, you may pick up from there in a \
+            few words."
+            )})],
+            max_output_tokens: 80,
+            timeout: Duration::from_secs(15),
+            stop: Some(stop.clone()),
+            ..Default::default()
+        };
+        if let Ok(answer) = openai.ask(&ask, None)
+            && !brain::is_silent(&answer.text)
+        {
+            text = brain::for_speech(&answer.text);
+        }
+    }
+    if stop.stopped() {
+        return;
+    }
+    if text.is_empty() {
+        // The usual line, in their language.
+        let mut translations = std::collections::HashMap::new();
+        say_line(
+            openai,
+            id,
+            stop,
+            HELLO,
+            language,
+            Some(crate::companion::Kind::Reply),
+            true,
+            &mut translations,
+            tx,
+        );
+        return;
+    }
+    let _ = tx.send(Done::Shown {
+        kind: crate::companion::Kind::Reply,
+        text: text.clone(),
+    });
+    brain.said(&text);
+    if let Err(error) = speak_line(openai, id, stop, &text, asked, false, tx) {
+        let _ = tx.send(Done::Failed {
+            id,
+            heard: None,
+            error,
+        });
+    }
 }
 
 /// 16-bit mono samples as a WAV file in memory.

@@ -139,6 +139,9 @@ pub enum Inbound {
     Effect(crate::ai::Effect),
     /// Start (true) or stop (false) recording the session.
     Record(bool),
+    /// How a turn went on a live call ("jumped in": MapleSyrup answered
+    /// before the player had finished), for the log it learns from.
+    Turn(String),
 }
 
 /// What the phone's live call asks the PC for.
@@ -178,12 +181,13 @@ struct Sight {
     snapshot: String,
 }
 
-/// The picture for a call: the frame with rulers, as a JPEG small enough
-/// for the call's data channel (which takes messages up to about 64 kB).
+/// The picture for a call: the frame with rulers, as a small JPEG (quick for
+/// the call to take in, and within its data channel's messages of up to
+/// about 64 kB).
 fn eyes_picture(frame: &RgbaImage) -> String {
     use crate::ai::images;
-    let mut size = (768u32, 480u32);
-    let mut quality = 60u8;
+    let mut size = (640u32, 400u32);
+    let mut quality = 55u8;
     loop {
         let picture = images::with_rulers(&images::fit(frame, size.0, size.1));
         let url = images::jpeg_url(&picture, quality);
@@ -653,7 +657,12 @@ impl Hub {
             }
             ("GET", "/api/eyes") => {
                 let sight = self.lock().sight.clone();
-                let image = sight.frame.as_deref().map(eyes_picture);
+                // (`image=0`: what is read off it only; the picture went lately.)
+                let image = sight
+                    .frame
+                    .as_deref()
+                    .filter(|_| request.param("image") != Some("0"))
+                    .map(eyes_picture);
                 Response::json(200, &json!({"snapshot": sight.snapshot, "image": image}))
             }
             ("POST", "/api/tool") => {
@@ -712,6 +721,13 @@ impl Hub {
                     Response::json(200, &json!({"ok": true}))
                 }
                 _ => Response::json(400, &json!({"error": "no text"})),
+            },
+            ("POST", "/api/turn") => match text_field("what").as_deref() {
+                Some(what @ "jumped in") => {
+                    self.lock().inbox.push(Inbound::Turn(what.to_string()));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                _ => Response::json(400, &json!({"error": "what is \"jumped in\""})),
             },
             ("POST", "/api/interrupt") => {
                 self.lock().inbox.push(Inbound::Interrupt);
@@ -1001,6 +1017,11 @@ mod tests {
             "{}",
             image.len()
         );
+        // The picture went lately: what is read off it only.
+        let r = hub.handle(&request("GET", "/api/eyes?k=k1&image=0", ""));
+        let eyes: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(eyes["snapshot"], "HP about 75%.");
+        assert!(eyes["image"].is_null());
         // A tool runs on the PC with the frame; what it changed reaches the main loop.
         let r = hub.handle(&request(
             "POST",
@@ -1017,6 +1038,7 @@ mod tests {
             ),
             ("/api/mode?k=k1", r#"{"live": true}"#),
             ("/api/talking?k=k1", r#"{"on": true}"#),
+            ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
         ] {
             assert_eq!(
                 hub.handle(&request("POST", path, body)).status,
@@ -1034,6 +1056,15 @@ mod tests {
             400
         );
         assert_eq!(
+            hub.handle(&request(
+                "POST",
+                "/api/turn?k=k1",
+                r#"{"what": "anything"}"#
+            ))
+            .status,
+            400
+        );
+        assert_eq!(
             hub.take_inbox(),
             vec![
                 Inbound::Effect(crate::ai::Effect::Note("ran remember_fact".into())),
@@ -1043,6 +1074,7 @@ mod tests {
                 },
                 Inbound::Live(true),
                 Inbound::Talking(true),
+                Inbound::Turn("jumped in".into()),
             ]
         );
     }

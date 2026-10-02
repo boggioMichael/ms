@@ -1,7 +1,9 @@
 //! The OpenAI client against a stand-in server on this machine, through the
 //! same `curl` the real calls use: model fallback, the reasoning retry,
 //! streamed replies, speech (streamed too), refused keys, calling a request
-//! off, and the worker speaking a reply line by line.
+//! off, the worker speaking a reply line by line, and learning: what it
+//! learned in every reply, a hello that picks up from last time, and the
+//! learner looking back on the session logs.
 
 use std::io::Write;
 use std::net::TcpListener;
@@ -105,6 +107,10 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                                     let mut events = String::from(
                                         "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
                                     );
+                                    // Asked to look it up: a web search first.
+                                    if said.contains("look it up") {
+                                        events.push_str("event: response.web_search_call.in_progress\ndata: {\"type\":\"response.web_search_call.in_progress\"}\n\n");
+                                    }
                                     let chars: Vec<char> = reply.chars().collect();
                                     for piece in chars.chunks(5) {
                                         let delta: String = piece.iter().collect();
@@ -115,6 +121,24 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                                     }
                                     events.push_str("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n");
                                     Response::new(200, "text/event-stream", events.into_bytes())
+                                }
+                                // The learner's look back: the notebook, updated.
+                                Some(_) if body["text"]["format"]["name"] == "notebook" => {
+                                    let notebook = json!({
+                                        "facts": ["Their main is a Night Lord, level 62.", "They want to beat Zakum."],
+                                        "style": ["Short answers."],
+                                        "words": ["Zakum", "MoonWalker77"],
+                                        "last_time": "They trained at Ellinia and reached level 62.",
+                                        "lessons": [{"about": "Easy Zakum level", "right": "Easy Zakum needs level 50."}],
+                                    });
+                                    Response::json(
+                                        200,
+                                        &json!({"output": [
+                                            {"type": "message", "role": "assistant", "content": [
+                                                {"type": "output_text", "text": notebook.to_string()}
+                                            ]}
+                                        ]}),
+                                    )
                                 }
                                 Some(model) => {
                                     let last = body["input"]
@@ -284,6 +308,7 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
             Ok(Done::Noted { line }) => panic!("noted: {line}"),
             Ok(Done::Shown { text, .. }) => panic!("shown: {text}"),
             Ok(Done::Command { word }) => panic!("command: {word}"),
+            Ok(Done::Warn { what, .. }) => panic!("warn: {what}"),
             Err(e) => panic!("{e}: {reply:?} {lines:?}"),
         }
     }
@@ -580,7 +605,12 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
         ],
         true,
     );
-    let call = live.session(&instructions, &tools).unwrap();
+    // As it adapted to the player: a little less eager, their words.
+    let tuning = ms::ai::live::Tuning {
+        eagerness: "medium".into(),
+        words: Some("MapleStory. Names and words the player uses: Zakum, MoonWalker77.".into()),
+    };
+    let call = live.session(&instructions, &tools, &tuning).unwrap();
     // The full model isn't there for this key: the smaller one is used.
     assert_eq!(call["key"], "ek_test_live");
     assert_eq!(call["model"], "gpt-realtime-mini");
@@ -605,7 +635,17 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
         session["audio"]["input"]["turn_detection"]["type"],
         "semantic_vad"
     );
+    assert_eq!(
+        session["audio"]["input"]["turn_detection"]["eagerness"],
+        "medium"
+    );
     assert!(session["audio"]["input"]["transcription"]["language"].is_null());
+    assert!(
+        session["audio"]["input"]["transcription"]["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("MoonWalker77")
+    );
     assert!(
         session["instructions"]
             .as_str()
@@ -620,6 +660,271 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
         .collect();
     assert_eq!(names, ["remember_fact", "search_web"]);
     // The model that worked is kept.
-    let again = live.session(&instructions, &tools).unwrap();
+    let again = live
+        .session(&instructions, &tools, &Default::default())
+        .unwrap();
     assert_eq!(again["model"], "gpt-realtime-mini");
+}
+
+/// A folder of its own for a test, empty.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("ms-fake-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn every_reply_knows_what_it_learned_and_keeps_what_it_looked_up() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let settings = scratch("reply");
+    std::fs::write(
+        settings.join("about-me.txt"),
+        "- Their main is a Night Lord.\n",
+    )
+    .unwrap();
+    let learning = ms::ai::Learning::load(&settings);
+    learning.knowledge().add(
+        "Easy Zakum level",
+        "Easy Zakum needs level 50.",
+        ms::ai::knowledge::Source::Player,
+    );
+    let mut brain = Brain::new();
+    brain.learning = Some(learning.clone());
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, brain);
+    let id = worker.send(Job::Converse {
+        heard: "what level is easy zakum, look it up".into(),
+        snapshot: "HP is about 80%.".into(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id: of, .. }) => {
+                assert_eq!(of, id);
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r["path"] == "/v1/responses")
+        .cloned()
+        .unwrap();
+    // Who it is first (cached), what it learned last.
+    let instructions = asked["body"]["instructions"].as_str().unwrap();
+    assert!(instructions.starts_with("You are MapleSyrup"));
+    let learned = instructions
+        .find("What you learned from playing together")
+        .unwrap();
+    assert!(
+        learned
+            > instructions
+                .find("Without a picture you can't see the game")
+                .unwrap()
+    );
+    assert!(instructions[learned..].contains("Night Lord"));
+    assert!(
+        instructions[learned..]
+            .contains("Easy Zakum needs level 50. (the player corrected you; trust this)")
+    );
+    // What may help with this question goes with it.
+    let last = asked["body"]["input"].as_array().unwrap().last().unwrap();
+    let parts: Vec<&str> = last["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["text"].as_str())
+        .collect();
+    assert!(
+        parts
+            .iter()
+            .any(|p| p.starts_with("[What you learned before") && p.contains("level 50")),
+        "{parts:?}"
+    );
+    // It searched: what it found is kept for next time.
+    assert_eq!(learning.knowledge().looked_up(), 1);
+    let found = learning
+        .knowledge()
+        .find("easy zakum level, look it up")
+        .unwrap();
+    assert!(found.answer.contains("you said"));
+    let _ = std::fs::remove_dir_all(settings);
+}
+
+#[test]
+fn the_hello_picks_up_from_last_time_when_it_knows_the_player() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    // Nothing known yet: the usual hello.
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    worker.send(Job::Greet { language: None });
+    let shown = loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, kind }) => {
+                assert_eq!(kind, ms::companion::Kind::Reply);
+                break text;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert_eq!(shown, "Hey! I'm here. Just talk to me.");
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .all(|r| r["path"] != "/v1/responses")
+    );
+    // Knowing them: its own hello, from what it knows, then said.
+    let settings = scratch("hello");
+    let learning = ms::ai::Learning::load(&settings);
+    learning.memory().last_time = "They trained at Ellinia and reached level 62.".into();
+    let mut brain = Brain::new();
+    brain.learning = Some(learning);
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, brain);
+    worker.send(Job::Greet {
+        language: Some("he-IL".into()),
+    });
+    let (mut shown, mut spoken) = (None, None);
+    while shown.is_none() || spoken.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, .. }) => shown = Some(text),
+            Ok(Done::Audio {
+                text, start: true, ..
+            }) => spoken = Some(text),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert_eq!(shown, spoken);
+    assert!(shown.unwrap().contains("Say hi"));
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r["path"] == "/v1/responses")
+        .cloned()
+        .unwrap();
+    assert!(
+        asked["body"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Lately: They trained at Ellinia")
+    );
+    assert!(
+        asked["body"]["input"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Hebrew")
+    );
+    let _ = std::fs::remove_dir_all(settings);
+}
+
+#[test]
+fn the_learner_looks_back_on_the_sessions_and_keeps_what_it_learned() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let settings = scratch("learner-settings");
+    let sessions = scratch("learner-sessions");
+    let session = sessions.join("2026-10-02 20-00-00");
+    std::fs::create_dir_all(&session).unwrap();
+    std::fs::write(
+        session.join("log.txt"),
+        "20:00:01  [info] Maple companion is on.\n\
+20:00:05  [heard] I'm level 62 now on my night lord\n\
+20:00:06  [reply] Nice, level 62! Easy Zakum is at 90, right?\n\
+20:00:09  [heard] no, easy zakum is level 50\n\
+20:00:10  [reply] Got it, 50. Thanks!\n",
+    )
+    .unwrap();
+    let learning = ms::ai::Learning::load(&settings);
+    let (news, heard) = std::sync::mpsc::channel();
+    ms::ai::memory::spawn(
+        Arc::new(OpenAi::new(
+            "sk-test-key-0123456789abcdef",
+            &base,
+            "cedar",
+            None,
+        )),
+        learning.clone(),
+        sessions.clone(),
+        news,
+    );
+    let mut lines = Vec::new();
+    while !lines
+        .iter()
+        .any(|l: &String| l.starts_with("notebook updated"))
+    {
+        lines.push(
+            heard
+                .recv_timeout(Duration::from_secs(40))
+                .unwrap_or_else(|e| panic!("{e}: {lines:?}")),
+        );
+    }
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("learned from your corrections: Easy Zakum level")),
+        "{lines:?}"
+    );
+    // The conversation went to the model as it was said.
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r["body"]["text"]["format"]["name"] == "notebook")
+        .cloned()
+        .unwrap();
+    let text = asked["body"]["input"][0]["content"].as_str().unwrap();
+    assert!(text.contains("Player: no, easy zakum is level 50"));
+    assert!(text.contains("MapleSyrup: Got it, 50. Thanks!"));
+    // What it learned is kept, on disk, and goes into what it is told.
+    let prompt = learning.prompt();
+    assert!(prompt.contains("Their main is a Night Lord, level 62."));
+    assert!(prompt.contains("Lately: They trained at Ellinia"));
+    assert!(prompt.contains("Easy Zakum needs level 50."));
+    assert_eq!(learning.knowledge().lessons(5).len(), 1);
+    // (It finishes writing a moment after it says so.)
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let kept = loop {
+        let kept = ms::ai::memory::Memory::load(&settings);
+        if kept.read_to.lines == 5 || Instant::now() > deadline {
+            break kept;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(kept.facts.len(), 2);
+    assert_eq!(kept.read_to.session, "2026-10-02 20-00-00");
+    assert_eq!(kept.read_to.lines, 5);
+    assert_eq!(kept.counts.sentences, 2);
+    assert!(
+        learning
+            .memory()
+            .words_hint()
+            .unwrap()
+            .contains("MoonWalker77")
+    );
+    let _ = std::fs::remove_dir_all(settings);
+    let _ = std::fs::remove_dir_all(sessions);
 }

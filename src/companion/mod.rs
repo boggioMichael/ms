@@ -151,6 +151,9 @@ pub struct Companion {
     warnings: u32,
     zero_hp_frames: u32,
     dead: bool,
+    /// HP lately (when, percent), to tell a death a sooner warning could
+    /// have helped with from a sudden one.
+    hp_lately: std::collections::VecDeque<(f64, f32)>,
     listening_until: f64,
     muted: bool,
     exp: ExpTracker,
@@ -173,6 +176,9 @@ const LEVEL_HOLD_SECS: f64 = 3.0;
 /// How long HP or MP must stay low before it is said, in seconds (and at
 /// least three frames): a moment's misread is not worth a warning.
 const LOW_HOLD_SECS: f64 = 0.6;
+
+/// HP warnings move sooner after deaths no warning came before, up to here.
+const SOONEST_WARNING: f32 = 50.0;
 
 /// How long after a line was said the phone may still hand it back as heard,
 /// in seconds: the line, its playing, and the phone's recognition finishing.
@@ -298,6 +304,7 @@ impl Companion {
             warnings: 0,
             zero_hp_frames: 0,
             dead: false,
+            hp_lately: std::collections::VecDeque::new(),
             listening_until: f64::NEG_INFINITY,
             muted: false,
             exp: ExpTracker::new(),
@@ -591,13 +598,23 @@ impl Companion {
             self.zero_hp_frames += 1;
             if self.zero_hp_frames >= 3 && !self.dead {
                 self.dead = true;
-                out.push(Action::Say(Say::alert(
-                    "Your HP hit zero. Time to revive and head back.",
-                )));
+                let mut line = "Your HP hit zero. Time to revive and head back.".to_string();
+                if let Some(sooner) = self.sooner_warning(now) {
+                    self.settings.hp_low = sooner;
+                    self.settings.hp_rearm = (sooner + 15.0).min(95.0);
+                    line.push_str(&format!(
+                        " I'll warn you sooner from now on, under {sooner:.0}%."
+                    ));
+                }
+                out.push(Action::Say(Say::alert(line)));
             }
             return;
         }
         self.zero_hp_frames = 0;
+        self.hp_lately.push_back((now, hp.percent));
+        while self.hp_lately.front().is_some_and(|(t, _)| now - t > 10.0) {
+            self.hp_lately.pop_front();
+        }
         if self.dead && hp.percent > 10.0 {
             self.dead = false;
             self.hp_warning = Warning::Armed;
@@ -628,6 +645,25 @@ impl Companion {
             self.warnings += 1;
             out.push(Action::Say(Say::alert(line)));
         }
+    }
+
+    /// Died without a warning, though HP went down through where a sooner
+    /// one would have come: warn sooner from now on (five points, up to
+    /// half the bar). Not when warnings are off, nor after a sudden death
+    /// (no warning would have helped).
+    fn sooner_warning(&self, now: f64) -> Option<f32> {
+        let low = self.settings.hp_low;
+        if low <= 0.0 || low >= SOONEST_WARNING {
+            return None;
+        }
+        let warned = matches!(self.hp_warning, Warning::Warned(at) if now - at <= 15.0);
+        let lowest = self
+            .hp_lately
+            .iter()
+            .filter(|(t, _)| now - t <= 10.0)
+            .map(|(_, p)| *p)
+            .fold(f32::INFINITY, f32::min);
+        (!warned && lowest < low + 20.0).then(|| (low + 5.0).min(SOONEST_WARNING))
     }
 
     fn watch_mp(&mut self, now: f64, obs: &Observation, out: &mut Vec<Action>) {
@@ -1071,6 +1107,57 @@ mod tests {
             ));
         }
         assert_eq!(lines, ["Your HP hit zero. Time to revive and head back."]);
+    }
+
+    #[test]
+    fn a_death_no_warning_came_before_moves_the_warning_sooner() {
+        let mut c = Companion::new(Settings::default());
+        // Down fast through 40% and 32%: above 30%, so no warning came.
+        let mut t = 0.0;
+        let mut step = |c: &mut Companion, hp: f32, frames: usize| {
+            let mut lines = Vec::new();
+            for _ in 0..frames {
+                t += 0.1;
+                lines.extend(said(&c.observe(t, frame(hp, 50.0, 10.0))));
+            }
+            lines
+        };
+        step(&mut c, 80.0, 3);
+        assert!(step(&mut c, 40.0, 3).is_empty());
+        assert!(step(&mut c, 32.0, 3).is_empty());
+        assert_eq!(
+            step(&mut c, 0.0, 5),
+            [
+                "Your HP hit zero. Time to revive and head back. I'll warn you sooner from now on, under 35%."
+            ]
+        );
+        assert_eq!((c.settings.hp_low, c.settings.hp_rearm), (35.0, 50.0));
+        // A sudden death from full HP: no warning would have helped.
+        step(&mut c, 100.0, 120);
+        assert_eq!(
+            step(&mut c, 0.0, 5),
+            ["Your HP hit zero. Time to revive and head back."]
+        );
+        assert_eq!(c.settings.hp_low, 35.0);
+        // Warned on the way down: the warning came, nothing to change.
+        step(&mut c, 100.0, 120);
+        assert_eq!(step(&mut c, 20.0, 8).len(), 1);
+        assert_eq!(
+            step(&mut c, 0.0, 5),
+            ["Your HP hit zero. Time to revive and head back."]
+        );
+        assert_eq!(c.settings.hp_low, 35.0);
+        // Never past half the bar, and never when warnings are off.
+        c.settings.hp_low = 0.0;
+        step(&mut c, 100.0, 120);
+        step(&mut c, 20.0, 8);
+        step(&mut c, 0.0, 5);
+        assert_eq!(c.settings.hp_low, 0.0);
+        c.settings.hp_low = 48.0;
+        step(&mut c, 100.0, 300);
+        step(&mut c, 60.0, 3);
+        step(&mut c, 0.0, 5);
+        assert_eq!(c.settings.hp_low, 50.0);
     }
 
     #[test]
