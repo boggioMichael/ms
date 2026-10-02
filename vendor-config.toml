@@ -1,0 +1,10 @@
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/boggioMichael/syrup?rev=8995d89fa972ac58d1f387031398d65ed7d1d2ac"]
+git = "https://github.com/boggioMichael/syrup"
+rev = "8995d89fa972ac58d1f387031398d65ed7d1d2ac"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor"
