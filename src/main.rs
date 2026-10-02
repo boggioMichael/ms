@@ -62,16 +62,10 @@ fn print_hud_summary(frame_index: usize, snapshot: &ms::hud::HudSnapshot) {
     println!("\u{1b}[2K{DIM}╰────────────────────────────────────{RESET}");
 }
 
-fn write_debug_overlay(image: &image::RgbaImage, markers: &ms::hud::UiMarkers, frame_index: usize) {
+fn write_debug_overlay(image: &image::RgbaImage, markers: &ms::hud::UiMarkers) {
+    // One file, overwritten: a numbered PNG per frame filled the disk at
+    // about 12 MB a second on a live window.
     let annotated = annotate_ui_markers(image, markers);
-    let frame_path = format!("out/last-frame-{frame_index:06}.png");
-
-    if let Err(err) = annotated.save(&frame_path) {
-        eprintln!("warning: failed to write frame overlay {frame_path}: {err}");
-        return;
-    }
-
-    // Best-effort stable filename for tools/scripts that read a fixed path.
     if let Err(err) = annotated.save("out/last-frame.png") {
         eprintln!("warning: failed to refresh out/last-frame.png: {err}");
     }
@@ -145,7 +139,7 @@ fn main() {
         print_hud_summary(frame_index, &snapshot);
 
         std::fs::create_dir_all("out").expect("failed to create output directory");
-        write_debug_overlay(&image, &markers, frame_index);
+        write_debug_overlay(&image, &markers);
         first_frame = false;
 
         frame_index += 1;

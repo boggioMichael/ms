@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16120d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>MapleSyrup</title>
+<style>
+  :root {
+    --bg: #16120d; --card: #221b13; --card2: #2b2219; --line: #3a2e21;
+    --text: #f6efe4; --dim: #b7a68e; --faint: #7d6d58;
+    --syrup: #f2a33a; --syrup-dark: #b8741c;
+    --hp: #ef5350; --mp: #42a5f5; --exp: #f4c430; --ok: #66bb6a; --warn: #ffb74d;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { padding: max(12px, env(safe-area-inset-top)) 14px max(24px, env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; margin: 4px 2px 12px; }
+  .brand { font-weight: 800; font-size: 22px; letter-spacing: .2px; }
+  .brand span { color: var(--syrup); }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--dim);
+    background: var(--card); border: 1px solid var(--line); padding: 4px 10px; border-radius: 999px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.bad { background: var(--hp); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px 14px 12px; margin-bottom: 12px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .who { font-weight: 700; font-size: 17px; }
+  .sub { color: var(--dim); font-size: 13px; }
+  .gauge { margin-top: 10px; }
+  .gauge .row { font-size: 14px; }
+  .gauge .name { font-weight: 700; width: 38px; }
+  .gauge .val { color: var(--dim); font-variant-numeric: tabular-nums; }
+  .bar { height: 12px; background: #120e0a; border-radius: 7px; overflow: hidden; margin-top: 4px; border: 1px solid #000; }
+  .bar i { display: block; height: 100%; width: 0%; border-radius: 7px; transition: width .35s ease; }
+  .hp i { background: linear-gradient(90deg, #c62828, var(--hp)); }
+  .mp i { background: linear-gradient(90deg, #1565c0, var(--mp)); }
+  .exp i { background: linear-gradient(90deg, #c9a227, var(--exp)); }
+  .est { color: var(--faint); font-size: 12px; }
+  .stats { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; color: var(--dim); font-size: 13px; }
+  .stats b { color: var(--text); font-weight: 600; }
+  .mic { text-align: center; }
+  #listen { width: 100%; border: 0; border-radius: 16px; padding: 18px 12px; font-size: 19px; font-weight: 800;
+    color: #1a1209; background: linear-gradient(180deg, #ffbf5e, var(--syrup)); box-shadow: 0 6px 18px rgba(242,163,58,.25); }
+  #listen.on { background: linear-gradient(180deg, #4b3a26, #3a2c1c); color: var(--text); box-shadow: none; border: 1px solid var(--syrup-dark); }
+  .meter { height: 8px; background: #120e0a; border-radius: 5px; margin: 12px 0 8px; overflow: hidden; }
+  .meter i { display: block; height: 100%; width: 0%; background: var(--ok); transition: width .08s linear; }
+  #micStatus { color: var(--dim); font-size: 14px; min-height: 20px; }
+  #heard { margin-top: 6px; font-size: 15px; min-height: 22px; color: var(--text); font-style: italic; }
+  #note { margin-top: 8px; font-size: 13px; color: var(--warn); display: none; text-align: left; }
+  .buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+  .buttons button { border: 1px solid var(--line); background: var(--card2); color: var(--text); border-radius: 12px;
+    padding: 12px 4px; font-size: 14px; font-weight: 600; }
+  .buttons button:active, .seg button:active { transform: scale(.97); }
+  .buttons button.mark { border-color: var(--syrup-dark); color: var(--syrup); }
+  #log { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; }
+  #log li { padding: 8px 2px; border-top: 1px solid var(--line); font-size: 15px; display: flex; gap: 8px; }
+  #log li:first-child { border-top: 0; }
+  #log time { color: var(--faint); font-size: 12px; min-width: 44px; padding-top: 2px; font-variant-numeric: tabular-nums; }
+  #log .alert { color: #ffcc80; font-weight: 600; }
+  #log .heard { color: var(--dim); font-style: italic; }
+  #log .info { color: var(--dim); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 0 0 8px; }
+  .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .seg button { border: 1px solid var(--line); background: var(--card2); color: var(--dim); border-radius: 10px; padding: 9px 4px; font-size: 14px; }
+  .seg button.sel { background: var(--syrup); color: #1a1209; border-color: var(--syrup); font-weight: 700; }
+  label.opt { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; color: var(--dim); font-size: 14px; }
+  select { background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px; font-size: 14px; }
+  input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--syrup); }
+  footer { color: var(--faint); font-size: 12px; text-align: center; margin-top: 16px; line-height: 1.6; }
+  #banner { display: none; background: #4a1f1f; border: 1px solid #7a3030; color: #ffd6d6; border-radius: 14px; padding: 12px; margin-bottom: 12px; font-size: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Maple<span>Syrup</span></div>
+  <div class="pill"><i class="dot" id="pcDot"></i><span id="pcText">connecting…</span></div>
+</header>
+
+<div id="banner"></div>
+
+<section class="card" id="game">
+  <div class="row">
+    <div>
+      <div class="who" id="who">Waiting for the game…</div>
+      <div class="sub" id="gameState">MapleSyrup is looking for the MapleStory window</div>
+    </div>
+    <div class="pill"><i class="dot" id="gameDot"></i><span id="fps">—</span></div>
+  </div>
+  <div class="gauge hp"><div class="row"><span class="name">HP</span><span class="val" id="hpVal">—</span></div><div class="bar"><i id="hpBar"></i></div></div>
+  <div class="gauge mp"><div class="row"><span class="name">MP</span><span class="val" id="mpVal">—</span></div><div class="bar"><i id="mpBar"></i></div></div>
+  <div class="gauge exp"><div class="row"><span class="name">EXP</span><span class="val" id="expVal">—</span></div><div class="bar"><i id="expBar"></i></div></div>
+  <div class="stats">
+    <span>EXP/hour <b id="rate">—</b></span>
+    <span>Next level <b id="eta">—</b></span>
+    <span>Session <b id="session">—</b></span>
+    <span>Marks <b id="marks">0</b></span>
+  </div>
+</section>
+
+<section class="card mic">
+  <button id="listen">🎙️ Start listening</button>
+  <div class="meter"><i id="meter"></i></div>
+  <div id="micStatus">Tap to use this phone as MapleSyrup's microphone.</div>
+  <div id="heard"></div>
+  <div id="note"></div>
+</section>
+
+<div class="buttons">
+  <button data-cmd="status">Status</button>
+  <button data-cmd="hp">HP</button>
+  <button data-cmd="mp">MP</button>
+  <button data-cmd="exp">EXP</button>
+  <button data-cmd="rate">Rate</button>
+  <button data-cmd="level">Level</button>
+  <button data-cmd="time">Time</button>
+  <button data-cmd="mark" class="mark">★ Mark</button>
+  <button data-cmd="mute" id="muteBtn">Mute</button>
+  <button data-cmd="help">Help</button>
+</div>
+
+<section class="card">
+  <h2>MapleSyrup says</h2>
+  <ul id="log"></ul>
+</section>
+
+<section class="card">
+  <h2>Replies spoken on</h2>
+  <div class="seg" id="voiceSeg">
+    <button data-on="pc">PC</button><button data-on="phone">Phone</button><button data-on="both">Both</button><button data-on="off">Off</button>
+  </div>
+  <label class="opt">Speech language
+    <select id="lang">
+      <option value="en-US">English (US)</option>
+      <option value="en-GB">English (UK)</option>
+      <option value="he-IL">עברית</option>
+      <option value="es-ES">Español</option>
+      <option value="pt-BR">Português</option>
+    </select>
+  </label>
+  <label class="opt">Send the microphone's audio to the PC <input type="checkbox" id="sendAudio" checked></label>
+</section>
+
+<footer>
+  Say <b>“syrup”</b> and then a command — “syrup, status”, “syrup, how long to level”, “syrup, mark that”.<br>
+  Keep this page open while you play; the screen stays on while listening.<br>
+  Nothing leaves your PC and this phone.
+</footer>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const KEY = new URLSearchParams(location.search).get("k") || "";
+  const store = (() => { try { return window.localStorage; } catch (e) { return null; } })();
+  const remember = (k, v) => { try { store && store.setItem("ms." + k, v); } catch (e) {} };
+  const recall = (k) => { try { return store ? store.getItem("ms." + k) : null; } catch (e) { return null; } };
+
+  function api(path, options) {
+    const sep = path.includes("?") ? "&" : "?";
+    return fetch(path + sep + "k=" + encodeURIComponent(KEY), Object.assign({ cache: "no-store" }, options || {}));
+  }
+  function postJson(path, body) {
+    return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  }
+  function banner(text) {
+    const b = $("banner");
+    b.textContent = text || "";
+    b.style.display = text ? "block" : "none";
+  }
+  function note(text) {
+    const n = $("note");
+    n.textContent = text || "";
+    n.style.display = text ? "block" : "none";
+  }
+  if (!KEY) banner("This page needs the link from MapleSyrup's window on the PC: scan its QR code.");
+
+  // ---- the game, from the PC ------------------------------------------
+  let status = {};
+  let voiceOn = "pc";
+  function pct(g) { return g ? Math.max(0, Math.min(100, g.percent)) : 0; }
+  function gaugeText(g) {
+    if (!g) return "—";
+    const p = g.percent >= 10 ? g.percent.toFixed(0) : g.percent.toFixed(1);
+    if (g.read && g.current != null && g.max != null) return g.current.toLocaleString() + " / " + g.max.toLocaleString() + " · " + p + "%";
+    return (g.read ? "" : "~") + p + "%";
+  }
+  function duration(s) {
+    if (s == null) return "—";
+    const m = Math.round(s / 60);
+    if (m < 1) return "<1 min";
+    const h = Math.floor(m / 60);
+    return h ? h + " h " + (m % 60) + " min" : m + " min";
+  }
+  function render(state) {
+    status = state.status || {};
+    const game = status.game || {};
+    const seen = game.state === "seen";
+    $("gameDot").className = "dot " + (seen ? "on" : "bad");
+    $("fps").textContent = seen && status.fps ? status.fps.toFixed(1) + " fps" : "no game";
+    const who = [];
+    if (status.level) who.push("Lv " + status.level);
+    if (status.name) who.push(status.name);
+    if (status.job) who.push(status.job);
+    $("who").textContent = seen ? (who.join(" · ") || "MapleStory") : "Waiting for the game…";
+    $("gameState").textContent = seen ? "Watching " + (game.detail || "MapleStory")
+      : game.state === "unavailable" ? "Can't capture the game: " + game.detail
+      : "MapleSyrup is looking for the MapleStory window";
+    for (const name of ["hp", "mp", "exp"]) {
+      const g = seen ? status[name] : null;
+      $(name + "Bar").style.width = pct(g) + "%";
+      $(name + "Val").textContent = gaugeText(g);
+    }
+    const p = status.progress || {};
+    $("rate").textContent = p.exp_per_hour != null ? (p.exp_per_hour >= 0 ? "+" : "") + p.exp_per_hour.toFixed(p.exp_per_hour < 10 ? 2 : 1) + "%" : "—";
+    $("eta").textContent = p.seconds_to_level != null ? duration(p.seconds_to_level) : "—";
+    $("session").textContent = duration(p.seconds);
+    $("marks").textContent = p.marks || 0;
+    const muted = !!status.muted;
+    const mb = $("muteBtn");
+    mb.textContent = muted ? "Unmute" : "Mute";
+    mb.dataset.cmd = muted ? "unmute" : "mute";
+    voiceOn = state.voice_on || voiceOn;
+    for (const b of $("voiceSeg").children) b.classList.toggle("sel", b.dataset.on === voiceOn);
+  }
+
+  // ---- messages --------------------------------------------------------
+  const log = $("log");
+  function clock(t) {
+    const s = Math.floor(t), m = Math.floor(s / 60), h = Math.floor(m / 60);
+    const two = (n) => String(n).padStart(2, "0");
+    return h ? h + ":" + two(m % 60) + ":" + two(s % 60) : two(m) + ":" + two(s % 60);
+  }
+  let speechUnlocked = false;
+  function speakHere(text) {
+    if (!speechUnlocked || !("speechSynthesis" in window)) return;
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "en-US";
+    u.rate = 1.05;
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(u);
+  }
+  function addMessage(m, live) {
+    const li = document.createElement("li");
+    const time = document.createElement("time");
+    time.textContent = clock(m.t);
+    const span = document.createElement("span");
+    span.className = m.kind;
+    span.textContent = m.kind === "heard" ? "“" + m.text + "”" : m.text;
+    li.append(time, span);
+    log.prepend(li);
+    while (log.children.length > 40) log.lastChild.remove();
+    if (live && m.speak && m.kind !== "heard" && !status.muted && (voiceOn === "phone" || voiceOn === "both")) speakHere(m.text);
+  }
+
+  // ---- polling ---------------------------------------------------------
+  let since = 0, first = true, failures = 0;
+  async function poll() {
+    if (!KEY) return;
+    try {
+      const r = await api("/api/state?since=" + since);
+      if (r.status === 403) {
+        banner("This link is out of date. Scan the QR code in MapleSyrup's window on the PC again.");
+        setPc(false, "old link");
+        setTimeout(poll, 4000);
+        return;
+      }
+      const state = await r.json();
+      failures = 0;
+      banner("");
+      setPc(true, "PC connected");
+      render(state);
+      for (const m of state.messages || []) addMessage(m, !first);
+      since = state.last_id || since;
+      first = false;
+    } catch (e) {
+      failures++;
+      setPc(false, failures > 2 ? "PC not reachable" : "reconnecting…");
+    }
+    setTimeout(poll, failures ? Math.min(5000, 700 * failures) : 700);
+  }
+  function setPc(ok, text) {
+    $("pcDot").className = "dot " + (ok ? "on" : "bad");
+    $("pcText").textContent = text;
+  }
+
+  // ---- buttons and settings --------------------------------------------
+  document.querySelectorAll(".buttons button").forEach((b) => b.addEventListener("click", () => {
+    unlockSpeech();
+    postJson("/api/command", { command: b.dataset.cmd }).catch(() => {});
+  }));
+  for (const b of $("voiceSeg").children) b.addEventListener("click", () => {
+    unlockSpeech();
+    voiceOn = b.dataset.on;
+    for (const x of $("voiceSeg").children) x.classList.toggle("sel", x === b);
+    postJson("/api/voice", { on: voiceOn }).catch(() => {});
+  });
+  const lang = $("lang");
+  lang.value = recall("lang") || (navigator.language && navigator.language.startsWith("he") ? "he-IL" : "en-US");
+  lang.addEventListener("change", () => { remember("lang", lang.value); if (listening) { stopRecognition(); startRecognition(); } });
+  const sendAudio = $("sendAudio");
+  sendAudio.checked = recall("sendAudio") !== "0";
+  sendAudio.addEventListener("change", () => remember("sendAudio", sendAudio.checked ? "1" : "0"));
+
+  function unlockSpeech() {
+    if (speechUnlocked || !("speechSynthesis" in window)) return;
+    // iOS speaks only after speech was started from a tap.
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    window.speechSynthesis.speak(u);
+    speechUnlocked = true;
+  }
+
+  // ---- the microphone ----------------------------------------------------
+  let listening = false;
+  let audio = null;
+  let wakeLock = null;
+  const TARGET_RATE = 16000;
+
+  async function keepAwake() {
+    try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+  }
+
+  async function startAudio() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      note(window.isSecureContext ? "This browser has no microphone access." :
+        "The microphone needs the secure (https) link from MapleSyrup's QR code.");
+      return false;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false,
+    });
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new Ctx();
+    if (ctx.state !== "running") await ctx.resume();
+    const source = ctx.createMediaStreamSource(stream);
+    const node = ctx.createScriptProcessor(4096, 1, 1);
+    const silent = ctx.createGain();
+    silent.gain.value = 0;
+    source.connect(node); node.connect(silent); silent.connect(ctx.destination);
+    audio = { ctx, stream, node, source, ratio: ctx.sampleRate / TARGET_RATE, pos: 0, queue: [], queued: 0, inflight: 0 };
+    node.onaudioprocess = (e) => {
+      const input = e.inputBuffer.getChannelData(0);
+      let sum = 0;
+      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
+      const rms = Math.sqrt(sum / input.length);
+      const db = rms > 1e-5 ? 20 * Math.log10(rms) : -100;
+      $("meter").style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%";
+      if (!sendAudio.checked) return;
+      // Average each 1/16000 s window down to one 16-bit sample.
+      const a = audio, out = [];
+      let pos = a.pos;
+      while (pos + a.ratio <= input.length) {
+        const from = Math.floor(pos), to = Math.max(from + 1, Math.floor(pos + a.ratio));
+        let acc = 0;
+        for (let j = from; j < to; j++) acc += input[j];
+        const v = acc / (to - from);
+        out.push(Math.max(-32768, Math.min(32767, Math.round(v * 32767))));
+        pos += a.ratio;
+      }
+      a.pos = Math.max(0, pos - input.length);
+      a.queue.push(Int16Array.from(out));
+      a.queued += out.length;
+      if (a.queued >= TARGET_RATE / 4) flushAudio();
+    };
+    stream.getAudioTracks().forEach((t) => {
+      t.addEventListener("ended", () => { if (listening) note("The phone stopped the microphone stream (another app, or the speech recognizer, took it). Recognition goes on."); });
+    });
+    return true;
+  }
+
+  function flushAudio() {
+    const a = audio;
+    if (!a || !a.queued) return;
+    const all = new Int16Array(a.queued);
+    let at = 0;
+    for (const part of a.queue) { all.set(part, at); at += part.length; }
+    a.queue = []; a.queued = 0;
+    if (a.inflight > 4) return; // the network is behind: drop rather than pile up
+    a.inflight++;
+    api("/api/audio?rate=" + TARGET_RATE, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: all.buffer })
+      .catch(() => {}).finally(() => { a.inflight--; });
+  }
+
+  function stopAudio() {
+    if (!audio) return;
+    try { audio.node.disconnect(); audio.source.disconnect(); } catch (e) {}
+    audio.stream.getTracks().forEach((t) => t.stop());
+    audio.ctx.close().catch(() => {});
+    audio = null;
+    $("meter").style.width = "0%";
+  }
+
+  // ---- speech recognition ------------------------------------------------
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let rec = null, wantRec = false, recStarted = 0, quickEnds = 0, lastSent = "", lastSentAt = 0;
+
+  function sendHeard(text) {
+    text = (text || "").trim();
+    if (!text) return;
+    const now = Date.now();
+    // Some phones report one sentence as final twice.
+    if (text.toLowerCase() === lastSent && now - lastSentAt < 4000) return;
+    lastSent = text.toLowerCase(); lastSentAt = now;
+    $("heard").textContent = "“" + text + "”";
+    postJson("/api/heard", { text }).catch(() => {});
+  }
+
+  function startRecognition() {
+    if (!Recognition) {
+      note("This browser has no speech recognition, so use the buttons. (Safari on iPhone and Chrome on Android have it.)");
+      return;
+    }
+    wantRec = true;
+    rec = new Recognition();
+    rec.lang = lang.value;
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.maxAlternatives = 1;
+    rec.onresult = (e) => {
+      let interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const r = e.results[i];
+        if (r.isFinal) sendHeard(r[0].transcript);
+        else interim += r[0].transcript;
+      }
+      if (interim) $("heard").textContent = interim + "…";
+    };
+    rec.onerror = (e) => {
+      if (e.error === "no-speech" || e.error === "aborted") return;
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        wantRec = false;
+        note("Speech recognition isn't allowed. On iPhone: Settings → Apps → Safari → Microphone: Allow, and Settings → Siri → turn on Siri (or Keyboard → Enable Dictation). Buttons still work.");
+      } else if (e.error === "network") {
+        note("Speech recognition needs the phone to be online.");
+      } else {
+        note("Speech recognition: " + e.error);
+      }
+    };
+    rec.onend = () => {
+      if (!wantRec || !listening) return;
+      quickEnds = Date.now() - recStarted < 1500 ? quickEnds + 1 : 0;
+      setTimeout(() => {
+        if (!wantRec || !listening) return;
+        try { recStarted = Date.now(); rec.start(); } catch (e) {}
+      }, quickEnds > 3 ? 3000 : 200);
+    };
+    try { recStarted = Date.now(); rec.start(); } catch (e) { note("Speech recognition could not start: " + e.message); }
+  }
+
+  function stopRecognition() {
+    wantRec = false;
+    if (rec) { try { rec.abort(); } catch (e) {} }
+    rec = null;
+  }
+
+  async function start() {
+    unlockSpeech();
+    note("");
+    listening = true;
+    $("listen").classList.add("on");
+    $("listen").textContent = "⏹ Stop listening";
+    $("micStatus").textContent = "Starting the microphone…";
+    try {
+      await startAudio();
+    } catch (e) {
+      note("The microphone could not start: " + (e && e.name === "NotAllowedError"
+        ? "permission was refused. Allow the microphone for this page in the browser's settings, then try again."
+        : (e && e.message) || e));
+    }
+    startRecognition();
+    keepAwake();
+    $("micStatus").textContent = Recognition ? "Listening — say “syrup” and a command." : "Sending audio to the PC.";
+  }
+
+  function stop() {
+    listening = false;
+    stopRecognition();
+    stopAudio();
+    if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+    $("listen").classList.remove("on");
+    $("listen").textContent = "🎙️ Start listening";
+    $("micStatus").textContent = "Paused. Tap to listen again.";
+  }
+
+  $("listen").addEventListener("click", () => (listening ? stop() : start()));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible" || !listening) return;
+    keepAwake();
+    if (audio && audio.ctx.state !== "running") audio.ctx.resume().catch(() => {});
+    if (wantRec && rec) { try { rec.start(); } catch (e) {} }
+  });
+
+  if (KEY) postJson("/api/hello", { agent: navigator.userAgent }).catch(() => {});
+  poll();
+})();
+</script>
+</body>
+</html>
