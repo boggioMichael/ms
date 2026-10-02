@@ -87,8 +87,9 @@ OPTIONS
   --voice NAME          the OpenAI voice: cedar, marin, ash, coral, sage… (default cedar)
   --no-voice            never speak on the PC
   --rate N              the Windows voice's speed, -10 to 10 (default 1)
-  --hp-low N            warn below N% HP (default 30)
-  --mp-low N            warn below N% MP (default 15)
+  --hp-low N            warn below N% HP (default 30, or what you asked it for
+                        or it learned)
+  --mp-low N            warn below N% MP (default 15, or what you asked it for)
   --fps N               frames watched per second (default 10)
   --preview             also open a window showing what the engine sees
   --no-overlay          no panel over the game window
@@ -125,8 +126,10 @@ struct Options {
     openai_base: String,
     voice: bool,
     rate: i32,
-    hp_low: f32,
-    mp_low: f32,
+    /// Warn below these percents (None: what the player asked for or it
+    /// learned, else the usual).
+    hp_low: Option<f32>,
+    mp_low: Option<f32>,
     fps: f64,
     preview: bool,
     overlay: bool,
@@ -157,8 +160,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
         voice: true,
         rate: 1,
-        hp_low: 30.0,
-        mp_low: 15.0,
+        hp_low: None,
+        mp_low: None,
         fps: 10.0,
         preview: false,
         overlay: true,
@@ -207,8 +210,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--openai-base" => o.openai_base = value("--openai-base")?,
             "--no-voice" => o.voice = false,
             "--rate" => o.rate = number("--rate", value("--rate")?)? as i32,
-            "--hp-low" => o.hp_low = number("--hp-low", value("--hp-low")?)? as f32,
-            "--mp-low" => o.mp_low = number("--mp-low", value("--mp-low")?)? as f32,
+            "--hp-low" => o.hp_low = Some(number("--hp-low", value("--hp-low")?)? as f32),
+            "--mp-low" => o.mp_low = Some(number("--mp-low", value("--mp-low")?)? as f32),
             "--fps" => o.fps = number("--fps", value("--fps")?)?.clamp(1.0, 30.0),
             "--preview" => o.preview = true,
             "--no-overlay" => o.overlay = false,
@@ -651,16 +654,24 @@ struct LiveService {
     toolbox: Toolbox,
     /// For the web search (the call's model can't search itself).
     chat: Arc<OpenAi>,
-    settings: PathBuf,
+    /// What it learned: told to every call; what it looked up, kept.
+    learning: ai::Learning,
 }
 
 impl phone::Service for LiveService {
     fn live(&self, recent: &[String], language: Option<&str>) -> Result<serde_json::Value, String> {
-        let about = std::fs::read_to_string(self.settings.join("about-me.txt")).unwrap_or_default();
-        let instructions = ai::live::instructions(&about, recent, language);
+        let instructions = ai::live::instructions(&self.learning.prompt(), recent, language);
         let tools = ai::live::tools(self.toolbox.definitions(), self.toolbox.web);
+        // How it adapted to the player: how soon to answer, their words.
+        let tuning = {
+            let memory = self.learning.memory();
+            ai::live::Tuning {
+                eagerness: memory.adapt.eagerness.clone(),
+                words: memory.words_hint(),
+            }
+        };
         self.live
-            .session(&instructions, &tools)
+            .session(&instructions, &tools, &tuning)
             .map_err(|e| e.to_string())
     }
 
@@ -675,7 +686,24 @@ impl phone::Service for LiveService {
                 .ok()
                 .and_then(|v| v["query"].as_str().map(String::from))
                 .unwrap_or_default();
-            return (ai::live::search(&self.chat, &query), None);
+            // Asked before: the answer at once, without searching again.
+            let known = self.learning.knowledge().find(&query);
+            if let Some(known) = known {
+                let whose = match known.from {
+                    ai::knowledge::Source::Player => "the player told you this; trust it",
+                    ai::knowledge::Source::Web => "you looked this up before",
+                };
+                return (format!("{} ({whose})", known.answer), None);
+            }
+            return match ai::live::search(&self.chat, &query) {
+                Ok(answer) => {
+                    self.learning
+                        .knowledge()
+                        .add(&query, &answer, ai::knowledge::Source::Web);
+                    (answer, None)
+                }
+                Err(why) => (why, None),
+            };
         }
         let call = ai::openai::Call {
             call_id: String::new(),
@@ -1133,6 +1161,49 @@ impl Outputs {
     }
 }
 
+/// The player asked to be warned at another HP or MP (`below`: the percent,
+/// 0 for never, None for the usual): from now on, and kept for next time.
+/// Returns the line to show.
+fn set_warning(
+    companion: &mut Companion,
+    learning: &ai::Learning,
+    options: &Options,
+    warn_at: &mut (f32, f32),
+    what: &str,
+    below: Option<f32>,
+) -> String {
+    let below = below.filter(|b| b.is_finite()).map(|b| b.clamp(0.0, 95.0));
+    let hp = what == "hp";
+    let usual = if hp {
+        options.hp_low.unwrap_or(30.0)
+    } else {
+        options.mp_low.unwrap_or(15.0)
+    };
+    let at = below.unwrap_or(usual);
+    let rearm = (at + 15.0).min(95.0);
+    {
+        let mut memory = learning.memory();
+        if hp {
+            companion.settings.hp_low = at;
+            companion.settings.hp_rearm = rearm;
+            warn_at.0 = at;
+            memory.adapt.hp_low = below;
+        } else {
+            companion.settings.mp_low = at;
+            companion.settings.mp_rearm = rearm;
+            warn_at.1 = at;
+            memory.adapt.mp_low = below;
+        }
+        memory.save();
+    }
+    let name = if hp { "HP" } else { "MP" };
+    if at <= 0.0 {
+        format!("No more {name} warnings.")
+    } else {
+        format!("{name} warnings below {at:.0}% from now on.")
+    }
+}
+
 /// The OpenAI key: saved, or asked for in this window (when there is one to
 /// type in). `None` runs MapleSyrup with its own simple answers.
 fn openai_key(options: &Options, settings: &Path) -> Option<String> {
@@ -1176,6 +1247,10 @@ fn run(options: Options) -> Result<(), String> {
     let settings_dir = tls::settings_dir();
     let session_dir = session::new_dir(&session::sessions_base(&settings_dir));
     let session = Session::open(session_dir.clone());
+    // What it learned from playing together before: about the player, their
+    // corrections, what it looked up, how they like to talk (all on this PC).
+    let learning = ai::Learning::load(&settings_dir);
+    let (learned_tx, learned_rx) = mpsc::channel::<String>();
 
     // The brain: OpenAI when there is a key that works. With it come the
     // eyes: a vision model that teaches MapleSyrup the player's screen.
@@ -1207,8 +1282,21 @@ fn run(options: Options) -> Result<(), String> {
                         ai_note = "OpenAI: conversation and natural voice".into();
                     }
                     let mut brain = Brain::new();
-                    if let Ok(about) = std::fs::read_to_string(settings_dir.join("about-me.txt")) {
-                        brain.about_player = about;
+                    brain.learning = Some(learning.clone());
+                    // It looks back on the conversation now and then, and
+                    // learns (the sessions before this one first).
+                    if let Some(sessions) = session_dir.parent() {
+                        ai::memory::spawn(
+                            Arc::new(OpenAi::new(
+                                &key,
+                                &options.openai_base,
+                                &options.voice_name,
+                                options.model.as_deref(),
+                            )),
+                            learning.clone(),
+                            sessions.to_path_buf(),
+                            learned_tx.clone(),
+                        );
                     }
                     let learned = Arc::new(Mutex::new(Sight::load(&settings_dir.join("learned"))));
                     let eye_models: Vec<String> = match &options.model {
@@ -1244,9 +1332,10 @@ fn run(options: Options) -> Result<(), String> {
                                 eyes: Arc::clone(&eyes),
                                 settings: settings_dir.clone(),
                                 web: options.web,
+                                learning: Some(learning.clone()),
                             },
                             chat,
-                            settings: settings_dir.clone(),
+                            learning: learning.clone(),
                         }));
                     }
                     let toolbox = Toolbox {
@@ -1254,6 +1343,7 @@ fn run(options: Options) -> Result<(), String> {
                         eyes,
                         settings: settings_dir.clone(),
                         web: options.web,
+                        learning: Some(learning.clone()),
                     };
                     sight = Some(learned);
                     Some(ai::spawn_with(client, brain, Some(toolbox)))
@@ -1375,14 +1465,28 @@ fn run(options: Options) -> Result<(), String> {
             .map_err(|e| e.to_string())?
     };
 
+    // Warnings where the player asked for them (or it learned), unless
+    // given on the command line.
+    let (hp_low, mp_low) = {
+        let memory = learning.memory();
+        (
+            options.hp_low.or(memory.adapt.hp_low).unwrap_or(30.0),
+            options.mp_low.or(memory.adapt.mp_low).unwrap_or(15.0),
+        )
+    };
     let mut companion = Companion::new(Settings {
-        hp_low: options.hp_low,
-        hp_rearm: (options.hp_low + 15.0).min(95.0),
-        mp_low: options.mp_low,
-        mp_rearm: (options.mp_low + 15.0).min(95.0),
+        hp_low,
+        hp_rearm: (hp_low + 15.0).min(95.0),
+        mp_low,
+        mp_rearm: (mp_low + 15.0).min(95.0),
         always_listen: !options.wake_word,
         ..Settings::default()
     });
+    // The warnings as kept (a death no warning came before moves them).
+    let mut warn_at = (hp_low, mp_low);
+    // What the phone shows of what it learned (looked at every few seconds).
+    let mut memory_status = serde_json::Value::Null;
+    let mut memory_checked = Instant::now() - Duration::from_secs(60);
     let mut out = Outputs {
         mouth: Mouth {
             ai: worker,
@@ -1479,6 +1583,17 @@ fn run(options: Options) -> Result<(), String> {
             }
             let actions = companion.observe(tick.at, tick.obs);
             out.apply(actions, &mut companion, latest_image.clone());
+            // Died without a warning: HP warnings come sooner now, for good.
+            if companion.settings.hp_low != warn_at.0 {
+                warn_at.0 = companion.settings.hp_low;
+                let mut memory = learning.memory();
+                memory.adapt.hp_low = Some(warn_at.0);
+                memory.save();
+                out.session.line(
+                    "learned",
+                    &format!("HP warnings below {:.0}% from now on", warn_at.0),
+                );
+            }
             // The things the player taught: their alerts.
             for fired in tick.fired {
                 out.tell(Kind::Alert, &fired.say, true, &mut companion);
@@ -1621,12 +1736,25 @@ fn run(options: Options) -> Result<(), String> {
                         }
                     }
                     Inbound::Talking(on) => out.phone_talking(on),
+                    // (The learner reads it from the log.)
+                    Inbound::Turn(what) => out.session.line("turn", &what),
                     Inbound::Record(true) => recording.start(&mut out),
                     Inbound::Record(false) => recording.stop(&mut out, panel_window.as_mut()),
                     Inbound::Effect(effect) => match effect {
                         ai::Effect::Note(line) => out.show(Kind::Info, &line),
                         ai::Effect::Fact(fact) => {
                             out.show(Kind::Info, &format!("remembered: {fact}"))
+                        }
+                        ai::Effect::Warn { what, below } => {
+                            let line = set_warning(
+                                &mut companion,
+                                &learning,
+                                &options,
+                                &mut warn_at,
+                                &what,
+                                below,
+                            );
+                            out.show(Kind::Info, &line);
                         }
                         ai::Effect::Command(word) if word == ai::tools::RECORD_ON => {
                             recording.start(&mut out)
@@ -1660,12 +1788,19 @@ fn run(options: Options) -> Result<(), String> {
                         }
                         // (On a live call the call itself says hello.)
                         if !(out.live_ok && out.voice_on().phone()) {
-                            let greeting = if out.mouth.ai.is_some() {
-                                "Hey! I'm here. Just talk to me."
-                            } else {
-                                "Phone connected."
-                            };
-                            out.speak(greeting, &mut companion);
+                            match &out.mouth.ai {
+                                // Knowing the player: a hello of its own,
+                                // picking up from last time.
+                                Some(worker) if learning.knows_player() && !companion.muted() => {
+                                    worker.send(Job::Greet {
+                                        language: player_language.clone(),
+                                    });
+                                }
+                                Some(_) => {
+                                    out.speak("Hey! I'm here. Just talk to me.", &mut companion)
+                                }
+                                None => out.speak("Phone connected.", &mut companion),
+                            }
                         }
                     }
                     Inbound::Voice(on) => {
@@ -1693,20 +1828,24 @@ fn run(options: Options) -> Result<(), String> {
                         }
                     }
                     Inbound::Forget(id) => {
-                        if let Some(sight) = &sight {
-                            let forgotten = sight
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .things
-                                .forget(&id);
-                            if let Some(name) = forgotten {
-                                out.tell(
-                                    Kind::Info,
-                                    &format!("I forgot \"{name}\"."),
-                                    false,
-                                    &mut companion,
-                                );
-                            }
+                        // What it learned about the player, or a thing on screen.
+                        let forgotten = learning.forget(&id).or_else(|| {
+                            sight.as_ref().and_then(|sight| {
+                                sight
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .things
+                                    .forget(&id)
+                            })
+                        });
+                        if let Some(name) = forgotten {
+                            memory_checked = Instant::now() - Duration::from_secs(60);
+                            out.tell(
+                                Kind::Info,
+                                &format!("I forgot \"{name}\"."),
+                                false,
+                                &mut companion,
+                            );
                         }
                     }
                     Inbound::Listen(always) => {
@@ -1773,6 +1912,17 @@ fn run(options: Options) -> Result<(), String> {
                     // Its own line, translated: what the phone may hear back.
                     companion.remember_spoken(now, &text);
                     out.show(kind, &text);
+                }
+                Done::Warn { what, below } => {
+                    let line = set_warning(
+                        &mut companion,
+                        &learning,
+                        &options,
+                        &mut warn_at,
+                        &what,
+                        below,
+                    );
+                    out.show(Kind::Info, &line);
                 }
                 Done::Command { word } if word == ai::tools::RECORD_ON => recording.start(&mut out),
                 Done::Command { word } if word == ai::tools::RECORD_OFF => {
@@ -1880,6 +2030,17 @@ fn run(options: Options) -> Result<(), String> {
             }
         }
 
+        // What the learner learned or adapted to.
+        while let Ok(line) = learned_rx.try_recv() {
+            memory_checked = Instant::now() - Duration::from_secs(60);
+            if line.starts_with("learned from") || line.starts_with("adapted") {
+                out.tell(Kind::Info, &line, false, &mut companion);
+            } else {
+                out.session.line("learned", &line);
+                out.push(Kind::Info, line);
+            }
+        }
+
         // Where the game is (for the panel, and whose sound to turn down).
         if last_draw.elapsed() >= Duration::from_millis(250) {
             game_area = match companion.last().map(|o| &o.game) {
@@ -1948,6 +2109,10 @@ fn run(options: Options) -> Result<(), String> {
             let progress = companion.progress();
             let summary = out.phone.as_ref().map(|h| h.summary());
             if let Some(hub) = &out.phone {
+                if out.mouth.ai.is_some() && memory_checked.elapsed() >= Duration::from_secs(3) {
+                    memory_checked = Instant::now();
+                    memory_status = learning.status();
+                }
                 let obs = companion.last();
                 hub.set_status(json!({
                     "game": obs.map(|o| o.game.clone()).unwrap_or(GameView::NotFound),
@@ -1971,6 +2136,11 @@ fn run(options: Options) -> Result<(), String> {
                     // Live calls can be made.
                     "live": out.live_ok,
                     "recording": recording.status(),
+                    // How long the phone waits after the words stop (it adapts).
+                    "settle_ms": learning.memory().adapt.settle_ms,
+                    // What it learned about the player (with an OpenAI key).
+                    "memory": if out.mouth.ai.is_some() { memory_status.clone() } else { serde_json::Value::Null },
+                    "warn": {"hp": companion.settings.hp_low, "mp": companion.settings.mp_low},
                 }));
                 // What a live call can see: the screen only while the game is
                 // the window in front.

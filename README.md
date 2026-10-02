@@ -12,6 +12,7 @@ It is non-invasive by design: no game-memory reads, code injection, or input aut
 Download **`MapleSyrup-Setup-<version>.exe`** from [Releases](https://github.com/boggioMichael/ms/releases) and run it (Windows 10 1903 or later, 64-bit, no administrator needed). Start MapleSyrup and MapleStory, scan the QR code with your phone, tap **Start listening**, and talk to it.
 
 - **Talks like a friend sitting next to you.** With an OpenAI API key it answers in a natural voice, knowing what is on your screen. It answers as soon as you stop talking, and you can talk over it. Without a key it answers simple questions in the Windows voice.
+- **Learns as you play.** It keeps a notebook about you (your characters, goals, how you like it to talk, what you did last time), answers fast from what it knows, and keeps your corrections for good. It adapts how long it waits before answering, and its warnings. The phone shows what it knows, with Forget; it all stays on your PC.
 - **Sees your game and learns it.** It finds your HUD by itself (any resolution or layout), measures HP, MP and EXP on every frame, and learns what you teach it by talking: "that's an Orange Mushroom, tell me when one shows up".
 - **Watches your back.** Low HP and MP warnings, level-ups, EXP per hour and time to level, with MapleStory's sound turned down while it talks.
 - **Your phone is its microphone and a second screen**, in 14 languages.

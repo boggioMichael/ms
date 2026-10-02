@@ -4,6 +4,7 @@
 
 use std::collections::VecDeque;
 
+use super::memory::Learning;
 use super::openai::Turn;
 use crate::companion::{GameView, Gauge, Observation, Progress};
 
@@ -28,8 +29,9 @@ How you talk:
 - If your last reply ends with \"…\", they talked over you there: don't repeat it; answer what they said now.
 - Answer in the language the player speaks to you.
 - Use what you can see (it comes with the player's words) when it's relevant. Values marked \"about\" are read from the length of a bar, so they are estimates. Don't read numbers out unless they matter or were asked for.
-- When you have pictures of their screen, look at them yourself: never ask the player to read out what is on screen (a quest name, a number, a dialogue); read it.
-- Don't guess MapleStory facts (where a place is, level requirements, quests, bosses, key bindings, events): a confident wrong answer sends them the wrong way. Look it up if you can; otherwise say plainly you're not sure.
+- When you have a picture of their screen, look at it yourself: never ask the player to read out what is on screen (a quest name, a number, a dialogue); read it, or look closer.
+- Be quick. Answer right away from what you know, even when you're not completely sure: a fast best guess beats making them wait (say \"I think\" when you're not sure). Only when you really have no idea, say so in a few words.
+- The player's corrections teach you: when they correct you, take it, thank them in a word, and keep it (note_correction). What they corrected you on before beats what you think you know.
 - If you got something wrong, own it in a few words and move on; don't keep apologising.
 - Trust your eyes: if the screen clearly shows something other than what the player says (a number, a name), tell them what you see instead of just agreeing.
 - You can't press keys or play for them; you watch and talk.
@@ -37,8 +39,13 @@ How you talk:
 
 pub struct Brain {
     turns: VecDeque<Turn>,
-    /// What the player wants it to know about them (`about-me.txt`).
+    /// What the player wants it to know about them (`about-me.txt`), when
+    /// there is no `learning` to read it from.
     pub about_player: String,
+    /// What it learned: about the player, from their corrections, from the
+    /// web. Read again for every reply, so what was learned meanwhile (or
+    /// forgotten on the phone) counts at once.
+    pub learning: Option<Learning>,
 }
 
 impl Default for Brain {
@@ -52,6 +59,7 @@ impl Brain {
         Self {
             turns: VecDeque::new(),
             about_player: String::new(),
+            learning: None,
         }
     }
 
@@ -97,21 +105,34 @@ impl Brain {
         self.turns.iter().skip(start).cloned().collect()
     }
 
-    /// Who it is and what it knows about the player: the part of the
-    /// instructions that stays the same from one reply to the next (so
-    /// OpenAI keeps it cached, and answers sooner).
+    /// Who it is: the part of the instructions that stays the same from one
+    /// reply to the next (so OpenAI keeps it cached, and answers sooner).
     pub fn persona(&self) -> String {
         let mut text = PERSONA.to_string();
-        if !self.about_player.trim().is_empty() {
+        if self.learning.is_none() && !self.about_player.trim().is_empty() {
             text.push_str("\n\nAbout the player (they told you this):\n");
             text.push_str(self.about_player.trim());
         }
         text
     }
 
+    /// What it learned so far, for the end of the instructions (it changes
+    /// now and then, so it goes after what never does). Empty when nothing.
+    pub fn learned(&self) -> String {
+        self.learning
+            .as_ref()
+            .map(|l| l.prompt())
+            .unwrap_or_default()
+    }
+
     /// The instructions with what is on screen now (for a one-off question).
     pub fn instructions(&self, snapshot: &str) -> String {
         let mut text = self.persona();
+        let learned = self.learned();
+        if !learned.is_empty() {
+            text.push_str("\n\n");
+            text.push_str(&learned);
+        }
         text.push_str("\n\nWhat you can see right now:\n");
         text.push_str(snapshot);
         text
