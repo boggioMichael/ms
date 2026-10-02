@@ -5,6 +5,7 @@
 //! anywhere.
 
 pub mod overlay;
+pub mod sound;
 pub mod voice;
 
 #[cfg(windows)]

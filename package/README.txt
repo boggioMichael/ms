@@ -3,27 +3,30 @@ MapleSyrup - the MapleStory companion
 
 Start
   1. Double-click MapleSyrup.exe.
-  2. Start MapleStory (windowed or borderless windowed).
+     The first time, it asks for an OpenAI API key (platform.openai.com/api-keys)
+     so it can talk like ChatGPT in a natural voice. Paste it and press Enter
+     (it is kept on this PC only, in %APPDATA%\MapleSyrup), or press Enter to
+     go without (simple answers, Windows voice). A key can also be put in a
+     file called openai-key.txt next to MapleSyrup.exe.
+  2. Start MapleStory (windowed or borderless windowed). Yohai's dog and a
+     small HP/MP/EXP panel appear at the top right of the game.
   3. On your phone (same Wi-Fi as the PC), scan the QR code in MapleSyrup's window.
      The phone warns that the page is "not private": the certificate was made
      on your PC, not by a public authority.
        iPhone:  Show Details -> visit this website -> Visit Website
        Android: Advanced -> Proceed
-  4. Tap "Start listening", allow the microphone, and say: "syrup, status".
+  4. Tap "Start listening", allow the microphone, and just talk to it:
+     "hey, how am I doing?", "how long until I level?", "mark that!".
 
   If Windows asks whether MapleSyrup may use the network, allow private networks.
 
-Voice commands (say "syrup" first) and phone buttons
-  status   level, HP, MP and EXP
-  hp / mp / exp / level
-  rate     EXP per hour and the time to the next level
-  time     how long this session has been running
-  mark     save this moment (a screenshot and a line in markers.csv)
-  mute / unmute
-  help
-
-It also speaks up by itself when HP or MP runs low, when you level up, and
-when the game window disappears.
+How it talks
+  It answers everything you say, knowing what is on your screen (HP, MP, EXP,
+  level, your EXP per hour). If you talk to your stream's chat instead, it
+  stays quiet. While it speaks, MapleStory's sound is turned down for a
+  moment. It also speaks up by itself when HP or MP runs low or you level up.
+  On the phone you can choose where replies are spoken (PC, phone, both, off)
+  and switch to "only after 'syrup'" for streaming.
 
 If the phone cannot connect
   Double-click "MapleSyrup (phone over internet).cmd". It links the phone
@@ -33,13 +36,14 @@ If the phone cannot connect
 If Windows blocks MapleSyrup.exe ("Smart App Control" / "blocked by your
 organization's Device Guard policy")
   The program is not signed. Windows Security -> App & browser control ->
-  Smart App Control settings -> Off. (On current Windows 11 it can be turned
-  back on later.)
+  Smart App Control settings -> Off.
 
 Files
   Each session is kept in "MapleSyrup sessions" next to MapleSyrup.exe:
   log.txt (what was said and heard), markers.csv and mark-NNN.png, and
-  mic.wav when started with --record-mic. Nothing is sent anywhere.
+  mic.wav when started with --record-mic.
+  Optional: write a few lines about yourself in %APPDATA%\MapleSyrup\about-me.txt
+  (your name, your class, what you're working towards) and it will know them.
 
 More options: open a terminal here and run  MapleSyrup.exe --help
 vision_debug.exe is the engine's own debugger (what it sees, frame by frame).

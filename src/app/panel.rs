@@ -37,6 +37,9 @@ pub struct Content<'a> {
     pub speaking: bool,
     pub muted: bool,
     pub last_line: Option<&'a str>,
+    /// The dog's current frame (premultiplied), drawn to the left of the
+    /// panel at the panel's height.
+    pub dog: Option<&'a RgbaImage>,
 }
 
 const BASE_W: f32 = 290.0;
@@ -220,10 +223,35 @@ pub fn paint(content: &Content, scale: f32) -> Panel {
         text: footer,
         size: s(13.0),
         bold: false,
-        color: DIM,
+        color: if content.speaking { WHITE } else { DIM },
         right: false,
     });
-    Panel { image: img, texts }
+    match content.dog {
+        Some(dog) => beside(dog, img, texts),
+        None => Panel { image: img, texts },
+    }
+}
+
+/// The dog to the left of the panel, both in one picture.
+fn beside(dog: &RgbaImage, panel: RgbaImage, mut texts: Vec<Text>) -> Panel {
+    let gap = (dog.width() / 12).max(2);
+    let left = dog.width() + gap;
+    let height = panel.height().max(dog.height());
+    let mut canvas = RgbaImage::new(left + panel.width(), height);
+    let dog_top = (height - dog.height()) / 2;
+    image::imageops::replace(&mut canvas, dog, 0, dog_top as i64);
+    let panel_top = (height - panel.height()) / 2;
+    image::imageops::replace(&mut canvas, &panel, left as i64, panel_top as i64);
+    for text in &mut texts {
+        text.rect.0 += left as i32;
+        text.rect.2 += left as i32;
+        text.rect.1 += panel_top as i32;
+        text.rect.3 += panel_top as i32;
+    }
+    Panel {
+        image: canvas,
+        texts,
+    }
 }
 
 #[cfg(test)]
@@ -264,6 +292,7 @@ mod tests {
                 speaking: false,
                 muted: false,
                 last_line: Some("HP 50 percent."),
+                dog: None,
             },
             1.0,
         );
@@ -289,6 +318,33 @@ mod tests {
     }
 
     #[test]
+    fn the_dog_sits_to_the_left() {
+        let o = obs();
+        let mut dog = crate::app::dog::Dog::load().unwrap();
+        let (_, h) = size(1.0);
+        let frame = dog.frame(0, h).clone();
+        let panel = paint(
+            &Content {
+                obs: Some(&o),
+                exp_per_hour: None,
+                phone_connected: Some(true),
+                speaking: true,
+                muted: false,
+                last_line: Some("Hey!"),
+                dog: Some(&frame),
+            },
+            1.0,
+        );
+        let (pw, ph) = size(1.0);
+        assert_eq!(panel.image.height(), ph);
+        assert!(panel.image.width() > pw + frame.width());
+        // Every text moved right of the dog.
+        assert!(panel.texts.iter().all(|t| t.rect.0 >= frame.width() as i32));
+        // The dog's fur is there, opaque, left of the panel.
+        assert!(panel.image.get_pixel(frame.width() / 2, ph * 6 / 10).0[3] > 200);
+    }
+
+    #[test]
     fn the_panel_grows_with_the_game() {
         assert_eq!(scale_for(768), 1.0);
         assert_eq!(scale_for(1440), 1440.0 / 768.0);
@@ -301,6 +357,7 @@ mod tests {
             speaking: false,
             muted: true,
             last_line: None,
+            dog: None,
         };
         let big = paint(&content, 2.0);
         assert_eq!(big.image.dimensions(), (580, 232));

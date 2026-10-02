@@ -16,59 +16,75 @@
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   html, body { margin: 0; background: var(--bg); color: var(--text);
     font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  body { padding: max(12px, env(safe-area-inset-top)) 14px max(24px, env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; }
-  header { display: flex; align-items: center; justify-content: space-between; margin: 4px 2px 12px; }
-  .brand { font-weight: 800; font-size: 22px; letter-spacing: .2px; }
+  body { padding: max(10px, env(safe-area-inset-top)) 14px max(24px, env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; }
+  header { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px 10px; }
+  .brand { font-weight: 800; font-size: 20px; }
   .brand span { color: var(--syrup); }
   .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--dim);
     background: var(--card); border: 1px solid var(--line); padding: 4px 10px; border-radius: 999px; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--faint); }
   .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
   .dot.bad { background: var(--hp); }
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px 14px 12px; margin-bottom: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 18px; padding: 14px; margin-bottom: 12px; }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .who { font-weight: 700; font-size: 17px; }
   .sub { color: var(--dim); font-size: 13px; }
-  .gauge { margin-top: 10px; }
+
+  /* The dog and what it says */
+  .buddy { display: flex; align-items: flex-end; gap: 10px; margin-bottom: 12px; }
+  #dog { width: 92px; height: 115px; flex: none; filter: drop-shadow(0 4px 10px rgba(0,0,0,.45)); }
+  .bubble { position: relative; flex: 1; min-height: 64px; background: var(--card2); border: 1px solid var(--line);
+    border-radius: 18px 18px 18px 6px; padding: 12px 14px; font-size: 17px; line-height: 1.35; margin-bottom: 18px; }
+  .bubble.talking { border-color: var(--syrup-dark); box-shadow: 0 0 0 1px rgba(242,163,58,.25); }
+  .bubble .who { font-size: 12px; color: var(--syrup); font-weight: 700; margin-bottom: 2px; }
+  .typing span { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--dim); margin-right: 4px; animation: blink 1.2s infinite; }
+  .typing span:nth-child(2) { animation-delay: .2s; } .typing span:nth-child(3) { animation-delay: .4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+
+  /* The game */
+  .gauge { margin-top: 8px; }
   .gauge .row { font-size: 14px; }
   .gauge .name { font-weight: 700; width: 38px; }
   .gauge .val { color: var(--dim); font-variant-numeric: tabular-nums; }
-  .bar { height: 12px; background: #120e0a; border-radius: 7px; overflow: hidden; margin-top: 4px; border: 1px solid #000; }
-  .bar i { display: block; height: 100%; width: 0%; border-radius: 7px; transition: width .35s ease; }
+  .bar { height: 10px; background: #120e0a; border-radius: 6px; overflow: hidden; margin-top: 3px; border: 1px solid #000; }
+  .bar i { display: block; height: 100%; width: 0%; border-radius: 6px; transition: width .35s ease; }
   .hp i { background: linear-gradient(90deg, #c62828, var(--hp)); }
   .mp i { background: linear-gradient(90deg, #1565c0, var(--mp)); }
   .exp i { background: linear-gradient(90deg, #c9a227, var(--exp)); }
-  .est { color: var(--faint); font-size: 12px; }
   .stats { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; color: var(--dim); font-size: 13px; }
   .stats b { color: var(--text); font-weight: 600; }
+
+  /* The microphone */
   .mic { text-align: center; }
-  #listen { width: 100%; border: 0; border-radius: 16px; padding: 18px 12px; font-size: 19px; font-weight: 800;
+  #listen { width: 100%; border: 0; border-radius: 16px; padding: 17px 12px; font-size: 19px; font-weight: 800;
     color: #1a1209; background: linear-gradient(180deg, #ffbf5e, var(--syrup)); box-shadow: 0 6px 18px rgba(242,163,58,.25); }
   #listen.on { background: linear-gradient(180deg, #4b3a26, #3a2c1c); color: var(--text); box-shadow: none; border: 1px solid var(--syrup-dark); }
-  .meter { height: 8px; background: #120e0a; border-radius: 5px; margin: 12px 0 8px; overflow: hidden; }
+  .meter { height: 7px; background: #120e0a; border-radius: 5px; margin: 12px 0 8px; overflow: hidden; }
   .meter i { display: block; height: 100%; width: 0%; background: var(--ok); transition: width .08s linear; }
   #micStatus { color: var(--dim); font-size: 14px; min-height: 20px; }
-  #heard { margin-top: 6px; font-size: 15px; min-height: 22px; color: var(--text); font-style: italic; }
+  #heard { margin-top: 4px; font-size: 15px; min-height: 22px; font-style: italic; }
   #note { margin-top: 8px; font-size: 13px; color: var(--warn); display: none; text-align: left; }
-  .buttons { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+
+  /* The conversation */
+  #log { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  #log li { max-width: 86%; padding: 9px 12px; border-radius: 16px; font-size: 15px; line-height: 1.35; }
+  #log li.heard { align-self: flex-end; background: #3b2f20; border-bottom-right-radius: 5px; }
+  #log li.reply, #log li.alert { align-self: flex-start; background: var(--card2); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+  #log li.alert { border-color: #8a5a1a; color: #ffd59a; }
+  #log li.info { align-self: center; background: none; color: var(--faint); font-size: 13px; padding: 2px 6px; }
+  #log time { display: block; color: var(--faint); font-size: 11px; margin-top: 2px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 0 0 10px; }
+
+  .buttons { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: 12px; }
   .buttons button { border: 1px solid var(--line); background: var(--card2); color: var(--text); border-radius: 12px;
-    padding: 12px 4px; font-size: 14px; font-weight: 600; }
+    padding: 10px 2px; font-size: 13px; font-weight: 600; }
   .buttons button:active, .seg button:active { transform: scale(.97); }
   .buttons button.mark { border-color: var(--syrup-dark); color: var(--syrup); }
-  #log { list-style: none; margin: 0; padding: 0; max-height: 46vh; overflow-y: auto; }
-  #log li { padding: 8px 2px; border-top: 1px solid var(--line); font-size: 15px; display: flex; gap: 8px; }
-  #log li:first-child { border-top: 0; }
-  #log time { color: var(--faint); font-size: 12px; min-width: 44px; padding-top: 2px; font-variant-numeric: tabular-nums; }
-  #log .alert { color: #ffcc80; font-weight: 600; }
-  #log .heard { color: var(--dim); font-style: italic; }
-  #log .info { color: var(--dim); }
-  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 0 0 8px; }
   .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
   .seg button { border: 1px solid var(--line); background: var(--card2); color: var(--dim); border-radius: 10px; padding: 9px 4px; font-size: 14px; }
   .seg button.sel { background: var(--syrup); color: #1a1209; border-color: var(--syrup); font-weight: 700; }
-  label.opt { display: flex; align-items: center; justify-content: space-between; margin-top: 12px; color: var(--dim); font-size: 14px; }
+  label.opt { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; color: var(--dim); font-size: 14px; }
   select { background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px; font-size: 14px; }
-  input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--syrup); }
+  input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--syrup); flex: none; }
   footer { color: var(--faint); font-size: 12px; text-align: center; margin-top: 16px; line-height: 1.6; }
   #banner { display: none; background: #4a1f1f; border: 1px solid #7a3030; color: #ffd6d6; border-radius: 14px; padding: 12px; margin-bottom: 12px; font-size: 14px; }
 </style>
@@ -81,10 +97,26 @@
 
 <div id="banner"></div>
 
+<div class="buddy">
+  <canvas id="dog" width="128" height="160" aria-label="MapleSyrup's dog"></canvas>
+  <div class="bubble" id="bubble">
+    <div class="who">MapleSyrup</div>
+    <div id="bubbleText">Hi! Tap “Start listening” and just talk to me.</div>
+  </div>
+</div>
+
+<section class="card mic">
+  <button id="listen">🎙️ Start listening</button>
+  <div class="meter"><i id="meter"></i></div>
+  <div id="micStatus">Tap, allow the microphone, and talk to me like you would to a friend.</div>
+  <div id="heard"></div>
+  <div id="note"></div>
+</section>
+
 <section class="card" id="game">
   <div class="row">
     <div>
-      <div class="who" id="who">Waiting for the game…</div>
+      <div style="font-weight:700" id="who">Waiting for the game…</div>
       <div class="sub" id="gameState">MapleSyrup is looking for the MapleStory window</div>
     </div>
     <div class="pill"><i class="dot" id="gameDot"></i><span id="fps">—</span></div>
@@ -100,37 +132,26 @@
   </div>
 </section>
 
-<section class="card mic">
-  <button id="listen">🎙️ Start listening</button>
-  <div class="meter"><i id="meter"></i></div>
-  <div id="micStatus">Tap to use this phone as MapleSyrup's microphone.</div>
-  <div id="heard"></div>
-  <div id="note"></div>
-</section>
-
 <div class="buttons">
   <button data-cmd="status">Status</button>
-  <button data-cmd="hp">HP</button>
-  <button data-cmd="mp">MP</button>
-  <button data-cmd="exp">EXP</button>
   <button data-cmd="rate">Rate</button>
-  <button data-cmd="level">Level</button>
-  <button data-cmd="time">Time</button>
   <button data-cmd="mark" class="mark">★ Mark</button>
   <button data-cmd="mute" id="muteBtn">Mute</button>
   <button data-cmd="help">Help</button>
 </div>
 
 <section class="card">
-  <h2>MapleSyrup says</h2>
+  <h2>Conversation</h2>
   <ul id="log"></ul>
 </section>
 
 <section class="card">
-  <h2>Replies spoken on</h2>
+  <h2>Settings</h2>
+  <div class="sub" style="margin-bottom:8px">Replies spoken on</div>
   <div class="seg" id="voiceSeg">
     <button data-on="pc">PC</button><button data-on="phone">Phone</button><button data-on="both">Both</button><button data-on="off">Off</button>
   </div>
+  <label class="opt">Answer everything I say (off: only after “syrup”, for streaming) <input type="checkbox" id="always" checked></label>
   <label class="opt">Speech language
     <select id="lang">
       <option value="en-US">English (US)</option>
@@ -144,9 +165,8 @@
 </section>
 
 <footer>
-  Say <b>“syrup”</b> and then a command — “syrup, status”, “syrup, how long to level”, “syrup, mark that”.<br>
-  Keep this page open while you play; the screen stays on while listening.<br>
-  Nothing leaves your PC and this phone.
+  Talk to it like a friend: “how am I doing?”, “how long until I level?”, “mark that!”<br>
+  Keep this page open while you play; the screen stays on while listening.
 </footer>
 
 <script>
@@ -165,19 +185,30 @@
   function postJson(path, body) {
     return api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   }
-  function banner(text) {
-    const b = $("banner");
-    b.textContent = text || "";
-    b.style.display = text ? "block" : "none";
-  }
-  function note(text) {
-    const n = $("note");
-    n.textContent = text || "";
-    n.style.display = text ? "block" : "none";
-  }
+  function banner(text) { const b = $("banner"); b.textContent = text || ""; b.style.display = text ? "block" : "none"; }
+  function note(text) { const n = $("note"); n.textContent = text || ""; n.style.display = text ? "block" : "none"; }
   if (!KEY) banner("This page needs the link from MapleSyrup's window on the PC: scan its QR code.");
 
-  // ---- the game, from the PC ------------------------------------------
+  // ---- the dog ------------------------------------------------------------
+  const dog = { img: new Image(), meta: null, phase: 0, last: 0, talking: false };
+  fetch("/dog.json").then((r) => r.json()).then((m) => { dog.meta = m; dog.img.src = "/dog.png"; }).catch(() => {});
+  const canvas = $("dog"), ctx = canvas.getContext("2d");
+  function drawDog(t) {
+    const m = dog.meta;
+    if (m && dog.img.complete && dog.img.naturalWidth) {
+      const dt = dog.last ? Math.min(0.5, (t - dog.last) / 1000) : 0;
+      dog.last = t;
+      dog.phase = (dog.phase + dt * m.fps * (dog.talking ? 1.7 : 1)) % m.frames;
+      const i = Math.floor(dog.phase), cols = m.columns;
+      const sx = (i % cols) * m.frame_width, sy = Math.floor(i / cols) * m.frame_height;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(dog.img, sx, sy, m.frame_width, m.frame_height, 0, 0, canvas.width, canvas.height);
+    }
+    requestAnimationFrame(drawDog);
+  }
+  requestAnimationFrame(drawDog);
+
+  // ---- the game, from the PC -------------------------------------------------
   let status = {};
   let voiceOn = "pc";
   function pct(g) { return g ? Math.max(0, Math.min(100, g.percent)) : 0; }
@@ -224,9 +255,22 @@
     mb.dataset.cmd = muted ? "unmute" : "mute";
     voiceOn = state.voice_on || voiceOn;
     for (const b of $("voiceSeg").children) b.classList.toggle("sel", b.dataset.on === voiceOn);
+    if (typeof status.always_listen === "boolean" && document.activeElement !== $("always")) $("always").checked = status.always_listen;
+    // The dog talks while the PC (or this phone) speaks; dots while it thinks.
+    dog.talking = !!status.speaking || !player.paused;
+    $("bubble").classList.toggle("talking", dog.talking);
+    if (status.thinking) {
+      $("bubbleText").innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
+      thinkingShown = true;
+    } else if (thinkingShown) {
+      thinkingShown = false;
+      $("bubbleText").textContent = lastReply || "…";
+    }
+    if (status.speaking) quietUntil = Date.now() + 900;
   }
+  let thinkingShown = false, lastReply = "", quietUntil = 0;
 
-  // ---- messages --------------------------------------------------------
+  // ---- the conversation ------------------------------------------------------
   const log = $("log");
   function clock(t) {
     const s = Math.floor(t), m = Math.floor(s / 60), h = Math.floor(m / 60);
@@ -237,25 +281,56 @@
   function speakHere(text) {
     if (!speechUnlocked || !("speechSynthesis" in window)) return;
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = "en-US";
     u.rate = 1.05;
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(u);
   }
   function addMessage(m, live) {
     const li = document.createElement("li");
+    li.className = m.kind;
+    li.textContent = m.text;
     const time = document.createElement("time");
     time.textContent = clock(m.t);
-    const span = document.createElement("span");
-    span.className = m.kind;
-    span.textContent = m.kind === "heard" ? "“" + m.text + "”" : m.text;
-    li.append(time, span);
+    if (m.kind !== "info") li.append(time);
     log.prepend(li);
-    while (log.children.length > 40) log.lastChild.remove();
-    if (live && m.speak && m.kind !== "heard" && !status.muted && (voiceOn === "phone" || voiceOn === "both")) speakHere(m.text);
+    while (log.children.length > 60) log.lastChild.remove();
+    if (m.kind === "reply" || m.kind === "alert") {
+      lastReply = m.text;
+      if (!status.thinking) $("bubbleText").textContent = m.text;
+    }
+    // Without a natural voice, the phone speaks with its own.
+    if (live && m.speak && !status.muted && (voiceOn === "phone" || voiceOn === "both")) speakHere(m.text);
   }
 
-  // ---- polling ---------------------------------------------------------
+  // ---- the natural voice, when it speaks on this phone --------------------------
+  const player = new Audio();
+  player.preload = "auto";
+  let lastClip = null;
+  function silentWav() {
+    const samples = 800, buf = new ArrayBuffer(44 + samples * 2), v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, "RIFF"); v.setUint32(4, 36 + samples * 2, true); w(8, "WAVEfmt "); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 8000, true); v.setUint32(28, 16000, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, samples * 2, true);
+    return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+  }
+  function unlockAudio() {
+    // iOS plays sound from a page only on an element a tap has started once.
+    if (player.dataset.unlocked) return;
+    player.dataset.unlocked = "1";
+    player.src = silentWav();
+    player.play().catch(() => {});
+  }
+  function maybePlayClip(seq) {
+    if (lastClip === null) { lastClip = seq; return; }
+    if (!seq || seq <= lastClip) return;
+    lastClip = seq;
+    player.src = "/api/clip?k=" + encodeURIComponent(KEY) + "&seq=" + seq;
+    player.play().catch(() => {});
+  }
+  player.addEventListener("ended", () => { quietUntil = Date.now() + 700; });
+
+  // ---- polling ---------------------------------------------------------------
   let since = 0, first = true, failures = 0;
   async function poll() {
     if (!KEY) return;
@@ -270,35 +345,37 @@
       const state = await r.json();
       failures = 0;
       banner("");
-      setPc(true, "PC connected");
+      setPc(true, state.status && state.status.ai ? "PC · " + state.status.ai : "PC connected");
       render(state);
       for (const m of state.messages || []) addMessage(m, !first);
       since = state.last_id || since;
+      maybePlayClip(state.clip || 0);
       first = false;
     } catch (e) {
       failures++;
       setPc(false, failures > 2 ? "PC not reachable" : "reconnecting…");
     }
-    setTimeout(poll, failures ? Math.min(5000, 700 * failures) : 700);
+    setTimeout(poll, failures ? Math.min(5000, 600 * failures) : 450);
   }
   function setPc(ok, text) {
     $("pcDot").className = "dot " + (ok ? "on" : "bad");
     $("pcText").textContent = text;
   }
 
-  // ---- buttons and settings --------------------------------------------
+  // ---- buttons and settings ------------------------------------------------------
   document.querySelectorAll(".buttons button").forEach((b) => b.addEventListener("click", () => {
-    unlockSpeech();
+    unlockSpeech(); unlockAudio();
     postJson("/api/command", { command: b.dataset.cmd }).catch(() => {});
   }));
   for (const b of $("voiceSeg").children) b.addEventListener("click", () => {
-    unlockSpeech();
+    unlockSpeech(); unlockAudio();
     voiceOn = b.dataset.on;
     for (const x of $("voiceSeg").children) x.classList.toggle("sel", x === b);
     postJson("/api/voice", { on: voiceOn }).catch(() => {});
   });
+  $("always").addEventListener("change", () => postJson("/api/listen", { always: $("always").checked }).catch(() => {}));
   const lang = $("lang");
-  lang.value = recall("lang") || (navigator.language && navigator.language.startsWith("he") ? "he-IL" : "en-US");
+  lang.value = recall("lang") || "en-US";
   lang.addEventListener("change", () => { remember("lang", lang.value); if (listening) { stopRecognition(); startRecognition(); } });
   const sendAudio = $("sendAudio");
   sendAudio.checked = recall("sendAudio") !== "0";
@@ -306,14 +383,13 @@
 
   function unlockSpeech() {
     if (speechUnlocked || !("speechSynthesis" in window)) return;
-    // iOS speaks only after speech was started from a tap.
     const u = new SpeechSynthesisUtterance(" ");
     u.volume = 0;
     window.speechSynthesis.speak(u);
     speechUnlocked = true;
   }
 
-  // ---- the microphone ----------------------------------------------------
+  // ---- the microphone ---------------------------------------------------------------
   let listening = false;
   let audio = null;
   let wakeLock = null;
@@ -349,7 +425,6 @@
       const db = rms > 1e-5 ? 20 * Math.log10(rms) : -100;
       $("meter").style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%";
       if (!sendAudio.checked) return;
-      // Average each 1/16000 s window down to one 16-bit sample.
       const a = audio, out = [];
       let pos = a.pos;
       while (pos + a.ratio <= input.length) {
@@ -365,9 +440,6 @@
       a.queued += out.length;
       if (a.queued >= TARGET_RATE / 4) flushAudio();
     };
-    stream.getAudioTracks().forEach((t) => {
-      t.addEventListener("ended", () => { if (listening) note("The phone stopped the microphone stream (another app, or the speech recognizer, took it). Recognition goes on."); });
-    });
     return true;
   }
 
@@ -378,7 +450,7 @@
     let at = 0;
     for (const part of a.queue) { all.set(part, at); at += part.length; }
     a.queue = []; a.queued = 0;
-    if (a.inflight > 4) return; // the network is behind: drop rather than pile up
+    if (a.inflight > 4) return;
     a.inflight++;
     api("/api/audio?rate=" + TARGET_RATE, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: all.buffer })
       .catch(() => {}).finally(() => { a.inflight--; });
@@ -393,15 +465,16 @@
     $("meter").style.width = "0%";
   }
 
-  // ---- speech recognition ------------------------------------------------
+  // ---- speech recognition --------------------------------------------------------------
   const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   let rec = null, wantRec = false, recStarted = 0, quickEnds = 0, lastSent = "", lastSentAt = 0;
 
   function sendHeard(text) {
     text = (text || "").trim();
     if (!text) return;
+    // While MapleSyrup speaks, the microphone mostly hears MapleSyrup.
+    if (status.speaking || Date.now() < quietUntil || !player.paused) return;
     const now = Date.now();
-    // Some phones report one sentence as final twice.
     if (text.toLowerCase() === lastSent && now - lastSentAt < 4000) return;
     lastSent = text.toLowerCase(); lastSentAt = now;
     $("heard").textContent = "“" + text + "”";
@@ -457,7 +530,7 @@
   }
 
   async function start() {
-    unlockSpeech();
+    unlockSpeech(); unlockAudio();
     note("");
     listening = true;
     $("listen").classList.add("on");
@@ -472,7 +545,7 @@
     }
     startRecognition();
     keepAwake();
-    $("micStatus").textContent = Recognition ? "Listening — say “syrup” and a command." : "Sending audio to the PC.";
+    $("micStatus").textContent = Recognition ? "Listening — just talk." : "Sending audio to the PC.";
   }
 
   function stop() {

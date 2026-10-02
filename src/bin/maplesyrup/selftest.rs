@@ -107,6 +107,34 @@ pub fn run() -> i32 {
         ),
     }
 
+    // The conversation and the natural voice (OpenAI), when there is a key.
+    let settings = tls::settings_dir();
+    match ms::ai::load_key(&settings) {
+        Some(key) => {
+            let client = ms::ai::OpenAi::new(&key, "https://api.openai.com/v1", "cedar", None);
+            match client.check() {
+                Ok(()) => match client.respond(
+                    "Reply with exactly: ready",
+                    &[ms::ai::openai::Turn {
+                        role: "user",
+                        text: "Are you there?".into(),
+                    }],
+                ) {
+                    Ok(text) => r.ok(
+                        "OpenAI",
+                        format!(
+                            "the key works; {} answered \"{text}\"",
+                            client.model().unwrap_or_default()
+                        ),
+                    ),
+                    Err(e) => r.fail("OpenAI", e.to_string()),
+                },
+                Err(e) => r.fail("OpenAI", e.to_string()),
+            }
+        }
+        None => r.note("OpenAI", "no key: simple answers and the Windows voice"),
+    }
+
     // The phone link: a certificate, TLS, the API, and the companion behind it.
     let dir = std::env::temp_dir().join(format!("maplesyrup-selftest-{}", tls::random_hex(4)));
     match phone_link(&dir) {

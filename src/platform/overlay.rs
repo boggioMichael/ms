@@ -20,6 +20,8 @@ pub struct GameArea {
     pub height: i32,
     /// Whether the game is the window in front.
     pub foreground: bool,
+    /// The game's process, whose sound is turned down while MapleSyrup talks.
+    pub pid: u32,
 }
 
 #[cfg(windows)]
@@ -63,10 +65,11 @@ mod win {
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, FindWindowW, GetClientRect,
-        GetForegroundWindow, IsIconic, MSG, PM_REMOVE, PeekMessageW, RegisterClassExW, SW_HIDE,
-        SW_SHOWNOACTIVATE, SetWindowDisplayAffinity, ShowWindow, TranslateMessage, ULW_ALPHA,
-        UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-        WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+        GetForegroundWindow, GetWindowThreadProcessId, IsIconic, MSG, PM_REMOVE, PeekMessageW,
+        RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE, SetWindowDisplayAffinity, ShowWindow,
+        TranslateMessage, ULW_ALPHA, UpdateLayeredWindow, WDA_EXCLUDEFROMCAPTURE, WNDCLASSEXW,
+        WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+        WS_POPUP,
     };
     use windows::core::{HSTRING, PCWSTR, w};
 
@@ -96,12 +99,15 @@ mod win {
             if !ClientToScreen(hwnd, &mut origin).as_bool() {
                 return None;
             }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid));
             Some(GameArea {
                 left: origin.x,
                 top: origin.y,
                 width: rect.right - rect.left,
                 height: rect.bottom - rect.top,
                 foreground: GetForegroundWindow() == hwnd,
+                pid,
             })
         }
     }

@@ -85,8 +85,20 @@ pub enum Heard {
 
 /// Spellings speech recognisers produce for "syrup".
 const WAKE_WORDS: &[&str] = &[
-    "syrup", "sirup", "syrop", "sirop", "serup", "cyrup", "syrups", "sir up", "sear up", "seer up",
+    "syrup",
+    "sirup",
+    "syrop",
+    "sirop",
+    "serup",
+    "cyrup",
+    "syrups",
+    "sir up",
+    "sear up",
+    "seer up",
     "syrah",
+    "סירופ",
+    "סירוף",
+    "סירופּ",
 ];
 
 /// Phrases for each command, most specific first: the first command with a
@@ -102,6 +114,10 @@ const PHRASES: &[(Command, &[&str])] = &[
             "voice on",
             "speak again",
             "you can talk",
+            "בטל השתקה",
+            "תדבר",
+            "דבר איתי",
+            "תחזור לדבר",
         ],
     ),
     (
@@ -114,6 +130,10 @@ const PHRASES: &[(Command, &[&str])] = &[
             "stop talking",
             "silence",
             "voice off",
+            "השתק",
+            "תשתוק",
+            "שקט",
+            "די לדבר",
         ],
     ),
     (
@@ -131,11 +151,26 @@ const PHRASES: &[(Command, &[&str])] = &[
             "when do i level",
             "eta",
             "how fast",
+            "כמה זמן עד",
+            "כמה זמן לרמה",
+            "כמה זמן לעלות",
+            "לשעה",
+            "קצב",
+            "מתי אעלה",
+            "מתי אני עולה",
         ],
     ),
     (
         Command::Session,
-        &["how long have i", "session", "time", "clock", "playing for"],
+        &[
+            "how long have i",
+            "session",
+            "what time",
+            "clock",
+            "playing for",
+            "כמה זמן אני משחק",
+            "זמן משחק",
+        ],
     ),
     (
         Command::Mark,
@@ -147,11 +182,24 @@ const PHRASES: &[(Command, &[&str])] = &[
             "remember this",
             "bookmark",
             "flag that",
+            "סמן",
+            "תסמן",
+            "קליפ",
+            "תשמור",
+            "שמור את זה",
         ],
     ),
     (
         Command::Help,
-        &["help", "what can you do", "commands", "options"],
+        &[
+            "help",
+            "what can you do",
+            "commands",
+            "options",
+            "עזרה",
+            "מה אתה יודע",
+            "מה אתה יכול",
+        ],
     ),
     (
         Command::Status,
@@ -161,17 +209,49 @@ const PHRASES: &[(Command, &[&str])] = &[
             "how am i",
             "how are we",
             "stats",
-            "update",
-            "everything",
+            "מצב",
+            "סטטוס",
+            "מה המצב שלי",
+            "איך אני",
         ],
     ),
     (
         Command::Hp,
-        &["hp", "h p", "health", "life", "hit points", "hitpoints"],
+        &[
+            "hp",
+            "h p",
+            "health",
+            "life",
+            "hit points",
+            "hitpoints",
+            "חיים",
+            "בריאות",
+            "אייץ פי",
+            "הפ",
+        ],
     ),
-    (Command::Mp, &["mp", "m p", "mana", "magic"]),
-    (Command::Exp, &["exp", "xp", "x p", "e x p", "experience"]),
-    (Command::Level, &["level", "lvl", "what level"]),
+    (
+        Command::Mp,
+        &["mp", "m p", "mana", "magic", "מאנה", "מנה", "אם פי", "קסם"],
+    ),
+    (
+        Command::Exp,
+        &[
+            "exp",
+            "xp",
+            "x p",
+            "e x p",
+            "experience",
+            "ניסיון",
+            "אקספי",
+            "אקס פי",
+            "נסיון",
+        ],
+    ),
+    (
+        Command::Level,
+        &["level", "lvl", "what level", "רמה", "לבל", "איזו רמה"],
+    ),
 ];
 
 /// Lower case, letters and digits only, single spaces: "Syrup, what's my HP?"
@@ -193,10 +273,25 @@ pub fn normalize(text: &str) -> String {
     out.trim_end().to_string()
 }
 
-/// Does `phrase` occur in `text` as whole words?
+/// Hebrew writes "the", "and", "in", "to", "from", "that", "as" as a letter
+/// joined to the next word: המצב is "the" + מצב.
+const HEBREW_PREFIXES: [char; 7] = ['ה', 'ו', 'ב', 'ל', 'מ', 'ש', 'כ'];
+
+/// Does `phrase` occur in `text` as whole words (a Hebrew phrase also with
+/// one of its one-letter prefixes)?
 fn has_phrase(text: &str, phrase: &str) -> bool {
     let padded = format!(" {text} ");
-    padded.contains(&format!(" {phrase} "))
+    if padded.contains(&format!(" {phrase} ")) {
+        return true;
+    }
+    let hebrew = phrase
+        .chars()
+        .next()
+        .is_some_and(|c| ('\u{05d0}'..='\u{05ea}').contains(&c));
+    hebrew
+        && HEBREW_PREFIXES
+            .iter()
+            .any(|p| padded.contains(&format!(" {p}{phrase} ")))
 }
 
 /// Where the wake word ends in `text`, if it is there.
@@ -218,6 +313,21 @@ pub fn command_in(text: &str) -> Option<Command> {
         .iter()
         .find(|(_, phrases)| phrases.iter().any(|p| has_phrase(&text, p)))
         .map(|(command, _)| *command)
+}
+
+/// A command the companion carries out itself even when a model answers
+/// the conversation: marking a moment and muting. Only short sentences
+/// count ("mark that", "be quiet"), not a sentence that mentions marking.
+pub fn local_command(sentence: &str) -> Option<Command> {
+    let text = normalize(sentence);
+    let text = match after_wake_word(&text) {
+        Some(end) => text[end..].trim().to_string(),
+        None => text,
+    };
+    if text.split(' ').filter(|w| !w.is_empty()).count() > 4 {
+        return None;
+    }
+    command_in(&text).filter(|c| matches!(c, Command::Mark | Command::Mute | Command::Unmute))
 }
 
 /// Read one heard sentence. `listening` is true when the wake word was said
@@ -319,6 +429,36 @@ mod tests {
             cmd("syrup you are helpful"),
             Heard::Unclear("you are helpful".into())
         );
+    }
+
+    #[test]
+    fn marking_and_muting_are_done_locally() {
+        assert_eq!(local_command("mark that"), Some(Command::Mark));
+        assert_eq!(local_command("Syrup, be quiet"), Some(Command::Mute));
+        assert_eq!(local_command("unmute"), Some(Command::Unmute));
+        assert_eq!(local_command("status"), None);
+        assert_eq!(
+            local_command("I want to mark the spot where the boss spawns"),
+            None
+        );
+    }
+
+    #[test]
+    fn hebrew_works_too() {
+        assert_eq!(cmd("סירופ מה המצב"), Heard::Command(Command::Status));
+        assert_eq!(
+            interpret("כמה מאנה יש לי", true),
+            Heard::Command(Command::Mp)
+        );
+        assert_eq!(
+            interpret("כמה זמן עד הרמה הבאה", true),
+            Heard::Command(Command::Rate)
+        );
+        assert_eq!(
+            interpret("כמה זמן אני משחק", true),
+            Heard::Command(Command::Session)
+        );
+        assert_eq!(interpret("תסמן את זה", true), Heard::Command(Command::Mark));
     }
 
     #[test]

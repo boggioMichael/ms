@@ -13,6 +13,7 @@
 //! - **platform**: The console, DPI awareness and the voice (Windows; quiet stand-ins elsewhere).
 //! - **app**: The standalone companion's screen and session files (`maplesyrup` binary).
 
+pub mod ai;
 pub mod app;
 pub mod capture;
 pub mod companion;

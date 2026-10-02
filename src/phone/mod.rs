@@ -96,6 +96,8 @@ pub enum Inbound {
     Hello(String),
     /// Where replies should be spoken now.
     Voice(VoiceOn),
+    /// Answer everything said (true), or only after "syrup" (false).
+    Listen(bool),
 }
 
 /// A line on the phone's screen.
@@ -129,6 +131,8 @@ struct State {
     phone_seen: Option<Instant>,
     browser: Option<String>,
     requests: u64,
+    /// The latest spoken reply as a WAV, for the phone to play, and its number.
+    clip: Option<(u64, Arc<Vec<u8>>)>,
 }
 
 /// Everything the phone link shares between the server's threads and the
@@ -155,6 +159,7 @@ impl Hub {
                 phone_seen: None,
                 browser: None,
                 requests: 0,
+                clip: None,
             }),
         })
     }
@@ -199,6 +204,14 @@ impl Hub {
         std::mem::take(&mut self.lock().inbox)
     }
 
+    /// Hand the phone a spoken line (a WAV) to play. Returns its number.
+    pub fn set_clip(&self, wav: Vec<u8>) -> u64 {
+        let mut state = self.lock();
+        let seq = state.clip.as_ref().map(|(n, _)| n + 1).unwrap_or(1);
+        state.clip = Some((seq, Arc::new(wav)));
+        seq
+    }
+
     pub fn voice_on(&self) -> VoiceOn {
         self.lock().voice_on
     }
@@ -229,6 +242,11 @@ impl Hub {
                     .with_header("Referrer-Policy", "no-referrer")
             }
             ("GET", "/health") => Response::text(200, "ok maplesyrup"),
+            ("GET", "/dog.png") => Response::new(200, "image/png", crate::app::dog::SHEET_PNG)
+                .with_header("Cache-Control", "max-age=86400"),
+            ("GET", "/dog.json") => {
+                Response::new(200, "application/json", crate::app::dog::SHEET_JSON)
+            }
             ("GET", "/favicon.ico") => Response::empty(204),
             (_, path) if path.starts_with("/api/") => {
                 let key = request
@@ -287,9 +305,24 @@ impl Hub {
                         "messages": messages,
                         "last_id": state.next_id - 1,
                         "uptime": self.started.elapsed().as_secs_f64(),
+                        "clip": state.clip.as_ref().map(|(n, _)| *n).unwrap_or(0),
                     }),
                 )
             }
+            ("GET", "/api/clip") => {
+                let clip = self.lock().clip.clone();
+                match clip {
+                    Some((_, wav)) => Response::new(200, "audio/wav", wav.as_slice()),
+                    None => Response::json(404, &json!({"error": "nothing spoken yet"})),
+                }
+            }
+            ("POST", "/api/listen") => match body().get("always").and_then(Value::as_bool) {
+                Some(always) => {
+                    self.lock().inbox.push(Inbound::Listen(always));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                None => Response::json(400, &json!({"error": "always must be true or false"})),
+            },
             ("POST", "/api/audio") => {
                 let rate: u32 = request
                     .param("rate")
@@ -627,6 +660,27 @@ mod tests {
         let mut bad = request("POST", "/api/audio?k=k1&rate=5", "");
         bad.body = vec![0, 0];
         assert_eq!(hub.handle(&bad).status, 400);
+    }
+
+    #[test]
+    fn the_phone_gets_spoken_clips_the_dog_and_the_listen_switch() {
+        let hub = hub();
+        assert_eq!(
+            hub.handle(&request("GET", "/api/clip?k=k1", "")).status,
+            404
+        );
+        assert_eq!(hub.set_clip(b"RIFF....WAVE".to_vec()), 1);
+        assert_eq!(hub.set_clip(b"RIFF....WAVE2".to_vec()), 2);
+        let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        assert_eq!(state["clip"], 2);
+        let clip = hub.handle(&request("GET", "/api/clip?k=k1&seq=2", ""));
+        assert_eq!((clip.status, clip.content_type), (200, "audio/wav"));
+        assert_eq!(clip.body, b"RIFF....WAVE2");
+        let dog = hub.handle(&request("GET", "/dog.png", ""));
+        assert_eq!(dog.status, 200);
+        assert_eq!(&dog.body[1..4], b"PNG");
+        hub.handle(&request("POST", "/api/listen?k=k1", r#"{"always":false}"#));
+        assert_eq!(hub.take_inbox(), vec![Inbound::Listen(false)]);
     }
 
     #[test]

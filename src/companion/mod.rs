@@ -10,6 +10,7 @@
 //! death, and the game window coming and going. Everything else waits to be
 //! asked.
 
+pub mod chat;
 pub mod commands;
 pub mod exp;
 pub mod observation;
@@ -36,6 +37,9 @@ pub struct Settings {
     /// After the wake word alone, how long the next sentence counts as
     /// addressed, in seconds.
     pub listen_for: f64,
+    /// Answer everything said to it (true), or only sentences with the wake
+    /// word "syrup" in them (for streams, where most talk is to the chat).
+    pub always_listen: bool,
 }
 
 impl Default for Settings {
@@ -48,6 +52,7 @@ impl Default for Settings {
             warning_cooldown: 20.0,
             lost_after: 5.0,
             listen_for: 8.0,
+            always_listen: true,
         }
     }
 }
@@ -151,6 +156,11 @@ pub struct Companion {
     announced_level_up: f64,
     marks: u32,
     now: f64,
+    /// Lines spoken lately (when, and normalised), to tell the phone hearing
+    /// MapleSyrup's own voice from the player.
+    spoken: std::collections::VecDeque<(f64, String)>,
+    /// Counts small-talk answers, to vary them.
+    turn: u32,
 }
 
 /// How long a new level reading must hold before it is believed, in seconds.
@@ -178,7 +188,42 @@ impl Companion {
             announced_level_up: f64::NEG_INFINITY,
             marks: 0,
             now: 0.0,
+            spoken: std::collections::VecDeque::new(),
+            turn: 0,
         }
+    }
+
+    /// Note a line that was spoken aloud (by the PC or the phone).
+    pub fn remember_spoken(&mut self, now: f64, text: &str) {
+        self.spoken.push_back((now, commands::normalize(text)));
+        while self.spoken.front().is_some_and(|(t, _)| now - t > 45.0) {
+            self.spoken.pop_front();
+        }
+    }
+
+    /// Whether `heard` is MapleSyrup's own voice coming back through the
+    /// phone's microphone rather than the player.
+    pub fn is_echo(&self, now: f64, heard: &str) -> bool {
+        let heard = commands::normalize(heard);
+        let words: Vec<&str> = heard.split(' ').filter(|w| !w.is_empty()).collect();
+        if words.is_empty() {
+            return false;
+        }
+        self.spoken.iter().any(|(t, said)| {
+            let age = now - t;
+            if !(-1.0..=45.0).contains(&age) {
+                return false;
+            }
+            let said: std::collections::HashSet<&str> = said.split(' ').collect();
+            let shared = words.iter().filter(|w| said.contains(*w)).count() as f64;
+            let overlap = shared / words.len() as f64;
+            (words.len() >= 3 && overlap >= 0.6)
+                || (words.len() >= 2 && age < 15.0 && overlap >= 0.8)
+        })
+    }
+
+    pub fn set_always_listen(&mut self, on: bool) {
+        self.settings.always_listen = on;
     }
 
     pub fn muted(&self) -> bool {
@@ -365,7 +410,11 @@ impl Companion {
             text: sentence.to_string(),
             speak: false,
         })];
-        match commands::interpret(sentence, self.listening(now)) {
+        if self.is_echo(now, sentence) {
+            return out;
+        }
+        let addressed = self.settings.always_listen || self.listening(now);
+        match commands::interpret(sentence, addressed) {
             Heard::NotForUs => {}
             Heard::WakeOnly => {
                 self.listening_until = now + self.settings.listen_for;
@@ -375,11 +424,16 @@ impl Companion {
                 self.listening_until = f64::NEG_INFINITY;
                 out.extend(self.command(now, command));
             }
-            Heard::Unclear(_) => {
+            Heard::Unclear(rest) => {
                 self.listening_until = f64::NEG_INFINITY;
-                out.push(Action::Say(Say::reply(
-                    "Sorry, I didn't catch that. Say status, HP, MP, EXP, rate, mark, or help.",
-                )));
+                self.turn += 1;
+                let answer = match chat::small_talk(&rest).or_else(|| chat::small_talk(sentence)) {
+                    Some(talk) => Some(chat::answer(talk, self.last.as_ref(), self.turn)),
+                    None => chat::fallback(&rest, self.turn),
+                };
+                if let Some(answer) = answer {
+                    out.push(Action::Say(Say::reply(answer)));
+                }
             }
         }
         out
@@ -435,10 +489,13 @@ impl Companion {
                     Action::Say(Say::info("I'm back.", true)),
                 ]
             }
-            Command::Help => reply(
+            Command::Help => reply(if self.settings.always_listen {
+                "Just talk to me. Ask how you're doing, about your HP, MP, EXP or level, or how long until you level. Say mark to save a moment, or mute to quiet me."
+                    .to_string()
+            } else {
                 "Say syrup, then: status, HP, MP, EXP, rate, level, time, mark, mute or unmute."
-                    .to_string(),
-            ),
+                    .to_string()
+            }),
         }
     }
 
@@ -677,8 +734,11 @@ mod tests {
     }
 
     #[test]
-    fn talk_is_ignored_and_addressed_commands_answered() {
-        let mut c = Companion::new(Settings::default());
+    fn with_the_wake_word_required_talk_is_ignored_and_addressed_commands_answered() {
+        let mut c = Companion::new(Settings {
+            always_listen: false,
+            ..Settings::default()
+        });
         c.observe(0.0, frame(82.0, 40.0, 13.25));
         assert!(said(&c.heard(1.0, "my hp is fine chat")).is_empty());
         assert_eq!(
@@ -692,6 +752,49 @@ mod tests {
         );
         // The follow-up window closes after one sentence.
         assert!(said(&c.heard(5.0, "what's my mana")).is_empty());
+    }
+
+    #[test]
+    fn everything_said_is_answered_like_a_conversation() {
+        let mut c = Companion::new(Settings::default());
+        c.observe(0.0, frame(82.0, 40.0, 13.25));
+        // What was said on the first real try, word for word.
+        let hello = &said(&c.heard(1.0, "Hello"))[0];
+        assert!(
+            hello.contains("You're level 57, HP about 82 percent"),
+            "{hello}"
+        );
+        assert!(
+            said(&c.heard(2.0, "Can you see my maple"))[0].starts_with("Yes, I can see your game.")
+        );
+        assert!(said(&c.heard(3.0, "Why don't you answer me"))[0].starts_with("I'm here!"));
+        assert_eq!(
+            said(&c.heard(4.0, "what's my mana")),
+            ["MP about 40 percent."]
+        );
+        // A long sentence to someone else gets nothing.
+        assert!(
+            said(&c.heard(
+                5.0,
+                "ok chat so today we are farming the monkey forest until sixty"
+            ))
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn its_own_voice_coming_back_is_not_answered() {
+        let mut c = Companion::new(Settings::default());
+        c.observe(0.0, frame(82.0, 40.0, 13.25));
+        c.remember_spoken(1.0, "HP about 82 percent, MP about 40 percent.");
+        // The phone heard the PC say it.
+        assert!(c.is_echo(3.0, "HP about 82% MP about 40%"));
+        assert!(said(&c.heard(3.0, "HP about 82% MP about 40%")).is_empty());
+        // The player saying a word that was in it is not an echo.
+        assert!(!c.is_echo(4.0, "HP"));
+        assert!(!c.is_echo(4.0, "how about my exp"));
+        // Long after, the same words are the player's.
+        assert!(!c.is_echo(100.0, "HP about 82% MP about 40%"));
     }
 
     #[test]

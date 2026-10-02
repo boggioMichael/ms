@@ -1,36 +1,43 @@
 //! MapleSyrup: the MapleStory companion, as one program you start.
 //!
 //! It finds the MapleStory window and watches it through the vision engine,
-//! speaks up when HP or MP runs low or you level up, and answers when asked
-//! — by voice through your phone, or from the phone's buttons. The phone
-//! joins by scanning the QR code in this window: its page is the
-//! companion's microphone and a second screen.
+//! and you talk with it through your phone like you would with a friend:
+//! with an OpenAI key it answers like ChatGPT, knowing what is on your
+//! screen, in a natural voice (the game turned down while it talks). It
+//! speaks up on its own when HP or MP runs low or you level up. Yohai's
+//! dog shows it all, on a panel over the game and on the phone.
 //!
 //! ```text
 //!  MapleStory window ─ syrup capture ─▶ vision engine ─▶ Observation ─┐
 //!                                                                      ▼
-//!  phone page ── heard / buttons / audio ──▶ phone link ──▶  Companion ──▶ voice, console,
-//!       ▲                                        │                       phone, session files
-//!       └──────────── status and replies ◀───────┘
+//!  phone page ── what you said / buttons / audio ──▶ phone link ──▶ Companion ─┐
+//!       ▲                                                   │      (warnings)   │
+//!       │                                                   ▼                   ▼
+//!       └──── replies, voice clips, the dog ◀──── OpenAI (reply + voice) ──▶ PC speakers
 //! ```
 
 mod selftest;
 
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
+use ms::ai::{self, AiError, Brain, Done, Job, OpenAi};
+use ms::app::dog::Dog;
 use ms::app::panel;
 use ms::app::screen::{self, LogLine};
 use ms::app::session::{self, Session};
 use ms::capture::{Captured, GameCapture};
+use ms::companion::commands::{self, Heard};
 use ms::companion::{Action, Command, Companion, GameView, Kind, Observation, Settings};
 use ms::observe::frame_result::{FrameTimings, VisionFrameResult};
 use ms::observe::preview::Preview;
 use ms::phone::{self, Hub, Inbound, VoiceOn, qr, tls, tunnel};
 use ms::platform::overlay::{self, Overlay};
+use ms::platform::sound::Player;
 use ms::platform::{self, voice::Voice};
 use ms::util::timing::FPSCounter;
 use ms::vision::snapshot::PerceptionPipeline;
@@ -40,8 +47,9 @@ const USAGE: &str = "\
 MapleSyrup — the MapleStory companion.
 
 Start it, start MapleStory (either order), and scan the QR code with your
-phone. Say \"syrup\" and then a command: status, hp, mp, exp, rate, level,
-time, mark, mute, unmute, help. Close this window or press Ctrl+C to stop.
+phone. Then just talk to it. With an OpenAI API key it talks like ChatGPT
+and sounds like a person; without one it answers simple questions in the
+Windows voice. Close this window or press Ctrl+C to stop.
 
 USAGE
   MapleSyrup [options] [IMAGE | FOLDER]
@@ -59,8 +67,13 @@ OPTIONS
   --no-phone            no phone link
   --record-mic          keep the phone's microphone in the session's mic.wav
   --replies WHERE       where replies are spoken: pc, phone, both, off (default pc)
+  --wake-word           answer only sentences that say \"syrup\" (for streams)
+  --no-ai               no OpenAI, even with a key
+  --forget-key          delete the saved OpenAI key and ask again
+  --model NAME          the OpenAI model (default: the fastest the key can use)
+  --voice NAME          the OpenAI voice: cedar, marin, ash, coral, sage… (default cedar)
   --no-voice            never speak on the PC
-  --rate N              the PC voice's speed, -10 to 10 (default 1)
+  --rate N              the Windows voice's speed, -10 to 10 (default 1)
   --hp-low N            warn below N% HP (default 30)
   --mp-low N            warn below N% MP (default 15)
   --fps N               frames watched per second (default 10)
@@ -71,6 +84,9 @@ OPTIONS
   --plain               no colours or redrawing in the console
   --self-test           check this PC: the engine, the phone link, the voice
   --help
+
+The OpenAI key is read from OPENAI_API_KEY, or from openai-key.txt next to
+MapleSyrup (moved into %APPDATA%\\MapleSyrup on first use), or asked for.
 ";
 
 struct Options {
@@ -81,6 +97,12 @@ struct Options {
     port: u16,
     record_mic: bool,
     replies: VoiceOn,
+    wake_word: bool,
+    ai: bool,
+    forget_key: bool,
+    model: Option<String>,
+    voice_name: String,
+    openai_base: String,
     voice: bool,
     rate: i32,
     hp_low: f32,
@@ -102,6 +124,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
         port: 8443,
         record_mic: false,
         replies: VoiceOn::Pc,
+        wake_word: false,
+        ai: true,
+        forget_key: false,
+        model: None,
+        voice_name: "cedar".into(),
+        openai_base: std::env::var("OPENAI_BASE_URL")
+            .unwrap_or_else(|_| "https://api.openai.com/v1".into()),
         voice: true,
         rate: 1,
         hp_low: 30.0,
@@ -140,6 +169,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 o.replies = VoiceOn::parse(&text)
                     .ok_or(format!("--replies is pc, phone, both or off, not {text:?}"))?
             }
+            "--wake-word" => o.wake_word = true,
+            "--no-ai" => o.ai = false,
+            "--forget-key" => o.forget_key = true,
+            "--model" => o.model = Some(value("--model")?),
+            "--voice" => o.voice_name = value("--voice")?,
+            "--openai-base" => o.openai_base = value("--openai-base")?,
             "--no-voice" => o.voice = false,
             "--rate" => o.rate = number("--rate", value("--rate")?)? as i32,
             "--hp-low" => o.hp_low = number("--hp-low", value("--hp-low")?)? as f32,
@@ -445,53 +480,130 @@ fn device_of(agent: &str) -> &'static str {
     }
 }
 
+/// How MapleSyrup's words get out: OpenAI's natural voice (played here,
+/// or handed to the phone), or the Windows voice when there is no key.
+struct Mouth {
+    ai: Option<ai::Worker>,
+    sapi: Option<Voice>,
+    player: Player,
+    /// When the Windows voice or the phone is expected to finish speaking.
+    sapi_until: Instant,
+    phone_until: Instant,
+    /// The game's process, turned down while the PC speaks.
+    game_pid: Option<u32>,
+}
+
+impl Mouth {
+    fn speaking(&self) -> bool {
+        let now = Instant::now();
+        self.player.speaking() || now < self.sapi_until || now < self.phone_until
+    }
+
+    fn hush(&mut self) {
+        self.player.stop();
+        if let Some(voice) = &self.sapi {
+            voice.hush();
+        }
+        self.sapi_until = Instant::now();
+    }
+
+    /// Roughly how long the Windows voice takes to say `text`.
+    fn estimate(text: &str) -> Duration {
+        Duration::from_secs_f64(0.6 + text.chars().count() as f64 / 14.0)
+    }
+}
+
 /// Everything an action can touch.
 struct Outputs {
-    voice: Option<Voice>,
+    mouth: Mouth,
     phone: Option<Arc<Hub>>,
     session: Session,
     log: Vec<LogLine>,
     plain: bool,
     start: Instant,
+    replies: VoiceOn,
 }
 
 impl Outputs {
-    fn voice_on(&self, fallback: VoiceOn) -> VoiceOn {
+    fn voice_on(&self) -> VoiceOn {
         self.phone
             .as_ref()
             .map(|h| h.voice_on())
-            .unwrap_or(fallback)
+            .unwrap_or(self.replies)
+    }
+
+    /// Show a line everywhere (console, phone, session log).
+    fn show(&mut self, kind: Kind, text: &str) {
+        let who = match kind {
+            Kind::Heard => "heard",
+            Kind::Alert => "alert",
+            Kind::Reply => "reply",
+            Kind::Info => "info",
+        };
+        self.session.line(who, text);
+        if let Some(hub) = &self.phone {
+            // The phone speaks a line itself only without a natural voice.
+            let phone_speaks = self.mouth.ai.is_none() && matches!(kind, Kind::Alert | Kind::Reply);
+            hub.post(kind, text, phone_speaks);
+        }
+        self.push(kind, text.to_string());
+    }
+
+    /// Say `text` out loud, where replies are spoken.
+    fn speak(&mut self, text: &str, companion: &mut Companion) {
+        if companion.muted() {
+            return;
+        }
+        let now = self.start.elapsed().as_secs_f64();
+        companion.remember_spoken(now, text);
+        match &self.mouth.ai {
+            Some(worker) => worker.send(Job::Speak {
+                text: text.to_string(),
+            }),
+            None => {
+                if self.voice_on().pc()
+                    && let Some(voice) = &self.mouth.sapi
+                {
+                    voice.say(text);
+                    self.mouth.sapi_until = Instant::now() + Mouth::estimate(text);
+                }
+            }
+        }
+    }
+
+    /// Play a natural-voice clip where replies are spoken.
+    fn play(&mut self, samples: &[i16], companion: &Companion) {
+        if companion.muted() {
+            return;
+        }
+        let voice_on = self.voice_on();
+        if voice_on.pc() {
+            self.mouth
+                .player
+                .play(samples, ai::openai::SPEECH_RATE, self.mouth.game_pid);
+        }
+        if voice_on.phone()
+            && let Some(hub) = &self.phone
+        {
+            hub.set_clip(ai::wav_bytes(samples, ai::openai::SPEECH_RATE));
+            let length = samples.len() as f64 / ai::openai::SPEECH_RATE as f64;
+            self.mouth.phone_until = Instant::now() + Duration::from_secs_f64(length + 0.8);
+        }
     }
 
     fn apply(
         &mut self,
         actions: Vec<Action>,
-        companion: &Companion,
+        companion: &mut Companion,
         frame: Option<Arc<RgbaImage>>,
-        replies: VoiceOn,
     ) {
-        let voice_on = self.voice_on(replies);
         for action in actions {
             match action {
                 Action::Say(say) => {
-                    let who = match say.kind {
-                        Kind::Heard => "heard",
-                        Kind::Alert => "alert",
-                        Kind::Reply => "reply",
-                        Kind::Info => "info",
-                    };
-                    self.session.line(who, &say.text);
-                    if let Some(hub) = &self.phone {
-                        hub.post(say.kind, &say.text, say.speak);
+                    self.show(say.kind, &say.text);
+                    if say.speak {
+                        self.speak(&say.text, companion);
                     }
-                    if say.speak
-                        && !companion.muted()
-                        && voice_on.pc()
-                        && let Some(voice) = &self.voice
-                    {
-                        voice.say(&say.text);
-                    }
-                    self.push(say.kind, say.text);
                 }
                 Action::Mark => {
                     let elapsed = self.start.elapsed().as_secs_f64();
@@ -508,11 +620,7 @@ impl Outputs {
                         None => self.push(Kind::Info, "marked (no game frame to save)".into()),
                     }
                 }
-                Action::SetMuted(true) => {
-                    if let Some(voice) = &self.voice {
-                        voice.hush();
-                    }
-                }
+                Action::SetMuted(true) => self.mouth.hush(),
                 Action::SetMuted(false) => {}
             }
         }
@@ -541,6 +649,42 @@ impl Outputs {
     }
 }
 
+/// The OpenAI key: saved, or asked for in this window (when there is one to
+/// type in). `None` runs MapleSyrup with its own simple answers.
+fn openai_key(options: &Options, settings: &Path) -> Option<String> {
+    if !options.ai {
+        return None;
+    }
+    if options.forget_key {
+        let _ = std::fs::remove_file(ai::key_file(settings));
+    }
+    if let Some(key) = ai::load_key(settings) {
+        return Some(key);
+    }
+    if !std::io::stdin().is_terminal() {
+        return None;
+    }
+    println!("MapleSyrup talks like ChatGPT, in a natural voice, with an OpenAI API key");
+    println!(
+        "(platform.openai.com/api-keys). It is kept on this PC only, in {}.",
+        settings.display()
+    );
+    println!("Paste the key and press Enter, or just press Enter to go without:");
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+    let key = line.trim().to_string();
+    if !ai::looks_like_key(&key) {
+        if !key.is_empty() {
+            println!("That does not look like an OpenAI key (they start with sk-). Going without.");
+        }
+        return None;
+    }
+    if let Err(e) = ai::save_key(settings, &key) {
+        println!("Could not save the key ({e}); it is used for this run only.");
+    }
+    Some(key)
+}
+
 fn run(options: Options) -> Result<(), String> {
     let console = platform::init("MapleSyrup (close this window or press Ctrl+C to stop)");
     let ansi = console.ansi && !options.plain;
@@ -549,13 +693,54 @@ fn run(options: Options) -> Result<(), String> {
     let session_dir = session::new_dir(&session::sessions_base(&settings_dir));
     let session = Session::open(session_dir.clone());
 
-    let (voice, voice_label) = if options.voice {
-        match Voice::start(options.rate) {
-            Ok(voice) => (Some(voice), "PC voice".to_string()),
-            Err(e) => (None, format!("no PC voice ({e})")),
+    // The brain: OpenAI when there is a key that works.
+    let mut ai_note = String::from("no OpenAI key: simple answers, Windows voice");
+    let worker = match openai_key(&options, &settings_dir) {
+        Some(key) => {
+            println!("Connecting to OpenAI…");
+            let client = OpenAi::new(
+                &key,
+                &options.openai_base,
+                &options.voice_name,
+                options.model.as_deref(),
+            );
+            match client.check() {
+                Err(AiError::Http(401, _)) => {
+                    let _ = std::fs::remove_file(ai::key_file(&settings_dir));
+                    ai_note =
+                        "OpenAI refused the key (removed; start again to paste another)".into();
+                    None
+                }
+                result => {
+                    if let Err(e) = &result {
+                        ai_note = format!("OpenAI not reachable yet ({e}); will keep trying");
+                    } else {
+                        ai_note = "OpenAI: conversation and natural voice".into();
+                    }
+                    let mut brain = Brain::new();
+                    if let Ok(about) = std::fs::read_to_string(settings_dir.join("about-me.txt")) {
+                        brain.about_player = about;
+                    }
+                    Some(ai::spawn(client, brain))
+                }
+            }
         }
+        None => None,
+    };
+
+    let sapi = if options.voice && worker.is_none() {
+        Voice::start(options.rate).ok()
+    } else if options.voice {
+        // Kept for when OpenAI cannot be reached.
+        Voice::start(options.rate).ok()
     } else {
-        (None, "PC voice off".to_string())
+        None
+    };
+    let voice_label = match (&worker, options.voice) {
+        (_, false) => "PC voice off".to_string(),
+        (Some(_), true) => format!("natural voice ({})", options.voice_name),
+        (None, true) if sapi.is_some() => "Windows voice".to_string(),
+        (None, true) => "no PC voice".to_string(),
     };
 
     let phone = if options.phone {
@@ -582,7 +767,7 @@ fn run(options: Options) -> Result<(), String> {
         print!("\x1b[2J\x1b[H\x1b[?7l");
     }
     println!(
-        "{b}Maple{s}Syrup{r}{b} · the MapleStory companion{r} {d}v{}{r}",
+        "{b}Maple{s}Syrup{r}{b} · the MapleStory companion{r} {d}v{} · {ai_note}{r}",
         env!("CARGO_PKG_VERSION")
     );
     if let Some(link) = &phone {
@@ -627,7 +812,7 @@ fn run(options: Options) -> Result<(), String> {
     let source = Source::open(&options)?;
     let slot = Arc::new(TickSlot::default());
     let running = Arc::new(AtomicBool::new(true));
-    let worker = {
+    let vision = {
         let (slot, running, fps) = (Arc::clone(&slot), Arc::clone(&running), options.fps);
         std::thread::Builder::new()
             .name("vision".into())
@@ -640,17 +825,27 @@ fn run(options: Options) -> Result<(), String> {
         hp_rearm: (options.hp_low + 15.0).min(95.0),
         mp_low: options.mp_low,
         mp_rearm: (options.mp_low + 15.0).min(95.0),
+        always_listen: !options.wake_word,
         ..Settings::default()
     });
     let mut out = Outputs {
-        voice,
+        mouth: Mouth {
+            ai: worker,
+            sapi,
+            player: Player::new(),
+            sapi_until: Instant::now(),
+            phone_until: Instant::now(),
+            game_pid: None,
+        },
         phone: phone.as_ref().map(|p| Arc::clone(&p.hub)),
         session,
         log: Vec::new(),
         plain: !ansi,
         start,
+        replies: options.replies,
     };
-    out.apply(companion.hello(), &companion, None, options.replies);
+    let hello = companion.hello();
+    out.apply(hello, &mut companion, None);
 
     // The panel over the game (Windows): only for the live game, not a screenshot.
     let mut panel_window = if options.overlay && options.input.is_none() {
@@ -665,6 +860,8 @@ fn run(options: Options) -> Result<(), String> {
         None
     };
     let mut panel_failed = false;
+    let mut dog = Dog::load();
+    let mut ai_error_shown = String::new();
 
     let mut preview: Option<Preview> = None;
     let mut preview_failed = false;
@@ -673,8 +870,10 @@ fn run(options: Options) -> Result<(), String> {
     let mut fps = 0.0;
     let mut drawn_lines = 0usize;
     let mut last_draw = Instant::now() - Duration::from_secs(1);
+    let mut last_panel = Instant::now() - Duration::from_secs(1);
     let mut last_plain_status = Instant::now();
     let block_height = qr_lines.len().max(screen::HEIGHT);
+    let mut game_area: Option<overlay::GameArea> = None;
 
     loop {
         if platform::stop_requested() {
@@ -708,22 +907,56 @@ fn run(options: Options) -> Result<(), String> {
                 }
             }
             let actions = companion.observe(tick.at, tick.obs);
-            out.apply(actions, &companion, latest_image.clone(), options.replies);
+            out.apply(actions, &mut companion, latest_image.clone());
         } else if let Some(p) = preview.as_mut() {
             p.pump();
         }
         if let Some(window) = &panel_window {
             window.pump();
         }
+        out.mouth.player.tick();
 
+        // What the phone sent.
         if let Some(hub) = out.phone.clone() {
             for inbound in hub.take_inbox() {
-                let actions = match inbound {
-                    Inbound::Heard(text) => companion.heard(now, &text),
-                    Inbound::Command(word) => match Command::from_word(&word) {
-                        Some(command) => companion.command(now, command),
-                        None => Vec::new(),
-                    },
+                match inbound {
+                    Inbound::Heard(text) => {
+                        if companion.is_echo(now, &text) {
+                            // MapleSyrup's own voice, heard back by the phone.
+                            out.session.line("echo", &text);
+                            continue;
+                        }
+                        if out.mouth.ai.is_some() {
+                            out.show(Kind::Heard, &text);
+                            if let Some(command) = commands::local_command(&text) {
+                                let actions = companion.command(now, command);
+                                out.apply(actions, &mut companion, latest_image.clone());
+                            } else if (companion.settings.always_listen
+                                || !matches!(commands::interpret(&text, false), Heard::NotForUs))
+                                && let Some(worker) = &out.mouth.ai
+                            {
+                                {
+                                    worker.send(Job::Converse {
+                                        heard: text,
+                                        snapshot: ai::brain::snapshot(
+                                            companion.last(),
+                                            &companion.progress(),
+                                        ),
+                                        speak: true,
+                                    });
+                                }
+                            }
+                        } else {
+                            let actions = companion.heard(now, &text);
+                            out.apply(actions, &mut companion, latest_image.clone());
+                        }
+                    }
+                    Inbound::Command(word) => {
+                        if let Some(command) = Command::from_word(&word) {
+                            let actions = companion.command(now, command);
+                            out.apply(actions, &mut companion, latest_image.clone());
+                        }
+                    }
                     Inbound::Hello(agent) => {
                         let device = device_of(&agent);
                         out.push(Kind::Info, format!("{device} connected"));
@@ -732,13 +965,12 @@ fn run(options: Options) -> Result<(), String> {
                             &format!("Connected to MapleSyrup on this {device}."),
                             false,
                         );
-                        if out.voice_on(options.replies).pc()
-                            && !companion.muted()
-                            && let Some(voice) = &out.voice
-                        {
-                            voice.say("Phone connected.");
-                        }
-                        Vec::new()
+                        let greeting = if out.mouth.ai.is_some() {
+                            "Hey! I'm here. Just talk to me."
+                        } else {
+                            "Phone connected."
+                        };
+                        out.speak(greeting, &mut companion);
                     }
                     Inbound::Voice(on) => {
                         let place = match on {
@@ -748,15 +980,132 @@ fn run(options: Options) -> Result<(), String> {
                             VoiceOn::Off => "nowhere (written only)",
                         };
                         out.push(Kind::Info, format!("replies are now spoken on {place}"));
-                        if !on.pc()
-                            && let Some(voice) = &out.voice
-                        {
-                            voice.hush();
+                        if !on.pc() {
+                            out.mouth.hush();
                         }
-                        Vec::new()
                     }
-                };
-                out.apply(actions, &companion, latest_image.clone(), options.replies);
+                    Inbound::Listen(always) => {
+                        companion.set_always_listen(always);
+                        out.show(
+                            Kind::Info,
+                            if always {
+                                "I answer everything you say now."
+                            } else {
+                                "I answer only when you say \"syrup\" now."
+                            },
+                        );
+                    }
+                }
+            }
+        }
+
+        // What the brain came back with.
+        let finished: Vec<Done> = match &out.mouth.ai {
+            Some(worker) => worker.done.try_iter().collect(),
+            None => Vec::new(),
+        };
+        for done in finished {
+            match done {
+                Done::Reply { text, took, .. } => {
+                    companion.remember_spoken(now, &text);
+                    out.show(Kind::Reply, &text);
+                    out.session
+                        .line("timing", &format!("reply in {:.1} s", took.as_secs_f64()));
+                }
+                Done::Audio { samples, .. } => out.play(&samples, &companion),
+                Done::Silent { heard } => out.session.line("silent", &heard),
+                Done::Failed { heard, error } => {
+                    let message = format!("OpenAI: {error}");
+                    if message != ai_error_shown {
+                        out.show(Kind::Info, &message);
+                        ai_error_shown = message;
+                    }
+                    if let AiError::Http(401, _) = error {
+                        let _ = std::fs::remove_file(ai::key_file(&settings_dir));
+                        out.mouth.ai = None;
+                        out.show(Kind::Info, "The OpenAI key was refused; going on with simple answers. Start MapleSyrup again to paste a new key.");
+                    }
+                    // Answer anyway, simply, in the Windows voice.
+                    if let Some(heard) = heard {
+                        let fallback: Vec<Action> = companion
+                            .heard(now, &heard)
+                            .into_iter()
+                            .filter(|a| !matches!(a, Action::Say(s) if s.kind == Kind::Heard))
+                            .collect();
+                        for action in fallback {
+                            if let Action::Say(say) = &action {
+                                out.show(say.kind, &say.text);
+                                if say.speak
+                                    && !companion.muted()
+                                    && let Some(voice) = &out.mouth.sapi
+                                {
+                                    voice.say(&say.text);
+                                    out.mouth.sapi_until =
+                                        Instant::now() + Mouth::estimate(&say.text);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Where the game is (for the panel, and whose sound to turn down).
+        if last_draw.elapsed() >= Duration::from_millis(250) {
+            game_area = match companion.last().map(|o| &o.game) {
+                Some(GameView::Seen(title)) if options.input.is_none() => overlay::game_area(title),
+                _ => None,
+            };
+            out.mouth.game_pid = game_area.map(|a| a.pid).filter(|pid| *pid != 0);
+        }
+
+        // The panel and the dog, about twelve times a second.
+        if last_panel.elapsed() >= Duration::from_millis(80) {
+            last_panel = Instant::now();
+            let speaking = out.mouth.speaking();
+            let frame = dog.as_mut().map(|d| d.advance(speaking));
+            if let Some(window) = panel_window.as_mut() {
+                match game_area {
+                    Some(area) if area.foreground && area.width > 200 && area.height > 150 => {
+                        let scale = panel::scale_for(area.height);
+                        let (_, ph) = panel::size(scale);
+                        let dog_frame = match (dog.as_mut(), frame) {
+                            (Some(d), Some(i)) => Some(d.frame(i, ph).clone()),
+                            _ => None,
+                        };
+                        let recent = out
+                            .log
+                            .iter()
+                            .rev()
+                            .find(|l| matches!(l.kind, Kind::Reply | Kind::Alert))
+                            .filter(|l| l.at.elapsed() < Duration::from_secs(15))
+                            .map(|l| l.text.as_str());
+                        let summary = out.phone.as_ref().map(|h| h.summary());
+                        let progress = companion.progress();
+                        let content = panel::Content {
+                            obs: companion.last(),
+                            exp_per_hour: progress.exp_per_hour,
+                            phone_connected: summary.as_ref().map(|s| s.connected),
+                            speaking,
+                            muted: companion.muted(),
+                            last_line: recent,
+                            dog: dog_frame.as_ref(),
+                        };
+                        let painted = panel::paint(&content, scale);
+                        let margin = (12.0 * scale) as i32;
+                        let at = (
+                            area.left + area.width - painted.image.width() as i32 - margin,
+                            area.top + margin,
+                        );
+                        if let Err(e) = window.show(&painted, at)
+                            && !panel_failed
+                        {
+                            panel_failed = true;
+                            out.push(Kind::Info, format!("the panel could not be drawn: {e}"));
+                        }
+                    }
+                    _ => window.hide(),
+                }
             }
         }
 
@@ -778,48 +1127,11 @@ fn run(options: Options) -> Result<(), String> {
                     "muted": companion.muted(),
                     "fps": fps,
                     "wake": "syrup",
+                    "always_listen": companion.settings.always_listen,
+                    "speaking": out.mouth.speaking(),
+                    "thinking": out.mouth.ai.as_ref().is_some_and(|w| w.busy()),
+                    "ai": out.mouth.ai.as_ref().map(|w| w.model.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "OpenAI".into())),
                 }));
-            }
-            if let Some(window) = panel_window.as_mut() {
-                let obs = companion.last();
-                let area = match obs.map(|o| &o.game) {
-                    Some(GameView::Seen(title)) => overlay::game_area(title),
-                    _ => None,
-                };
-                match area {
-                    Some(area) if area.foreground && area.width > 200 && area.height > 150 => {
-                        let scale = panel::scale_for(area.height);
-                        let (pw, _) = panel::size(scale);
-                        let margin = (12.0 * scale) as i32;
-                        let recent = out
-                            .log
-                            .iter()
-                            .rev()
-                            .find(|l| matches!(l.kind, Kind::Reply | Kind::Alert))
-                            .filter(|l| l.at.elapsed() < Duration::from_secs(12))
-                            .map(|l| l.text.as_str());
-                        let content = panel::Content {
-                            obs,
-                            exp_per_hour: progress.exp_per_hour,
-                            phone_connected: summary.as_ref().map(|s| s.connected),
-                            speaking: summary.as_ref().is_some_and(|s| s.mic.speaking),
-                            muted: companion.muted(),
-                            last_line: recent,
-                        };
-                        let painted = panel::paint(&content, scale);
-                        let at = (
-                            area.left + area.width - pw as i32 - margin,
-                            area.top + margin,
-                        );
-                        if let Err(e) = window.show(&painted, at)
-                            && !panel_failed
-                        {
-                            panel_failed = true;
-                            out.push(Kind::Info, format!("the panel could not be drawn: {e}"));
-                        }
-                    }
-                    _ => window.hide(),
-                }
             }
             if ansi {
                 let view = screen::View {
@@ -829,7 +1141,7 @@ fn run(options: Options) -> Result<(), String> {
                     progress: &progress,
                     phone: summary.as_ref(),
                     voice: &voice_label,
-                    voice_on: out.voice_on(options.replies),
+                    voice_on: out.voice_on(),
                     muted: companion.muted(),
                     log: &out.log,
                 };
@@ -898,7 +1210,9 @@ fn run(options: Options) -> Result<(), String> {
     }
 
     running.store(false, Ordering::Relaxed);
-    let _ = worker.join();
+    let _ = vision.join();
+    out.mouth.hush();
+    ms::platform::sound::restore();
     if ansi {
         print!("\x1b[?7h");
     }
