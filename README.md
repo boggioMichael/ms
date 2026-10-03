@@ -16,7 +16,8 @@ Download **`MapleSyrup-Setup-<version>.exe`** from [Releases](https://github.com
 - **Its own voice, and a dog that's alive.** Pick its voice on the phone from your ElevenLabs account (OpenAI's voice steps in when ElevenLabs can't). The dog — the chow chow from the logo — lives in a box on the phone page: it hops, runs, jumps, naps and plays with its ball as it likes, looks at you while you talk, and its mouth moves with the voice.
 - **Learns as you play.** It keeps a notebook about you (your characters, goals, how you like it to talk, what you did last time), answers fast from what it knows, and keeps your corrections for good. It adapts how long it waits before answering, and its warnings. The phone shows what it knows, with Forget; it all stays on your PC.
 - **Sees your game and learns it.** It finds your HUD by itself (any resolution or layout), measures HP, MP and EXP on every frame, and learns what you teach it by talking: "that's an Orange Mushroom, tell me when one shows up".
-- **Watches your back.** Low HP and MP warnings, level-ups, EXP per hour and time to level, with MapleStory's sound turned down while it talks.
+- **Watches your back.** Low HP and MP warnings, a beating called as it happens ("Back off, you're getting shredded"), level-ups, EXP per hour and time to level, with MapleStory's sound turned down while it talks.
+- **Coaches on its own.** You play, it talks: it watches the game go by and speaks up when there is something worth saying — you just arrived somewhere new, you went up a level, your EXP hasn't moved for minutes, something on screen deserves a callout — one short instruction, never a question. It looks now and then (less often when there is nothing to say) and keeps quiet while anyone talks. Say "stop coaching" or "only talk when I ask" and it only answers; "coach me" turns it back on.
 - **Your phone is its microphone and a second screen**, in 14 languages.
 - **Records the session for you.** Tap *Record the session* on the phone (or say "start recording"): a video of the whole screen with every sound — the game, its voice and yours — each sound placed where it was heard, saved in the session folder.
 
@@ -57,6 +58,7 @@ MapleStory window / image fixture
                                                       |
                                                       v
                                    Observation ─▶ the companion (what to say)
+                                               ─▶ the coach (when a model may look)
                                    WorldState  ─▶ the preview, GameState + JSON
 ```
 
@@ -66,7 +68,8 @@ The main modules are:
 - `src/perceive.rs`: one frame through the companion's eyes — the same function for the companion and for `vision_bench`.
 - `src/sight/`: what MapleSyrup learned about the player's own screen — where the HUD is (`find_hud`, from the pixels), the bars (`syrup::bars`), the numbers in the game's font (`syrup::glyphs`), the things the player taught it (`syrup::template`, `syrup::tracking`), and the teacher, a vision model asked only when those fail.
 - `src/vision/`: the detectors the preview shows (motion, dialogs, panels, platform edges) and the HUD geometry detector that runs until the sight sees the HUD; thin re-exports of Syrup's geometry, OCR and quality modules.
-- `src/companion/`: what MapleSyrup says and when.
+- `src/companion/`: what MapleSyrup says and when, from the numbers alone (warnings, a beating, a death, a level-up).
+- `src/coach/`: when MapleSyrup speaks up on its own beyond that — which moments a model gets to look at (a new scene, a level-up, a stall, a look now and then), paced so it is company and not nagging — and the scene fingerprint that tells one map from the next.
 - `src/observe/`: the live terminal dashboard, the graphical preview, and the per-frame result both render from.
 - `src/util/`: per-stage timing from the tracing spans, and the vision engine's worker pool (one fewer than the cores, at most eight, below-normal priority).
 - `src/game_state.rs`: stable application-facing and serialized state.

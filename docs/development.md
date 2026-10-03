@@ -42,9 +42,20 @@ keeps what the pixels mean in MapleStory, and the orchestration.
 
 ### The companion
 
-- **`companion/`**: what MapleSyrup says and when — warnings, level-ups,
-  EXP/hour, voice commands, the `Observation` of a frame.
-- **`ai/`**: the model clients, the teaching loop, the tools.
+- **`companion/`**: what MapleSyrup says and when from the numbers alone —
+  warnings, a beating, a death, level-ups, EXP/hour, voice commands, the
+  `Observation` of a frame.
+- **`coach/`**: when MapleSyrup speaks up on its own beyond that. `Coach`
+  is fed every frame and returns a `Reason` when a model should look (a
+  new scene, a level-up, EXP stalled, a look now and then); the main loop
+  turns it into `ai::Job::Coach`, and the model answers one line or
+  `[silent]`. Pacing lives here and is tested by playing sessions through
+  it (`MIN_GAP`, `CONSULT_GAP`, `LOOK_EVERY` growing to `LOOK_AT_MOST`).
+  `coach::scene` is the frame fingerprint (32×18 cells of brightness, a
+  few thousand samples whatever the frame's size) and what a run of them
+  says: a cut, a new scene once it settled, how much is going on.
+- **`ai/`**: the model clients, the teaching loop, the tools, the coach's
+  look (`coach()`).
 - **`phone/`**: the phone link.
 - **`app/`**, **`platform/`**, **`observe/`**, **`overlay/`**: the
   screen, the console and voice, the dashboard and preview, the overlay.
