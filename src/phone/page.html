@@ -1819,11 +1819,14 @@
     for (const [id, output] of outputs) {
       liveSend({ type: "conversation.item.create", item: { type: "function_call_output", call_id: id, output } });
     }
-    liveSend({ type: "response.create" });
+    // The player started talking meanwhile: the answer to that will see the
+    // tools' results too, and asking for another response now would only
+    // fight it (and lose: the model drops the thread and never answers).
+    if (!liveCall.userTalking) liveSend({ type: "response.create" });
     // The call answers again after the tools: the player waits for that too.
     liveCall.stoppedAt = doneAt || Date.now();
     liveCall.firstSoundTold = false;
-    liveTiming("live: " + calls.map((c) => c.name).join(", ") + " ran in " + ((Date.now() - (doneAt || Date.now())) / 1000).toFixed(1) + " s; the answer after them is timed from here");
+    liveTiming("live: " + calls.map((c) => c.name).join(", ") + " ran in " + ((Date.now() - (doneAt || Date.now())) / 1000).toFixed(1) + " s; the answer after them is timed from here" + (liveCall.userTalking ? " (the player is talking: it answers with their next words)" : ""));
   }
 
   // A line for the PC's session log about where the time went.

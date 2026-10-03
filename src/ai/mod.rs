@@ -1264,7 +1264,7 @@ words (\"probably\" if you're not sure)."
                 if speak && let Some(rest) = sentences.finish() {
                     let _ = lines.send(brain::for_speech(&rest));
                 }
-                let text = brain::for_speech(&said);
+                let text = brain::for_speech(&brain::without_announcement(&said));
                 brain.heard(&heard);
                 brain.said(&text);
                 let _ = tx.send(Done::Reply {

@@ -259,9 +259,18 @@ const SENTENCE_MIN_CHARS: usize = 16;
 
 /// Cuts a reply that arrives a few words at a time into sentences, so the
 /// first can be spoken while the rest is still being written.
+///
+/// A first sentence that only announces the answer ("Alright, I'll give
+/// you the quickest route.") is held back: it goes when the answer follows
+/// — the player hears the answer two seconds sooner — and is said only
+/// when it turns out to be the whole reply.
 #[derive(Default)]
 pub struct Sentences {
     pending: String,
+    /// Sentences handed out so far.
+    given: usize,
+    /// A first sentence held back as an announcement.
+    held: Option<String>,
 }
 
 impl Sentences {
@@ -276,9 +285,17 @@ impl Sentences {
         while let Some(end) = sentence_end(&self.pending, SENTENCE_MIN_CHARS) {
             let sentence: String = self.pending.drain(..end).collect();
             let sentence = sentence.trim();
-            if !sentence.is_empty() {
-                out.push(sentence.to_string());
+            if sentence.is_empty() {
+                continue;
             }
+            if self.given == 0 && self.held.is_none() && is_announcement(sentence) {
+                self.held = Some(sentence.to_string());
+                continue;
+            }
+            // The answer came: the announcement before it is not said.
+            self.held = None;
+            self.given += 1;
+            out.push(sentence.to_string());
         }
         out
     }
@@ -287,7 +304,147 @@ impl Sentences {
     pub fn finish(&mut self) -> Option<String> {
         let rest = std::mem::take(&mut self.pending);
         let rest = rest.trim();
-        (!rest.is_empty()).then(|| rest.to_string())
+        if !rest.is_empty() {
+            self.held = None;
+            self.given += 1;
+            return Some(rest.to_string());
+        }
+        // The announcement was all there was: better than nothing.
+        self.held.take()
+    }
+}
+
+/// Does `sentence` only say that an answer is coming ("Alright, I'll give
+/// you the best quick route.", "Let's pin this down first.", "Got it, I'll
+/// keep it short.")? It starts the way such sentences start and says what
+/// the speaker is about to do, in a few words — and tells the player
+/// nothing.
+pub fn is_announcement(sentence: &str) -> bool {
+    let text = crate::companion::commands::normalize(sentence);
+    let words = text.split(' ').filter(|w| !w.is_empty()).count();
+    if words == 0 || words > 14 {
+        return false;
+    }
+    const OPENERS: &[&str] = &[
+        "alright",
+        "all right",
+        "okay",
+        "ok",
+        "sure",
+        "got it",
+        "right",
+        "lets",
+        "let me",
+        "so ",
+        "well",
+        "fine",
+        "sounds good",
+        "no problem",
+        "good question",
+        "great question",
+        "heres",
+        "here is",
+        "ill ",
+        "i will",
+        "im gonna",
+        "im going to",
+        "i am going to",
+        "gonna",
+        "one sec",
+        "hold on",
+        "hang on",
+        "give me a sec",
+        "first things first",
+        "quick one",
+        "טוב",
+        "בסדר",
+        "אוקיי",
+        "אוקי",
+        "בוא",
+        "בואו",
+        "תן לי",
+        "אני א",
+        "שנייה",
+        "שניה",
+        "רגע",
+        "קודם כל",
+    ];
+    // …and says the answer is coming (not a promise about later: "I'll warn
+    // you at 40" tells them something).
+    const INTENTS: &[&str] = &[
+        "let me",
+        "lets see",
+        "lets look",
+        "lets check",
+        "lets start",
+        "lets begin",
+        "lets do this",
+        "lets get into",
+        "lets break",
+        "lets pin",
+        "lets sort",
+        "lets figure",
+        "heres",
+        "here is",
+        "coming up",
+        "one sec",
+        "hold on",
+        "hang on",
+        "a sec",
+        "a second",
+        "a moment",
+        "pin this down",
+        "pin it down",
+        "break it down",
+        "break this down",
+        "break that down",
+        "walk you through",
+        "run you through",
+        "lay it out",
+        "keep it",
+        "the deal",
+        "the plan",
+        "the quick",
+        "the short",
+        "the route",
+        "the steps",
+        "the rundown",
+        "the breakdown",
+        "step by step",
+        "stepbased",
+        "step based",
+        "quick version",
+        "quick route",
+        "quick rundown",
+        "rundown",
+        "בוא נ",
+        "בואו נ",
+        "תן לי",
+        "אתן לך",
+        "אסביר",
+        "אפרט",
+        "שנייה",
+        "שניה",
+        "רגע",
+        "הנה ה",
+    ];
+    let padded = format!("{text} ");
+    let opens = OPENERS.iter().any(|o| padded.starts_with(o));
+    let intends = INTENTS.iter().any(|i| padded.contains(i));
+    opens && intends
+}
+
+/// The reply without a first sentence that only announced the rest (the
+/// shown text matches what was said).
+pub fn without_announcement(reply: &str) -> String {
+    let Some(end) = sentence_end(reply, 1) else {
+        return reply.to_string();
+    };
+    let (first, rest) = reply.split_at(end);
+    if !rest.trim().is_empty() && is_announcement(first.trim()) {
+        rest.trim().to_string()
+    } else {
+        reply.to_string()
     }
 }
 
@@ -521,5 +678,70 @@ mod tests {
             ["[silent]. Talking to chat."]
         );
         assert!(is_silent(&split("[silent]", 3)[0]));
+    }
+
+    #[test]
+    fn a_first_sentence_that_only_announces_the_answer_is_not_said() {
+        // From the player's session: the answer came two seconds after.
+        for piece in [1, 4, 300] {
+            assert_eq!(
+                split(
+                    "Alright, I'll give you the best quick route to farm it. Farm Root Abyss bosses for drops.",
+                    piece
+                ),
+                ["Farm Root Abyss bosses for drops."],
+                "{piece}"
+            );
+            assert_eq!(
+                split(
+                    "Got it, I'll keep it tight and step-based for you. First, unlock Root Abyss. Then gear up.",
+                    piece
+                ),
+                ["First, unlock Root Abyss.", "Then gear up."],
+                "{piece}"
+            );
+            assert_eq!(
+                split(
+                    "Let's pin this down for your level and class first. Use Fafnir or Sweetwater.",
+                    piece
+                ),
+                ["Use Fafnir or Sweetwater."],
+                "{piece}"
+            );
+        }
+        // On its own it is all there is: said.
+        assert_eq!(
+            split("Alright, I'll give you the best quick route to farm it.", 5),
+            ["Alright, I'll give you the best quick route to farm it."]
+        );
+        // An opener with something to say is not an announcement.
+        assert_eq!(
+            split("Okay, listen up, go left now. The portal's there.", 5),
+            ["Okay, listen up, go left now.", "The portal's there."]
+        );
+        assert_eq!(
+            split("Sure, go left to the portal. Then enter Preserve.", 5),
+            ["Sure, go left to the portal.", "Then enter Preserve."]
+        );
+        assert!(!is_announcement("Pot now, you're at 20."));
+        assert!(!is_announcement(
+            "I'll warn you sooner from now on, under 35%."
+        ));
+        assert!(is_announcement("Here's the deal."));
+        assert!(is_announcement("בוא נעשה את זה צעד אחר צעד."));
+        assert!(is_announcement("טוב, אני אסביר לך בקצרה."));
+        assert!(!is_announcement("טוב, לך שמאלה לפורטל."));
+        // The shown text matches what was said.
+        assert_eq!(
+            without_announcement(
+                "Alright, I'll give you the best quick route to farm it. Farm Root Abyss bosses."
+            ),
+            "Farm Root Abyss bosses."
+        );
+        assert_eq!(
+            without_announcement("Farm Root Abyss bosses."),
+            "Farm Root Abyss bosses."
+        );
+        assert_eq!(without_announcement("Here's the deal."), "Here's the deal.");
     }
 }
