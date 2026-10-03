@@ -184,6 +184,7 @@ impl Sight {
     /// and the things the player taught.
     pub fn observe(&mut self, frame: &RgbaImage, now: Instant) -> Seen {
         let mut seen = Seen::default();
+        let bars = tracing::trace_span!("sight.bars").entered();
         if let Some(layout) = self
             .layout
             .as_ref()
@@ -236,7 +237,8 @@ impl Sight {
                 }
             }
         }
-        seen.fired = self.things.run(frame, now);
+        drop(bars);
+        seen.fired = tracing::trace_span!("sight.things").in_scope(|| self.things.run(frame, now));
         self.last = seen.clone();
         seen
     }

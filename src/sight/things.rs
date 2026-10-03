@@ -648,7 +648,13 @@ impl Things {
                 continue;
             }
             let mut near = Vec::new();
-            let reading = Self::read_with(&self.list[i], frame, &mut near);
+            let span = match self.list[i].kind {
+                Kind::Object => tracing::trace_span!("sight.things.object"),
+                Kind::Indicator => tracing::trace_span!("sight.things.indicator"),
+                Kind::Gauge => tracing::trace_span!("sight.things.gauge"),
+                Kind::Number | Kind::Text => tracing::trace_span!("sight.things.text"),
+            };
+            let reading = span.in_scope(|| Self::read_with(&self.list[i], frame, &mut near));
             let id = self.list[i].id.clone();
             // A few near misses to check, not a flood.
             if self.candidates.len() < 4 && self.list[i].images.len() < MAX_PICTURES {

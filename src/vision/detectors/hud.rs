@@ -133,11 +133,13 @@ impl HudDetector {
             player_name,
             character_class,
             level,
-        } = hud_geometry::detect_hud_snapshot(image);
+        } = tracing::trace_span!("vision.hud.geometry")
+            .in_scope(|| hud_geometry::detect_hud_snapshot(image));
 
         // Geometry gives the fill ratio every frame; OCR contributes the
         // printed numbers and plate text when its cadence comes round.
-        let reading = self.text.read(image, &markers, frame_id);
+        let reading = tracing::trace_span!("vision.hud.text")
+            .in_scope(|| self.text.read(image, &markers, frame_id));
         let text = reading.text;
 
         let hp = fuse(hp, "HP", text.hp, None);

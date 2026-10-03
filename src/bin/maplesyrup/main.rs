@@ -491,9 +491,12 @@ fn watch(
                 let capture = began.elapsed();
                 frame_id += 1;
                 let vision_start = Instant::now();
-                let world = pipeline.detect_frame(&image, frame_id);
+                let frame_span = tracing::trace_span!("frame").entered();
+                let world = tracing::trace_span!("vision")
+                    .in_scope(|| pipeline.detect_frame(&image, frame_id));
                 let image = Arc::new(image);
-                let mut obs = Observation::from_world(&title, &world);
+                let mut obs = tracing::trace_span!("observation")
+                    .in_scope(|| Observation::from_world(&title, &world));
                 // What MapleSyrup learned about this screen replaces the
                 // old HUD reader's guesses. Only while the game is the window
                 // in front: the capture is of the screen where the game is,
@@ -507,6 +510,7 @@ fn watch(
                     latest.clear();
                 }
                 if let Some(sight) = &sight {
+                    let _sight_span = tracing::trace_span!("sight").entered();
                     let mut sight = sight.lock().unwrap_or_else(|e| e.into_inner());
                     let seen = if in_view {
                         sight.observe(&image, Instant::now())
@@ -516,6 +520,7 @@ fn watch(
                     sight.apply(&mut obs, &seen);
                     fired = seen.fired;
                 }
+                drop(frame_span);
                 let vision = vision_start.elapsed();
                 let now = Instant::now();
                 let interval = now.duration_since(previous);

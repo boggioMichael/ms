@@ -81,18 +81,27 @@ impl PerceptionPipeline {
 
     /// Run detection for an explicitly numbered frame, so OCR provenance
     /// records the same frame id the rest of the pipeline reports.
+    ///
+    /// Each detector runs inside a `TRACE` span named after it
+    /// (`vision.motion`, …), so a [`crate::util::stages::StageRecorder`]
+    /// can time the stages of a frame one by one.
     pub fn detect_frame(&mut self, image: &RgbaImage, frame_id: u64) -> WorldState {
-        let hud = self.hud.detect(image, frame_id);
-        let motion = self.motion.detect(image);
-        let dialog = self.dialog.detect(image);
-        let minimap = self.minimap.detect(image);
-        let chat_log = self.chat_log.detect(image);
-        let icon_row = self.icon_row.detect(image);
-        let footholds = self.footholds.detect(image);
+        let hud = tracing::trace_span!("vision.hud").in_scope(|| self.hud.detect(image, frame_id));
+        let motion = tracing::trace_span!("vision.motion").in_scope(|| self.motion.detect(image));
+        let dialog = tracing::trace_span!("vision.dialog").in_scope(|| self.dialog.detect(image));
+        let minimap =
+            tracing::trace_span!("vision.minimap").in_scope(|| self.minimap.detect(image));
+        let chat_log =
+            tracing::trace_span!("vision.chat_log").in_scope(|| self.chat_log.detect(image));
+        let icon_row =
+            tracing::trace_span!("vision.icon_row").in_scope(|| self.icon_row.detect(image));
+        let footholds =
+            tracing::trace_span!("vision.footholds").in_scope(|| self.footholds.detect(image));
 
         let motion_count = motion.value.as_deref().map(|v| v.len()).unwrap_or(0);
         let diff_magnitude = self.motion.last_diff_magnitude();
-        let combat_intensity = self.combat.observe(motion_count, diff_magnitude);
+        let combat_intensity = tracing::trace_span!("vision.combat")
+            .in_scope(|| self.combat.observe(motion_count, diff_magnitude));
 
         WorldState {
             hud,

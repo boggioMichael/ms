@@ -3,9 +3,11 @@
 //! - `timing`: `ScopedTimer`, `FrameTimer`, `FPSCounter`, `MovingAverage`.
 //! - `pixel`: RGB/RGBA/HSV/brightness pixel helpers operating on borrowed frames.
 //! - `image_ops`: rectangle drawing and crop/annotation saving helpers.
+//! - `stages`: per-stage timing of the vision path from its tracing spans.
 
 pub mod image_ops;
 pub mod pixel;
+pub mod stages;
 pub mod timing;
 
 pub use image_ops::{draw_rect, save_annotated, save_crop};
