@@ -362,6 +362,8 @@ struct Tick {
     frame: Option<VisionFrameResult>,
     /// Alerts of things the player taught, that fired on this frame.
     fired: Vec<Fired>,
+    /// A line worth showing once: where the frames come from.
+    note: Option<String>,
 }
 
 /// The newest tick; an unread one is replaced (the main loop is never
@@ -436,6 +438,14 @@ impl Source {
         }))
     }
 
+    /// Where the game's frames come from (see [`GameCapture::path`]).
+    fn path(&self) -> Option<String> {
+        match self {
+            Source::Game(capture) => capture.path(),
+            _ => None,
+        }
+    }
+
     fn next(&mut self) -> Captured {
         match self {
             Source::Game(capture) => capture.capture(),
@@ -496,6 +506,7 @@ fn watch(
     let mut counter = FPSCounter::new(30);
     let mut frame_id: u64 = 0;
     let mut previous = Instant::now();
+    let mut capture_path: Option<String> = None;
     let period = Duration::from_secs_f64(1.0 / fps);
     while running.load(Ordering::Relaxed) {
         let began = Instant::now();
@@ -503,6 +514,19 @@ fn watch(
             Captured::Frame { title, image } => {
                 let capture = began.elapsed();
                 frame_id += 1;
+                // Said once, and again if the path changes (the GPU path
+                // giving up, say): where the frames are coming from.
+                let path = source.path();
+                let note = (path != capture_path).then(|| {
+                    capture_path = path;
+                    capture_path.as_ref().map(|path| {
+                        format!(
+                            "capture: {}x{} frames from {path}",
+                            image.width(),
+                            image.height()
+                        )
+                    })
+                });
                 let vision_start = Instant::now();
                 let frame_span = tracing::trace_span!("frame").entered();
                 let world = tracing::trace_span!("vision")
@@ -556,6 +580,7 @@ fn watch(
                     obs,
                     frame: Some(frame),
                     fired,
+                    note: note.flatten(),
                 });
                 if let Some(rest) = period.checked_sub(began.elapsed()) {
                     std::thread::sleep(rest);
@@ -568,6 +593,7 @@ fn watch(
                     obs: Observation::unseen(GameView::NotFound),
                     frame: None,
                     fired: Vec::new(),
+                    note: None,
                 });
                 std::thread::sleep(Duration::from_millis(500));
             }
@@ -578,6 +604,7 @@ fn watch(
                     obs: Observation::unseen(GameView::Unavailable(why)),
                     frame: None,
                     fired: Vec::new(),
+                    note: None,
                 });
                 std::thread::sleep(Duration::from_millis(500));
             }
@@ -1744,6 +1771,10 @@ fn run(options: Options) -> Result<(), String> {
             // The things the player taught: their alerts.
             for fired in tick.fired {
                 out.tell(Kind::Alert, &fired.say, true, &mut companion);
+            }
+            if let Some(note) = tick.note {
+                out.session.line("capture", &note);
+                out.push(Kind::Info, note);
             }
         } else if let Some(p) = preview.as_mut() {
             p.pump();

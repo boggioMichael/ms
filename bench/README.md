@@ -84,3 +84,40 @@ work is even (p95 25 ms, down from 44) at a higher mean; the matching
 itself is Phase 6's to speed up. The HUD is found from the pixels alone and
 the model is not asked about a stable HUD: 0 calls an hour for it; the
 near-miss confirmations remain (at most 180 an hour).
+
+## Phase 5: the frames from the compositor, on the GPU
+
+Capture is not in the offline runs above (they start from decoded frames),
+so it has its own measurement, live, on the PC with the game open:
+
+```powershell
+.\tools\bench.ps1 -Capture 100              # the game window, 100 frames at 10 fps
+.\tools\bench.ps1 -Capture 100 -Window Notepad
+```
+
+It captures on the GPU path and then, with the CPU path asked for, on the
+GDI path, so the two are measured on one machine in the same minute; the
+companion's own dashboard shows `capture` per frame as well, and its log
+says once where the frames come from (`capture: 1366x768 frames from the
+GPU (Windows.Graphics.Capture)`, or `from the CPU (…)` and why).
+
+What changed per frame on Windows: `PrintWindow` had the game draw itself
+into our bitmap on every capture — work on the game's own thread, plus a
+GDI copy of the whole client area and `GetDIBits` on ours. Now the
+compositor's frame (Windows.Graphics.Capture, a free-threaded frame pool of
+two BGRA buffers, cursor and capture border off) is copied GPU to GPU into
+a texture of our own and read back through a staging texture: the whole
+frame is one copy and one map, and a region (`Frame::read`) moves only its
+own pixels. The game is not asked to do anything. Where the GPU path is
+not available (older Windows, a window the system will not capture, three
+failures running) GDI takes over for good, with its device context and
+bitmap kept between frames instead of made and destroyed each time;
+`SYRUP_CAPTURE=cpu` in the environment asks for that path outright.
+
+This machine is Linux (the X11 path), so there are no Windows capture
+numbers in this directory yet; they come from `tools\bench.ps1 -Capture`
+on the owner's PC and belong in the row below when they do.
+
+| | capture, GPU path (mean / p50 / p95) | capture, GDI path (mean / p50 / p95) |
+|---|--:|--:|
+| owner's PC, 1366×768 | — | — |

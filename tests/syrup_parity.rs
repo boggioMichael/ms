@@ -109,10 +109,12 @@ fn crops(frame: &RgbaImage) -> Vec<(RgbaImage, NBox)> {
         .collect()
 }
 
+/// The frame at three quarters of its brightness.
 fn dimmer(frame: &RgbaImage) -> RgbaImage {
+    let dim = |v: u8| (u16::from(v) * 3 / 4) as u8;
     RgbaImage::from_fn(frame.width(), frame.height(), |x, y| {
         let p = frame.get_pixel(x, y).0;
-        Rgba([p[0] * 3 / 4, p[1] * 3 / 4, p[2] * 3 / 4, 255])
+        Rgba([dim(p[0]), dim(p[1]), dim(p[2]), 255])
     })
 }
 
@@ -365,12 +367,18 @@ fn the_fixture_reads_as_it_did_before_the_migration() {
             now.bars, golden.bars
         ));
     }
+    // Reviewed change: the golden file's "dimmer" readings are None because
+    // the helper that dimmed the frame multiplied bytes without widening
+    // them, so bright pixels wrapped round and the "dim" frame was noise
+    // (the test ran in release, where nothing said so). Dimmed properly, a
+    // learned bar reads the same fill at three quarters of the brightness.
     for ((hue, fill, dim), (ghue, gfill, gdim)) in now.bars.iter().zip(&golden.bars) {
         if (hue - ghue).abs() > 3.0 {
             m.0.push(format!("bar hue {hue} vs golden {ghue}"));
         }
         m.near(*fill, *gfill, 1.0, "bar fill");
-        m.near(*dim, *gdim, 1.0, "bar fill, dimmer");
+        assert_eq!(*gdim, None, "golden bar fill, dimmer");
+        m.near(*dim, *fill, 1.0, "bar fill, dimmer");
     }
     assert_eq!(now.hits.len(), golden.hits.len());
     for (i, (a, b)) in now.hits.iter().zip(&golden.hits).enumerate() {

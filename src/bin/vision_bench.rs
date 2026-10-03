@@ -26,6 +26,11 @@
 //! or the one MapleSyrup downloaded for its recordings), already scaled
 //! to each size. `--json FILE` writes everything measured, for before/after
 //! tables.
+//!
+//! `--capture N` times the capture itself instead, live: N frames of the
+//! game window (or `--window TITLE`) at the companion's frame rate, on
+//! each path the system has — the GPU (Windows.Graphics.Capture) and then
+//! the CPU (GDI) — so the two can be compared on one PC.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -37,6 +42,7 @@ use serde::Serialize;
 use tracing_subscriber::prelude::*;
 
 use ms::ai::images::NBox;
+use ms::capture::{Captured, GameCapture};
 use ms::companion::Observation;
 use ms::sight::Sight;
 use ms::sight::numbers::Field;
@@ -61,12 +67,17 @@ struct Options {
     teach: bool,
     /// Every detector, as with the preview window open, rather than the HUD alone.
     all: bool,
+    /// Time the capture itself, live, over this many frames.
+    capture: Option<usize>,
+    /// The window to capture, instead of the game.
+    window: Option<String>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: vision_bench [--image PNG]... [--video MP4]... [--frames N] [--sizes WxH,...]
-                    [--fps F] [--ffmpeg PATH] [--json FILE] [--no-teach]
+                    [--fps F] [--ffmpeg PATH] [--json FILE] [--no-teach] [--all]
+       vision_bench --capture N [--window TITLE] [--fps F] [--json FILE]
 
   --image PNG     a still frame (default: resources/maplestory.png, when it exists)
   --video MP4     a recording; N frames spread over it are used (default:
@@ -79,7 +90,11 @@ fn usage() -> ! {
   --json FILE     write the results as JSON too
   --no-teach      do not teach objects or learn the HUD bars
   --all           run every detector, as the companion does with --preview
-                  (by default only the HUD, as it runs without)"
+                  (by default only the HUD, as it runs without)
+  --capture N     time the capture itself instead, live: N frames of the game
+                  window at the frame rate, on each path the system has (the
+                  GPU, then the CPU)
+  --window TITLE  the window to capture, instead of the game"
     );
     std::process::exit(2);
 }
@@ -95,6 +110,8 @@ fn parse(args: &[String]) -> Options {
         json: None,
         teach: true,
         all: false,
+        capture: None,
+        window: None,
     };
     let mut explicit_inputs = false;
     let mut i = 0;
@@ -130,6 +147,8 @@ fn parse(args: &[String]) -> Options {
             "--json" => o.json = Some(PathBuf::from(value(&mut i))),
             "--no-teach" => o.teach = false,
             "--all" => o.all = true,
+            "--capture" => o.capture = Some(value(&mut i).parse().unwrap_or_else(|_| usage())),
+            "--window" => o.window = Some(value(&mut i)),
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("unknown argument {other}");
@@ -137,6 +156,9 @@ fn parse(args: &[String]) -> Options {
             }
         }
         i += 1;
+    }
+    if o.capture.is_some() {
+        return o;
     }
     if !explicit_inputs {
         for p in ["resources/maplestory.png"] {
@@ -452,6 +474,130 @@ fn run(
     }
 }
 
+/// One live run of the capture: `frames` captures at the frame rate.
+#[derive(Serialize)]
+struct CaptureRun {
+    /// Where the frames came from, as the capture reports it.
+    path: String,
+    /// Whether the CPU path was asked for.
+    cpu_only: bool,
+    window: String,
+    width: u32,
+    height: u32,
+    fps: f64,
+    /// Frames captured, after the first (which waits for the compositor).
+    frames: usize,
+    /// Captures that gave no frame, and the last reason.
+    failures: usize,
+    last_failure: Option<String>,
+    capture: Option<StageStats>,
+}
+
+/// The capture itself, timed live: `frames` captures of the game window
+/// (or `title`) at `fps`, on the GPU path and then the CPU path, so the
+/// two can be compared on the same PC in the same minute.
+fn capture_runs(title: Option<&str>, frames: usize, fps: f64) -> Vec<CaptureRun> {
+    let period = Duration::from_secs_f64(1.0 / fps.max(0.1));
+    let mut runs = Vec::new();
+    for cpu_only in [false, true] {
+        let mut capture = match title {
+            Some(title) => GameCapture::titled(title),
+            None => GameCapture::auto(),
+        };
+        if cpu_only {
+            capture = capture.without_gpu();
+        }
+        let mut run = CaptureRun {
+            path: String::new(),
+            cpu_only,
+            window: String::new(),
+            width: 0,
+            height: 0,
+            fps,
+            frames: 0,
+            failures: 0,
+            last_failure: None,
+            capture: None,
+        };
+        let mut samples = Vec::with_capacity(frames);
+        // One more than asked: the first capture of a window is the slow
+        // one (the compositor's first frame, the GDI surface) and is not
+        // counted, as the companion pays it once.
+        for i in 0..=frames {
+            let began = Instant::now();
+            match capture.capture() {
+                Captured::Frame { title, image } => {
+                    let took = began.elapsed();
+                    if i > 0 {
+                        samples.push(took.as_secs_f64() * 1000.0);
+                    }
+                    run.window = title;
+                    (run.width, run.height) = image.dimensions();
+                }
+                Captured::NotFound => {
+                    eprintln!(
+                        "no window to capture{}",
+                        title
+                            .map(|t| format!(" called \"{t}\""))
+                            .unwrap_or_default()
+                    );
+                    return runs;
+                }
+                Captured::Unavailable(why) => {
+                    run.failures += 1;
+                    run.last_failure = Some(why);
+                }
+            }
+            if let Some(rest) = period.checked_sub(began.elapsed()) {
+                std::thread::sleep(rest);
+            }
+        }
+        run.path = capture.path().unwrap_or_else(|| "?".into());
+        run.frames = samples.len();
+        run.capture = (!samples.is_empty()).then(|| StageStats::from_samples("capture", &samples));
+        runs.push(run);
+        // On a system with no GPU path both runs would be the same; say so
+        // once rather than measure it twice.
+        if !cpu_only && runs[0].path.starts_with("the CPU") {
+            break;
+        }
+    }
+    runs
+}
+
+fn print_capture_run(run: &CaptureRun) {
+    println!();
+    println!(
+        "capture of \"{}\" ({}x{}) {}: {} frames at {:.0} fps, {} failures{}",
+        run.window,
+        run.width,
+        run.height,
+        if run.cpu_only {
+            "with the CPU path asked for"
+        } else {
+            "as the companion captures"
+        },
+        run.frames,
+        run.fps,
+        run.failures,
+        run.last_failure
+            .as_deref()
+            .map(|why| format!(" (last: {why})"))
+            .unwrap_or_default()
+    );
+    println!("  frames from {}", run.path);
+    if let Some(s) = &run.capture {
+        println!(
+            "  {:<26} {:>6} {:>9} {:>9} {:>9} {:>9}",
+            "stage", "runs", "mean", "p50", "p95", "max"
+        );
+        println!(
+            "  {:<26} {:>6} {:>7.2}ms {:>7.2}ms {:>7.2}ms {:>7.2}ms",
+            s.name, s.count, s.mean, s.p50, s.p95, s.max
+        );
+    }
+}
+
 fn print_run(run: &Run) {
     println!();
     println!(
@@ -515,6 +661,23 @@ fn main() {
             .map(|n| n.get())
             .unwrap_or(1)
     );
+
+    if let Some(frames) = options.capture {
+        let runs = capture_runs(options.window.as_deref(), frames, options.fps);
+        for run in &runs {
+            print_capture_run(run);
+        }
+        if let Some(json) = &options.json {
+            match serde_json::to_string_pretty(&runs) {
+                Ok(text) => match std::fs::write(json, text) {
+                    Ok(()) => println!("\nwritten: {}", json.display()),
+                    Err(e) => eprintln!("{}: {e}", json.display()),
+                },
+                Err(e) => eprintln!("json: {e}"),
+            }
+        }
+        return;
+    }
 
     let wanted = if options.all {
         Detectors::ALL

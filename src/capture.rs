@@ -87,6 +87,9 @@ pub struct GameCapture {
     /// A title to match instead of looking for MapleStory.
     query: Option<String>,
     window: Option<Window>,
+    /// Frames through the CPU path only (on Windows, GDI rather than
+    /// Windows.Graphics.Capture).
+    cpu_only: bool,
 }
 
 impl GameCapture {
@@ -95,6 +98,7 @@ impl GameCapture {
         Self {
             query: None,
             window: None,
+            cpu_only: false,
         }
     }
 
@@ -103,7 +107,29 @@ impl GameCapture {
         Self {
             query: Some(query.to_string()),
             window: None,
+            cpu_only: false,
         }
+    }
+
+    /// Frames through the CPU path only: for comparing the two, or a
+    /// driver the GPU path does not get on with.
+    pub fn without_gpu(mut self) -> Self {
+        self.cpu_only = true;
+        if let Some(window) = &mut self.window {
+            window.without_gpu();
+        }
+        self
+    }
+
+    /// Where the frames come from, once a window is held and a frame has
+    /// been asked of it: the GPU (the compositor's own frames, read back a
+    /// region at a time) or the CPU, and why not the GPU.
+    pub fn path(&self) -> Option<String> {
+        let window = self.window.as_ref()?;
+        Some(match window.gpu_unavailable() {
+            None => "the GPU (Windows.Graphics.Capture)".to_string(),
+            Some(why) => format!("the CPU ({why})"),
+        })
     }
 
     pub fn capture(&mut self) -> Captured {
@@ -124,7 +150,12 @@ impl GameCapture {
             };
             match Window::find(&target) {
                 // syrup matches by "contains"; make sure it is the one chosen.
-                Ok(window) if window.title() == target => self.window = Some(window),
+                Ok(mut window) if window.title() == target => {
+                    if self.cpu_only {
+                        window.without_gpu();
+                    }
+                    self.window = Some(window);
+                }
                 Ok(window) => {
                     return Captured::Unavailable(format!(
                         "another window, \"{}\", has the game's title in its own; close it or start MapleSyrup with --window",
