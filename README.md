@@ -29,51 +29,51 @@ Everything it does, recording and streaming, and privacy: [package/README.txt](p
 
 ## What the MVP includes
 
-- Windows game-window discovery and pixel capture with a static-image fallback.
-- A modular perception pipeline for HUD geometry, motion and stable entity tracking, dialogs, panels, environment edges, and combat inference.
-- Explicit confidence, reliability, and failure-reason semantics instead of silent empty results.
-- Temporal state for smoothing, stable IDs, prediction, and brief occlusion handling.
-- Structured `WorldState` and serializable `GameState` output.
+- Windows game-window discovery and capture through the compositor (Windows.Graphics.Capture, the frame kept on the GPU; GDI as the fallback), with a static-image fallback.
+- Every pixel operation on [Syrup](https://github.com/boggioMichael/syrup), the generic vision engine: *Syrup sees, MapleSyrup understands.* MapleSyrup keeps only what the pixels mean in MapleStory and the orchestration.
+- Deterministic first: the HUD is found from the pixels alone, its bars measured and its numbers read in the game's own font on every frame, taught things followed by template matching and tracking; a vision model is asked only when the pixels fail, and never on the per-frame path. No OCR on the per-frame path either.
+- Explicit confidence, reliability, and failure-reason semantics instead of silent empty results; a number is `read` only when it was read this frame, else the bar's fill is an estimate and is called one.
+- Structured `WorldState` and serializable `GameState` output; the preview's detectors (motion, dialogs, panels, platform edges) run only while something shows them.
 - A transparent overlay architecture with managers and reusable widgets.
-- A real-image HP-bar integration test and Criterion performance benchmarks.
+- A golden parity test of the fixture's readings, a real-image HP-bar integration test, and `vision_bench`, the per-frame path timed stage by stage (`bench/README.md`, with the numbers of every phase).
 - Evidence, architecture, and development documentation under `docs/`.
 
 ## Architecture
 
 ```text
 MapleStory window / image fixture
-              |
+              |  syrup::capture (the compositor's frame, on the GPU)
               v
-       Frame capture layer
-              |
-              v
-       PerceptionPipeline
-  +-----------+------------+
-  | HUD | motion | dialogs |
-  | panels | environment   |
-  | combat | temporal state|
-  +-----------+------------+
-              |
-              v
-          WorldState
-              |
-              v
-       GameState + JSON
-              |
-              v
-       Overlay / AI consumer
+       capture thread ─ a mailbox of one frame ─▶ vision thread
+                                                      |
+                                              ms::perceive::perceive
+                                 +--------------------+--------------------+
+                                 | the detectors still needed              |
+                                 |   (PerceptionPipeline, on syrup)        |
+                                 | the sight: HUD found from the pixels,   |
+                                 |   bars measured, numbers read in the    |
+                                 |   game's font, taught things followed   |
+                                 +--------------------+--------------------+
+                                                      |
+                                                      v
+                                   Observation ─▶ the companion (what to say)
+                                   WorldState  ─▶ the preview, GameState + JSON
 ```
 
 The main modules are:
 
-- `src/capture.rs` and `src/frame.rs`: capture boundaries and RGBA frame representation.
-- `src/vision/`: detectors, geometry, OCR and OCR provenance, capture-quality assessment, temporal reasoning, shared types, and snapshots.
+- `src/capture.rs`: which window is the game, and a capture session on it (`syrup::capture`).
+- `src/perceive.rs`: one frame through the companion's eyes — the same function for the companion and for `vision_bench`.
+- `src/sight/`: what MapleSyrup learned about the player's own screen — where the HUD is (`find_hud`, from the pixels), the bars (`syrup::bars`), the numbers in the game's font (`syrup::glyphs`), the things the player taught it (`syrup::template`, `syrup::tracking`), and the teacher, a vision model asked only when those fail.
+- `src/vision/`: the detectors the preview shows (motion, dialogs, panels, platform edges) and the HUD geometry detector that runs until the sight sees the HUD; thin re-exports of Syrup's geometry, OCR and quality modules.
+- `src/companion/`: what MapleSyrup says and when.
 - `src/observe/`: the live terminal dashboard, the graphical preview, and the per-frame result both render from.
+- `src/util/`: per-stage timing from the tracing spans, and the vision engine's worker pool (one fewer than the cores, at most eight, below-normal priority).
 - `src/game_state.rs`: stable application-facing and serialized state.
 - `src/overlay/`: transparent window, manager, coordinates, configuration, and widgets.
 - `src/knowledge/`: game-domain classification and lookup helpers.
 
-For deeper design context, see `docs/vision-architecture.md`, `docs/perception-architecture-redesign.md`, and `docs/development.md`.
+Syrup is a Cargo git dependency pinned to a commit (a tag at a release). For deeper design context, see `docs/vision-architecture.md`, `docs/perception-architecture-redesign.md`, and `docs/development.md`.
 
 ## Requirements
 

@@ -10,22 +10,44 @@ See [vision-architecture.md](vision-architecture.md) for the existing detector-o
 
 ## Module Layout
 
-### Core Architecture (`src/vision/`)
+Every pixel operation is [Syrup](https://github.com/boggioMichael/syrup)'s
+(a Cargo git dependency, pinned): capture, geometry, colour, bars, glyph
+reading, template matching, tracking, motion, OCR, quality. This crate
+keeps what the pixels mean in MapleStory, and the orchestration.
 
-- **`types.rs`**: `Detection<T>`, `Confidence`, `Source`, `Reliability`, `Timestamp` — the confidence/transparency contract every detector honors
-- **`temporal.rs`**: Temporal reasoning: `Ema`, `ConfidenceAccumulator`, `ObjectTracker`, `History<T>`
-- **`geometry.rs`**: Shared rectangle/segmentation/color-matching helpers used by all detectors
-- **`hud_geometry.rs`**: Raw HP/MP/EXP/name/job/level bar detection via geometry + OCR (battle-tested implementation kept separate for maintainability)
-- **`detectors/`**: Individual detector modules:
-  - `hud.rs`: Confidence-wrapped HUD metrics
-  - `motion.rs`: Frame-diff moving entity tracker
-  - `dialog.rs`: Dialog/popup panel detection
-  - `panels.rs`: Minimap, chat log, icon row detection
-  - `environment.rs`: Platform/foothold edge detection
-  - `combat.rs`: Meta-detector for combat intensity
-- **`snapshot.rs`**: `PerceptionPipeline` orchestrator producing `WorldState` per frame
-- **`diff.rs`**: Frame differencing for motion detection
-- **`ocr.rs`**: Tesseract-backed OCR wrapper
+### The per-frame path
+
+- **`perceive.rs`**: one frame through the companion's eyes — the
+  detectors still needed, then the sight — the same function for the
+  `maplesyrup` binary and for `vision_bench`.
+- **`sight/`**: what MapleSyrup learned about the player's own screen.
+  `mod.rs` finds the HUD from the pixels (`find_hud`) and measures its bars
+  on every frame (`syrup::bars::BarModel`); `numbers.rs` reads HP, MP and
+  EXP in the game's own font (`syrup::glyphs`, learned from labelled
+  examples, cross-checked against the bars); `things.rs` follows what the
+  player taught it (`syrup::template` sets, `syrup::tracking`, a stripe of
+  the frame swept per frame for newcomers); `teacher.rs` is the vision
+  model, asked only when the pixels fail, with backoff.
+- **`vision/`**: `snapshot.rs`'s `PerceptionPipeline` runs only the
+  detectors asked for (`Detectors`) and says which were not run; the HUD
+  geometry detector (`hud_geometry.rs`, `detectors/hud.rs`) runs until the
+  sight sees the HUD; `detectors/{motion,dialog,panels,environment,
+  combat}.rs` feed the preview window; `types.rs`, `geometry.rs`, `ocr.rs`
+  and `quality.rs` re-export Syrup's.
+- **`capture.rs`**: which window is the game, and a capture session on it
+  (`syrup::capture::Window`; on Windows, Windows.Graphics.Capture with GDI
+  as the fallback; `GameCapture::path` says which).
+- **`util/`**: `stages.rs`, per-stage timing of the path from its tracing
+  spans; `pool.rs`, the vision engine's worker threads.
+
+### The companion
+
+- **`companion/`**: what MapleSyrup says and when — warnings, level-ups,
+  EXP/hour, voice commands, the `Observation` of a frame.
+- **`ai/`**: the model clients, the teaching loop, the tools.
+- **`phone/`**: the phone link.
+- **`app/`**, **`platform/`**, **`observe/`**, **`overlay/`**: the
+  screen, the console and voice, the dashboard and preview, the overlay.
 
 ### Knowledge Base (`src/knowledge/`)
 
@@ -34,20 +56,14 @@ Structured, non-verbatim MapleStory gameplay knowledge:
 - `mechanics.rs`: Rune, portal, farming heuristics
 - `monsters.rs`: Behavior profiles for common creatures
 
-### Utilities (`src/util/`)
-
-- **`timing.rs`**: `ScopedTimer`, `FrameTimer`, `FPSCounter`, `MovingAverage`
-- **`pixel.rs`**: RGB/HSV/brightness accessors, HSV color space conversion
-- **`image_ops.rs`**: Rectangle drawing, crop/annotation saving
-
 ### Entry Points
 
-- **`capture.rs`**: Windows game window capture via DirectX/WGC
 - **`config.rs`**: `AppConfig` global settings
 - **`logging.rs`**: Tracing initialization
-- **`frame.rs`**: Frame metadata wrapper
 - **`hud.rs`**: Convenience re-export of HUD detection API (backward compatibility)
-- **`main.rs`**: Application entrypoint
+- **`bin/maplesyrup/`**: the companion; **`bin/vision_bench.rs`**: the
+  per-frame path timed (`bench/README.md`); **`bin/vision_debug.rs`**: the
+  live vision debugger.
 
 ## Quick Start
 
