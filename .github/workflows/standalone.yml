@@ -10,7 +10,7 @@ name: MapleSyrup standalone
 #   build-cache/vendor      the crates this tree depends on, for offline builds
 #                           (only for a commit whose message says [vendor])
 #
-# A version tag (v0.7.0) also makes a draft GitHub release with the installer
+# A version tag (v0.8.0) also makes a draft GitHub release with the installer
 # and the portable zip, to publish by hand.
 # A commit message with [vendor-only] runs the vendor job alone.
 on:

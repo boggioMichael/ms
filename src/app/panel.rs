@@ -322,7 +322,7 @@ mod tests {
         let o = obs();
         let mut dog = crate::app::dog::Dog::load().unwrap();
         let (_, h) = size(1.0);
-        let frame = dog.frame(0, h).clone();
+        let frame = dog.frame(h, crate::app::dog::Mood::default());
         let panel = paint(
             &Content {
                 obs: Some(&o),
@@ -340,8 +340,8 @@ mod tests {
         assert!(panel.image.width() > pw + frame.width());
         // Every text moved right of the dog.
         assert!(panel.texts.iter().all(|t| t.rect.0 >= frame.width() as i32));
-        // The dog's fur is there, opaque, left of the panel.
-        assert!(panel.image.get_pixel(frame.width() / 2, ph * 6 / 10).0[3] > 200);
+        // The dog is there, opaque, left of the panel.
+        assert!(panel.image.get_pixel(frame.width() / 2, ph * 4 / 10).0[3] > 200);
     }
 
     #[test]

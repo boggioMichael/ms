@@ -9,8 +9,9 @@ Start
      it and press Enter (it is kept on this PC only, in %APPDATA%\MapleSyrup), or
      press Enter to go without (simple answers, Windows voice). A key can also
      be put in a file called openai-key.txt next to MapleSyrup.exe.
-  2. Start MapleStory (windowed or borderless windowed). Yohai's dog and a
-     small HP/MP/EXP panel appear at the top right of the game.
+  2. Start MapleStory (windowed or borderless windowed). MapleSyrup's dog (the
+     chow chow from the logo) and a small HP/MP/EXP panel appear at the top
+     right of the game.
   3. On your phone (same Wi-Fi as the PC), scan the QR code in MapleSyrup's window.
      The phone warns that the page is "not private": the certificate was made
      on your PC, not by a public authority.
@@ -37,6 +38,15 @@ How it talks
   its words). Put the key in a file named xai-key.txt next to MapleSyrup.exe;
   it moves itself into %APPDATA%\MapleSyrup. OpenAI still makes the voice,
   the look-ups and the live call, and answers whenever Grok can't.
+
+  Its voice: with an ElevenLabs key, pick the voice it speaks in on the phone
+  (Settings -> Voice: the voices on your ElevenLabs account, or OpenAI's).
+  Put the key in a file named elevenlabs-key.txt next to MapleSyrup.exe; it
+  moves itself into %APPDATA%\MapleSyrup. The voice you pick says everything
+  except a live call (that one speaks in OpenAI's own voice), so picking one
+  turns the live call off; turn it back on under "Live call on the phone".
+  Hebrew is spoken by ElevenLabs' Eleven v4; when your account can't use it,
+  or ElevenLabs is down or out of credit, OpenAI's voice says the line.
 
   With an OpenAI key, talking to it is a live call, like ChatGPT's voice mode:
   its voice comes from the phone (or earbuds on the phone), and the phone
@@ -66,6 +76,16 @@ How it talks
   Windows voice. It also speaks up by itself when HP or MP runs low or you level up.
   On the phone you can choose where replies are spoken (PC, phone, both, off)
   and switch to "only after 'syrup'" for streaming.
+
+The dog
+  At the top of the phone page MapleSyrup's dog lives in a box of its own. It
+  hops about, runs, jumps, spins, rolls over, sniffs around, scratches, plays
+  with its ball and naps in its bed, as it feels like it. It looks at you
+  while you talk, tilts its head while it thinks, and talks: its mouth opens
+  as far as the voice is loud. It barks at danger, jumps for joy when you
+  level up, and plays dead when your character dies. Tap the box and it comes
+  running; tap the dog to pet it. On the PC it sits beside the panel over
+  the game and talks there too.
 
 It sees your screen, and learns it
   With each thing you say, the model gets a picture of the game, so you can
@@ -162,7 +182,8 @@ Privacy
   To learn, every few minutes it sends the text of the conversation (not the
   pictures) to OpenAI to update its notebook; what it learns is kept on your
   PC only. With an xAI key, what you say and a small picture of the game go to
-  xAI (Grok) for the regular replies. Your keys stay on this PC
+  xAI (Grok) for the regular replies. With an ElevenLabs key, what it says
+  goes to ElevenLabs to be spoken. Your keys stay on this PC
   (%APPDATA%\MapleSyrup).
   OpenAI bills your account: a live call costs more than the PC voice (very
   roughly a dollar or two per hour of play, depending on how much you talk). Without a key, nothing leaves your PC

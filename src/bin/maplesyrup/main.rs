@@ -4,8 +4,9 @@
 //! and you talk with it through your phone like you would with a friend:
 //! with an OpenAI key it answers like ChatGPT, knowing what is on your
 //! screen, in a natural voice (the game turned down while it talks). It
-//! speaks up on its own when HP or MP runs low or you level up. Yohai's
-//! dog shows it all, on a panel over the game and on the phone.
+//! speaks up on its own when HP or MP runs low or you level up. Its dog
+//! (the chow chow from the logo) shows it all, on a panel over the game,
+//! and lives in a box of its own on the phone.
 //!
 //! ```text
 //!  MapleStory window ─ syrup capture ─▶ vision engine ─▶ Observation ─┐
@@ -1252,9 +1253,60 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(attitude) = options.attitude {
         learning.memory().attitude = attitude;
     }
-    // (The ElevenLabs key is put away in the settings folder now; the voices
-    // that use it come later.)
-    let _elevenlabs_key = ai::load_elevenlabs_key(&settings_dir);
+    // ElevenLabs voices, with a key: the account's voices are listed on the
+    // phone (fetched on the side), and the one picked speaks.
+    let elevenlabs_key = ai::load_elevenlabs_key(&settings_dir);
+    let eleven_base =
+        std::env::var("ELEVENLABS_BASE_URL").unwrap_or_else(|_| ai::eleven::BASE.to_string());
+    let voices: Arc<Mutex<Vec<ai::eleven::Voice>>> = Arc::new(Mutex::new(Vec::new()));
+    // What it found (for the log and the phone).
+    let (voices_tx, voices_rx) = mpsc::channel::<String>();
+    if let Some(key) = &elevenlabs_key {
+        let (key, base, voices, learning) = (
+            key.clone(),
+            eleven_base.clone(),
+            Arc::clone(&voices),
+            learning.clone(),
+        );
+        let _ = std::thread::Builder::new()
+            .name("voices".into())
+            .spawn(move || {
+                let eleven = ai::eleven::Eleven::new(&key, &base);
+                // The network may not be up yet: a few tries.
+                let mut tries = 0;
+                let list = loop {
+                    tries += 1;
+                    match eleven.voices() {
+                        Ok(list) => break list,
+                        Err(ai::AiError::Network(_)) if tries < 4 => {
+                            std::thread::sleep(Duration::from_secs(5))
+                        }
+                        Err(error) => {
+                            let _ = voices_tx.send(format!(
+                                "ElevenLabs: couldn't list the voices ({})",
+                                error.detail()
+                            ));
+                            return;
+                        }
+                    }
+                };
+                // None picked yet: a lively one to start with.
+                {
+                    let mut memory = learning.memory();
+                    if memory.voice.is_none()
+                        && let Some(voice) = ai::eleven::default_voice(&list)
+                    {
+                        memory.voice = Some(voice.id.clone());
+                        memory.save();
+                    }
+                }
+                let _ = voices_tx.send(format!(
+                    "ElevenLabs: {} voices to pick from on the phone",
+                    list.len()
+                ));
+                *voices.lock().unwrap_or_else(|e| e.into_inner()) = list;
+            });
+    }
 
     // The brain: OpenAI when there is a key that works. With it come the
     // eyes: a vision model that teaches MapleSyrup the player's screen; and,
@@ -1388,7 +1440,20 @@ fn run(options: Options) -> Result<(), String> {
                                 }
                             }
                         });
-                    Some(ai::spawn_hybrid(client, grok, brain, Some(toolbox)))
+                    if elevenlabs_key.is_some() {
+                        ai_note.push_str("; ElevenLabs voices");
+                    }
+                    Some(ai::spawn_brains(
+                        ai::Brains {
+                            openai: client,
+                            fast: grok,
+                            eleven: elevenlabs_key
+                                .as_deref()
+                                .map(|key| ai::eleven::Eleven::new(key, &eleven_base)),
+                        },
+                        brain,
+                        Some(toolbox),
+                    ))
                 }
             }
         }
@@ -1806,6 +1871,34 @@ fn run(options: Options) -> Result<(), String> {
                     Inbound::Talking(on) => out.phone_talking(on),
                     // (The learner reads it from the log.)
                     Inbound::Turn(what) => out.session.line("turn", &what),
+                    Inbound::Speaker(id) => {
+                        let openai = id == "openai";
+                        let known = openai
+                            || voices
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .iter()
+                                .any(|v| v.id == id);
+                        if known {
+                            {
+                                let mut memory = learning.memory();
+                                memory.voice = Some(id.clone());
+                                memory.save();
+                            }
+                            out.session.line("info", &format!("voice: {id}"));
+                            // A word in the new voice.
+                            if let Some(worker) = &out.mouth.ai
+                                && !companion.muted()
+                            {
+                                worker.send(Job::Speak {
+                                    text: "This is my voice now.".into(),
+                                    language: out.language.clone(),
+                                    show: None,
+                                    speak: true,
+                                });
+                            }
+                        }
+                    }
                     Inbound::Attitude(attitude) => {
                         {
                             let mut memory = learning.memory();
@@ -2157,6 +2250,10 @@ fn run(options: Options) -> Result<(), String> {
         }
 
         // What the learner learned or adapted to.
+        while let Ok(line) = voices_rx.try_recv() {
+            out.session.line("info", &line);
+            out.push(Kind::Info, line);
+        }
         while let Ok(line) = learned_rx.try_recv() {
             memory_checked = Instant::now() - Duration::from_secs(60);
             if line.starts_with("learned from") || line.starts_with("adapted") {
@@ -2184,16 +2281,19 @@ fn run(options: Options) -> Result<(), String> {
         if last_panel.elapsed() >= Duration::from_millis(80) {
             last_panel = Instant::now();
             let speaking = out.mouth.speaking();
-            let frame = dog.as_mut().map(|d| d.advance(speaking));
             if let Some(window) = panel_window.as_mut() {
                 match game_area {
                     Some(area) if area.foreground && area.width > 200 && area.height > 150 => {
                         let scale = panel::scale_for(area.height);
                         let (_, ph) = panel::size(scale);
-                        let dog_frame = match (dog.as_mut(), frame) {
-                            (Some(d), Some(i)) => Some(d.frame(i, ph).clone()),
-                            _ => None,
+                        // The dog: its mouth with the PC's voice, its head
+                        // tilting while it thinks.
+                        let mood = ms::app::dog::Mood {
+                            speaking,
+                            level: out.mouth.player.loudness(),
+                            thinking: out.mouth.ai.as_ref().is_some_and(|w| w.busy()),
                         };
+                        let dog_frame = dog.as_mut().map(|d| d.frame(ph, mood));
                         let recent = out
                             .log
                             .iter()
@@ -2250,6 +2350,8 @@ fn run(options: Options) -> Result<(), String> {
                     "job": obs.and_then(|o| o.job.clone()),
                     "progress": progress,
                     "muted": companion.muted(),
+                    // The dog plays dead with the character.
+                    "dead": companion.dead(),
                     "fps": fps,
                     "wake": "syrup",
                     "always_listen": companion.settings.always_listen,
@@ -2264,6 +2366,9 @@ fn run(options: Options) -> Result<(), String> {
                     "recording": recording.status(),
                     // How it talks, and who answers.
                     "attitude": companion.settings.attitude,
+                    // The voices to pick from (ElevenLabs), and the one picked.
+                    "voices": *voices.lock().unwrap_or_else(|e| e.into_inner()),
+                    "voice": learning.memory().voice.clone().unwrap_or_else(|| "openai".into()),
                     // How long the phone waits after the words stop (it adapts).
                     "settle_ms": learning.memory().adapt.settle_ms,
                     // What it learned about the player (with an OpenAI key).

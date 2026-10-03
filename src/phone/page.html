@@ -29,12 +29,17 @@
   .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .sub { color: var(--dim); font-size: 13px; }
 
-  /* The dog and what it says */
-  .buddy { display: flex; align-items: flex-end; gap: 10px; margin-bottom: 12px; }
-  #dog { width: 92px; height: 115px; flex: none; filter: drop-shadow(0 4px 10px rgba(0,0,0,.45)); }
-  .bubble { position: relative; flex: 1; min-height: 64px; background: var(--card2); border: 1px solid var(--line);
-    border-radius: 18px 18px 18px 6px; padding: 12px 14px; font-size: 17px; line-height: 1.35; margin-bottom: 18px; }
+  /* The dog in its box, and what it says */
+  .buddy { margin-bottom: 12px; }
+  #dogBox { display: block; width: 100%; height: 160px; border-radius: 18px; border: 1px solid var(--line);
+    background: #241b12; touch-action: manipulation; cursor: pointer; -webkit-user-select: none; user-select: none; }
+  .bubble { position: relative; min-height: 54px; background: var(--card2); border: 1px solid var(--line);
+    border-radius: 18px; padding: 12px 14px; font-size: 17px; line-height: 1.35; margin-top: 12px; }
+  .bubble::before { content: ""; position: absolute; top: -8px; left: var(--tail, 50%); width: 14px; height: 14px;
+    background: var(--card2); border-left: 1px solid var(--line); border-top: 1px solid var(--line);
+    transform: translateX(-50%) rotate(45deg); transition: left .3s ease; }
   .bubble.talking { border-color: var(--syrup-dark); box-shadow: 0 0 0 1px rgba(242,163,58,.25); }
+  .bubble.talking::before { border-color: var(--syrup-dark); }
   .bubble .who { font-size: 12px; color: var(--syrup); font-weight: 700; margin-bottom: 2px; }
   .typing span { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--dim); margin-right: 4px; animation: blink 1.2s infinite; }
   .typing span:nth-child(2) { animation-delay: .2s; } .typing span:nth-child(3) { animation-delay: .4s; }
@@ -131,7 +136,7 @@
 <div id="banner"></div>
 
 <div class="buddy">
-  <canvas id="dog" width="128" height="160" aria-label="MapleSyrup's dog"></canvas>
+  <canvas id="dogBox" aria-label="MapleSyrup's dog"></canvas>
   <div class="bubble" id="bubble">
     <div class="who">MapleSyrup</div>
     <div id="bubbleText"></div>
@@ -212,6 +217,10 @@
     <button data-a="friendly" data-t="a_friendly">Friendly</button><button data-a="blunt" data-t="a_blunt">Blunt</button><button data-a="savage" data-t="a_savage">Savage</button>
   </div>
   <div class="sub" style="margin:6px 0 0" data-t="attitude_hint">Savage swears and roasts you, personally.</div>
+  <label class="opt" id="voicePickRow" style="display:none"><span data-t="voice_pick">Voice</span>
+    <select id="voicePick"></select>
+  </label>
+  <label class="opt" id="liveCallRow" style="display:none"><span data-t="live_call">Live call on the phone (fastest, but OpenAI's own voice and brain)</span> <input type="checkbox" id="liveCall"></label>
   <div class="sub" id="liveHint" style="margin:8px 0 4px; display:none" data-t="live_hint">On the phone it's a live call: talk any time, in any language, and interrupt him. On the PC: his voice on the PC speakers.</div>
   <label class="opt"><span data-t="answer_all">Answer everything I say</span> <input type="checkbox" id="always" checked></label>
   <label class="opt"><span data-t="send_audio">Send the microphone's audio to the PC</span> <input type="checkbox" id="sendAudio" checked></label>
@@ -222,6 +231,7 @@
   <span data-t="footer2"></span>
 </footer>
 
+<script src="/dog.js"></script>
 <script>
 (() => {
   "use strict";
@@ -254,6 +264,7 @@
       level_n: "Level {n}.", told_me: "(you told me)",
       teach_hint: "Teach me by talking: “see that? that's an Orange Mushroom”, “that's the boss's HP, tell me when it's under 20%”, “I'm level 61”.",
       forget: "Forget", sure: "Sure?", says: "says",
+      woof: "Woof!", voice_pick: "Voice", voice_openai: "OpenAI (built in)", live_call: "Live call on the phone (fastest, but OpenAI's own voice and brain)",
       attitude: "How it talks to you", a_friendly: "Friendly", a_blunt: "Blunt", a_savage: "Savage", attitude_hint: "Savage swears and roasts you, personally.",
       h_memory: "What I know about you", mem_told: "you told me", mem_style: "How you like me to talk", mem_lately: "Lately", mem_lessons: "What you corrected me on",
       mem_empty: "Nothing yet. I learn as we play: what you're working on, how you like me to talk, and what you correct me on. It all stays on your PC.", mem_sessions: "learned from {n} sessions", mem_looked: "{n} answers I looked up, kept", mem_wait: "I answer {n} s after you stop talking",
@@ -289,6 +300,7 @@
       level_n: "רמה {n}.", told_me: "(אמרת לי)",
       teach_hint: "למד אותי בדיבור: „רואה את זה? זה Orange Mushroom”, „זה ה-HP של הבוס, תגיד לי כשהוא מתחת ל-20%”, „אני ברמה 61”.",
       forget: "שכח", sure: "בטוח?", says: "אומר",
+      woof: "הב!", voice_pick: "קול", voice_openai: "OpenAI (מובנה)", live_call: "שיחה חיה בטלפון (הכי מהיר, אבל בקול ובמוח של OpenAI)",
       attitude: "איך הוא מדבר אליך", a_friendly: "נחמד", a_blunt: "ישיר", a_savage: "פרוע", attitude_hint: "פרוע מקלל ויורד עליך אישית.",
       h_memory: "מה שאני יודע עליך", mem_told: "אמרת לי", mem_style: "איך אתה אוהב שאני מדבר", mem_lately: "לאחרונה", mem_lessons: "במה תיקנת אותי",
       mem_empty: "עדיין כלום. אני לומד תוך כדי משחק: על מה אתה עובד, איך אתה אוהב שאדבר, ובמה אתה מתקן אותי. הכל נשאר במחשב שלך.", mem_sessions: "למדתי מ-{n} סשנים", mem_looked: "{n} תשובות שחיפשתי שמורות", mem_wait: "אני עונה {n} שניות אחרי שאתה מסיים לדבר",
@@ -324,6 +336,7 @@
       level_n: "Nivel {n}.", told_me: "(me lo dijiste)",
       teach_hint: "Enséñame hablando: «¿ves eso? es un Orange Mushroom», «esa es la vida del jefe, avísame cuando baje del 20 %», «soy nivel 61».",
       forget: "Olvidar", sure: "¿Seguro?", says: "dice",
+      woof: "¡Guau!", voice_pick: "Voz", voice_openai: "OpenAI (integrada)", live_call: "Llamada en vivo en el teléfono (lo más rápido, pero con la voz y el cerebro de OpenAI)",
       attitude: "Cómo te habla", a_friendly: "Amable", a_blunt: "Directo", a_savage: "Salvaje", attitude_hint: "Salvaje dice palabrotas y se burla de ti sin piedad.",
       h_memory: "Lo que sé de ti", mem_told: "me lo dijiste", mem_style: "Cómo te gusta que hable", mem_lately: "Últimamente", mem_lessons: "En qué me corregiste",
       mem_empty: "Nada todavía. Aprendo mientras jugamos: en qué estás, cómo te gusta que hable y en qué me corriges. Todo se queda en tu PC.", mem_sessions: "aprendí de {n} sesiones", mem_looked: "{n} respuestas que busqué, guardadas", mem_wait: "Respondo {n} s después de que dejas de hablar",
@@ -359,6 +372,7 @@
       level_n: "Nível {n}.", told_me: "(você me disse)",
       teach_hint: "Me ensine falando: “tá vendo? é um Orange Mushroom”, “esse é o HP do chefe, me avisa quando ficar abaixo de 20%”, “sou nível 61”.",
       forget: "Esquecer", sure: "Certeza?", says: "diz",
+      woof: "Au au!", voice_pick: "Voz", voice_openai: "OpenAI (embutida)", live_call: "Chamada ao vivo no celular (mais rápida, mas com a voz e o cérebro da OpenAI)",
       attitude: "Como ele fala com você", a_friendly: "Gentil", a_blunt: "Direto", a_savage: "Selvagem", attitude_hint: "Selvagem xinga e zoa você sem dó.",
       h_memory: "O que eu sei sobre você", mem_told: "você me contou", mem_style: "Como você gosta que eu fale", mem_lately: "Ultimamente", mem_lessons: "Onde você me corrigiu",
       mem_empty: "Nada ainda. Eu aprendo enquanto a gente joga: no que você está, como gosta que eu fale e onde você me corrige. Tudo fica no seu PC.", mem_sessions: "aprendi com {n} sessões", mem_looked: "{n} respostas que pesquisei, guardadas", mem_wait: "Respondo {n} s depois que você para de falar",
@@ -394,6 +408,7 @@
       level_n: "Niveau {n}.", told_me: "(tu me l'as dit)",
       teach_hint: "Apprends-moi en parlant : « tu vois ça ? c'est un Orange Mushroom », « c'est la vie du boss, préviens-moi sous 20 % », « je suis niveau 61 ».",
       forget: "Oublier", sure: "Sûr ?", says: "dit",
+      woof: "Ouaf !", voice_pick: "Voix", voice_openai: "OpenAI (intégrée)", live_call: "Appel en direct sur le téléphone (le plus rapide, mais avec la voix et le cerveau d'OpenAI)",
       attitude: "Comment il te parle", a_friendly: "Sympa", a_blunt: "Direct", a_savage: "Sauvage", attitude_hint: "Sauvage jure et te clashe sans pitié.",
       h_memory: "Ce que je sais de toi", mem_told: "tu me l'as dit", mem_style: "Comment tu aimes que je parle", mem_lately: "Dernièrement", mem_lessons: "Ce sur quoi tu m'as corrigé",
       mem_empty: "Rien pour l'instant. J'apprends en jouant : ce que tu fais, comment tu aimes que je parle et ce sur quoi tu me corriges. Tout reste sur ton PC.", mem_sessions: "appris de {n} sessions", mem_looked: "{n} réponses cherchées, gardées", mem_wait: "Je réponds {n} s après que tu as fini de parler",
@@ -429,6 +444,7 @@
       level_n: "Level {n}.", told_me: "(hast du mir gesagt)",
       teach_hint: "Bring es mir im Gespräch bei: „Siehst du das? Das ist ein Orange Mushroom“, „das sind die HP vom Boss, sag mir unter 20 % Bescheid“, „ich bin Level 61“.",
       forget: "Vergessen", sure: "Sicher?", says: "sagt",
+      woof: "Wuff!", voice_pick: "Stimme", voice_openai: "OpenAI (eingebaut)", live_call: "Live-Anruf auf dem Handy (am schnellsten, aber mit OpenAIs Stimme und Gehirn)",
       attitude: "Wie er mit dir redet", a_friendly: "Freundlich", a_blunt: "Direkt", a_savage: "Gnadenlos", attitude_hint: "Gnadenlos flucht und disst dich persönlich.",
       h_memory: "Was ich über dich weiß", mem_told: "hast du mir gesagt", mem_style: "Wie ich mit dir reden soll", mem_lately: "Zuletzt", mem_lessons: "Wo du mich korrigiert hast",
       mem_empty: "Noch nichts. Ich lerne beim Spielen: woran du gerade bist, wie ich mit dir reden soll und wo du mich korrigierst. Alles bleibt auf deinem PC.", mem_sessions: "aus {n} Sitzungen gelernt", mem_looked: "{n} nachgeschlagene Antworten gespeichert", mem_wait: "Ich antworte {n} s, nachdem du aufhörst zu sprechen",
@@ -464,6 +480,7 @@
       level_n: "레벨 {n}.", told_me: "(네가 알려 줌)",
       teach_hint: "말로 가르쳐 줘: “저거 보여? 주황버섯이야”, “저게 보스 HP야, 20% 아래로 떨어지면 알려 줘”, “나 61레벨이야”.",
       forget: "잊기", sure: "확실해?", says: "말:",
+      woof: "멍!", voice_pick: "목소리", voice_openai: "OpenAI (기본)", live_call: "휴대폰 실시간 통화 (가장 빠르지만 OpenAI의 목소리와 두뇌)",
       attitude: "말투", a_friendly: "친절", a_blunt: "직설", a_savage: "독설", attitude_hint: "독설 모드는 욕도 하고 대놓고 놀려.",
       h_memory: "내가 너에 대해 아는 것", mem_told: "네가 말해 줬어", mem_style: "네가 좋아하는 말투", mem_lately: "최근", mem_lessons: "네가 고쳐 준 것",
       mem_empty: "아직 없어. 같이 플레이하면서 배워: 네가 하고 있는 것, 좋아하는 말투, 네가 고쳐 준 것. 전부 네 PC에만 저장돼.", mem_sessions: "{n}개 세션에서 배움", mem_looked: "찾아본 답 {n}개 저장", mem_wait: "말이 끝나고 {n}초 뒤에 대답해",
@@ -499,6 +516,7 @@
       level_n: "レベル{n}。", told_me: "（君が教えてくれた）",
       teach_hint: "話して教えてね:「あれ見える？オレンジマッシュルームだよ」「あれがボスのHP、20%を切ったら教えて」「僕はレベル61」。",
       forget: "忘れる", sure: "本当に？", says: "セリフ:",
+      woof: "ワン!", voice_pick: "声", voice_openai: "OpenAI（内蔵）", live_call: "スマホでライブ通話（最速、ただしOpenAIの声と頭脳）",
       attitude: "話し方", a_friendly: "やさしい", a_blunt: "ストレート", a_savage: "毒舌", attitude_hint: "毒舌モードは悪口も言うし、容赦なくいじるよ。",
       h_memory: "きみについて知っていること", mem_told: "きみが教えてくれた", mem_style: "好きな話し方", mem_lately: "最近", mem_lessons: "きみが直してくれたこと",
       mem_empty: "まだ何もないよ。一緒に遊びながら覚えるね：今やっていること、好きな話し方、直してくれたこと。全部きみのPCに保存されるよ。", mem_sessions: "{n}回のセッションから学習", mem_looked: "調べた答え{n}件を保存", mem_wait: "話し終わってから{n}秒で答えるよ",
@@ -534,6 +552,7 @@
       level_n: "{n} 级。", told_me: "（你告诉我的）",
       teach_hint: "用说话来教我：“看到那个了吗？那是绿水灵”，“那是Boss的血条，低于 20% 时告诉我”，“我 61 级”。",
       forget: "忘掉", sure: "确定？", says: "会说",
+      woof: "汪!", voice_pick: "声音", voice_openai: "OpenAI（内置）", live_call: "手机实时通话（最快，但用的是 OpenAI 的声音和大脑）",
       attitude: "说话方式", a_friendly: "友好", a_blunt: "直接", a_savage: "毒舌", attitude_hint: "毒舌模式会骂人，还会毫不留情地损你。",
       h_memory: "我对你的了解", mem_told: "你告诉我的", mem_style: "你喜欢我怎么说话", mem_lately: "最近", mem_lessons: "你纠正过我的",
       mem_empty: "还没有。我们一起玩的时候我会学：你在做什么、你喜欢我怎么说话、你纠正过我什么。全部只保存在你的电脑上。", mem_sessions: "从 {n} 次会话中学习", mem_looked: "已保存 {n} 个查到的答案", mem_wait: "你说完 {n} 秒后我就回答",
@@ -569,6 +588,7 @@
       level_n: "{n} 等。", told_me: "（你告訴我的）",
       teach_hint: "用說話來教我：「看到那個了嗎？那是橘子菇菇」、「那是王的血條，低於 20% 時告訴我」、「我 61 等」。",
       forget: "忘掉", sure: "確定？", says: "會說",
+      woof: "汪!", voice_pick: "聲音", voice_openai: "OpenAI（內建）", live_call: "手機即時通話（最快，但用的是 OpenAI 的聲音和大腦）",
       attitude: "說話方式", a_friendly: "友善", a_blunt: "直接", a_savage: "毒舌", attitude_hint: "毒舌模式會罵人，還會毫不留情地損你。",
       h_memory: "我對你的了解", mem_told: "你告訴我的", mem_style: "你喜歡我怎麼說話", mem_lately: "最近", mem_lessons: "你糾正過我的",
       mem_empty: "還沒有。我們一起玩的時候我會學：你在做什麼、你喜歡我怎麼說話、你糾正過我什麼。全部只存在你的電腦上。", mem_sessions: "從 {n} 次工作階段中學習", mem_looked: "已儲存 {n} 個查到的答案", mem_wait: "你說完 {n} 秒後我就回答",
@@ -604,6 +624,7 @@
       level_n: "เลเวล {n}", told_me: "(คุณบอกฉัน)",
       teach_hint: "สอนฉันด้วยการพูด: “เห็นนั่นไหม? นั่นคือ Orange Mushroom”, “นั่นคือ HP ของบอส บอกฉันเมื่อต่ำกว่า 20%”, “ฉันเลเวล 61”",
       forget: "ลืม", sure: "แน่ใจไหม?", says: "พูดว่า",
+      woof: "โฮ่ง!", voice_pick: "เสียง", voice_openai: "OpenAI (ในตัว)", live_call: "โทรสดบนมือถือ (เร็วที่สุด แต่ใช้เสียงและสมองของ OpenAI)",
       attitude: "สไตล์การพูด", a_friendly: "ใจดี", a_blunt: "ตรงๆ", a_savage: "โหด", attitude_hint: "โหดจะด่าและแซวคุณแบบไม่ยั้ง",
       h_memory: "สิ่งที่ฉันรู้เกี่ยวกับคุณ", mem_told: "คุณบอกฉัน", mem_style: "คุณชอบให้ฉันพูดแบบไหน", mem_lately: "ช่วงนี้", mem_lessons: "เรื่องที่คุณแก้ให้ฉัน",
       mem_empty: "ยังไม่มีเลย ฉันเรียนรู้ระหว่างที่เราเล่นด้วยกัน: คุณกำลังทำอะไร ชอบให้ฉันพูดแบบไหน และเรื่องที่คุณแก้ให้ฉัน ทั้งหมดเก็บไว้ในพีซีของคุณเท่านั้น", mem_sessions: "เรียนรู้จาก {n} เซสชัน", mem_looked: "เก็บคำตอบที่ค้นมาแล้ว {n} ข้อ", mem_wait: "ฉันตอบหลังจากคุณหยุดพูด {n} วินาที",
@@ -639,6 +660,7 @@
       level_n: "Cấp {n}.", told_me: "(bạn đã nói với mình)",
       teach_hint: "Dạy mình bằng lời nói: “thấy cái đó không? đó là Orange Mushroom”, “đó là máu của boss, báo mình khi dưới 20%”, “mình cấp 61”.",
       forget: "Quên", sure: "Chắc chưa?", says: "sẽ nói",
+      woof: "Gâu!", voice_pick: "Giọng", voice_openai: "OpenAI (có sẵn)", live_call: "Gọi trực tiếp trên điện thoại (nhanh nhất, nhưng dùng giọng và bộ não của OpenAI)",
       attitude: "Cách nói chuyện", a_friendly: "Thân thiện", a_blunt: "Thẳng thắn", a_savage: "Gắt", attitude_hint: "Gắt sẽ chửi thề và cà khịa bạn thẳng mặt.",
       h_memory: "Những gì mình biết về bạn", mem_told: "bạn đã kể", mem_style: "Bạn thích mình nói chuyện thế nào", mem_lately: "Gần đây", mem_lessons: "Những điều bạn đã sửa cho mình",
       mem_empty: "Chưa có gì. Mình học trong lúc chơi cùng bạn: bạn đang làm gì, bạn thích mình nói thế nào và những gì bạn sửa cho mình. Tất cả chỉ lưu trên PC của bạn.", mem_sessions: "học từ {n} phiên", mem_looked: "đã lưu {n} câu trả lời mình tra", mem_wait: "Mình trả lời {n} giây sau khi bạn ngừng nói",
@@ -674,6 +696,7 @@
       level_n: "Level {n}.", told_me: "(kamu yang bilang)",
       teach_hint: "Ajari aku lewat obrolan: “lihat itu? itu Orange Mushroom”, “itu HP bos, kasih tahu aku kalau di bawah 20%”, “aku level 61”.",
       forget: "Lupakan", sure: "Yakin?", says: "akan bilang",
+      woof: "Guk!", voice_pick: "Suara", voice_openai: "OpenAI (bawaan)", live_call: "Panggilan langsung di ponsel (paling cepat, tapi pakai suara dan otak OpenAI)",
       attitude: "Cara dia bicara", a_friendly: "Ramah", a_blunt: "Blak-blakan", a_savage: "Sadis", attitude_hint: "Sadis bakal ngumpat dan nge-roast kamu habis-habisan.",
       h_memory: "Yang kutahu tentangmu", mem_told: "kamu yang bilang", mem_style: "Cara bicara yang kamu suka", mem_lately: "Belakangan ini", mem_lessons: "Yang kamu koreksi",
       mem_empty: "Belum ada. Aku belajar sambil kita main: apa yang sedang kamu kejar, cara bicara yang kamu suka, dan apa yang kamu koreksi. Semuanya tetap di PC-mu.", mem_sessions: "belajar dari {n} sesi", mem_looked: "{n} jawaban yang kucari, disimpan", mem_wait: "Aku menjawab {n} dtk setelah kamu berhenti bicara",
@@ -709,6 +732,7 @@
       level_n: "Уровень {n}.", told_me: "(ты мне сказал)",
       teach_hint: "Научи меня голосом: «видишь? это Orange Mushroom», «это HP босса, скажи, когда станет меньше 20%», «у меня 61 уровень».",
       forget: "Забыть", sure: "Точно?", says: "скажет",
+      woof: "Гав!", voice_pick: "Голос", voice_openai: "OpenAI (встроенный)", live_call: "Живой звонок на телефоне (быстрее всего, но голос и мозг OpenAI)",
       attitude: "Как он с тобой говорит", a_friendly: "Дружелюбно", a_blunt: "Прямо", a_savage: "Жёстко", attitude_hint: "Жёстко — матерится и подкалывает тебя лично.",
       h_memory: "Что я о тебе знаю", mem_told: "ты мне сказал", mem_style: "Как тебе нравится, чтобы я говорил", mem_lately: "В последнее время", mem_lessons: "В чём ты меня поправил",
       mem_empty: "Пока ничего. Я учусь, пока мы играем: чем ты занят, как тебе нравится, чтобы я говорил, и в чём ты меня поправляешь. Всё остаётся на твоём ПК.", mem_sessions: "выучено за {n} сессий", mem_looked: "{n} найденных ответов сохранено", mem_wait: "Я отвечаю через {n} с после того, как ты замолчишь",
@@ -776,23 +800,56 @@
   if (!KEY) banner(t("need_link"));
 
   // ---- the dog ------------------------------------------------------------
-  const dog = { img: new Image(), meta: null, phase: 0, last: 0, talking: false };
-  fetch("/dog.json").then((r) => r.json()).then((m) => { dog.meta = m; dog.img.src = "/dog.png"; }).catch(() => {});
-  const canvas = $("dog"), ctx = canvas.getContext("2d");
-  function drawDog(t) {
-    const m = dog.meta;
-    if (m && dog.img.complete && dog.img.naturalWidth) {
-      const dt = dog.last ? Math.min(0.5, (t - dog.last) / 1000) : 0;
-      dog.last = t;
-      dog.phase = (dog.phase + dt * m.fps * (dog.talking ? 1.7 : 1)) % m.frames;
-      const i = Math.floor(dog.phase), cols = m.columns;
-      const sx = (i % cols) * m.frame_width, sy = Math.floor(i / cols) * m.frame_height;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(dog.img, sx, sy, m.frame_width, m.frame_height, 0, 0, canvas.width, canvas.height);
+  // It lives in its box (dog.js): it talks with the voice (its mouth goes
+  // with how loud it is), looks at the player while they talk, tilts its
+  // head while it thinks, reacts to the game, and does what it likes in
+  // between. A tap on the box calls it (or pets it).
+  const dog = window.MSDog ? MSDog.Life($("dogBox")) : { react() {}, anchor: null };
+  if (dog.start) dog.start();
+  dog.bark = t("woof");
+  window.msDog = dog; // (to look at it from the console)
+  let heardAt = 0, prevGained = null, wasDead = null;
+  // How loud the voice is now, when this phone plays it: a clip from the PC
+  // (it comes with how loud it is as it goes), or a live call (heard here).
+  let clipMouth = null;
+  const liveBuf = new Float32Array(512);
+  function mouthLevel() {
+    if (liveCall.talking && audio && audio.mouth) {
+      audio.mouth.getFloatTimeDomainData(liveBuf);
+      let sum = 0;
+      for (let i = 0; i < liveBuf.length; i++) sum += liveBuf[i] * liveBuf[i];
+      const db = 20 * Math.log10(Math.sqrt(sum / liveBuf.length) + 1e-6);
+      return Math.max(0, Math.min(1, (db + 50) / 40));
     }
-    requestAnimationFrame(drawDog);
+    if (!player.paused && clipMouth && clipMouth.seq === playingClip) {
+      const l = clipMouth.levels[Math.floor(player.currentTime * 1000 / clipMouth.step)];
+      return l == null ? 0 : l / 255;
+    }
+    return null; // (the PC's speakers: it moves its mouth like speech)
   }
-  requestAnimationFrame(drawDog);
+  dog.level = mouthLevel;
+  function dogMood() {
+    dog.talking = !!status.speaking || !player.paused || liveCall.talking;
+    dog.listening = !dog.talking && (liveCall.userTalking || Date.now() - heardAt < 900);
+    dog.thinking = !!status.thinking;
+  }
+  setInterval(() => {
+    dogMood();
+    // The bubble points at the dog.
+    const b = $("bubble"), x = dog.anchor && dog.anchor[0];
+    if (x) b.style.setProperty("--tail", Math.round(Math.max(22, Math.min(b.clientWidth - 22, x))) + "px");
+  }, 200);
+  // A level up, a death: it joins in. A warning: it barks.
+  function dogGame(status) {
+    const gained = (status.progress || {}).levels_gained;
+    if (prevGained != null && gained > prevGained) dog.react("levelup");
+    if (gained != null) prevGained = gained;
+    if (status.dead && wasDead === false) dog.react("death");
+    if (typeof status.dead === "boolean") wasDead = status.dead;
+  }
+  function dogAlert() {
+    if (dog.doing !== "levelup" && dog.doing !== "death") dog.react("alert");
+  }
 
   // ---- the game, from the PC -------------------------------------------------
   let status = {};
@@ -847,12 +904,15 @@
     mb.dataset.cmd = muted ? "unmute" : "mute";
     voiceOn = state.voice_on || voiceOn;
     for (const b of $("voiceSeg").children) b.classList.toggle("sel", b.dataset.on === voiceOn);
+    renderVoices(status.voices, status.voice);
+    $("liveCallRow").style.display = status.live ? "" : "none";
     if (status.attitude && Date.now() > attitudeHeldUntil) {
       for (const b of $("attitudeSeg").children) b.classList.toggle("sel", b.dataset.a === status.attitude);
     }
     if (typeof status.always_listen === "boolean" && document.activeElement !== $("always")) $("always").checked = status.always_listen;
     // The dog talks while the PC (or this phone) speaks; dots while it thinks.
-    dog.talking = !!status.speaking || !player.paused || liveCall.talking;
+    dogMood();
+    if (seen) dogGame(status);
     if (liveCall.audio) liveCall.audio.muted = !!status.muted;
     $("liveHint").style.display = status.live ? "block" : "none";
     $("bubble").classList.toggle("talking", dog.talking);
@@ -1047,6 +1107,7 @@
     if (m.kind !== "info") li.append(time);
     log.prepend(li);
     while (log.children.length > 60) log.lastChild.remove();
+    if (live && m.kind === "alert") dogAlert();
     if (m.kind === "reply" || m.kind === "alert") {
       lastReply = m.text;
       if (!status.thinking) $("bubbleText").textContent = m.text;
@@ -1112,6 +1173,13 @@
     updateHold();
   }
   player.addEventListener("playing", () => updateHold());
+  player.addEventListener("playing", () => {
+    const seq = playingClip;
+    if (seq === null || (clipMouth && clipMouth.seq === seq)) return;
+    api("/api/mouth?seq=" + seq).then((r) => (r.ok ? r.json() : null)).then((m) => {
+      if (m && m.levels) clipMouth = { seq, levels: m.levels, step: m.step_ms || 40 };
+    }).catch(() => {});
+  });
   player.addEventListener("ended", () => { quietUntil = Date.now() + 500; playNextClip(); updateHold(); });
   player.addEventListener("error", () => { playNextClip(); updateHold(); });
 
@@ -1167,6 +1235,51 @@
     // A live call on the phone, or the regular mode with the voice elsewhere.
     if (listening && wantLive() !== (liveCall.on || liveCall.starting)) restartListening();
   });
+  // The voice: OpenAI's, or one of the ElevenLabs voices on the account.
+  let voicesKey = "", voiceHeldUntil = 0;
+  // A live call on the phone, unless it was turned off.
+  let liveWanted = recall("live") !== "0";
+  function renderVoices(list, chosen) {
+    list = list || [];
+    $("voicePickRow").style.display = list.length ? "" : "none";
+    const pick = $("voicePick");
+    const key = locale + JSON.stringify(list);
+    if (key !== voicesKey) {
+      voicesKey = key;
+      pick.textContent = "";
+      const builtIn = document.createElement("option");
+      builtIn.value = "openai";
+      builtIn.textContent = t("voice_openai");
+      pick.append(builtIn);
+      for (const v of list) {
+        const option = document.createElement("option");
+        option.value = v.id;
+        option.textContent = v.about ? v.name + " · " + v.about : v.name;
+        pick.append(option);
+      }
+    }
+    if (chosen && Date.now() > voiceHeldUntil && document.activeElement !== pick) pick.value = chosen;
+  }
+  $("voicePick").addEventListener("change", () => {
+    voiceHeldUntil = Date.now() + 2000;
+    const id = $("voicePick").value;
+    postJson("/api/speaker", { id }).catch(() => {});
+    // A voice of its own is heard without the live call (that one speaks
+    // in OpenAI's voice).
+    if (id !== "openai" && liveWanted && $("liveCallRow").style.display !== "none") {
+      liveWanted = false;
+      $("liveCall").checked = false;
+      remember("live", "0");
+      if (listening) restartListening();
+    }
+  });
+  const liveBox = $("liveCall");
+  liveBox.checked = liveWanted;
+  liveBox.addEventListener("change", () => {
+    liveWanted = liveBox.checked;
+    remember("live", liveWanted ? "1" : "0");
+    if (listening) restartListening();
+  });
   // How it talks: the PC keeps it; a live call starts again in the new voice.
   let attitudeHeldUntil = 0;
   for (const b of $("attitudeSeg").children) b.addEventListener("click", () => {
@@ -1185,6 +1298,7 @@
   }
   lang.value = locale;
   lang.addEventListener("change", () => {
+    setTimeout(() => { dog.bark = t("woof"); }, 0);
     locale = lang.value;
     remember("lang", locale);
     applyLanguage(locale);
@@ -1311,10 +1425,14 @@
     try {
       a.played = a.ctx.createMediaStreamSource(stream);
       a.played.connect(a.merger, 0, 1);
+      // And how loud it is, for the dog's mouth.
+      a.mouth = a.ctx.createAnalyser();
+      a.mouth.fftSize = 512;
+      a.played.connect(a.mouth);
     } catch (e) { a.played = null; }
   }
   function disconnectPlayed() {
-    if (audio && audio.played) { try { audio.played.disconnect(); } catch (e) {} audio.played = null; }
+    if (audio && audio.played) { try { audio.played.disconnect(); } catch (e) {} audio.played = null; audio.mouth = null; }
   }
 
   function stopAudio() {
@@ -1378,6 +1496,7 @@
     postJson("/api/hearing", { text }).catch(() => {});
   }
   function interim(index, transcript) {
+    heardAt = Date.now();
     if (index !== current) { current = index; sentWords = 0; sentAll = ""; }
     const rest = restOf(index, transcript);
     pending = rest;
@@ -1512,7 +1631,9 @@
   const liveCall = { pc: null, dc: null, audio: null, on: false, starting: false, userTalking: false, talking: false,
     pending: [], eyesAt: 0, pictureAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false };
   function canLive() { return !!status.live && !!window.RTCPeerConnection && status.always_listen !== false; }
-  function wantLive() { return canLive() && (voiceOn === "phone" || voiceOn === "both"); }
+  // The live call can be turned off (liveWanted, with the settings): then
+  // Grok answers and the voice picked speaks, on the phone too.
+  function wantLive() { return canLive() && liveWanted && (voiceOn === "phone" || voiceOn === "both"); }
   function liveAudio() {
     if (!liveCall.audio) {
       const a = document.createElement("audio");
