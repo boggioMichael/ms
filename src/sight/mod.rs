@@ -18,6 +18,15 @@
 //! font ([`numbers`]) once it is learned, and cross-checked against the
 //! bars; when the two keep disagreeing, the HUD is read again.
 //!
+//! Deterministic first: the HUD is found from the pixels alone — the red,
+//! blue and yellow-green bars in the status band, each learned as a bar
+//! model with its track fitted from its own fill — and the font from the
+//! OCR engine. The vision model is asked only when that fails: no bars to
+//! be found for a while, numbers and bars that keep disagreeing, a font
+//! that cannot be labelled because the text is not sharp enough for OCR,
+//! or a level-up to confirm; each with a backoff, so a model that cannot
+//! answer is not asked again and again.
+//!
 //! The player teaches it too, by talking: corrections ("I'm level 61"),
 //! and new things to recognise ([`things`]).
 
@@ -107,11 +116,25 @@ pub struct Seen {
 /// Why the teacher should look again soon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Want {
-    /// Nothing known yet, or the screen changed shape: find the HUD.
+    /// Nothing known yet, or the screen changed shape, and the pixels alone
+    /// did not give the HUD: find it.
     Calibrate,
-    /// Read the HUD again (a level-up, a correction, bars lost).
+    /// Read the HUD again (a level-up, a correction, bars lost, numbers and
+    /// bars disagreeing, a font that cannot be labelled otherwise).
     Verify,
 }
+
+/// How long the pixels alone get to find the HUD before the model is asked.
+const FIND_FOR: Duration = Duration::from_secs(10);
+/// How often the pixels are asked to find the HUD while they cannot.
+const FIND_EVERY: Duration = Duration::from_secs(1);
+/// How long a field may go without an example the OCR engine could give
+/// before the model is asked to spell its line out.
+const UNLABELLED_FOR: Duration = Duration::from_secs(15);
+/// The first wait between two asks of the model for the same reason; it
+/// doubles each time, up to [`ASK_BACKOFF_MAX`].
+const ASK_BACKOFF: Duration = Duration::from_secs(60);
+const ASK_BACKOFF_MAX: Duration = Duration::from_secs(900);
 
 pub struct Sight {
     dir: PathBuf,
@@ -129,6 +152,17 @@ pub struct Sight {
     disagreements: u32,
     pub last: Seen,
     pub last_look: Option<Instant>,
+    /// The pixels alone looking for the HUD: when they last tried, and
+    /// since when they have failed.
+    find_tried: Option<Instant>,
+    find_failing_since: Option<Instant>,
+    /// Since when a field has wanted an example the OCR engine did not give.
+    unlabelled_since: Option<Instant>,
+    /// The model was last asked at, and the wait before asking again.
+    asked: Option<Instant>,
+    ask_backoff: Duration,
+    /// When a bar's track was last refitted from the number beside it.
+    refit_at: Option<Instant>,
 }
 
 /// How long the bars may be missing before the HUD is looked for again.
@@ -157,6 +191,12 @@ impl Sight {
             disagreements: 0,
             last: Seen::default(),
             last_look: None,
+            find_tried: None,
+            find_failing_since: None,
+            unlabelled_since: None,
+            asked: None,
+            ask_backoff: ASK_BACKOFF,
+            refit_at: None,
         }
     }
 
@@ -176,27 +216,158 @@ impl Sight {
         }
     }
 
-    /// What the teacher should do next for a frame this size, if anything.
-    pub fn wants(&self, width: u32, height: u32, every: Duration) -> Option<Want> {
-        match &self.layout {
-            None => return Some(Want::Calibrate),
-            Some(l) if !l.fits(width, height) => return Some(Want::Calibrate),
-            _ => {}
+    /// What the model should be asked for a frame this size, if anything:
+    /// to find the HUD when the pixels alone have failed to for a while, or
+    /// to read it again for one of the reasons in [`Want`]. Never while a
+    /// backoff from the last ask is running.
+    pub fn wants(&self, width: u32, height: u32) -> Option<Want> {
+        let now = Instant::now();
+        if self
+            .asked
+            .is_some_and(|t| now.duration_since(t) < self.ask_backoff)
+        {
+            return None;
+        }
+        let fits = self.layout.as_ref().is_some_and(|l| l.fits(width, height));
+        if !fits {
+            // The pixels get their turn first.
+            return self
+                .find_failing_since
+                .is_some_and(|t| now.duration_since(t) >= FIND_FOR)
+                .then_some(Want::Calibrate);
         }
         if let Some(want) = self.want {
             return Some(want);
         }
-        match self.last_look {
-            None => Some(Want::Verify),
-            Some(t) if t.elapsed() >= every => Some(Want::Verify),
-            _ => None,
+        if self
+            .unlabelled_since
+            .is_some_and(|t| now.duration_since(t) >= UNLABELLED_FOR)
+        {
+            return Some(Want::Verify);
         }
+        None
+    }
+
+    /// The model is being asked now: the next ask for the same reason
+    /// waits longer. An answer that helps ([`Sight::calibrated`],
+    /// [`Sight::verified`]) resets the wait.
+    pub fn asking(&mut self) {
+        self.asked = Some(Instant::now());
+    }
+
+    fn answered(&mut self) {
+        self.asked = None;
+        self.ask_backoff = ASK_BACKOFF;
+        self.unlabelled_since = None;
+    }
+
+    /// The model could not be asked, or did not answer usefully: try
+    /// again later rather than at once, and later still each time.
+    pub fn looked(&mut self) {
+        self.last_look = Some(Instant::now());
+        self.asked = Some(Instant::now());
+        self.ask_backoff = (self.ask_backoff * 2).min(ASK_BACKOFF_MAX);
+    }
+
+    /// Find the HUD from the pixels alone: the red, blue and yellow-green
+    /// bars in the status band (the bottom of the screen, left of the
+    /// buttons), each learned as a bar model with its track fitted from its
+    /// own fill. The level, name and job stay unknown until the model, if
+    /// there is one, reads them. Returns what was found, for the log.
+    pub fn find_hud(&mut self, frame: &RgbaImage) -> Result<String, String> {
+        use syrup::color::is_color_pixel;
+        use syrup::geometry::{Rect, find_color_bar, measure_bar_fill};
+        let (fw, fh) = frame.dimensions();
+        if fw < 64 || fh < 64 {
+            return Err("the frame is too small to hold a HUD".into());
+        }
+        let band = Rect {
+            x: 0,
+            y: fh.saturating_mul(9) / 10,
+            w: fw.saturating_mul(3) / 4,
+            h: fh - fh.saturating_mul(9) / 10,
+        };
+        // The three bars' colours as hue ranges (for the search) and the
+        // hue each model is expected to have.
+        let colours = [
+            ((340.0, 30.0), 0.35, 0.30, 0.0),
+            ((190.0, 250.0), 0.30, 0.30, 215.0),
+            ((40.0, 80.0), 0.25, 0.25, 55.0),
+        ];
+        let mut models: [Option<BarModel>; 3] = [None, None, None];
+        for (i, (hue, sat, val, expected)) in colours.into_iter().enumerate() {
+            let Some(fill) = find_color_bar(frame, band, hue, sat, val) else {
+                continue;
+            };
+            let percent = measure_bar_fill(frame, fill, band, |p| is_color_pixel(p, hue, sat, val));
+            // The track runs as far past the fill as the fill's share says.
+            let track_end = match percent {
+                Some(p) if p > 1.0 => fill.x + (fill.w as f32 * 100.0 / p).round() as u32,
+                _ => fill.x + fill.w,
+            }
+            .min(fw);
+            let approx = NBox::from_pixels(fill.x, fill.y, track_end - fill.x, fill.h, fw, fh);
+            let Some(mut model) = BarModel::learn(frame, &approx, Some(expected)) else {
+                continue;
+            };
+            if let Some(p) = percent {
+                model.reading(frame, p);
+            }
+            models[i] = Some(model);
+        }
+        let found = models.iter().filter(|m| m.is_some()).count();
+        if found == 0 {
+            return Err("no HP, MP or EXP bar in the status band".into());
+        }
+        let [hp, mp, exp] = models;
+        let mut status: Option<NBox> = None;
+        for b in [&hp, &mp, &exp].into_iter().flatten() {
+            status = Some(match status {
+                Some(s) => s.union(&b.band),
+                None => b.band,
+            });
+        }
+        let kept_level = self.layout.as_ref().and_then(|l| l.level);
+        let kept_minimap = self.layout.as_ref().and_then(|l| l.minimap);
+        self.layout = Some(Layout {
+            frame: frame.dimensions(),
+            hp,
+            mp,
+            exp,
+            level: kept_level,
+            minimap: kept_minimap,
+            status: status.map(|s| s.grown(0.04, 1.2)),
+            found: now_text(),
+        });
+        self.want = None;
+        self.disagreements = 0;
+        self.lost_since = None;
+        self.find_failing_since = None;
+        self.save();
+        Ok(format!("found {found} bar(s) from the pixels"))
     }
 
     /// One frame: the bars where they were learned, the numbers beside
     /// them, the EXP bar's wrap, and the things the player taught.
     pub fn observe(&mut self, frame: &RgbaImage, now: Instant) -> Seen {
         let mut seen = Seen::default();
+        // No HUD known for a screen this shape: the pixels look for it,
+        // once a second, and the clock runs on how long they fail.
+        let fits = self
+            .layout
+            .as_ref()
+            .is_some_and(|l| l.fits(frame.width(), frame.height()));
+        if !fits
+            && self
+                .find_tried
+                .is_none_or(|t| now.duration_since(t) >= FIND_EVERY)
+        {
+            self.find_tried = Some(now);
+            let _find = tracing::trace_span!("sight.find").entered();
+            if self.find_hud(frame).is_err() {
+                self.find_failing_since.get_or_insert(now);
+            }
+        }
         let bars = tracing::trace_span!("sight.bars").entered();
         let mut bands: [Option<NBox>; 3] = [None; 3];
         if let Some(layout) = self
@@ -231,6 +402,7 @@ impl Sight {
         // checked against the bars; the number wins when it is read.
         let numbers_span = tracing::trace_span!("sight.numbers").entered();
         let mut disagree = 0;
+        let mut refit: Vec<(Field, f32)> = Vec::new();
         for (field, band) in Field::ALL.into_iter().zip(bands) {
             let Some(band) = band else { continue };
             let bar = match field {
@@ -240,7 +412,21 @@ impl Sight {
             };
             let read = self.numbers.read(frame, field, &band);
             let percent = read.as_ref().map(|r| r.value.percent());
-            disagree = disagree.max(self.numbers.cross_check(field, percent, bar));
+            let streak = self.numbers.cross_check(field, percent, bar);
+            disagree = disagree.max(streak);
+            // The game's own number says how far the fill should reach: a
+            // bar whose track end was guessed from its fill is refitted to
+            // it, the way a reading by the teacher refits it. Only a new
+            // bar (under three readings): a well-fitted one that suddenly
+            // disagrees is more likely misread than wrong, and is not bent.
+            if streak > 0
+                && let Some(p) = percent
+                && self
+                    .refit_at
+                    .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1))
+            {
+                refit.push((field, p));
+            }
             let Some(read) = read else { continue };
             match (field, &read.value) {
                 (Field::Hp, Value::Amount { current, max }) => {
@@ -266,8 +452,38 @@ impl Sight {
                 _ => {}
             }
         }
+        if !refit.is_empty() {
+            self.refit_at = Some(now);
+            if let Some(layout) = self.layout.as_mut() {
+                for (field, percent) in refit {
+                    let bar = match field {
+                        Field::Hp => layout.hp.as_mut(),
+                        Field::Mp => layout.mp.as_mut(),
+                        Field::Exp => layout.exp.as_mut(),
+                    };
+                    if let Some(bar) = bar
+                        && bar.readings.len() < 3
+                    {
+                        bar.reading(frame, percent);
+                    }
+                }
+            }
+            self.save();
+        }
         if disagree >= numbers::DISAGREE_FOR && self.want.is_none() {
             self.want = Some(Want::Verify);
+        }
+        // A field that has wanted an example for a while, which the OCR
+        // engine did not give (not sharp enough, or no engine): the model
+        // will be asked to spell the line out.
+        let unlabelled = bands
+            .iter()
+            .zip(Field::ALL)
+            .any(|(band, field)| band.is_some() && self.numbers.wants_label(field));
+        if unlabelled {
+            self.unlabelled_since.get_or_insert(now);
+        } else {
+            self.unlabelled_since = None;
         }
         drop(numbers_span);
         // A level-up: the EXP bar goes from nearly full to nearly empty, and
@@ -302,9 +518,12 @@ impl Sight {
         seen
     }
 
-    /// Put what the learned sight knows into `obs` (in place of the old
-    /// HUD reader's guesses). A gauge is `read` only when its number was
-    /// read on this very frame; a bar's fill is an estimate.
+    /// Put what the learned sight knows into `obs`, over what the HUD
+    /// geometry guessed — but only what it knows: a gauge the sight could
+    /// not see this frame, or a fact it has not learned, leaves the
+    /// observation's own value standing rather than blanking it. A gauge
+    /// is `read` only when its number was read on this very frame; a bar's
+    /// fill is an estimate.
     pub fn apply(&self, obs: &mut Observation, seen: &Seen) {
         let gauge = |percent: Option<f32>, number: Option<(u64, u64)>, max: Option<u64>| {
             percent.map(|p| Gauge {
@@ -314,21 +533,33 @@ impl Sight {
                 read: number.is_some(),
             })
         };
-        obs.hp = gauge(seen.hp, seen.hp_number, self.facts.hp_max);
-        obs.mp = gauge(seen.mp, seen.mp_number, self.facts.mp_max);
+        if let Some(hp) = gauge(seen.hp, seen.hp_number, self.facts.hp_max) {
+            obs.hp = Some(hp);
+        }
+        if let Some(mp) = gauge(seen.mp, seen.mp_number, self.facts.mp_max) {
+            obs.mp = Some(mp);
+        }
         let exp_amount = match &seen.exp_number {
             Some(Value::Amount { current, max }) => Some((*current, *max)),
             _ => None,
         };
-        obs.exp = seen.exp.map(|p| Gauge {
-            percent: p,
-            current: exp_amount.map(|(c, _)| c),
-            max: exp_amount.map(|(_, m)| m),
-            read: seen.exp_number.is_some(),
-        });
-        obs.level = self.facts.level;
-        obs.name = self.facts.name.clone();
-        obs.job = self.facts.job.clone();
+        if let Some(p) = seen.exp {
+            obs.exp = Some(Gauge {
+                percent: p,
+                current: exp_amount.map(|(c, _)| c),
+                max: exp_amount.map(|(_, m)| m),
+                read: seen.exp_number.is_some(),
+            });
+        }
+        if self.facts.level.is_some() {
+            obs.level = self.facts.level;
+        }
+        if self.facts.name.is_some() {
+            obs.name = self.facts.name.clone();
+        }
+        if self.facts.job.is_some() {
+            obs.job = self.facts.job.clone();
+        }
     }
 
     fn take_values(&mut self, v: &HudValues) {
@@ -431,7 +662,9 @@ impl Sight {
         self.want = None;
         self.disagreements = 0;
         self.lost_since = None;
+        self.find_failing_since = None;
         self.last_look = Some(Instant::now());
+        self.answered();
         self.save();
         Ok(parts.join("; "))
     }
@@ -477,6 +710,7 @@ impl Sight {
     pub fn verified(&mut self, frame: &RgbaImage, v: &HudValues) -> String {
         self.last_look = Some(Instant::now());
         self.want = None;
+        self.answered();
         let mut notes = Vec::new();
         let mut off = 0;
         if let Some(layout) = self.layout.as_mut() {
@@ -533,12 +767,6 @@ impl Sight {
         } else {
             format!("read {summary}; {}", notes.join("; "))
         }
-    }
-
-    /// The teacher could not be asked, or did not answer usefully: try
-    /// again later rather than at once.
-    pub fn looked(&mut self) {
-        self.last_look = Some(Instant::now());
     }
 
     /// The player says `what` is `value`. Returns what was done, for the
@@ -745,14 +973,14 @@ mod tests {
     fn the_hud_is_learned_measured_kept_and_checked() {
         let dir = temp_dir("hud");
         let mut sight = Sight::load(&dir);
-        assert_eq!(
-            sight.wants(1280, 720, Duration::from_secs(120)),
-            Some(Want::Calibrate)
-        );
+        // Nothing known: the pixels get their turn before the model is asked.
+        assert_eq!(sight.wants(1280, 720), None);
+        sight.find_failing_since = Some(Instant::now() - FIND_FOR);
+        assert_eq!(sight.wants(1280, 720), Some(Want::Calibrate));
         let frame = status_bar(60.0, 100.0);
         let line = sight.calibrated(&frame, &calibration()).unwrap();
         assert!(line.contains("found 2 bar(s) and the level"), "{line}");
-        assert_eq!(sight.wants(1280, 720, Duration::from_secs(120)), None);
+        assert_eq!(sight.wants(1280, 720), None);
         // Measured on other frames, and put into the observation.
         let seen = sight.observe(&status_bar(25.0, 50.0), Instant::now());
         assert!((seen.hp.unwrap() - 25.0).abs() < 1.5, "{seen:?}");
@@ -766,11 +994,48 @@ mod tests {
         let again = Sight::load(&dir);
         assert_eq!(again.facts.level, Some(61));
         assert!(again.layout.is_some());
-        // Another window shape: look for the HUD again.
-        assert_eq!(
-            again.wants(1920, 800, Duration::from_secs(120)),
-            Some(Want::Calibrate)
-        );
+        // Another window shape: the pixels look for the HUD again, and the
+        // model is asked only once they have failed for a while.
+        let mut again = again;
+        assert_eq!(again.wants(1920, 800), None);
+        let blank = RgbaImage::from_pixel(1920, 800, image::Rgba([20, 20, 20, 255]));
+        let t0 = Instant::now();
+        again.observe(&blank, t0);
+        assert!(again.find_failing_since.is_some());
+        assert_eq!(again.wants(1920, 800), None);
+        again.find_failing_since = Some(t0 - FIND_FOR);
+        assert_eq!(again.wants(1920, 800), Some(Want::Calibrate));
+        // Asked, and not again until the backoff has run.
+        again.asking();
+        assert_eq!(again.wants(1920, 800), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_hud_is_found_from_the_pixels_alone() {
+        let dir = temp_dir("find");
+        let mut sight = Sight::load(&dir);
+        let (frame, _) = numbers::tests::hud((240, 400), (1351, 1351), 86.25);
+        let seen = sight.observe(&frame, Instant::now());
+        assert!(sight.layout.is_some(), "the bars were found");
+        assert!((seen.hp.unwrap() - 60.0).abs() < 3.0, "{seen:?}");
+        assert!((seen.mp.unwrap() - 100.0).abs() < 3.0, "{seen:?}");
+        assert!((seen.exp.unwrap() - 86.25).abs() < 3.0, "{seen:?}");
+        assert_eq!(sight.wants(1280, 720), None, "nothing for the model to do");
+        // The next frames measure the bars where they were found. A bar
+        // found full has its track end where its fill ended; the first
+        // frame it is seen less than full the measurement is right.
+        let (other, _) = numbers::tests::hud((100, 400), (675, 1351), 10.0);
+        let seen = sight.observe(&other, Instant::now());
+        assert!((seen.hp.unwrap() - 25.0).abs() < 3.0, "{seen:?}");
+        assert!((seen.mp.unwrap() - 50.0).abs() < 3.0, "{seen:?}");
+        assert!((seen.exp.unwrap() - 10.0).abs() < 3.0, "{seen:?}");
+        // What the geometry guessed stays when the sight has nothing better.
+        let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
+        obs.level = Some(7);
+        sight.apply(&mut obs, &Seen::default());
+        assert_eq!(obs.level, Some(7));
+        assert!(obs.hp.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -793,10 +1058,7 @@ mod tests {
             assert_eq!(seen.leveled, i == 4, "{i}: {seen:?}");
         }
         assert_eq!(sight.facts.level, Some(62));
-        assert_eq!(
-            sight.wants(1280, 720, Duration::from_secs(120)),
-            Some(Want::Verify)
-        );
+        assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
         // The player corrects it; a later reading wins again.
         assert_eq!(
             sight.correct("level", "level 61").unwrap(),
@@ -912,10 +1174,7 @@ mod tests {
             assert_eq!(seen.hp_number, Some((400, 400)), "{i}: {seen:?}");
             assert_eq!(seen.hp, Some(100.0));
         }
-        assert_eq!(
-            sight.wants(1280, 720, Duration::from_secs(120)),
-            Some(Want::Verify)
-        );
+        assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -930,13 +1189,10 @@ mod tests {
             ..Default::default()
         };
         sight.verified(&frame, &wrong);
-        assert_eq!(sight.wants(1280, 720, Duration::from_secs(120)), None);
+        assert_eq!(sight.wants(1280, 720), None);
         let line = sight.verified(&frame, &wrong);
         assert!(line.contains("looked for again"), "{line}");
-        assert_eq!(
-            sight.wants(1280, 720, Duration::from_secs(120)),
-            Some(Want::Calibrate)
-        );
+        assert_eq!(sight.wants(1280, 720), Some(Want::Calibrate));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

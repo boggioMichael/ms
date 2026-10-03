@@ -18,7 +18,7 @@ minifb = "0.28.0"
 # The generic engine MapleSyrup is the MapleStory edition of. Pinned to the
 # newest syrup (PR #2, "compiled operations"): its window capture keeps the
 # window between frames and says why a capture failed.
-syrup = { git = "https://github.com/boggioMichael/syrup", rev = "2e0eb46c18adf29244ecdac422d89889a6442bd8", features = ["serde"] }
+syrup = { git = "https://github.com/boggioMichael/syrup", rev = "419ef1d32f0ae2740fc95e1a25f5d41cfb47b877", features = ["serde"] }
 
 # The phone link: HTTPS on the local network (a phone browser only opens the
 # microphone for a secure page), with a self-signed certificate made on the

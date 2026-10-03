@@ -1,7 +1,9 @@
 //! The teacher at work, on a thread of its own: it looks at the newest
-//! frame when the learned sight wants it to — to find the HUD on a new
-//! screen, to read it every few minutes, after a level-up or a correction —
-//! and checks the near misses the things the player taught turned up.
+//! frame when the learned sight wants it to — to find the HUD the pixels
+//! could not, to read it again after a level-up, a correction, a lasting
+//! disagreement between the numbers and the bars, or for a line the OCR
+//! engine could not spell out — and checks the near misses the things the
+//! player taught turned up.
 //! Before any of that, and with or without a model, it labels the HUD's
 //! font for the sight from the OCR engine, when a line is sharp enough for
 //! it (`sight::numbers`).
@@ -51,9 +53,6 @@ pub enum News {
     /// It could not look or make sense of what it saw.
     Trouble(String),
 }
-
-/// How often the HUD is read again, to check the bars and the level.
-pub const CHECK_EVERY: Duration = Duration::from_secs(120);
 
 fn outline(picture: &mut RgbaImage, b: &NBox, color: [u8; 3]) {
     let (w, h) = picture.dimensions();
@@ -193,8 +192,11 @@ pub fn spawn(
                 if Instant::now() < wait_until {
                     continue;
                 }
-                let want = lock().wants(frame.width(), frame.height(), CHECK_EVERY);
+                let want = lock().wants(frame.width(), frame.height());
                 let status = lock().layout.as_ref().and_then(|l| l.status);
+                if want.is_some() {
+                    lock().asking();
+                }
                 match (want, status) {
                     (Some(Want::Calibrate), _) | (Some(Want::Verify), None) => {
                         let answer = look(eyes, &teacher::calibrate(&frame));

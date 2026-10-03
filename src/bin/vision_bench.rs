@@ -13,9 +13,9 @@
 //! searches run at their real cadence (every 500 ms of simulated time).
 //!
 //! It also counts the vision-model calls a session of steady play would
-//! make in an hour with the HUD stable: the HUD check every `CHECK_EVERY`,
-//! and the near-miss confirmations the taught things queue (one at most
-//! every 20 s), from the rate they were queued at here.
+//! make in an hour with the HUD stable: finding the HUD when the pixels
+//! alone could not, and the near-miss confirmations the taught things
+//! queue (one at most every 20 s), from the rate they were queued at here.
 //!
 //! ```text
 //! cargo run --release --bin vision_bench -- --video chaos-zakum-solo-lvl230.mp4 --frames 300
@@ -37,7 +37,6 @@ use serde::Serialize;
 use tracing_subscriber::prelude::*;
 
 use ms::ai::images::NBox;
-use ms::ai::teaching::CHECK_EVERY;
 use ms::companion::Observation;
 use ms::sight::Sight;
 use ms::sight::numbers::Field;
@@ -274,9 +273,10 @@ struct Run {
 /// stable on screen.
 #[derive(Serialize)]
 struct AiCalls {
-    /// Once, to find the HUD on this window shape.
+    /// To find the HUD on this window shape, when the pixels alone could not.
     calibrate: u32,
-    /// The HUD read again every `CHECK_EVERY`.
+    /// The HUD read again: only on a lasting disagreement between the
+    /// numbers and the bars, or a line the OCR engine could not spell out.
     verify: u32,
     /// Near misses of taught things queued for confirmation, per hour,
     /// from the rate seen here.
@@ -426,8 +426,10 @@ fn run(
     let frames_per_hour = fps * 3600.0;
     let near_misses_queued = queued as f64 / frames.len() as f64 * frames_per_hour;
     let near_miss_checks = near_misses_queued.min(3600.0 / NEAR_MISS_EVERY.as_secs_f64());
-    let verify = (3600.0 / CHECK_EVERY.as_secs_f64()) as u32;
-    let calibrate = 1;
+    // With the HUD found from the pixels and the numbers agreeing with the
+    // bars, the model is not asked about the HUD at all.
+    let verify = 0;
+    let calibrate = u32::from(!hud_learned);
     let _ = std::fs::remove_dir_all(&dir);
     Run {
         input: name.to_string(),

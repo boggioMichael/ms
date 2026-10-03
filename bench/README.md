@@ -59,6 +59,8 @@ Same machine, the recording at 1366×768 unless said; milliseconds per frame
 | phase 2: only the HUD and the taught things run | 16.3 / 5.7 / 43.3 | 8.8 / 5.5 / 8.0 | 12.4 |
 | phase 2, at 1920×1080 | 33.1 / 10.8 / 98.3 | 15.5 / 10.5 / 12.3 | 29.1 |
 | phase 3: the numbers read in the game's font, no OCR per frame | 14.0 / 6.5 / 44.3 (max 61) | 5.6 / 5.4 / 6.7 | 12.5 |
+| phase 4: objects followed every frame, HUD found from the pixels | 17.6 / 17.6 / 25.0 (max 37) | 5.0 / 5.0 / 5.7 | 3.7 per object per frame |
+| phase 4, at 1920×1080 | 31.6 / 32.3 / 42.0 | 10.1 / 9.9 / 13.3 | 7.0 per object per frame |
 
 Phase 1: HUD geometry 13.7 → 5.4 ms, minimap 3.6 → 1.1, chat log 1.2 →
 0.65, the taught objects 111 → 11.8; motion 8 → 50 ms, because Syrup's
@@ -74,3 +76,11 @@ Phase 3: the HUD's numbers come from Syrup's glyph reader on every frame
 (`sight.numbers`, 1.1 ms mean for the three fields on the recording, 4.3 ms
 on the still whose blurred glyphs it refuses), and the OCR pass every 60th
 frame is gone from the hot path: the worst frame fell from 255 ms to 61 ms.
+
+Phase 4: each taught object is followed on every frame — a small search
+around where its track expects it, plus one stripe of twelve of the frame
+swept for newcomers — instead of the whole frame every fifth frame, so the
+work is even (p95 25 ms, down from 44) at a higher mean; the matching
+itself is Phase 6's to speed up. The HUD is found from the pixels alone and
+the model is not asked about a stable HUD: 0 calls an hour for it; the
+near-miss confirmations remain (at most 180 an hour).

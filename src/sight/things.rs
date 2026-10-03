@@ -16,11 +16,15 @@
 //! A thing can carry an alert — appears, disappears, below or above a
 //! threshold, changes — and the words to say when it fires.
 //!
-//! An object also gets better on its own: a near miss (a monster in
-//! another pose) is kept as a candidate, and when the vision model agrees
-//! it is the same thing, its picture is added.
+//! An object is followed from frame to frame: each one it is seen in, it is
+//! looked for around where its track says it will be (a small, cheap
+//! search), while a sweep of the whole frame, a stripe a frame, picks up
+//! newcomers (`Tracking`). An object also gets better on its own: a near
+//! miss that continues a track it was seen on — the same monster in another
+//! pose — is taken for a new picture of it; a near miss nobody can account
+//! for is kept as a candidate for the vision model to judge.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -30,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use syrup::bars::BarModel;
 use syrup::template::{self, SetMatch, SetSearch, TemplateSet};
 use syrup::threshold::Channel;
+use syrup::tracking::ObjectTracker;
 
 use crate::ai::images::{self, NBox};
 
@@ -200,6 +205,8 @@ pub struct Live {
     pub reading: Option<Reading>,
     /// Its pictures prepared for matching, at the frame size last seen.
     poses: Option<Poses>,
+    /// An object's tracks across frames.
+    tracking: Option<Tracking>,
     last_run: Option<Instant>,
     /// Checks in a row the alert's condition held, and whether it may fire.
     streak: u32,
@@ -208,15 +215,75 @@ pub struct Live {
     previous_text: Option<String>,
 }
 
-/// A thing's pictures as a template set: scaled to the frame width they
+/// A thing's pictures as template sets: scaled to the frame width they
 /// were prepared for, mirrored too for an object (a monster faces either
 /// way), and rebuilt when a picture is added or the window changes size.
+/// `all` holds every picture; `each` one set per picture, for following a
+/// track with the picture it was last seen as.
 #[derive(Debug, Clone)]
 struct Poses {
     frame_width: u32,
     pictures: usize,
-    set: TemplateSet,
+    all: TemplateSet,
+    each: Vec<TemplateSet>,
 }
+
+/// An object followed from frame to frame.
+#[derive(Debug, Clone)]
+struct Tracking {
+    tracker: ObjectTracker,
+    /// Per track: which picture it was last seen as, and how well.
+    seen: HashMap<u64, LastSeen>,
+    /// The stripe of the frame the sweep searches next.
+    stripe: usize,
+    /// When a near miss was last taken for a new pose.
+    pose_added: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LastSeen {
+    picture: usize,
+    score: f32,
+    /// Frames in a row it was seen at a confident score.
+    confident: u32,
+}
+
+impl Tracking {
+    /// For an object whose pictures are about `width`×`height`.
+    fn new(width: u32, height: u32) -> Tracking {
+        Tracking {
+            tracker: ObjectTracker::new(
+                (width.max(height) as f32 * 0.75 + 8.0).max(12.0),
+                TRACK_GRACE,
+            ),
+            seen: HashMap::new(),
+            stripe: 0,
+            pose_added: None,
+        }
+    }
+
+    /// An object known to be at `place` (where it was taught): a track for
+    /// it, so the next frame looks there first rather than waiting for the
+    /// sweep to come round.
+    fn seed(&mut self, place: syrup::Rect) {
+        let _ = self.tracker.assign(&[(
+            place.x as f32 + place.w as f32 / 2.0,
+            place.y as f32 + place.h as f32 / 2.0,
+            place.w as f32,
+            place.h as f32,
+        )]);
+    }
+}
+
+/// The sweep of the whole frame for newcomers takes this many frames (a
+/// little over a second at the companion's frame rate).
+const SWEEP_STRIPES: usize = 12;
+/// A near miss is taken for a new pose when it continues a track seen this
+/// confidently for this many frames, and not more often than this.
+const POSE_AFTER: u32 = 3;
+const POSE_EVERY: Duration = Duration::from_secs(10);
+/// A track is kept this many frames without being seen.
+const TRACK_GRACE: u32 = 5;
 
 /// How far the mean colour of a match may be from the picture's, per
 /// channel: correlation on grey levels alone would take a monster of
@@ -261,7 +328,7 @@ const INDICATOR_MATCH: f32 = 0.78;
 const NEAR_MISS: f32 = 0.58;
 /// Pictures kept per thing.
 const MAX_PICTURES: usize = 8;
-/// How often each kind is looked for.
+/// How often each kind is looked for. Objects are followed on every frame.
 const PICTURE_EVERY: Duration = Duration::from_millis(500);
 const GAUGE_EVERY: Duration = Duration::from_millis(250);
 const TEXT_EVERY: Duration = Duration::from_secs(3);
@@ -370,8 +437,17 @@ impl Things {
                 if picture.width() < 6 || picture.height() < 6 {
                     return Err("that is too small to recognise".into());
                 }
-                self.add_picture_to(&mut thing, picture);
+                Self::add_picture_to(&self.dir, &mut thing, picture);
                 thing.frame = (fw, fh);
+                // It is on screen where the player pointed: a track to
+                // start from.
+                if teach.kind == Kind::Object {
+                    let (x, y, w, h) = teach.place.pixels(fw, fh);
+                    thing.live.tracking = Some(Tracking::new(w, h));
+                    if let Some(t) = thing.live.tracking.as_mut() {
+                        t.seed(syrup::Rect { x, y, w, h });
+                    }
+                }
                 format!("{} picture(s)", thing.images.len())
             }
             Kind::Gauge => {
@@ -387,9 +463,12 @@ impl Things {
                 "a place to read".to_string()
             }
         };
-        // Look right away, so the answer can say what it sees.
+        // Look right away, so the answer can say what it sees (the track
+        // seeded above survives: only the alert's state starts over).
+        let tracking = thing.live.tracking.take();
         thing.live = Live::default();
-        let reading = Self::read(&mut thing, frame);
+        thing.live.tracking = tracking;
+        let reading = Self::read(&mut thing, frame, Instant::now());
         thing.live.reading = Some(reading.clone());
         // "Tell me when it shows up", taught while it is on screen: the
         // next time it shows up, not now.
@@ -436,22 +515,22 @@ impl Things {
         }
     }
 
-    fn add_picture_to(&self, thing: &mut Thing, picture: RgbaImage) {
+    fn add_picture_to(dir: &Path, thing: &mut Thing, picture: RgbaImage) {
         if thing.images.len() >= MAX_PICTURES {
             thing.images.remove(1.min(thing.images.len() - 1));
             if thing.pictures.len() > 1 {
                 let old = thing.pictures.remove(1);
-                let _ = std::fs::remove_file(self.dir.join(old));
+                let _ = std::fs::remove_file(dir.join(old));
             }
         }
-        let _ = std::fs::create_dir_all(&self.dir);
+        let _ = std::fs::create_dir_all(dir);
         let mut n = thing.pictures.len() + 1;
         let mut file = format!("{}-{n}.png", thing.id);
         while thing.pictures.contains(&file) {
             n += 1;
             file = format!("{}-{n}.png", thing.id);
         }
-        let _ = picture.save(self.dir.join(&file));
+        let _ = picture.save(dir.join(&file));
         thing.pictures.push(file);
         thing.images.push(picture);
     }
@@ -460,7 +539,7 @@ impl Things {
     pub fn add_picture(&mut self, id: &str, picture: RgbaImage) -> bool {
         let Some(i) = self.find(id) else { return false };
         let mut thing = self.list.remove(i);
-        self.add_picture_to(&mut thing, picture);
+        Self::add_picture_to(&self.dir, &mut thing, picture);
         self.list.insert(i, thing);
         self.save();
         true
@@ -497,79 +576,249 @@ impl Things {
             } else {
                 width as f32 / tw as f32
             };
-            let mut set = TemplateSet::new(Channel::Luma, thing.kind == Kind::Object);
+            let mirrored = thing.kind == Kind::Object;
+            let mut all = TemplateSet::new(Channel::Luma, mirrored);
+            let mut each = Vec::new();
             for picture in &thing.images {
-                if scale == 1.0 {
-                    set.add(picture);
+                let scaled;
+                let picture = if scale == 1.0 {
+                    picture
                 } else {
                     let (w, h) = picture.dimensions();
-                    let scaled = image::imageops::resize(
+                    scaled = image::imageops::resize(
                         picture,
                         ((w as f32 * scale).round() as u32).max(4),
                         ((h as f32 * scale).round() as u32).max(4),
                         image::imageops::FilterType::Triangle,
                     );
-                    set.add(&scaled);
+                    &scaled
+                };
+                // A flat picture is kept out of both, so the indexes agree.
+                if all.add(picture) {
+                    let mut one = TemplateSet::new(Channel::Luma, mirrored);
+                    one.add(picture);
+                    each.push(one);
                 }
             }
             thing.live.poses = Some(Poses {
                 frame_width: width,
                 pictures: thing.images.len(),
-                set,
+                all,
+                each,
             });
+            // The pictures changed: tracks keep their places, but which
+            // picture each was seen as is no longer meaningful.
+            if let Some(tracking) = thing.live.tracking.as_mut() {
+                tracking.seen.clear();
+            }
         }
         thing
             .live
             .poses
             .as_ref()
-            .map(|p| &p.set)
+            .map(|p| &p.all)
             .filter(|s| !s.is_empty())
     }
 
-    /// What `thing` shows in `frame`, finding near misses on the way.
-    fn read_with(thing: &mut Thing, frame: &RgbaImage, near: &mut Vec<RgbaImage>) -> Reading {
+    /// Follow an object across the frame: each track is looked for around
+    /// where it is expected, with the picture it was last seen as (all of
+    /// them when that fails), and one stripe of the frame is swept with
+    /// the picture it was taught from, for newcomers. Confident matches
+    /// feed the tracker; a near miss continuing a confident track becomes
+    /// a new picture of the object; other near misses go to `near`.
+    fn follow_object(
+        thing: &mut Thing,
+        frame: &RgbaImage,
+        now: Instant,
+        near: &mut Vec<RgbaImage>,
+        new_pose: &mut Option<RgbaImage>,
+    ) -> Reading {
         let (fw, fh) = frame.dimensions();
-        let whole = syrup::Rect {
-            x: 0,
-            y: 0,
-            w: fw,
-            h: fh,
+        let empty = Reading::Seen {
+            count: 0,
+            places: Vec::new(),
         };
-        match thing.kind {
-            Kind::Object => {
-                let kept: Vec<SetMatch> = match Self::poses(thing, fw) {
-                    Some(set) => template::find_set(
-                        frame,
-                        whole,
-                        set,
-                        SetSearch {
-                            min_score: NEAR_MISS,
-                            limit: 24,
-                            max_colour_shift: Some(COLOUR_SHIFT),
-                        },
-                    ),
-                    None => Vec::new(),
-                };
-                for f in kept.iter().filter(|f| f.score < OBJECT_MATCH).take(2) {
-                    let b = f.bounds;
-                    near.push(image::imageops::crop_imm(frame, b.x, b.y, b.w, b.h).to_image());
-                }
-                let mut places: Vec<(f32, f32)> = kept
-                    .iter()
-                    .filter(|f| f.score >= OBJECT_MATCH)
-                    .map(|f| {
-                        (
-                            (f.bounds.x + f.bounds.w / 2) as f32 / fw as f32,
-                            (f.bounds.y + f.bounds.h / 2) as f32 / fh as f32,
-                        )
-                    })
-                    .collect();
-                places.sort_by(|a, b| a.0.total_cmp(&b.0));
-                Reading::Seen {
-                    count: places.len(),
-                    places,
+        if Self::poses(thing, fw).is_none() {
+            return empty;
+        }
+        let (tw, th) = thing
+            .live
+            .poses
+            .as_ref()
+            .and_then(|p| p.all.templates().next())
+            .map(|t| (t.width(), t.height()))
+            .unwrap_or((8, 8));
+        let tracking = thing
+            .live
+            .tracking
+            .get_or_insert_with(|| Tracking::new(tw, th));
+        let poses = thing.live.poses.as_ref().expect("prepared above");
+        let near_miss = |limit| SetSearch {
+            min_score: NEAR_MISS,
+            limit,
+            max_colour_shift: Some(COLOUR_SHIFT),
+        };
+        // Every match this frame: where, how well, as which picture.
+        let mut matches: Vec<SetMatch> = Vec::new();
+        let add = |m: SetMatch, matches: &mut Vec<SetMatch>| {
+            let overlaps = matches.iter().any(|k| {
+                2 * k.bounds.x.abs_diff(m.bounds.x) < m.bounds.w.min(k.bounds.w)
+                    && 2 * k.bounds.y.abs_diff(m.bounds.y) < m.bounds.h.min(k.bounds.h)
+            });
+            if !overlaps {
+                matches.push(m);
+            }
+        };
+
+        // 1. Around each track's expected place.
+        let predicted: Vec<(u64, f32, f32, f32, f32)> = tracking
+            .tracker
+            .tracks()
+            .iter()
+            .map(|t| {
+                (
+                    t.id,
+                    t.position.x + t.velocity.x,
+                    t.position.y + t.velocity.y,
+                    t.width,
+                    t.height,
+                )
+            })
+            .collect();
+        for (id, cx, cy, w, h) in predicted {
+            let (mx, my) = ((w * 0.35).max(6.0), (h * 0.35).max(6.0));
+            let x0 = (cx - w / 2.0 - mx).max(0.0) as u32;
+            let y0 = (cy - h / 2.0 - my).max(0.0) as u32;
+            let x1 = ((cx + w / 2.0 + mx).max(0.0) as u32).min(fw);
+            let y1 = ((cy + h / 2.0 + my).max(0.0) as u32).min(fh);
+            if x1 <= x0 || y1 <= y0 {
+                continue;
+            }
+            let window = syrup::Rect {
+                x: x0,
+                y: y0,
+                w: x1 - x0,
+                h: y1 - y0,
+            };
+            let last = tracking.seen.get(&id).copied();
+            let mut found = match last.and_then(|l| poses.each.get(l.picture)) {
+                Some(one) => template::find_set(frame, window, one, near_miss(1)),
+                None => Vec::new(),
+            };
+            if let (Some(l), Some(f)) = (last, found.first_mut()) {
+                // A set of one picture numbers it 0; it is picture `l.picture`.
+                f.picture = l.picture;
+            }
+            if found.is_empty() {
+                found = template::find_set(frame, window, &poses.all, near_miss(1));
+            }
+            for m in found {
+                add(m, &mut matches);
+            }
+        }
+
+        // 2. One stripe of the frame, with the picture it was taught from.
+        //    Each stripe reaches a template's height above its own rows,
+        //    so a thing straddling two stripes is whole in the lower one.
+        let stripes = SWEEP_STRIPES as u32;
+        let stripe = tracking.stripe as u32;
+        tracking.stripe = (tracking.stripe + 1) % SWEEP_STRIPES;
+        let y0 = (fh * stripe / stripes).saturating_sub(th);
+        let y1 = (fh * (stripe + 1) / stripes).min(fh);
+        if y1 > y0 {
+            let band = syrup::Rect {
+                x: 0,
+                y: y0,
+                w: fw,
+                h: y1 - y0,
+            };
+            if let Some(primary) = poses.each.first() {
+                for m in template::find_set(frame, band, primary, near_miss(8)) {
+                    add(m, &mut matches);
                 }
             }
+        }
+
+        // 3. Confident matches feed the tracker; near misses are judged by
+        //    the tracks: continuing a confident one, a new pose; else a
+        //    candidate for the model.
+        let confident: Vec<&SetMatch> =
+            matches.iter().filter(|m| m.score >= OBJECT_MATCH).collect();
+        let detections: Vec<(f32, f32, f32, f32)> = confident
+            .iter()
+            .map(|m| (m.centre.0, m.centre.1, m.bounds.w as f32, m.bounds.h as f32))
+            .collect();
+        let ids = tracking.tracker.assign(&detections);
+        let mut live_ids: Vec<u64> = Vec::new();
+        for (m, id) in confident.iter().zip(ids) {
+            let Some(id) = id else { continue };
+            live_ids.push(id);
+            let entry = tracking.seen.entry(id).or_insert(LastSeen {
+                picture: m.picture,
+                score: m.score,
+                confident: 0,
+            });
+            entry.picture = m.picture;
+            entry.score = m.score;
+            entry.confident = entry.confident.saturating_add(1);
+        }
+        let alive: Vec<u64> = tracking.tracker.tracks().iter().map(|t| t.id).collect();
+        tracking.seen.retain(|id, _| alive.contains(id));
+        for m in matches.iter().filter(|m| m.score < OBJECT_MATCH) {
+            let b = m.bounds;
+            let crop = || image::imageops::crop_imm(frame, b.x, b.y, b.w, b.h).to_image();
+            // The track this near miss sits on, if any: one predicted (not
+            // seen this frame) within half a template of it.
+            let continues = tracking.tracker.tracks().iter().find(|t| {
+                t.is_predicted()
+                    && (t.position.x - m.centre.0).abs() < b.w as f32 * 0.5
+                    && (t.position.y - m.centre.1).abs() < b.h as f32 * 0.5
+            });
+            match continues {
+                Some(track)
+                    if tracking
+                        .seen
+                        .get(&track.id)
+                        .is_some_and(|l| l.confident >= POSE_AFTER)
+                        && thing.images.len() < MAX_PICTURES
+                        && tracking
+                            .pose_added
+                            .is_none_or(|t| now.duration_since(t) >= POSE_EVERY) =>
+                {
+                    tracking.pose_added = Some(now);
+                    // Taken for a new pose: the caller adds it, as it owns
+                    // the pictures on disk.
+                    *new_pose = Some(crop());
+                }
+                _ => near.push(crop()),
+            }
+        }
+        let mut places: Vec<(f32, f32)> = tracking
+            .tracker
+            .tracks()
+            .iter()
+            .filter(|t| !t.is_predicted() && live_ids.contains(&t.id))
+            .map(|t| (t.position.x / fw as f32, t.position.y / fh as f32))
+            .collect();
+        places.sort_by(|a, b| a.0.total_cmp(&b.0));
+        Reading::Seen {
+            count: places.len(),
+            places,
+        }
+    }
+
+    /// What `thing` shows in `frame`, finding near misses on the way, and
+    /// for an object perhaps a new picture of it.
+    fn read_with(
+        thing: &mut Thing,
+        frame: &RgbaImage,
+        now: Instant,
+        near: &mut Vec<RgbaImage>,
+        new_pose: &mut Option<RgbaImage>,
+    ) -> Reading {
+        let (fw, fh) = frame.dimensions();
+        match thing.kind {
+            Kind::Object => Self::follow_object(thing, frame, now, near, new_pose),
             Kind::Indicator => {
                 let region = thing.place.grown(0.5, 0.5).rect(fw, fh);
                 let present = Self::poses(thing, fw).is_some_and(|set| {
@@ -612,8 +861,8 @@ impl Things {
         }
     }
 
-    fn read(thing: &mut Thing, frame: &RgbaImage) -> Reading {
-        Self::read_with(thing, frame, &mut Vec::new())
+    fn read(thing: &mut Thing, frame: &RgbaImage, now: Instant) -> Reading {
+        Self::read_with(thing, frame, now, &mut Vec::new(), &mut None)
     }
 
     /// Look at `frame` for everything learned (each at its own pace).
@@ -622,26 +871,39 @@ impl Things {
         let mut fired = Vec::new();
         for i in 0..self.list.len() {
             let every = match self.list[i].kind {
-                Kind::Object | Kind::Indicator => PICTURE_EVERY,
+                // Followed on every frame, cheaply, around where they are.
+                Kind::Object => Duration::ZERO,
+                Kind::Indicator => PICTURE_EVERY,
                 Kind::Gauge => GAUGE_EVERY,
                 Kind::Number | Kind::Text => TEXT_EVERY,
             };
-            if self.list[i]
-                .live
-                .last_run
-                .is_some_and(|t| now.duration_since(t) < every)
+            if !every.is_zero()
+                && self.list[i]
+                    .live
+                    .last_run
+                    .is_some_and(|t| now.duration_since(t) < every)
             {
                 continue;
             }
             let mut near = Vec::new();
+            let mut new_pose = None;
             let span = match self.list[i].kind {
                 Kind::Object => tracing::trace_span!("sight.things.object"),
                 Kind::Indicator => tracing::trace_span!("sight.things.indicator"),
                 Kind::Gauge => tracing::trace_span!("sight.things.gauge"),
                 Kind::Number | Kind::Text => tracing::trace_span!("sight.things.text"),
             };
-            let reading = span.in_scope(|| Self::read_with(&mut self.list[i], frame, &mut near));
+            let reading = span.in_scope(|| {
+                Self::read_with(&mut self.list[i], frame, now, &mut near, &mut new_pose)
+            });
             let id = self.list[i].id.clone();
+            // A near miss that continued a confident track: another look of
+            // the thing, kept without asking.
+            if let Some(picture) = new_pose {
+                let dir = self.dir.clone();
+                Self::add_picture_to(&dir, &mut self.list[i], picture);
+                self.save();
+            }
             // A few near misses to check, not a flood.
             if self.candidates.len() < 4 && self.list[i].images.len() < MAX_PICTURES {
                 for picture in near.into_iter().take(1) {
@@ -848,31 +1110,34 @@ mod tests {
         assert_eq!(again.list.len(), 1);
         assert_eq!(again.list[0].images.len(), 1);
         let t0 = Instant::now();
-        // None for a while, then two: the alert fires once, after two looks.
-        assert!(again.run(&field(&[]), t0).is_empty());
-        assert!(
-            again
-                .run(
-                    &field(&[(150, 100), (600, 320)]),
-                    t0 + Duration::from_secs(1)
-                )
-                .is_empty()
-        );
-        let fired = again.run(
-            &field(&[(150, 100), (600, 320)]),
-            t0 + Duration::from_secs(2),
-        );
-        assert_eq!(fired.len(), 1);
+        let at = |i: u64| t0 + Duration::from_millis(100 * i);
+        // None for a while (the sweep goes round once, the old track dies),
+        // then two appear: within a sweep both are found, and the alert
+        // fires once, after two looks at them.
+        for i in 0..SWEEP_STRIPES as u64 {
+            assert!(again.run(&field(&[]), at(i)).is_empty());
+        }
+        let two = field(&[(150, 100), (600, 320)]);
+        let mut fired = Vec::new();
+        for i in 8..8 + 2 * SWEEP_STRIPES as u64 {
+            fired.extend(again.run(&two, at(i)));
+        }
+        assert_eq!(fired.len(), 1, "{fired:?}");
         assert_eq!(fired[0].say, "An Orange Mushroom!");
         assert!(
             again.describe()[0].starts_with("Orange Mushroom: 2 on screen (left, right)"),
             "{:?}",
             again.describe()
         );
+        // One goes: its track is dropped after a few frames; no alert.
+        let one = field(&[(150, 100)]);
+        for i in 24..24 + 2 * SWEEP_STRIPES as u64 {
+            assert!(again.run(&one, at(i)).is_empty());
+        }
         assert!(
-            again
-                .run(&field(&[(150, 100)]), t0 + Duration::from_secs(3))
-                .is_empty()
+            again.describe()[0].starts_with("Orange Mushroom: 1 on screen (left)"),
+            "{:?}",
+            again.describe()
         );
         assert!(again.thumbnail("orange-mushroom").is_some());
         assert_eq!(
@@ -880,6 +1145,91 @@ mod tests {
             Some("Orange Mushroom")
         );
         assert!(Things::load(&dir).list.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The mushroom with its stem bent to one side: the same thing in
+    /// another pose, which matches the taught picture only so-so.
+    fn bent_mushroom() -> RgbaImage {
+        RgbaImage::from_fn(36, 34, |x, y| {
+            let (fx, fy) = (x as f32 - 18.0, y as f32 - 12.0);
+            if fy < 4.0 && fx * fx / 280.0 + fy * fy / 120.0 <= 1.0 {
+                if (x / 6 + y / 5) % 3 == 0 {
+                    Rgba([250, 245, 235, 255])
+                } else {
+                    Rgba([240, 120, 30, 255])
+                }
+            } else if fy >= 4.0 && (fx + (fy - 4.0) * 0.55).abs() < 6.5 {
+                Rgba([235, 220, 190, 255])
+            } else {
+                Rgba([70, 140, 210, 255])
+            }
+        })
+    }
+
+    #[test]
+    fn a_near_miss_on_a_confident_track_becomes_a_new_pose() {
+        let dir = temp_dir("pose");
+        let mut things = Things::load(&dir);
+        let frame = field(&[(300, 200)]);
+        let place = NBox::from_pixels(296, 196, 44, 42, 800, 450);
+        things
+            .learn(&frame, teach("Orange Mushroom", Kind::Object, place, None))
+            .unwrap();
+        let t0 = Instant::now();
+        // Seen confidently for a few frames, standing still.
+        for i in 0..4u64 {
+            things.run(&frame, t0 + Duration::from_millis(100 * i));
+        }
+        assert_eq!(things.list[0].images.len(), 1);
+        // Then it bends: a near miss where the track expects it.
+        let mut bent = field(&[]);
+        image::imageops::replace(&mut bent, &bent_mushroom(), 300, 200);
+        {
+            // Make sure the bent one is a near miss, not a match or a stranger.
+            let mut set = TemplateSet::new(Channel::Luma, true);
+            set.add(&things.list[0].images[0]);
+            let whole = syrup::Rect {
+                x: 0,
+                y: 0,
+                w: 800,
+                h: 450,
+            };
+            let found = template::find_set(
+                &bent,
+                whole,
+                &set,
+                SetSearch {
+                    min_score: 0.3,
+                    limit: 1,
+                    max_colour_shift: Some(COLOUR_SHIFT),
+                },
+            );
+            let score = found.first().map(|f| f.score).unwrap_or(0.0);
+            assert!(
+                (NEAR_MISS..OBJECT_MATCH).contains(&score),
+                "the bent mushroom should be a near miss, scored {score}"
+            );
+        }
+        things.run(&bent, t0 + Duration::from_millis(400));
+        assert_eq!(things.list[0].images.len(), 2, "the new pose was kept");
+        assert!(
+            things.candidates.is_empty(),
+            "nothing for the model to judge"
+        );
+        assert_eq!(Things::load(&dir).list[0].images.len(), 2);
+        // And from now on the bent one is found outright.
+        let mut found = false;
+        for i in 5..5 + 2 * SWEEP_STRIPES as u64 {
+            things.run(&bent, t0 + Duration::from_millis(100 * i));
+            if matches!(
+                things.list[0].live.reading,
+                Some(Reading::Seen { count: 1, .. })
+            ) {
+                found = true;
+            }
+        }
+        assert!(found, "{:?}", things.list[0].live.reading);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

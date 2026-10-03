@@ -1332,7 +1332,11 @@ fn run(options: Options) -> Result<(), String> {
     let mut ai_note = String::from("no OpenAI key: simple answers, Windows voice");
     let latest = Arc::new(Latest::default());
     let (news_tx, news_rx) = mpsc::channel::<News>();
-    let mut sight: Option<Arc<Mutex<Sight>>> = None;
+    // What it learned about this screen: the HUD, found from the pixels
+    // and read in the game's own font, with or without a model to ask.
+    let learned = Arc::new(Mutex::new(Sight::load(&settings_dir.join("learned"))));
+    let sight: Option<Arc<Mutex<Sight>>> = Some(Arc::clone(&learned));
+    let mut teacher_started = false;
     let mut live_service: Option<Arc<LiveService>> = None;
     let mut lookups: Option<(ai::lookup::Lookups, mpsc::Receiver<ai::lookup::Found>)> = None;
     let worker = match openai_key(&options, &settings_dir) {
@@ -1374,7 +1378,6 @@ fn run(options: Options) -> Result<(), String> {
                             learned_tx.clone(),
                         );
                     }
-                    let learned = Arc::new(Mutex::new(Sight::load(&settings_dir.join("learned"))));
                     let eye_models: Vec<String> = match &options.model {
                         Some(m) => vec![m.clone()],
                         None => ai::openai::VISION_MODELS
@@ -1394,6 +1397,7 @@ fn run(options: Options) -> Result<(), String> {
                         Arc::clone(&latest),
                         news_tx.clone(),
                     );
+                    teacher_started = true;
                     if options.live {
                         let chat = Arc::new(OpenAi::new(
                             &key,
@@ -1420,7 +1424,6 @@ fn run(options: Options) -> Result<(), String> {
                         web: options.web,
                         learning: Some(learning.clone()),
                     };
-                    sight = Some(learned);
                     lookups = Some(ai::lookup::Lookups::new(
                         Arc::new(OpenAi::new(
                             &key,
@@ -1476,6 +1479,16 @@ fn run(options: Options) -> Result<(), String> {
         }
         None => None,
     };
+    // Without a model, the teacher still labels the HUD's font from the OCR
+    // engine.
+    if !teacher_started {
+        teaching::spawn(
+            None,
+            Arc::clone(&learned),
+            Arc::clone(&latest),
+            news_tx.clone(),
+        );
+    }
 
     let sapi = if options.voice && worker.is_none() {
         Voice::start(options.rate).ok()

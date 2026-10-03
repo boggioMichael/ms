@@ -136,6 +136,8 @@ struct FieldState {
     /// seen, so the line was presumably there).
     unread: u32,
     last_sample: Option<Instant>,
+    /// Times a labeller tried since the last example was learned.
+    attempts: u32,
     /// Frames in a row the number and the bar disagreed.
     disagreements: u32,
 }
@@ -314,7 +316,25 @@ impl Numbers {
     /// A labeller tried to read `field`'s line just now (whatever came of
     /// it): not again for a while.
     pub fn attempted(&mut self, field: Field, now: Instant) {
-        self.state.entry(field).or_default().last_sample = Some(now);
+        let state = self.state.entry(field).or_default();
+        state.last_sample = Some(now);
+        state.attempts = state.attempts.saturating_add(1);
+    }
+
+    /// Whether `field` still wants an example after the OCR engine has had
+    /// its tries: nothing learned for it, or the glyphs cannot read it, and
+    /// the engine was asked at least twice without an example coming of it
+    /// (or was never there to ask). The sight asks the model then.
+    pub fn wants_label(&self, field: Field) -> bool {
+        let kept = self.samples.iter().filter(|s| s.field == field).count();
+        if kept >= MAX_SAMPLES {
+            return false;
+        }
+        let state = self.state.get(&field);
+        let unread = state.is_none_or(|s| s.unread > 0);
+        let tried =
+            state.is_none_or(|s| s.attempts >= 2 || !crate::vision::ocr::is_ocr_available());
+        (!self.knows(field) || unread) && tried
     }
 
     /// The region a labeller should read `field`'s text from: the line
@@ -378,6 +398,7 @@ impl Numbers {
                             .to_image();
                     self.keep(field, &label, crop, line, from);
                     self.lines.insert(field, line);
+                    self.state.entry(field).or_default().attempts = 0;
                     return Ok(format!(
                         "learned {count} glyphs of \"{label}\" ({:?} the {} bar, from the {from}); the font knows {} characters",
                         line,
@@ -501,7 +522,7 @@ pub(crate) mod tests {
                 mp.0 as f32 / mp.1 as f32,
                 [40, 110, 235],
             ),
-            (740, format!("EXP[{exp:.2}%]"), exp / 100.0, [200, 220, 40]),
+            (700, format!("EXP[{exp:.2}%]"), exp / 100.0, [200, 220, 40]),
         ];
         for (x0, text, fill, rgb) in specs {
             let (y0, w, h) = (690u32, 260u32, 10u32);
