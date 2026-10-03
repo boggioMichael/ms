@@ -1563,7 +1563,10 @@ mod tests {
         // The model saw nothing: the next look is not at once, and each
         // such look waits twice as long.
         let first = sight.verified(&blank, &HudValues::default());
-        assert!(first.contains("no HUD in view; the next look waits 120 s"), "{first}");
+        assert!(
+            first.contains("no HUD in view; the next look waits 120 s"),
+            "{first}"
+        );
         sight.observe(&blank, t0 + LOST_FOR + Duration::from_secs(1));
         assert_eq!(sight.wants(1280, 720), None, "held back");
         sight.asked = Some(Instant::now() - Duration::from_secs(121));
