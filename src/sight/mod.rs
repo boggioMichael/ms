@@ -174,7 +174,21 @@ pub struct Sight {
     label_backoff: Duration,
     /// When a bar's track was last refitted from the number beside it.
     refit_at: Option<Instant>,
+    /// The bars as measured on the last frame, to see one jump.
+    last_bars: [Option<f32>; 3],
+    /// Pictures of the status strip saved for a look at a misread bar:
+    /// how many so far, and when the last was.
+    debug_saved: u32,
+    debug_at: Option<Instant>,
 }
+
+/// A bar jumping by this much between two frames is a misread (or a
+/// level-up, which the EXP bar does once a session at most): the status
+/// strip is saved under `learned/debug/` to be looked at, a few times a
+/// session and not more often than once a minute.
+const JUMP: f32 = 45.0;
+const DEBUG_PICTURES: u32 = 6;
+const DEBUG_EVERY: Duration = Duration::from_secs(60);
 
 /// How long the bars may be missing before the HUD is looked for again.
 const LOST_FOR: Duration = Duration::from_secs(20);
@@ -211,6 +225,9 @@ impl Sight {
             label_backoff: ASK_BACKOFF,
             ask_backoff: ASK_BACKOFF,
             refit_at: None,
+            last_bars: [None; 3],
+            debug_saved: 0,
+            debug_at: None,
         }
     }
 
@@ -426,6 +443,8 @@ impl Sight {
         }
         let bars = tracing::trace_span!("sight.bars").entered();
         let mut bands: [Option<NBox>; 3] = [None; 3];
+        // A picture to save for a look at a bar that jumped, if one did.
+        let mut debug: Option<(Option<NBox>, String)> = None;
         if let Some(layout) = self
             .layout
             .as_ref()
@@ -434,6 +453,16 @@ impl Sight {
             seen.hp = layout.hp.as_ref().and_then(|b| b.measure(frame));
             seen.mp = layout.mp.as_ref().and_then(|b| b.measure(frame));
             seen.exp = layout.exp.as_ref().and_then(|b| b.measure(frame));
+            // A bar that jumped since the last frame: a picture for a look.
+            let now_bars = [seen.hp, seen.mp, seen.exp];
+            let jumped = now_bars
+                .iter()
+                .zip(self.last_bars)
+                .zip(["hp", "mp", "exp"])
+                .find(|((a, b), _)| matches!((a, b), (Some(a), Some(b)) if (a - b).abs() >= JUMP))
+                .map(|(_, name)| name);
+            self.last_bars = now_bars;
+            debug = jumped.map(|name| (layout.status, format!("{name}-jump")));
             bands = [
                 layout.hp.as_ref().map(|b| b.band),
                 layout.mp.as_ref().map(|b| b.band),
@@ -452,6 +481,9 @@ impl Sight {
             } else {
                 self.lost_since = None;
             }
+        }
+        if let Some((status, what)) = debug {
+            self.save_debug(frame, status, &what, now);
         }
         drop(bars);
         // The numbers in the game's own font, where the font is known,
@@ -789,6 +821,7 @@ impl Sight {
         let wanted_labels = self.still_unlabelled();
         let mut notes = Vec::new();
         let mut off = 0;
+        let mut disagreed: Vec<String> = Vec::new();
         if let Some(layout) = self.layout.as_mut() {
             for (name, bar, percent) in [
                 ("HP", layout.hp.as_mut(), v.hp_percent()),
@@ -803,6 +836,7 @@ impl Sight {
                     Some(m) if (m - percent).abs() > 12.0 => {
                         off += 1;
                         notes.push(format!("{name} bar said {m:.0}%, the game {percent:.0}%"));
+                        disagreed.push(name.to_ascii_lowercase());
                         false
                     }
                     None if percent > 10.0 => {
@@ -819,6 +853,11 @@ impl Sight {
                     bar.reading(frame, percent);
                 }
             }
+        }
+        if let Some(name) = disagreed.first()
+            && let Some(status) = self.layout.as_ref().map(|l| l.status)
+        {
+            self.save_debug(frame, status, &format!("{name}-disagrees"), Instant::now());
         }
         if let (Some(old), Some(new)) = (self.facts.level, v.level)
             && old != new
@@ -853,6 +892,30 @@ impl Sight {
         } else {
             format!("read {summary}; {}", notes.join("; "))
         }
+    }
+
+    /// Save the status strip of `frame` under `learned/debug/` as
+    /// `<what>-<n>.png`, for a look at a bar that was misread: a few a
+    /// session, not more often than once a minute. (`status`: the strip,
+    /// as a fraction of the frame; the whole frame when None.)
+    fn save_debug(&mut self, frame: &RgbaImage, status: Option<NBox>, what: &str, now: Instant) {
+        if self.debug_saved >= DEBUG_PICTURES
+            || self
+                .debug_at
+                .is_some_and(|t| now.duration_since(t) < DEBUG_EVERY)
+        {
+            return;
+        }
+        self.debug_saved += 1;
+        self.debug_at = Some(now);
+        let (fw, fh) = frame.dimensions();
+        let (x, y, w, h) = status.map(|s| s.pixels(fw, fh)).unwrap_or((0, 0, fw, fh));
+        let w = w.min(fw.saturating_sub(x)).max(1);
+        let h = h.min(fh.saturating_sub(y)).max(1);
+        let crop = image::imageops::crop_imm(frame, x, y, w, h).to_image();
+        let dir = self.dir.join("debug");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = crop.save(dir.join(format!("{what}-{}.png", self.debug_saved)));
     }
 
     /// The player says `what` is `value`. Returns what was done, for the
@@ -1280,6 +1343,31 @@ mod tests {
             assert_eq!(seen.hp, Some(100.0));
         }
         assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_bar_that_jumps_leaves_a_picture_to_look_at_now_and_then() {
+        let dir = temp_dir("jump");
+        let mut sight = Sight::load(&dir);
+        let frame = status_bar_exp(60.0, 100.0, 19.0);
+        let mut c = calibration();
+        c.exp = Some(NBox::new(0.0, 706.0 / 720.0, 1.0, 716.0 / 720.0));
+        c.values.exp_percent = Some(19.0);
+        sight.calibrated(&frame, &c).unwrap();
+        let t0 = Instant::now();
+        let first = sight.observe(&frame, t0);
+        assert!((first.exp.unwrap() - 19.0).abs() < 2.0, "{first:?}");
+        // Misread as nearly full for a frame: the strip is saved once…
+        sight.observe(
+            &status_bar_exp(60.0, 100.0, 99.0),
+            t0 + Duration::from_millis(100),
+        );
+        assert!(dir.join("debug").join("exp-jump-1.png").is_file());
+        // …and the fall back is not saved again within the minute.
+        sight.observe(&frame, t0 + Duration::from_millis(200));
+        assert!(!dir.join("debug").join("exp-jump-2.png").exists());
+        assert_eq!(sight.debug_saved, 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
