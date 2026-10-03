@@ -1019,6 +1019,7 @@ dependencies = [
  "image",
  "minifb",
  "qrcode",
+ "rayon",
  "rcgen",
  "ring",
  "rustls",
@@ -1710,7 +1711,7 @@ dependencies = [
 [[package]]
 name = "syrup"
 version = "0.1.0"
-source = "git+https://github.com/boggioMichael/syrup?rev=37503142248b4186ed4591caf4f1aceea7ab3cb5#37503142248b4186ed4591caf4f1aceea7ab3cb5"
+source = "git+https://github.com/boggioMichael/syrup?rev=aa26d0fb9ad39827ed66ac60938c6786daed4841#aa26d0fb9ad39827ed66ac60938c6786daed4841"
 dependencies = [
  "block2",
  "image",

@@ -14,6 +14,8 @@
 //! - **app**: The standalone companion's screen and session files (`maplesyrup` binary).
 //! - **sight**: What MapleSyrup learned about the player's own screen (from a vision model and from
 //!   the player): where the HUD is, the character's facts, and things it was taught to recognise.
+//! - **perceive**: One frame through the companion's eyes — the detectors it still needs, then the
+//!   sight — the same function for the companion and for `vision_bench`.
 
 pub mod ai;
 pub mod app;
@@ -25,6 +27,7 @@ pub mod hud;
 pub mod knowledge;
 pub mod logging;
 pub mod observe;
+pub mod perceive;
 pub mod phone;
 pub mod platform;
 pub mod sight;

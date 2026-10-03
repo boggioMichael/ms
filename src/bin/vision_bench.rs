@@ -1,8 +1,8 @@
 //! The companion's per-frame vision path, timed stage by stage.
 //!
 //! Runs exactly what the `maplesyrup` binary runs on every captured frame
-//! (`PerceptionPipeline::detect_some` → `Observation::from_world` →
-//! `Sight::observe` + `Sight::apply`), minus capture and the phone, over a
+//! (`ms::perceive::perceive`: the detectors still needed → the sight's
+//! observation), minus capture and the phone, over a
 //! still frame and over frames from a gameplay recording, each at the
 //! window sizes asked for, and reports every stage's count, mean, median
 //! and 95th percentile from the `TRACE` spans the hot path opens.
@@ -43,7 +43,7 @@ use tracing_subscriber::prelude::*;
 
 use ms::ai::images::NBox;
 use ms::capture::{Captured, GameCapture};
-use ms::companion::Observation;
+use ms::perceive::{Look, perceive};
 use ms::sight::Sight;
 use ms::sight::numbers::Field;
 use ms::sight::teacher::{Calibration, HudValues};
@@ -415,18 +415,22 @@ fn run(
         // The sight paces its searches by the clock; a simulated one runs
         // them at the cadence of a real session rather than of this loop.
         let clock = start + period * i as u32;
-        let frame_span = tracing::trace_span!("frame").entered();
-        let world = tracing::trace_span!("vision")
-            .in_scope(|| pipeline.detect_some(frame, i as u64 + 1, wanted));
-        let mut obs =
-            tracing::trace_span!("observation").in_scope(|| Observation::from_world(name, &world));
-        {
-            let _sight_span = tracing::trace_span!("sight").entered();
-            let seen = sight.observe(frame, clock);
-            sight.apply(&mut obs, &seen);
-        }
-        drop(frame_span);
-        std::hint::black_box(&obs);
+        let perceived = {
+            let _frame_span = tracing::trace_span!("frame").entered();
+            perceive(
+                &mut pipeline,
+                Some(&mut sight),
+                wanted,
+                &Look {
+                    title: name,
+                    frame,
+                    frame_id: i as u64 + 1,
+                    now: clock,
+                    in_view: true,
+                },
+            )
+        };
+        std::hint::black_box(&perceived.obs);
         queued += sight.things.candidates.len();
         sight.things.candidates.clear();
     }

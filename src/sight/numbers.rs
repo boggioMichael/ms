@@ -135,6 +135,9 @@ struct FieldState {
     /// Frames in a row the glyphs could not read it (while the bar could be
     /// seen, so the line was presumably there).
     unread: u32,
+    /// Times the glyphs were asked, for the tests.
+    #[cfg(test)]
+    tries: u32,
     last_sample: Option<Instant>,
     /// Times a labeller tried since the last example was learned.
     attempts: u32,
@@ -144,6 +147,13 @@ struct FieldState {
 
 /// Examples kept per field; the oldest goes when a new one comes.
 const MAX_SAMPLES: usize = 8;
+/// After this many frames in a row unread, a line is tried every
+/// `UNREAD_EVERY` frames rather than every frame: a line that cannot be
+/// read (covered, blurred, not where it was) costs the most to try, as the
+/// reader works hardest on ink it cannot make out. The first frame it
+/// reads again puts it back on every frame.
+const UNREAD_SLOWLY_AFTER: u32 = 10;
+const UNREAD_EVERY: u32 = 5;
 /// How often a field that cannot be read asks for a new example.
 const SAMPLE_EVERY: Duration = Duration::from_secs(3);
 /// How far a label's number may be from the bar's fill to be believed.
@@ -282,8 +292,16 @@ impl Numbers {
         if region.w < 8 || region.h < 6 {
             return None;
         }
-        let reading = self.font.read(frame, region);
         let state = self.state.entry(field).or_default();
+        if state.unread >= UNREAD_SLOWLY_AFTER && !state.unread.is_multiple_of(UNREAD_EVERY) {
+            state.unread = state.unread.saturating_add(1);
+            return None;
+        }
+        #[cfg(test)]
+        {
+            state.tries += 1;
+        }
+        let reading = self.font.read(frame, region);
         let read = reading.value.and_then(|r| {
             parse(field, &r.text).map(|value| Read {
                 value,
@@ -625,6 +643,54 @@ pub(crate) mod tests {
         again.forget();
         assert_eq!(again.glyphs(), 0);
         assert!(!dir.join("font/hp-1.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_line_that_cannot_be_read_is_tried_less_often_until_it_reads() {
+        let dir = temp_dir("slowly");
+        let mut numbers = Numbers::load(&dir);
+        let now = Instant::now();
+        let (frame, bands) = hud((400, 400), (1291, 1351), 37.51);
+        numbers
+            .learn(&frame, Field::Hp, &bands[0], "HP [400/400]", "ocr", now)
+            .unwrap();
+        // Digits the font does not know: unreadable, frame after frame.
+        let (other, bands) = hud((315, 400), (1291, 1351), 37.51);
+        let tries = |n: &Numbers| n.state.get(&Field::Hp).map_or(0, |s| s.tries);
+        let before = tries(&numbers);
+        for _ in 0..UNREAD_SLOWLY_AFTER {
+            assert!(numbers.read(&other, Field::Hp, &bands[0]).is_none());
+        }
+        assert_eq!(
+            tries(&numbers) - before,
+            UNREAD_SLOWLY_AFTER,
+            "every frame at first"
+        );
+        let before = tries(&numbers);
+        for _ in 0..UNREAD_EVERY * 4 {
+            assert!(numbers.read(&other, Field::Hp, &bands[0]).is_none());
+        }
+        assert_eq!(
+            tries(&numbers) - before,
+            4,
+            "then one frame in {UNREAD_EVERY}"
+        );
+        // The line reads again: back to every frame from the next one.
+        let (readable, bands) = hud((400, 400), (1291, 1351), 37.51);
+        let mut read = None;
+        for _ in 0..UNREAD_EVERY {
+            read = numbers.read(&readable, Field::Hp, &bands[0]);
+            if read.is_some() {
+                break;
+            }
+        }
+        assert!(read.is_some(), "read within {UNREAD_EVERY} frames");
+        let before = tries(&numbers);
+        for _ in 0..3 {
+            assert!(numbers.read(&readable, Field::Hp, &bands[0]).is_some());
+        }
+        assert_eq!(tries(&numbers) - before, 3);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

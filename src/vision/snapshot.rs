@@ -73,6 +73,22 @@ impl Detectors {
         panels: false,
         footholds: false,
     };
+
+    /// Nothing: a frame the sight answers for by itself.
+    pub const NONE: Detectors = Detectors {
+        hud: false,
+        hud_text: false,
+        motion: false,
+        dialog: false,
+        panels: false,
+        footholds: false,
+    };
+
+    /// Is the HUD's geometry the only thing asked for — the companion's
+    /// own need, which the sight can answer once it sees the HUD?
+    pub fn only_the_hud(&self) -> bool {
+        *self == Detectors::HUD
+    }
 }
 
 impl Default for Detectors {

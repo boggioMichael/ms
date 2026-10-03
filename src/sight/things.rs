@@ -31,8 +31,9 @@ use std::time::{Duration, Instant};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 
+use rayon::prelude::*;
 use syrup::bars::BarModel;
-use syrup::template::{self, SetMatch, SetSearch, TemplateSet};
+use syrup::template::{self, Prepared, SetMatch, SetSearch, TemplateSet};
 use syrup::threshold::Channel;
 use syrup::tracking::ObjectTracker;
 
@@ -234,8 +235,6 @@ struct Tracking {
     tracker: ObjectTracker,
     /// Per track: which picture it was last seen as, and how well.
     seen: HashMap<u64, LastSeen>,
-    /// The stripe of the frame the sweep searches next.
-    stripe: usize,
     /// When a near miss was last taken for a new pose.
     pose_added: Option<Instant>,
 }
@@ -257,7 +256,6 @@ impl Tracking {
                 TRACK_GRACE,
             ),
             seen: HashMap::new(),
-            stripe: 0,
             pose_added: None,
         }
     }
@@ -278,6 +276,9 @@ impl Tracking {
 /// The sweep of the whole frame for newcomers takes this many frames (a
 /// little over a second at the companion's frame rate).
 const SWEEP_STRIPES: usize = 12;
+/// How far, in pixels, a tracked object is looked for around where its
+/// track expects it before the window around it is searched.
+const TRACK_RADIUS: u32 = 3;
 /// A near miss is taken for a new pose when it continues a track seen this
 /// confidently for this many frames, and not more often than this.
 const POSE_AFTER: u32 = 3;
@@ -320,6 +321,9 @@ pub struct Things {
     dir: PathBuf,
     /// Near misses waiting to be checked (a few at a time).
     pub candidates: VecDeque<Candidate>,
+    /// The stripe of the frame the next frame's sweep searches, for every
+    /// object alike: one band of the frame prepared once, searched by all.
+    sweep: usize,
 }
 
 /// How good a match must be, and the band of near misses below it.
@@ -386,6 +390,7 @@ impl Things {
             list,
             dir: dir.to_path_buf(),
             candidates: VecDeque::new(),
+            sweep: 0,
         }
     }
 
@@ -628,11 +633,13 @@ impl Things {
     /// a new picture of the object; other near misses go to `near`.
     fn follow_object(
         thing: &mut Thing,
-        frame: &RgbaImage,
+        prepared: &Prepared<'_>,
         now: Instant,
+        stripe: usize,
         near: &mut Vec<RgbaImage>,
         new_pose: &mut Option<RgbaImage>,
     ) -> Reading {
+        let frame = prepared.image();
         let (fw, fh) = frame.dimensions();
         let empty = Reading::Seen {
             count: 0,
@@ -671,6 +678,7 @@ impl Things {
         };
 
         // 1. Around each track's expected place.
+        let tracks_span = tracing::trace_span!("sight.things.object.tracks").entered();
         let predicted: Vec<(u64, f32, f32, f32, f32)> = tracking
             .tracker
             .tracks()
@@ -701,28 +709,50 @@ impl Things {
                 h: y1 - y0,
             };
             let last = tracking.seen.get(&id).copied();
-            let mut found = match last.and_then(|l| poses.each.get(l.picture)) {
-                Some(one) => template::find_set(frame, window, one, near_miss(1)),
-                None => Vec::new(),
-            };
-            if let (Some(l), Some(f)) = (last, found.first_mut()) {
-                // A set of one picture numbers it 0; it is picture `l.picture`.
-                f.picture = l.picture;
+            // Where the track expects it, at full resolution, with the
+            // pose it was last seen as and then with every pose: the cheap
+            // look that is right most frames. Then the window around it,
+            // with every pose. (A set of one picture numbers it 0; it is
+            // picture `l.picture`.)
+            let own = last.and_then(|l| poses.each.get(l.picture));
+            let mut found: Option<(SetMatch, bool)> = None;
+            if let Some(one) = own {
+                found =
+                    template::find_set_near(prepared, one, (cx, cy), TRACK_RADIUS, near_miss(1))
+                        .map(|m| (m, true));
             }
-            if found.is_empty() {
-                found = template::find_set(frame, window, &poses.all, near_miss(1));
+            if found.is_none() {
+                found = template::find_set_near(
+                    prepared,
+                    &poses.all,
+                    (cx, cy),
+                    TRACK_RADIUS,
+                    near_miss(1),
+                )
+                .map(|m| (m, false));
             }
-            for m in found {
+            if found.is_none() {
+                found = template::find_set_in(prepared, window, &poses.all, near_miss(1))
+                    .into_iter()
+                    .next()
+                    .map(|m| (m, false));
+            }
+            if let Some((mut m, from_own)) = found {
+                if from_own && let Some(l) = last {
+                    m.picture = l.picture;
+                }
                 add(m, &mut matches);
             }
         }
 
+        drop(tracks_span);
+
         // 2. One stripe of the frame, with the picture it was taught from.
         //    Each stripe reaches a template's height above its own rows,
         //    so a thing straddling two stripes is whole in the lower one.
+        let sweep_span = tracing::trace_span!("sight.things.object.sweep").entered();
         let stripes = SWEEP_STRIPES as u32;
-        let stripe = tracking.stripe as u32;
-        tracking.stripe = (tracking.stripe + 1) % SWEEP_STRIPES;
+        let stripe = (stripe % SWEEP_STRIPES) as u32;
         let y0 = (fh * stripe / stripes).saturating_sub(th);
         let y1 = (fh * (stripe + 1) / stripes).min(fh);
         if y1 > y0 {
@@ -733,11 +763,12 @@ impl Things {
                 h: y1 - y0,
             };
             if let Some(primary) = poses.each.first() {
-                for m in template::find_set(frame, band, primary, near_miss(8)) {
+                for m in template::find_set_in(prepared, band, primary, near_miss(8)) {
                     add(m, &mut matches);
                 }
             }
         }
+        drop(sweep_span);
 
         // 3. Confident matches feed the tracker; near misses are judged by
         //    the tracks: continuing a confident one, a new pose; else a
@@ -811,19 +842,21 @@ impl Things {
     /// for an object perhaps a new picture of it.
     fn read_with(
         thing: &mut Thing,
-        frame: &RgbaImage,
+        prepared: &Prepared<'_>,
         now: Instant,
+        stripe: usize,
         near: &mut Vec<RgbaImage>,
         new_pose: &mut Option<RgbaImage>,
     ) -> Reading {
+        let frame = prepared.image();
         let (fw, fh) = frame.dimensions();
         match thing.kind {
-            Kind::Object => Self::follow_object(thing, frame, now, near, new_pose),
+            Kind::Object => Self::follow_object(thing, prepared, now, stripe, near, new_pose),
             Kind::Indicator => {
                 let region = thing.place.grown(0.5, 0.5).rect(fw, fh);
                 let present = Self::poses(thing, fw).is_some_and(|set| {
-                    !template::find_set(
-                        frame,
+                    !template::find_set_in(
+                        prepared,
                         region,
                         set,
                         SetSearch {
@@ -862,15 +895,24 @@ impl Things {
     }
 
     fn read(thing: &mut Thing, frame: &RgbaImage, now: Instant) -> Reading {
-        Self::read_with(thing, frame, now, &mut Vec::new(), &mut None)
+        let prepared = Prepared::new(frame);
+        Self::read_with(thing, &prepared, now, 0, &mut Vec::new(), &mut None)
     }
 
     /// Look at `frame` for everything learned (each at its own pace).
     /// Returns the alerts that fired.
     pub fn run(&mut self, frame: &RgbaImage, now: Instant) -> Vec<Fired> {
-        let mut fired = Vec::new();
-        for i in 0..self.list.len() {
-            let every = match self.list[i].kind {
+        // The frame prepared once for every search of it this frame, and
+        // the one stripe every object sweeps.
+        let prepared = Prepared::new(frame);
+        let stripe = self.sweep;
+        self.sweep = (self.sweep + 1) % SWEEP_STRIPES;
+        // Every thing that is due is looked for, each on its own worker
+        // thread: the things are independent, and the frame is shared. (On
+        // a machine with one worker, right here: a hop to another thread
+        // would cost without buying anything.)
+        let look = |thing: &mut Thing| -> Option<(Reading, Vec<RgbaImage>, Option<RgbaImage>)> {
+            let every = match thing.kind {
                 // Followed on every frame, cheaply, around where they are.
                 Kind::Object => Duration::ZERO,
                 Kind::Indicator => PICTURE_EVERY,
@@ -878,24 +920,45 @@ impl Things {
                 Kind::Number | Kind::Text => TEXT_EVERY,
             };
             if !every.is_zero()
-                && self.list[i]
+                && thing
                     .live
                     .last_run
                     .is_some_and(|t| now.duration_since(t) < every)
             {
-                continue;
+                return None;
             }
             let mut near = Vec::new();
             let mut new_pose = None;
-            let span = match self.list[i].kind {
+            let span = match thing.kind {
                 Kind::Object => tracing::trace_span!("sight.things.object"),
                 Kind::Indicator => tracing::trace_span!("sight.things.indicator"),
                 Kind::Gauge => tracing::trace_span!("sight.things.gauge"),
                 Kind::Number | Kind::Text => tracing::trace_span!("sight.things.text"),
             };
             let reading = span.in_scope(|| {
-                Self::read_with(&mut self.list[i], frame, now, &mut near, &mut new_pose)
+                Self::read_with(thing, &prepared, now, stripe, &mut near, &mut new_pose)
             });
+            Some((reading, near, new_pose))
+        };
+        let pool = crate::util::pool::pool();
+        let looked: Vec<(usize, Reading, Vec<RgbaImage>, Option<RgbaImage>)> =
+            if pool.current_num_threads() > 1 {
+                pool.install(|| {
+                    self.list
+                        .par_iter_mut()
+                        .enumerate()
+                        .filter_map(|(i, thing)| look(thing).map(|(r, n, p)| (i, r, n, p)))
+                        .collect()
+                })
+            } else {
+                self.list
+                    .iter_mut()
+                    .enumerate()
+                    .filter_map(|(i, thing)| look(thing).map(|(r, n, p)| (i, r, n, p)))
+                    .collect()
+            };
+        let mut fired = Vec::new();
+        for (i, reading, near, new_pose) in looked {
             let id = self.list[i].id.clone();
             // A near miss that continued a confident track: another look of
             // the thing, kept without asking.

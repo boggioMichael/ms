@@ -349,6 +349,18 @@ impl Sight {
 
     /// One frame: the bars where they were learned, the numbers beside
     /// them, the EXP bar's wrap, and the things the player taught.
+    /// Does the sight see the HUD on a screen this shape: a layout that
+    /// fits it, whose bars it measured the last time it looked? Then its
+    /// bars and numbers answer for the HUD and the geometry detector can
+    /// rest ([`crate::perceive`]).
+    pub fn sees_hud(&self, width: u32, height: u32) -> bool {
+        self.lost_since.is_none()
+            && self
+                .layout
+                .as_ref()
+                .is_some_and(|l| l.fits(width, height) && (l.hp.is_some() || l.mp.is_some()))
+    }
+
     pub fn observe(&mut self, frame: &RgbaImage, now: Instant) -> Seen {
         let mut seen = Seen::default();
         // No HUD known for a screen this shape: the pixels look for it,
