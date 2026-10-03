@@ -344,6 +344,15 @@ fn now_text() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
+/// What the updater has to say: to the player (a new version fetched, a
+/// version ready) or for the log alone (a look that failed; the channel may
+/// simply have nothing published yet).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    Said(String),
+    Noted(String),
+}
+
 /// What the start of the program should do.
 #[derive(Debug, PartialEq)]
 pub enum Start {
@@ -645,8 +654,8 @@ pub struct Updater {
     status: Mutex<Status>,
     /// Woken to look now.
     wake: (Mutex<bool>, Condvar),
-    /// What it did, for the session log.
-    log: Mutex<Option<mpsc::Sender<String>>>,
+    /// What it did, for the session log and the player.
+    log: Mutex<Option<mpsc::Sender<Event>>>,
 }
 
 impl Updater {
@@ -740,16 +749,25 @@ impl Updater {
         condvar.notify_all();
     }
 
+    /// A line for the player (and the logs).
     fn say(&self, line: String) {
         self.store.log(&line);
         if let Some(tx) = self.log.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-            let _ = tx.send(line);
+            let _ = tx.send(Event::Said(line));
+        }
+    }
+
+    /// A line for the logs alone.
+    fn note(&self, line: String) {
+        self.store.log(&line);
+        if let Some(tx) = self.log.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            let _ = tx.send(Event::Noted(line));
         }
     }
 
     /// The checker's thread: a look after the start, then every hour, or
     /// when woken; looks on its own only while `auto`.
-    pub fn spawn(self: Arc<Self>, log: mpsc::Sender<String>) {
+    pub fn spawn(self: Arc<Self>, log: mpsc::Sender<Event>) {
         *self.log.lock().unwrap_or_else(|e| e.into_inner()) = Some(log);
         let _ = std::thread::Builder::new()
             .name("updates".into())
@@ -777,7 +795,7 @@ impl Updater {
                         }
                         Err(why) => {
                             self.set_phase(Phase::Failed(why.clone()));
-                            self.say(format!("update check failed: {why}"));
+                            self.note(format!("update check failed: {why}"));
                             wait = retry;
                             retry = (retry * 2).min(CHECK_EVERY);
                         }

@@ -1435,7 +1435,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     }
     // New versions: looked for in the background and staged for the next
     // start, unless asked not to (here, or on the phone, for good).
-    let (update_tx, update_rx) = mpsc::channel::<String>();
+    let (update_tx, update_rx) = mpsc::channel::<ms::update::Event>();
     let updater = Arc::new(ms::update::Updater::new(
         &settings_dir,
         env!("CARGO_PKG_VERSION"),
@@ -1909,9 +1909,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         let now = start.elapsed().as_secs_f64();
         // What the updater did; and this version, once it has run long
         // enough, is kept for good (the previous one let go).
-        while let Ok(line) = update_rx.try_recv() {
-            out.session.line("update", &line);
-            out.push(Kind::Info, line);
+        while let Ok(event) = update_rx.try_recv() {
+            match event {
+                ms::update::Event::Said(line) => {
+                    out.session.line("update", &line);
+                    out.push(Kind::Info, line);
+                }
+                ms::update::Event::Noted(line) => out.session.line("update", &line),
+            }
         }
         if !update_committed && start.elapsed() >= ms::update::HEALTHY_AFTER {
             update_committed = true;
