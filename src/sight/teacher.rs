@@ -35,6 +35,11 @@ pub struct HudValues {
     pub hp: Option<(u64, u64)>,
     pub mp: Option<(u64, u64)>,
     pub exp_percent: Option<f32>,
+    /// The HP, MP and EXP lines exactly as printed, character for
+    /// character (`HP [4200/5000]`), for learning the HUD's font.
+    pub hp_text: Option<String>,
+    pub mp_text: Option<String>,
+    pub exp_text: Option<String>,
     pub map: Option<String>,
     pub name: Option<String>,
     pub job: Option<String>,
@@ -124,6 +129,18 @@ fn value_properties() -> serde_json::Map<String, Value> {
     p.insert("hp".into(), nullable_pair("[current, max] as printed"));
     p.insert("mp".into(), nullable_pair("[current, max] as printed"));
     p.insert("exp_percent".into(), nullable("number"));
+    p.insert(
+        "hp_text".into(),
+        json!({"type": ["string", "null"], "description": "the HP line exactly as printed, character for character, label and brackets included (for example \"HP [4200/5000]\"), or null if any character is unclear"}),
+    );
+    p.insert(
+        "mp_text".into(),
+        json!({"type": ["string", "null"], "description": "the MP line exactly as printed, character for character, or null"}),
+    );
+    p.insert(
+        "exp_text".into(),
+        json!({"type": ["string", "null"], "description": "the EXP line exactly as printed, character for character (for example \"EXP 35900 [37.51%]\"), or null"}),
+    );
     p.insert("map".into(), nullable("string"));
     p.insert("name".into(), nullable("string"));
     p.insert("job".into(), nullable("string"));
@@ -325,6 +342,9 @@ fn values(o: &serde_json::Map<String, Value>) -> HudValues {
             .and_then(Value::as_f64)
             .filter(|e| (0.0..=100.0).contains(e))
             .map(|e| e as f32),
+        hp_text: text(o.get("hp_text")),
+        mp_text: text(o.get("mp_text")),
+        exp_text: text(o.get("exp_text")),
         map: text(o.get("map")),
         name: text(o.get("name")),
         job: text(o.get("job")),

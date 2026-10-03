@@ -1389,7 +1389,7 @@ fn run(options: Options) -> Result<(), String> {
                         eye_models,
                     ));
                     teaching::spawn(
-                        Arc::clone(&eyes),
+                        Some(Arc::clone(&eyes)),
                         Arc::clone(&learned),
                         Arc::clone(&latest),
                         news_tx.clone(),

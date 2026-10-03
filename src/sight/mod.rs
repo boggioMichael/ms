@@ -8,15 +8,20 @@
 //!    is there, it says Lv. 61,             keeps the level (and adds one when
 //!    HP 4200/5000"                         the EXP bar wraps), runs the things
 //!                                          the player taught
-//!   checks every few minutes:        ◀──  "HP about 84%"
+//!   checks every few minutes:        ◀──  "HP 4200/5000, the bar agrees"
 //!   "HP 4200/5000" (84%) — agrees, or
 //!   the bar's end is corrected; looks
 //!   again from scratch if it is lost
 //! ```
 //!
+//! The numbers beside the bars are read on every frame in the game's own
+//! font ([`numbers`]) once it is learned, and cross-checked against the
+//! bars; when the two keep disagreeing, the HUD is read again.
+//!
 //! The player teaches it too, by talking: corrections ("I'm level 61"),
 //! and new things to recognise ([`things`]).
 
+pub mod numbers;
 pub mod teacher;
 pub mod things;
 
@@ -29,6 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai::images::NBox;
 use crate::companion::{Gauge, Observation};
+use numbers::{Field, Numbers, Value};
 use syrup::bars::BarModel;
 use teacher::{Calibration, HudValues};
 use things::{Fired, Things};
@@ -84,9 +90,15 @@ pub struct Facts {
 /// What the learned sight saw in one frame.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Seen {
+    /// Percentages: the number read this frame when there was one, else
+    /// the bar's fill.
     pub hp: Option<f32>,
     pub mp: Option<f32>,
     pub exp: Option<f32>,
+    /// The numbers read this frame, in the game's own font.
+    pub hp_number: Option<(u64, u64)>,
+    pub mp_number: Option<(u64, u64)>,
+    pub exp_number: Option<Value>,
     pub fired: Vec<Fired>,
     /// The EXP bar just wrapped (a level-up).
     pub leveled: bool,
@@ -106,6 +118,8 @@ pub struct Sight {
     pub layout: Option<Layout>,
     pub facts: Facts,
     pub things: Things,
+    /// The HUD's font, and the numbers it reads every frame.
+    pub numbers: Numbers,
     want: Option<Want>,
     /// Recent EXP measurements, to see the bar wrap at a level-up.
     exp_trail: VecDeque<(Instant, f32)>,
@@ -136,6 +150,7 @@ impl Sight {
                 .and_then(|t| serde_json::from_str(&t).ok())
                 .unwrap_or_default(),
             things: Things::load(dir),
+            numbers: Numbers::load(dir),
             want: None,
             exp_trail: VecDeque::new(),
             lost_since: None,
@@ -178,11 +193,12 @@ impl Sight {
         }
     }
 
-    /// One frame: the bars where they were learned, the EXP bar's wrap,
-    /// and the things the player taught.
+    /// One frame: the bars where they were learned, the numbers beside
+    /// them, the EXP bar's wrap, and the things the player taught.
     pub fn observe(&mut self, frame: &RgbaImage, now: Instant) -> Seen {
         let mut seen = Seen::default();
         let bars = tracing::trace_span!("sight.bars").entered();
+        let mut bands: [Option<NBox>; 3] = [None; 3];
         if let Some(layout) = self
             .layout
             .as_ref()
@@ -191,10 +207,12 @@ impl Sight {
             seen.hp = layout.hp.as_ref().and_then(|b| b.measure(frame));
             seen.mp = layout.mp.as_ref().and_then(|b| b.measure(frame));
             seen.exp = layout.exp.as_ref().and_then(|b| b.measure(frame));
-            let expected = [&layout.hp, &layout.mp, &layout.exp]
-                .iter()
-                .filter(|b| b.is_some())
-                .count();
+            bands = [
+                layout.hp.as_ref().map(|b| b.band),
+                layout.mp.as_ref().map(|b| b.band),
+                layout.exp.as_ref().map(|b| b.band),
+            ];
+            let expected = bands.iter().filter(|b| b.is_some()).count();
             let measured = [seen.hp, seen.mp, seen.exp]
                 .iter()
                 .filter(|v| v.is_some())
@@ -208,6 +226,50 @@ impl Sight {
                 self.lost_since = None;
             }
         }
+        drop(bars);
+        // The numbers in the game's own font, where the font is known,
+        // checked against the bars; the number wins when it is read.
+        let numbers_span = tracing::trace_span!("sight.numbers").entered();
+        let mut disagree = 0;
+        for (field, band) in Field::ALL.into_iter().zip(bands) {
+            let Some(band) = band else { continue };
+            let bar = match field {
+                Field::Hp => seen.hp,
+                Field::Mp => seen.mp,
+                Field::Exp => seen.exp,
+            };
+            let read = self.numbers.read(frame, field, &band);
+            let percent = read.as_ref().map(|r| r.value.percent());
+            disagree = disagree.max(self.numbers.cross_check(field, percent, bar));
+            let Some(read) = read else { continue };
+            match (field, &read.value) {
+                (Field::Hp, Value::Amount { current, max }) => {
+                    seen.hp_number = Some((*current, *max));
+                    seen.hp = percent;
+                    if self.facts.hp_max != Some(*max) {
+                        self.facts.hp_max = Some(*max);
+                        self.save();
+                    }
+                }
+                (Field::Mp, Value::Amount { current, max }) => {
+                    seen.mp_number = Some((*current, *max));
+                    seen.mp = percent;
+                    if self.facts.mp_max != Some(*max) {
+                        self.facts.mp_max = Some(*max);
+                        self.save();
+                    }
+                }
+                (Field::Exp, value) => {
+                    seen.exp_number = Some(value.clone());
+                    seen.exp = percent;
+                }
+                _ => {}
+            }
+        }
+        if disagree >= numbers::DISAGREE_FOR && self.want.is_none() {
+            self.want = Some(Want::Verify);
+        }
+        drop(numbers_span);
         // A level-up: the EXP bar goes from nearly full to nearly empty, and
         // stays there.
         if let Some(exp) = seen.exp {
@@ -235,26 +297,35 @@ impl Sight {
                 }
             }
         }
-        drop(bars);
         seen.fired = tracing::trace_span!("sight.things").in_scope(|| self.things.run(frame, now));
         self.last = seen.clone();
         seen
     }
 
     /// Put what the learned sight knows into `obs` (in place of the old
-    /// HUD reader's guesses).
+    /// HUD reader's guesses). A gauge is `read` only when its number was
+    /// read on this very frame; a bar's fill is an estimate.
     pub fn apply(&self, obs: &mut Observation, seen: &Seen) {
-        let gauge = |percent: Option<f32>, max: Option<u64>| {
+        let gauge = |percent: Option<f32>, number: Option<(u64, u64)>, max: Option<u64>| {
             percent.map(|p| Gauge {
                 percent: p,
-                current: None,
-                max,
-                read: false,
+                current: number.map(|(c, _)| c),
+                max: number.map(|(_, m)| m).or(max),
+                read: number.is_some(),
             })
         };
-        obs.hp = gauge(seen.hp, self.facts.hp_max);
-        obs.mp = gauge(seen.mp, self.facts.mp_max);
-        obs.exp = gauge(seen.exp, None);
+        obs.hp = gauge(seen.hp, seen.hp_number, self.facts.hp_max);
+        obs.mp = gauge(seen.mp, seen.mp_number, self.facts.mp_max);
+        let exp_amount = match &seen.exp_number {
+            Some(Value::Amount { current, max }) => Some((*current, *max)),
+            _ => None,
+        };
+        obs.exp = seen.exp.map(|p| Gauge {
+            percent: p,
+            current: exp_amount.map(|(c, _)| c),
+            max: exp_amount.map(|(_, m)| m),
+            read: seen.exp_number.is_some(),
+        });
         obs.level = self.facts.level;
         obs.name = self.facts.name.clone();
         obs.job = self.facts.job.clone();
@@ -355,6 +426,7 @@ impl Sight {
             status,
             found: now_text(),
         });
+        parts.extend(self.learn_font(frame, &c.values));
         self.take_values(&c.values);
         self.want = None;
         self.disagreements = 0;
@@ -362,6 +434,41 @@ impl Sight {
         self.last_look = Some(Instant::now());
         self.save();
         Ok(parts.join("; "))
+    }
+
+    /// The HUD's font, from the lines the teacher read character for
+    /// character, where the font still has them to learn and the line
+    /// agrees with the bar. Returns what was learned, for the log.
+    fn learn_font(&mut self, frame: &RgbaImage, v: &HudValues) -> Vec<String> {
+        let mut notes = Vec::new();
+        let Some(layout) = &self.layout else {
+            return notes;
+        };
+        let now = Instant::now();
+        let lines = [
+            (Field::Hp, &v.hp_text, layout.hp.as_ref()),
+            (Field::Mp, &v.mp_text, layout.mp.as_ref()),
+            (Field::Exp, &v.exp_text, layout.exp.as_ref()),
+        ];
+        let mut todo = Vec::new();
+        for (field, text, bar) in lines {
+            let (Some(text), Some(bar)) = (text, bar) else {
+                continue;
+            };
+            if !self.numbers.wants_sample(field, now) {
+                continue;
+            }
+            todo.push((field, text.clone(), bar.band, bar.measure(frame)));
+        }
+        for (field, text, band, measured) in todo {
+            let learned = Numbers::believable(field, &text, measured)
+                .and_then(|_| self.numbers.learn(frame, field, &band, &text, "model", now));
+            match learned {
+                Ok(line) => notes.push(line),
+                Err(why) => notes.push(format!("{} line not learned: {why}", field.label())),
+            }
+        }
+        notes
     }
 
     /// The teacher read the HUD again. Corrects the bars' ends and the
@@ -408,6 +515,7 @@ impl Sight {
         {
             notes.push(format!("level {old} → {new}"));
         }
+        notes.extend(self.learn_font(frame, v));
         self.take_values(v);
         if off > 0 {
             self.disagreements += 1;
@@ -523,6 +631,8 @@ impl Sight {
             lines.push(
                 "You haven't found the HUD on this screen yet; the bars aren't measured.".into(),
             );
+        } else {
+            lines.push(format!("{}.", self.numbers.describe()));
         }
         let things = self.things.describe();
         if !things.is_empty() {
@@ -703,6 +813,109 @@ mod tests {
         );
         assert!(line.contains("level 61 → 62"), "{line}");
         assert_eq!(sight.facts.level_from.as_deref(), Some("read"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_numbers_are_read_every_frame_once_the_teacher_spelled_them_out() {
+        let dir = temp_dir("numbers");
+        let mut sight = Sight::load(&dir);
+        let (frame, bands) = numbers::tests::hud((400, 400), (1291, 1351), 37.51);
+        let c = Calibration {
+            level: None,
+            hp: Some(bands[0].grown(0.05, 0.4)),
+            mp: Some(bands[1].grown(0.05, 0.4)),
+            exp: Some(bands[2].grown(0.05, 0.4)),
+            minimap: None,
+            values: HudValues {
+                hp: Some((400, 400)),
+                mp: Some((1291, 1351)),
+                exp_percent: Some(37.51),
+                hp_text: Some("HP [400/400]".into()),
+                mp_text: Some("MP [1291/1351]".into()),
+                exp_text: Some("EXP [37.51%]".into()),
+                ..Default::default()
+            },
+        };
+        let line = sight.calibrated(&frame, &c).unwrap();
+        assert!(line.contains("found 3 bar(s)"), "{line}");
+        assert!(line.contains("learned 11 glyphs"), "{line}");
+        assert!(sight.numbers.knows(Field::Exp));
+        // Another frame: the numbers come from the font, not the bars.
+        let (other, _) = numbers::tests::hud((315, 400), (1000, 1351), 40.01);
+        let seen = sight.observe(&other, Instant::now());
+        assert_eq!(seen.hp_number, Some((315, 400)), "{seen:?}");
+        assert_eq!(seen.mp_number, Some((1000, 1351)));
+        assert_eq!(seen.exp_number, Some(Value::Percent(40.01)));
+        assert!((seen.hp.unwrap() - 78.75).abs() < 0.01);
+        let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
+        sight.apply(&mut obs, &seen);
+        let hp = obs.hp.unwrap();
+        assert!(
+            hp.read && hp.current == Some(315) && hp.max == Some(400),
+            "{hp:?}"
+        );
+        assert!(obs.exp.unwrap().read);
+        assert_eq!(sight.facts.hp_max, Some(400));
+        // A digit the font never saw: the bar's estimate, not a reading.
+        let (unknown, _) = numbers::tests::hud((88, 400), (1000, 1351), 40.01);
+        let seen = sight.observe(&unknown, Instant::now());
+        assert_eq!(seen.hp_number, None);
+        assert!((seen.hp.unwrap() - 22.0).abs() < 3.0, "{:?}", seen.hp);
+        let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
+        sight.apply(&mut obs, &seen);
+        assert!(!obs.hp.unwrap().read);
+        assert!(
+            sight
+                .describe()
+                .iter()
+                .any(|l| l.contains("the HUD's font"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn numbers_and_bars_disagreeing_for_a_while_send_it_looking_again() {
+        let dir = temp_dir("disagree-numbers");
+        let mut sight = Sight::load(&dir);
+        let (frame, bands) = numbers::tests::hud((400, 400), (1291, 1351), 37.51);
+        let c = Calibration {
+            level: None,
+            hp: Some(bands[0].grown(0.05, 0.4)),
+            mp: None,
+            exp: None,
+            minimap: None,
+            values: HudValues {
+                hp: Some((400, 400)),
+                hp_text: Some("HP [400/400]".into()),
+                ..Default::default()
+            },
+        };
+        sight.calibrated(&frame, &c).unwrap();
+        // The font reads 400/400 while the bar is drawn 10% full: the
+        // number wins, and after a while the HUD is read again.
+        let (odd, _) = {
+            let (mut f, b) = numbers::tests::hud((40, 400), (1291, 1351), 37.51);
+            // Paint the HP line as if it said 400/400.
+            let (full, _) = numbers::tests::hud((400, 400), (1291, 1351), 37.51);
+            let (x, y, w, _) = b[0].pixels(1280, 720);
+            for yy in y - 16..y {
+                for xx in x..x + w {
+                    f.put_pixel(xx, yy, *full.get_pixel(xx, yy));
+                }
+            }
+            (f, b)
+        };
+        let t0 = Instant::now();
+        for i in 0..numbers::DISAGREE_FOR {
+            let seen = sight.observe(&odd, t0 + Duration::from_millis(100 * i as u64));
+            assert_eq!(seen.hp_number, Some((400, 400)), "{i}: {seen:?}");
+            assert_eq!(seen.hp, Some(100.0));
+        }
+        assert_eq!(
+            sight.wants(1280, 720, Duration::from_secs(120)),
+            Some(Want::Verify)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

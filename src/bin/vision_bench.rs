@@ -40,6 +40,7 @@ use ms::ai::images::NBox;
 use ms::ai::teaching::CHECK_EVERY;
 use ms::companion::Observation;
 use ms::sight::Sight;
+use ms::sight::numbers::Field;
 use ms::sight::teacher::{Calibration, HudValues};
 use ms::sight::things::{Kind, Teach};
 use ms::util::stages::{StageRecorder, StageStats};
@@ -261,6 +262,8 @@ struct Run {
     /// Simulated frames per second (the clock the sight paces by).
     fps: f64,
     hud_learned: bool,
+    /// Characters of the HUD's font learned for the run.
+    font_glyphs: usize,
     taught: usize,
     /// Every stage, outermost (`frame`) first.
     stages: Vec<StageStats>,
@@ -317,6 +320,31 @@ fn prepare_sight(dir: &Path, first: &RgbaImage, teach: bool) -> (Sight, bool, us
         },
     };
     let learned = sight.calibrated(first, &calibration).is_ok();
+    // The HUD's font, from the fixture's own numbers, so the glyph reading
+    // runs on every frame as in a session where the font is known. On the
+    // scaled fixture the glyphs blur together, and the reader refuses them
+    // — which costs the same as reading them.
+    if learned {
+        let now = Instant::now();
+        let bands = sight.layout.as_ref().map(|l| {
+            (
+                l.hp.as_ref().map(|b| b.band),
+                l.mp.as_ref().map(|b| b.band),
+                l.exp.as_ref().map(|b| b.band),
+            )
+        });
+        if let Some((hp, mp, exp)) = bands {
+            for (field, band, text) in [
+                (Field::Hp, hp, "HP[400/400]"),
+                (Field::Mp, mp, "MP[1291/1351]"),
+                (Field::Exp, exp, "EXP35900[37.51%]"),
+            ] {
+                if let Some(band) = band {
+                    let _ = sight.numbers.learn(first, field, &band, text, "bench", now);
+                }
+            }
+        }
+    }
     // Three things to look for: crops where the game draws something.
     let side = (fw as f32 * 56.0 / 1366.0).round().max(16.0) / fw as f32;
     let tall = side * fw as f32 / fh as f32;
@@ -409,6 +437,7 @@ fn run(
         all_detectors: wanted == Detectors::ALL,
         fps,
         hud_learned,
+        font_glyphs: sight.numbers.glyphs(),
         taught,
         stages,
         ai: AiCalls {
@@ -424,7 +453,7 @@ fn run(
 fn print_run(run: &Run) {
     println!();
     println!(
-        "{} at {}x{}: {} frames, {:.0} fps simulated, {}, HUD bars learned: {}, taught objects: {}",
+        "{} at {}x{}: {} frames, {:.0} fps simulated, {}, HUD bars learned: {}, font glyphs: {}, taught objects: {}",
         run.input,
         run.width,
         run.height,
@@ -436,6 +465,7 @@ fn print_run(run: &Run) {
             "the HUD alone"
         },
         if run.hud_learned { "yes" } else { "no" },
+        run.font_glyphs,
         run.taught
     );
     let frame_total = run

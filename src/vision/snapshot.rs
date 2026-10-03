@@ -41,7 +41,12 @@ pub struct WorldState {
 /// only what is asked for and reports the rest as not run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Detectors {
+    /// The HUD's geometry: the bars and their fills, every frame.
     pub hud: bool,
+    /// The HUD's text through OCR, on its cadence: for the preview; the
+    /// companion reads the numbers in the game's font instead
+    /// (`sight::numbers`).
+    pub hud_text: bool,
     pub motion: bool,
     pub dialog: bool,
     pub panels: bool,
@@ -52,15 +57,17 @@ impl Detectors {
     /// Everything, for a view that shows everything.
     pub const ALL: Detectors = Detectors {
         hud: true,
+        hud_text: true,
         motion: true,
         dialog: true,
         panels: true,
         footholds: true,
     };
 
-    /// What the companion itself consumes.
+    /// What the companion itself consumes: no OCR on the per-frame path.
     pub const HUD: Detectors = Detectors {
         hud: true,
+        hud_text: false,
         motion: false,
         dialog: false,
         panels: false,
@@ -143,7 +150,8 @@ impl PerceptionPipeline {
             Detection::missing(source, "not run: nothing is showing it")
         }
         let hud = if wanted.hud {
-            tracing::trace_span!("vision.hud").in_scope(|| self.hud.detect(image, frame_id))
+            tracing::trace_span!("vision.hud")
+                .in_scope(|| self.hud.detect_with(image, frame_id, wanted.hud_text))
         } else {
             HudReading::not_run()
         };
