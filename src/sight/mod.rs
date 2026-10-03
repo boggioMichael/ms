@@ -916,15 +916,29 @@ impl Sight {
         }
         notes.extend(self.learn_font(frame, v));
         self.take_values(v);
-        // Asked to spell the lines out and none of them learned: the next
-        // ask waits longer, and says so.
-        let helped = !wanted_labels || !self.still_unlabelled();
-        self.answered(helped);
-        if !helped {
+        // The model saw no HUD at all (a cutscene, a dialog over it, the
+        // HUD hidden): asking again at once would only ask again at once,
+        // every few seconds, for as long as it stays hidden. The next look
+        // waits, and longer each time.
+        let saw_hud =
+            v.level.is_some() || v.hp.is_some() || v.mp.is_some() || v.exp_percent.is_some();
+        if !saw_hud {
+            self.looked();
             notes.push(format!(
-                "no line learned from this; the lines are next asked about in {} s",
-                self.label_backoff.as_secs()
+                "no HUD in view; the next look waits {} s",
+                self.ask_backoff.as_secs()
             ));
+        } else {
+            // Asked to spell the lines out and none of them learned: the
+            // next ask waits longer, and says so.
+            let helped = !wanted_labels || !self.still_unlabelled();
+            self.answered(helped);
+            if !helped {
+                notes.push(format!(
+                    "no line learned from this; the lines are next asked about in {} s",
+                    self.label_backoff.as_secs()
+                ));
+            }
         }
         if off > 0 {
             self.disagreements += 1;
@@ -1529,6 +1543,40 @@ mod tests {
         sight.want = None;
         let second = sight.verified(&frame, &useless);
         assert!(second.contains("next asked about in 240 s"), "{second}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_look_that_sees_no_hud_waits_longer_each_time() {
+        let dir = temp_dir("hidden");
+        let mut sight = Sight::load(&dir);
+        let frame = status_bar(60.0, 100.0);
+        sight.calibrated(&frame, &calibration()).unwrap();
+        // The HUD hidden (a cutscene): the bars are lost, and a look is
+        // wanted once they have been for a while.
+        let blank = RgbaImage::from_pixel(1280, 720, image::Rgba([20, 20, 20, 255]));
+        let t0 = Instant::now();
+        sight.observe(&blank, t0);
+        sight.observe(&blank, t0 + LOST_FOR);
+        assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
+        sight.asking();
+        // The model saw nothing: the next look is not at once, and each
+        // such look waits twice as long.
+        let first = sight.verified(&blank, &HudValues::default());
+        assert!(first.contains("no HUD in view; the next look waits 120 s"), "{first}");
+        sight.observe(&blank, t0 + LOST_FOR + Duration::from_secs(1));
+        assert_eq!(sight.wants(1280, 720), None, "held back");
+        sight.asked = Some(Instant::now() - Duration::from_secs(121));
+        assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
+        let second = sight.verified(&blank, &HudValues::default());
+        assert!(second.contains("the next look waits 240 s"), "{second}");
+        // The HUD back and read: the usual wait again.
+        let values = HudValues {
+            hp: Some((3000, 5000)),
+            ..Default::default()
+        };
+        sight.verified(&frame, &values);
+        assert_eq!(sight.ask_backoff, ASK_BACKOFF);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
