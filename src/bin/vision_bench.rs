@@ -161,15 +161,13 @@ fn parse(args: &[String]) -> Options {
         return o;
     }
     if !explicit_inputs {
-        for p in ["resources/maplestory.png"] {
-            if Path::new(p).exists() {
-                o.images.push(p.into());
-            }
+        let still = Path::new("resources/maplestory.png");
+        if still.exists() {
+            o.images.push(still.into());
         }
-        for p in ["chaos-zakum-solo-lvl230.mp4"] {
-            if Path::new(p).exists() {
-                o.videos.push(p.into());
-            }
+        let recording = Path::new("chaos-zakum-solo-lvl230.mp4");
+        if recording.exists() {
+            o.videos.push(recording.into());
         }
     }
     if o.images.is_empty() && o.videos.is_empty() {
