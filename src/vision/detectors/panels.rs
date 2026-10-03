@@ -11,7 +11,7 @@ use image::RgbaImage;
 use crate::vision::geometry::{
     Rect, dominant_color_bucket, find_uniform_color_panel, group_segments, segment_row,
 };
-use crate::vision::types::{Confidence, Detection, Reliability, Source};
+use crate::vision::types::{Confidence, Detection, Reliability};
 
 #[derive(Debug, Clone)]
 pub struct MinimapReading {
@@ -34,27 +34,24 @@ impl MinimapDetector {
             h: height / 3,
         };
         let Some(bucket) = dominant_color_bucket(image, region, 10) else {
-            return Detection::missing(Source::Panel, "no coherent color found in minimap region");
+            return Detection::missing("panel", "no coherent color found in minimap region");
         };
         let Some(panel) = find_uniform_color_panel(image, region, bucket, 10) else {
-            return Detection::missing(
-                Source::Panel,
-                "no panel-shaped region found in minimap corner",
-            );
+            return Detection::missing("panel", "no panel-shaped region found in minimap corner");
         };
         // The minimap frame is a compact, roughly-square-to-wide panel; reject
         // tiny slivers (a stray solid-colored icon) and full-width bands
         // (the top HUD bar itself, which is not the minimap).
         if panel.area() < 900 || panel.w > region.w.saturating_mul(9) / 10 {
             return Detection::missing(
-                Source::Panel,
+                "panel",
                 "candidate region does not match minimap proportions",
             );
         }
         Detection::found(
             MinimapReading { bounds: panel },
             Confidence::new(0.55),
-            Source::Panel,
+            "panel",
             Reliability::Heuristic,
         )
     }
@@ -84,13 +81,10 @@ impl ChatLogDetector {
             Some(bounds) if bounds.area() >= 400 => Detection::found(
                 ChatLogReading { bounds },
                 Confidence::new(0.5),
-                Source::Panel,
+                "panel",
                 Reliability::Heuristic,
             ),
-            _ => Detection::missing(
-                Source::Panel,
-                "no dense text block found in chat log region",
-            ),
+            _ => Detection::missing("panel", "no dense text block found in chat log region"),
         }
     }
 }
@@ -134,7 +128,7 @@ impl IconRowDetector {
         let width = image.width();
         let height = image.height();
         if width < 32 || height < 32 {
-            return Detection::missing(Source::Panel, "frame too small for icon-row search");
+            return Detection::missing("panel", "frame too small for icon-row search");
         }
         let region = Rect {
             x: width * 3 / 5,
@@ -144,7 +138,7 @@ impl IconRowDetector {
         };
 
         let is_icon_pixel = |pixel: &image::Rgba<u8>| {
-            let (_, s, v) = crate::util::pixel::hsv_from_rgb(pixel[0], pixel[1], pixel[2]);
+            let (_, s, v) = syrup::color::hsv_from_rgb(pixel[0], pixel[1], pixel[2]);
             pixel[3] > 200 && s >= self.min_saturation && v >= self.min_value
         };
 
@@ -167,7 +161,7 @@ impl IconRowDetector {
             .collect();
 
         if blobs.is_empty() {
-            return Detection::missing(Source::Panel, "no icon-sized saturated blobs found");
+            return Detection::missing("panel", "no icon-sized saturated blobs found");
         }
 
         let icons: Vec<IconSlot> = blobs
@@ -178,7 +172,7 @@ impl IconRowDetector {
         Detection::found(
             IconRowReading { icons },
             confidence,
-            Source::Panel,
+            "panel",
             Reliability::Heuristic,
         )
     }

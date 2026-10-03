@@ -16,7 +16,7 @@ use crate::vision::hud_geometry::{
 };
 use crate::vision::hud_ocr::HudOcrResult;
 use crate::vision::hud_text::HudTextReader;
-use crate::vision::types::{Confidence, Detection, Reliability, Source};
+use crate::vision::types::{Confidence, Detection, Reliability};
 
 /// A HUD metric (HP/MP/EXP) with confidence-scored percent and absolute value.
 #[derive(Debug, Clone)]
@@ -62,7 +62,7 @@ pub struct HudReading {
 /// agree: the colored bar exists, and the label/number text was read).
 fn metric_detection(metric: Option<RawHudMetric>) -> Detection<HudMetric> {
     match metric {
-        None => Detection::missing(Source::Hud, "no matching color bar found in the HUD band"),
+        None => Detection::missing("hud", "no matching color bar found in the HUD band"),
         Some(raw) => {
             let has_ocr_value = raw.value.is_some()
                 || raw
@@ -76,26 +76,23 @@ fn metric_detection(metric: Option<RawHudMetric>) -> Detection<HudMetric> {
             } else {
                 (Confidence::new(0.2), Reliability::Heuristic)
             };
-            Detection::found(HudMetric::from(raw), confidence, Source::Hud, reliability)
+            Detection::found(HudMetric::from(raw), confidence, "hud", reliability)
         }
     }
 }
 
 fn text_detection(value: Option<String>, plate_found: bool) -> Detection<String> {
     match value {
-        Some(text) => Detection::found(
-            text,
-            Confidence::new(0.8),
-            Source::Hud,
-            Reliability::Corroborated,
-        ),
+        Some(text) => {
+            Detection::found(text, Confidence::new(0.8), "hud", Reliability::Corroborated)
+        }
         None if plate_found => {
             let mut detection =
-                Detection::missing(Source::Hud, "plate located but OCR text could not be read");
+                Detection::missing("hud", "plate located but OCR text could not be read");
             detection.reliability = Reliability::Heuristic;
             detection
         }
-        None => Detection::missing(Source::Hud, "no stat-row plate detected for this field"),
+        None => Detection::missing("hud", "no stat-row plate detected for this field"),
     }
 }
 

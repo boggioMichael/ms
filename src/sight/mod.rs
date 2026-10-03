@@ -17,8 +17,6 @@
 //! The player teaches it too, by talking: corrections ("I'm level 61"),
 //! and new things to recognise ([`things`]).
 
-pub mod bars;
-pub mod matcher;
 pub mod teacher;
 pub mod things;
 
@@ -31,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai::images::NBox;
 use crate::companion::{Gauge, Observation};
-use bars::BarModel;
+use syrup::bars::BarModel;
 use teacher::{Calibration, HudValues};
 use things::{Fired, Things};
 
@@ -548,8 +546,64 @@ mod tests {
         dir
     }
 
+    /// A modern status bar: dark background, a red HP bar and a blue MP bar
+    /// with white text over them and a gradient on each, and a thin
+    /// yellow-green EXP bar along the bottom (here 50% full).
+    fn status_bar(hp: f32, mp: f32) -> RgbaImage {
+        status_bar_exp(hp, mp, 50.0)
+    }
+
+    fn status_bar_exp(hp: f32, mp: f32, exp: f32) -> RgbaImage {
+        use image::Rgba;
+        let mut f = RgbaImage::from_pixel(1280, 720, Rgba([60, 90, 140, 255]));
+        for y in 640..700 {
+            for x in 400..880 {
+                f.put_pixel(x, y, Rgba([28, 28, 34, 255]));
+            }
+        }
+        let bar = |f: &mut RgbaImage, y0: u32, fill: f32, rgb: [u8; 3]| {
+            let (x0, x1) = (520u32, 860u32);
+            let end = x0 + ((x1 - x0) as f32 * fill / 100.0) as u32;
+            for y in y0..y0 + 10 {
+                let shade = 1.0 - (y - y0) as f32 * 0.04;
+                for x in x0..x1 {
+                    let p = if x < end {
+                        Rgba([
+                            (rgb[0] as f32 * shade) as u8,
+                            (rgb[1] as f32 * shade) as u8,
+                            (rgb[2] as f32 * shade) as u8,
+                            255,
+                        ])
+                    } else {
+                        Rgba([45, 45, 50, 255])
+                    };
+                    f.put_pixel(x, y, p);
+                }
+            }
+            for y in y0 + 2..y0 + 8 {
+                for x in (660..720).step_by(3) {
+                    f.put_pixel(x, y, Rgba([250, 250, 250, 255]));
+                }
+            }
+        };
+        bar(&mut f, 652, hp, [230, 40, 50]);
+        bar(&mut f, 670, mp, [40, 110, 235]);
+        let end = (1280.0 * exp / 100.0) as u32;
+        for y in 708..714 {
+            for x in 0..1280 {
+                let p = if x < end {
+                    Rgba([200, 220, 40, 255])
+                } else {
+                    Rgba([30, 30, 30, 255])
+                };
+                f.put_pixel(x, y, p);
+            }
+        }
+        f
+    }
+
     fn calibration() -> Calibration {
-        // Where the made-up status bar's HP and MP are (bars::tests).
+        // Where the made-up status bar's HP and MP are (`status_bar`).
         Calibration {
             level: Some(NBox::new(0.32, 0.9, 0.38, 0.95)),
             hp: Some(NBox::new(
@@ -585,12 +639,12 @@ mod tests {
             sight.wants(1280, 720, Duration::from_secs(120)),
             Some(Want::Calibrate)
         );
-        let frame = bars::tests::status_bar(60.0, 100.0);
+        let frame = status_bar(60.0, 100.0);
         let line = sight.calibrated(&frame, &calibration()).unwrap();
         assert!(line.contains("found 2 bar(s) and the level"), "{line}");
         assert_eq!(sight.wants(1280, 720, Duration::from_secs(120)), None);
         // Measured on other frames, and put into the observation.
-        let seen = sight.observe(&bars::tests::status_bar(25.0, 50.0), Instant::now());
+        let seen = sight.observe(&status_bar(25.0, 50.0), Instant::now());
         assert!((seen.hp.unwrap() - 25.0).abs() < 1.5, "{seen:?}");
         assert!((seen.mp.unwrap() - 50.0).abs() < 1.5, "{seen:?}");
         let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
@@ -614,7 +668,7 @@ mod tests {
     fn the_exp_bar_wrapping_is_a_level_up_and_corrections_stick() {
         let dir = temp_dir("level");
         let mut sight = Sight::load(&dir);
-        let frame = bars::tests::status_bar_exp(60.0, 100.0, 86.25);
+        let frame = status_bar_exp(60.0, 100.0, 86.25);
         let mut c = calibration();
         c.exp = Some(NBox::new(0.0, 706.0 / 720.0, 1.0, 716.0 / 720.0));
         sight.calibrated(&frame, &c).unwrap();
@@ -623,7 +677,7 @@ mod tests {
         let t0 = Instant::now();
         for (i, exp) in [90.0, 95.0, 98.0, 3.0, 4.0].into_iter().enumerate() {
             let seen = sight.observe(
-                &bars::tests::status_bar_exp(60.0, 100.0, exp),
+                &status_bar_exp(60.0, 100.0, exp),
                 t0 + Duration::from_secs(i as u64),
             );
             assert_eq!(seen.leveled, i == 4, "{i}: {seen:?}");
@@ -656,7 +710,7 @@ mod tests {
     fn bars_that_disagree_twice_send_it_looking_again() {
         let dir = temp_dir("disagree");
         let mut sight = Sight::load(&dir);
-        let frame = bars::tests::status_bar(60.0, 100.0);
+        let frame = status_bar(60.0, 100.0);
         sight.calibrated(&frame, &calibration()).unwrap();
         let wrong = HudValues {
             hp: Some((1000, 5000)),

@@ -4,7 +4,7 @@
 //! - **capture**: Windows game window capture via DirectX/WGC.
 //! - **vision**: Complete perception pipeline with confidence/temporal reasoning.
 //! - **knowledge**: Structured MapleStory mechanics and heuristics.
-//! - **util**: Timing, pixel, and image manipulation helpers.
+//! - **util**: Per-stage timing of the vision path, from its tracing spans.
 //! - **game_state**: Serializable game state aggregating all vision outputs.
 //! - **hud**: Convenience re-export of HUD detection API for backwards compatibility.
 //! - **observe**: Live terminal dashboard and graphical preview of the running pipeline.
@@ -20,7 +20,6 @@ pub mod app;
 pub mod capture;
 pub mod companion;
 pub mod config;
-pub mod frame;
 pub mod game_state;
 pub mod hud;
 pub mod knowledge;

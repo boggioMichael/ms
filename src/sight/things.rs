@@ -27,8 +27,10 @@ use std::time::{Duration, Instant};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 
-use super::bars::BarModel;
-use super::matcher::{self, Found};
+use syrup::bars::BarModel;
+use syrup::template::{self, SetMatch, SetSearch, TemplateSet};
+use syrup::threshold::Channel;
+
 use crate::ai::images::{self, NBox};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +198,8 @@ pub struct Thing {
 #[derive(Debug, Clone, Default)]
 pub struct Live {
     pub reading: Option<Reading>,
+    /// Its pictures prepared for matching, at the frame size last seen.
+    poses: Option<Poses>,
     last_run: Option<Instant>,
     /// Checks in a row the alert's condition held, and whether it may fire.
     streak: u32,
@@ -203,6 +207,21 @@ pub struct Live {
     last_fired: Option<Instant>,
     previous_text: Option<String>,
 }
+
+/// A thing's pictures as a template set: scaled to the frame width they
+/// were prepared for, mirrored too for an object (a monster faces either
+/// way), and rebuilt when a picture is added or the window changes size.
+#[derive(Debug, Clone)]
+struct Poses {
+    frame_width: u32,
+    pictures: usize,
+    set: TemplateSet,
+}
+
+/// How far the mean colour of a match may be from the picture's, per
+/// channel: correlation on grey levels alone would take a monster of
+/// another colour for the one taught.
+const COLOUR_SHIFT: f32 = 60.0;
 
 /// What the player said to learn.
 #[derive(Debug, Clone)]
@@ -273,76 +292,10 @@ fn slug(name: &str) -> String {
 /// The part of a crop that stands out from its edges (the monster, not the
 /// sky and the grass around it), if that is a fair part of it.
 fn foreground(crop: &RgbaImage) -> RgbaImage {
-    let (w, h) = crop.dimensions();
-    if w < 8 || h < 8 {
-        return crop.clone();
+    match template::foreground(crop) {
+        Some(r) => image::imageops::crop_imm(crop, r.x, r.y, r.w, r.h).to_image(),
+        None => crop.clone(),
     }
-    // The background: the most common colours along the edges (a few, as
-    // a monster stands on the ground in front of the sky).
-    let mut buckets: std::collections::HashMap<u16, (u32, [u32; 3])> = Default::default();
-    let mut border = 0u32;
-    let mut add = |x: u32, y: u32| {
-        let p = crop.get_pixel(x, y).0;
-        let key = ((p[0] as u16 >> 3) << 10) | ((p[1] as u16 >> 3) << 5) | (p[2] as u16 >> 3);
-        let e = buckets.entry(key).or_insert((0, [0; 3]));
-        e.0 += 1;
-        for (sum, &v) in e.1.iter_mut().zip(&p[..3]) {
-            *sum += v as u32;
-        }
-        border += 1;
-    };
-    for x in 0..w {
-        add(x, 0);
-        add(x, h - 1);
-    }
-    for y in 1..h - 1 {
-        add(0, y);
-        add(w - 1, y);
-    }
-    let mut common: Vec<(u32, [u32; 3])> = buckets.into_values().collect();
-    common.sort_by_key(|c| std::cmp::Reverse(c.0));
-    let background: Vec<[i32; 3]> = common
-        .iter()
-        .take(4)
-        .filter(|(n, _)| n * 10 >= border)
-        .map(|(n, sum)| sum.map(|v| (v / n) as i32))
-        .collect();
-    if background.is_empty() {
-        return crop.clone();
-    }
-    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
-    let mut count = 0u32;
-    for y in 0..h {
-        for x in 0..w {
-            let p = crop.get_pixel(x, y).0;
-            let near = background.iter().any(|bg| {
-                (0..3)
-                    .map(|c| (p[c] as i32 - bg[c]).abs())
-                    .max()
-                    .unwrap_or(0)
-                    <= 40
-            });
-            if !near {
-                count += 1;
-                x0 = x0.min(x);
-                y0 = y0.min(y);
-                x1 = x1.max(x + 1);
-                y1 = y1.max(y + 1);
-            }
-        }
-    }
-    if count < 16 || x1 <= x0 || y1 <= y0 {
-        return crop.clone();
-    }
-    let (bw, bh) = (x1 - x0, y1 - y0);
-    // Only when it is a fair part of the crop and big enough to match.
-    if bw * bh * 10 < w * h || bw < 8 || bh < 8 {
-        return crop.clone();
-    }
-    // A pixel or two of margin.
-    let (x0, y0) = (x0.saturating_sub(2), y0.saturating_sub(2));
-    let (x1, y1) = ((x1 + 2).min(w), (y1 + 2).min(h));
-    image::imageops::crop_imm(crop, x0, y0, x1 - x0, y1 - y0).to_image()
 }
 
 fn today() -> String {
@@ -436,7 +389,7 @@ impl Things {
         };
         // Look right away, so the answer can say what it sees.
         thing.live = Live::default();
-        let reading = self.read(&thing, frame);
+        let reading = Self::read(&mut thing, frame);
         thing.live.reading = Some(reading.clone());
         // "Tell me when it shows up", taught while it is on screen: the
         // next time it shows up, not now.
@@ -529,62 +482,85 @@ impl Things {
         Some(thing.name)
     }
 
-    /// Where a thing taught at another window size is, in this frame's
-    /// pixels, and its pictures at this size.
-    fn scaled(thing: &Thing, frame: &RgbaImage) -> Vec<RgbaImage> {
-        let (fw, _) = frame.dimensions();
-        let (tw, _) = thing.frame;
-        if tw == 0 || tw == fw {
-            return thing.images.clone();
+    /// The thing's pictures ready to match in a frame `width` wide: a thing
+    /// taught at another window size has them scaled to this one.
+    fn poses(thing: &mut Thing, width: u32) -> Option<&TemplateSet> {
+        let fresh = thing
+            .live
+            .poses
+            .as_ref()
+            .is_some_and(|p| p.frame_width == width && p.pictures == thing.images.len());
+        if !fresh {
+            let (tw, _) = thing.frame;
+            let scale = if tw == 0 || tw == width {
+                1.0
+            } else {
+                width as f32 / tw as f32
+            };
+            let mut set = TemplateSet::new(Channel::Luma, thing.kind == Kind::Object);
+            for picture in &thing.images {
+                if scale == 1.0 {
+                    set.add(picture);
+                } else {
+                    let (w, h) = picture.dimensions();
+                    let scaled = image::imageops::resize(
+                        picture,
+                        ((w as f32 * scale).round() as u32).max(4),
+                        ((h as f32 * scale).round() as u32).max(4),
+                        image::imageops::FilterType::Triangle,
+                    );
+                    set.add(&scaled);
+                }
+            }
+            thing.live.poses = Some(Poses {
+                frame_width: width,
+                pictures: thing.images.len(),
+                set,
+            });
         }
-        let s = fw as f32 / tw as f32;
         thing
-            .images
-            .iter()
-            .map(|i| {
-                let (w, h) = i.dimensions();
-                image::imageops::resize(
-                    i,
-                    ((w as f32 * s).round() as u32).max(4),
-                    ((h as f32 * s).round() as u32).max(4),
-                    image::imageops::FilterType::Triangle,
-                )
-            })
-            .collect()
+            .live
+            .poses
+            .as_ref()
+            .map(|p| &p.set)
+            .filter(|s| !s.is_empty())
     }
 
     /// What `thing` shows in `frame`, finding near misses on the way.
-    fn read_with(thing: &Thing, frame: &RgbaImage, near: &mut Vec<RgbaImage>) -> Reading {
+    fn read_with(thing: &mut Thing, frame: &RgbaImage, near: &mut Vec<RgbaImage>) -> Reading {
         let (fw, fh) = frame.dimensions();
+        let whole = syrup::Rect {
+            x: 0,
+            y: 0,
+            w: fw,
+            h: fh,
+        };
         match thing.kind {
             Kind::Object => {
-                let mut all: Vec<Found> = Vec::new();
-                for picture in Self::scaled(thing, frame) {
-                    for f in matcher::locate(frame, &picture, None, NEAR_MISS, 12, true) {
-                        all.push(f);
-                    }
-                }
-                all.sort_by(|a, b| b.score.total_cmp(&a.score));
-                let mut kept: Vec<Found> = Vec::new();
-                for f in all {
-                    if kept
-                        .iter()
-                        .any(|k| k.x.abs_diff(f.x) < f.w / 2 && k.y.abs_diff(f.y) < f.h / 2)
-                    {
-                        continue;
-                    }
-                    kept.push(f);
-                }
+                let kept: Vec<SetMatch> = match Self::poses(thing, fw) {
+                    Some(set) => template::find_set(
+                        frame,
+                        whole,
+                        set,
+                        SetSearch {
+                            min_score: NEAR_MISS,
+                            limit: 24,
+                            max_colour_shift: Some(COLOUR_SHIFT),
+                        },
+                    ),
+                    None => Vec::new(),
+                };
                 for f in kept.iter().filter(|f| f.score < OBJECT_MATCH).take(2) {
-                    near.push(image::imageops::crop_imm(frame, f.x, f.y, f.w, f.h).to_image());
+                    let b = f.bounds;
+                    near.push(image::imageops::crop_imm(frame, b.x, b.y, b.w, b.h).to_image());
                 }
                 let mut places: Vec<(f32, f32)> = kept
                     .iter()
                     .filter(|f| f.score >= OBJECT_MATCH)
                     .map(|f| {
                         (
-                            (f.x + f.w / 2) as f32 / fw as f32,
-                            (f.y + f.h / 2) as f32 / fh as f32,
+                            (f.bounds.x + f.bounds.w / 2) as f32 / fw as f32,
+                            (f.bounds.y + f.bounds.h / 2) as f32 / fh as f32,
                         )
                     })
                     .collect();
@@ -595,9 +571,19 @@ impl Things {
                 }
             }
             Kind::Indicator => {
-                let region = thing.place.grown(0.5, 0.5).pixels(fw, fh);
-                let present = Self::scaled(thing, frame).iter().any(|p| {
-                    !matcher::locate(frame, p, Some(region), INDICATOR_MATCH, 1, false).is_empty()
+                let region = thing.place.grown(0.5, 0.5).rect(fw, fh);
+                let present = Self::poses(thing, fw).is_some_and(|set| {
+                    !template::find_set(
+                        frame,
+                        region,
+                        set,
+                        SetSearch {
+                            min_score: INDICATOR_MATCH,
+                            limit: 1,
+                            max_colour_shift: Some(COLOUR_SHIFT),
+                        },
+                    )
+                    .is_empty()
                 });
                 Reading::Present { present }
             }
@@ -626,7 +612,7 @@ impl Things {
         }
     }
 
-    fn read(&self, thing: &Thing, frame: &RgbaImage) -> Reading {
+    fn read(thing: &mut Thing, frame: &RgbaImage) -> Reading {
         Self::read_with(thing, frame, &mut Vec::new())
     }
 
@@ -654,7 +640,7 @@ impl Things {
                 Kind::Gauge => tracing::trace_span!("sight.things.gauge"),
                 Kind::Number | Kind::Text => tracing::trace_span!("sight.things.text"),
             };
-            let reading = span.in_scope(|| Self::read_with(&self.list[i], frame, &mut near));
+            let reading = span.in_scope(|| Self::read_with(&mut self.list[i], frame, &mut near));
             let id = self.list[i].id.clone();
             // A few near misses to check, not a flood.
             if self.candidates.len() < 4 && self.list[i].images.len() < MAX_PICTURES {

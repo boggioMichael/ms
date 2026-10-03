@@ -13,10 +13,10 @@
 
 use image::{Rgba, RgbaImage};
 
-use crate::observe::font;
 use crate::observe::frame_result::VisionFrameResult;
 use crate::vision::geometry::Rect;
 use crate::vision::hud_ocr::{HudOcrResult, ReadState};
+use syrup::draw as font;
 
 const HP_COLOR: Rgba<u8> = Rgba([235, 64, 64, 255]);
 const MP_COLOR: Rgba<u8> = Rgba([64, 140, 245, 255]);

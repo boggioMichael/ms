@@ -15,7 +15,7 @@ use std::time::Duration;
 use image::RgbaImage;
 use serde_json::{Value, json};
 
-use super::images::NBox;
+use super::images::{NBox, Thousandths};
 use super::knowledge::Source;
 use super::memory::Learning;
 use super::openai::{Ask, Call, OpenAi};

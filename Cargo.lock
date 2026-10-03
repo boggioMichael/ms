@@ -1710,7 +1710,7 @@ dependencies = [
 [[package]]
 name = "syrup"
 version = "0.1.0"
-source = "git+https://github.com/boggioMichael/syrup?rev=8995d89fa972ac58d1f387031398d65ed7d1d2ac#8995d89fa972ac58d1f387031398d65ed7d1d2ac"
+source = "git+https://github.com/boggioMichael/syrup?rev=2e0eb46c18adf29244ecdac422d89889a6442bd8#2e0eb46c18adf29244ecdac422d89889a6442bd8"
 dependencies = [
  "block2",
  "image",
@@ -1720,6 +1720,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation",
  "objc2-screen-capture-kit",
+ "serde",
  "windows",
  "x11rb",
  "zbus",

@@ -12,7 +12,7 @@
 use image::RgbaImage;
 use serde_json::{Value, json};
 
-use crate::ai::images::{self, NBox};
+use crate::ai::images::{self, NBox, Thousandths};
 
 /// One question for the vision model.
 #[derive(Debug, Clone)]

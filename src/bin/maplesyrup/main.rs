@@ -45,9 +45,9 @@ use ms::platform::sound::Player;
 use ms::platform::{self, voice::Voice};
 use ms::sight::Sight;
 use ms::sight::things::Fired;
-use ms::util::timing::FPSCounter;
 use ms::vision::snapshot::PerceptionPipeline;
 use serde_json::json;
+use syrup::timing::FPSCounter;
 
 const USAGE: &str = "\
 MapleSyrup — the MapleStory companion.
@@ -249,6 +249,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
 }
 
 fn main() {
+    // `MS_OCR` chose the text reader before OCR moved into Syrup; it still
+    // does, through Syrup's own variable.
+    if let Some(engine) = std::env::var_os("MS_OCR")
+        && std::env::var_os("SYRUP_OCR").is_none()
+    {
+        // SAFETY: nothing else is running yet; the variable is read later,
+        // on other threads, through the usual lock.
+        unsafe { std::env::set_var("SYRUP_OCR", engine) };
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match parse(&args) {
         Ok(o) => o,

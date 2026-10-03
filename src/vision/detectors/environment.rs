@@ -14,7 +14,7 @@
 use image::RgbaImage;
 
 use crate::vision::geometry::{Rect, group_segments};
-use crate::vision::types::{Confidence, Detection, Reliability, Source};
+use crate::vision::types::{Confidence, Detection, Reliability};
 
 #[derive(Debug, Clone, Copy)]
 pub struct EnvironmentConfig {
@@ -53,10 +53,7 @@ impl FootholdDetector {
         let width = image.width();
         let height = image.height();
         if width < 8 || height < 8 {
-            return Detection::missing(
-                Source::Environment,
-                "frame too small to scan for platform edges",
-            );
+            return Detection::missing("environment", "frame too small to scan for platform edges");
         }
 
         let luminance = |x: u32, y: u32| -> f32 {
@@ -93,7 +90,7 @@ impl FootholdDetector {
             .collect();
 
         if edges.is_empty() {
-            return Detection::missing(Source::Environment, "no strong horizontal edges found");
+            return Detection::missing("environment", "no strong horizontal edges found");
         }
 
         // Confidence scales with the longest edge's coverage of the frame
@@ -101,12 +98,7 @@ impl FootholdDetector {
         let longest = edges.iter().map(|edge| edge.bounds.w).max().unwrap_or(0);
         let confidence =
             Confidence::new(longest as f32 / width as f32).combine(Confidence::new(0.1));
-        Detection::found(
-            edges,
-            confidence,
-            Source::Environment,
-            Reliability::Heuristic,
-        )
+        Detection::found(edges, confidence, "environment", Reliability::Heuristic)
     }
 }
 

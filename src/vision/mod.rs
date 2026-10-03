@@ -8,18 +8,14 @@
 //! "very confident the HP is 50%" and "found a red bar, could be HP or
 //! something else".
 
-pub mod bar_geometry;
 pub mod detectors;
-pub mod diff;
 pub mod geometry;
 pub mod hud_geometry;
 pub mod hud_ocr;
 pub mod hud_text;
 pub mod ocr;
-pub mod ocr_windows;
 pub mod quality;
 pub mod snapshot;
-pub mod temporal;
 pub mod types;
 
 // Re-export commonly-used types at the vision module level for ergonomic
@@ -27,5 +23,5 @@ pub mod types;
 // `crate::vision::types::Detection<T>`).
 pub use geometry::Rect;
 pub use snapshot::{PerceptionPipeline, WorldState};
-pub use temporal::{ObjectTracker, Track};
-pub use types::{Confidence, Detection, Reliability, Source, Timestamp};
+pub use syrup::tracking::{ObjectTracker, Track};
+pub use types::{Confidence, Detection, Reliability, Timestamp};

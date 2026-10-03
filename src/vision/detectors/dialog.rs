@@ -13,7 +13,7 @@ use image::RgbaImage;
 use crate::knowledge::dialogs::{DialogKind, classify};
 use crate::vision::geometry::{Rect, dominant_color_bucket, find_uniform_color_panel};
 use crate::vision::ocr;
-use crate::vision::types::{Confidence, Detection, Reliability, Source};
+use crate::vision::types::{Confidence, Detection, Reliability};
 
 /// A detected dialog/popup panel and its classification.
 #[derive(Debug, Clone)]
@@ -54,7 +54,7 @@ impl DialogDetector {
         let width = image.width();
         let height = image.height();
         if width == 0 || height == 0 {
-            return Detection::missing(Source::Dialog, "empty frame");
+            return Detection::missing("dialog", "empty frame");
         }
 
         // Dialogs are rendered above the bottom HUD band and rarely at the
@@ -68,17 +68,17 @@ impl DialogDetector {
         };
 
         let Some(dominant) = dominant_color_bucket(image, band, self.config.quantization) else {
-            return Detection::missing(Source::Dialog, "no coherent panel color found");
+            return Detection::missing("dialog", "no coherent panel color found");
         };
 
         let Some(panel) = find_uniform_color_panel(image, band, dominant, self.config.quantization)
         else {
-            return Detection::missing(Source::Dialog, "no panel-sized uniform region found");
+            return Detection::missing("dialog", "no panel-sized uniform region found");
         };
 
         let min_area = (band.area() as f32 * self.config.min_area_fraction) as u32;
         if panel.area() < min_area {
-            return Detection::missing(Source::Dialog, "candidate panel too small to be a dialog");
+            return Detection::missing("dialog", "candidate panel too small to be a dialog");
         }
 
         let text =
@@ -98,7 +98,7 @@ impl DialogDetector {
                 text,
             },
             confidence,
-            Source::Dialog,
+            "dialog",
             reliability,
         )
     }

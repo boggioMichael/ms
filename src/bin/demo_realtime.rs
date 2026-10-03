@@ -16,10 +16,10 @@ use ms::game_state::*;
 use ms::logging::init_tracing;
 use ms::observe::dashboard::Dashboard;
 use ms::observe::frame_result::{FrameTimings, VisionFrameResult};
-use ms::util::timing::{FPSCounter, FrameTimer};
 use ms::vision::snapshot::PerceptionPipeline;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use syrup::timing::FPSCounter;
 
 fn main() {
     init_tracing("info");
@@ -54,7 +54,7 @@ fn main() {
 
 fn run_perception_loop(initial_image: &image::RgbaImage) {
     let mut pipeline = PerceptionPipeline::new();
-    let mut frame_timer = FrameTimer::new();
+    let mut frame_timer = Instant::now();
     let mut fps_counter = FPSCounter::new(30);
     let mut frame_number: u64 = 0;
     let start_time = Instant::now();
@@ -100,12 +100,12 @@ fn process_and_display_frame(
     pipeline: &mut PerceptionPipeline,
     image: &image::RgbaImage,
     frame_number: &mut u64,
-    frame_timer: &mut ms::util::timing::FrameTimer,
-    fps_counter: &mut ms::util::timing::FPSCounter,
+    frame_timer: &mut Instant,
+    fps_counter: &mut FPSCounter,
     start_time: Instant,
     dashboard: &mut Dashboard,
 ) {
-    frame_timer.mark();
+    *frame_timer = Instant::now();
 
     let perception_start = Instant::now();
     let world_state = pipeline.detect(image);
@@ -283,7 +283,8 @@ fn process_and_display_frame(
         processing_time_ms: perception_elapsed.as_secs_f32() * 1000.0,
     };
 
-    fps_counter.add_frame_seconds(frame_timer.mark().as_secs_f64());
+    fps_counter.add_frame_seconds(frame_timer.elapsed().as_secs_f64());
+    *frame_timer = Instant::now();
     let current_fps = fps_counter.fps();
 
     // Routine per-frame state belongs in the live dashboard, not the log:

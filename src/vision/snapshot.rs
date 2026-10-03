@@ -116,7 +116,7 @@ impl PerceptionPipeline {
     }
 
     pub fn motion_entity_count(&self) -> usize {
-        self.motion.tracked_entity_count()
+        self.motion.tracked_blob_count()
     }
 }
 

@@ -4,31 +4,24 @@
 
 use image::{Rgba, RgbaImage, imageops};
 
-use crate::observe::font;
+use syrup::draw as font;
 
 /// A box in a frame, as fractions of its width and height (0 to 1, from the
-/// top left). Models get and give these as 0 to 1000.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct NBox {
-    pub x0: f32,
-    pub y0: f32,
-    pub x1: f32,
-    pub y1: f32,
-}
+/// top left): Syrup's [`NormRect`](syrup::geometry::NormRect). Models get
+/// and give these as 0 to 1000 ([`Thousandths`]).
+pub type NBox = syrup::geometry::NormRect;
 
-impl NBox {
-    pub fn new(x0: f32, y0: f32, x1: f32, y1: f32) -> NBox {
-        NBox {
-            x0: x0.min(x1).clamp(0.0, 1.0),
-            y0: y0.min(y1).clamp(0.0, 1.0),
-            x1: x0.max(x1).clamp(0.0, 1.0),
-            y1: y0.max(y1).clamp(0.0, 1.0),
-        }
-    }
-
+/// A box as a model writes it: `[x0, y0, x1, y1]` in thousandths of the
+/// frame.
+pub trait Thousandths: Sized {
     /// From a model's `[x0, y0, x1, y1]` in 0 to 1000. `None` for anything
     /// that is not four numbers making a box of some size.
-    pub fn from_thousandths(values: &[f64]) -> Option<NBox> {
+    fn from_thousandths(values: &[f64]) -> Option<Self>;
+    fn to_thousandths(&self) -> [u32; 4];
+}
+
+impl Thousandths for NBox {
+    fn from_thousandths(values: &[f64]) -> Option<NBox> {
         if values.len() != 4 || values.iter().any(|v| !v.is_finite()) {
             return None;
         }
@@ -41,71 +34,8 @@ impl NBox {
         (b.width() > 0.0005 && b.height() > 0.0005).then_some(b)
     }
 
-    pub fn to_thousandths(&self) -> [u32; 4] {
+    fn to_thousandths(&self) -> [u32; 4] {
         [self.x0, self.y0, self.x1, self.y1].map(|v| (v * 1000.0).round() as u32)
-    }
-
-    pub fn width(&self) -> f32 {
-        self.x1 - self.x0
-    }
-
-    pub fn height(&self) -> f32 {
-        self.y1 - self.y0
-    }
-
-    pub fn center(&self) -> (f32, f32) {
-        ((self.x0 + self.x1) / 2.0, (self.y0 + self.y1) / 2.0)
-    }
-
-    /// Grown by `fx` of its width and `fy` of its height on each side.
-    pub fn grown(&self, fx: f32, fy: f32) -> NBox {
-        let (dx, dy) = (self.width() * fx, self.height() * fy);
-        NBox::new(self.x0 - dx, self.y0 - dy, self.x1 + dx, self.y1 + dy)
-    }
-
-    /// The smallest box holding both.
-    pub fn union(&self, other: &NBox) -> NBox {
-        NBox::new(
-            self.x0.min(other.x0),
-            self.y0.min(other.y0),
-            self.x1.max(other.x1),
-            self.y1.max(other.y1),
-        )
-    }
-
-    /// In pixels of a `width`×`height` frame: x, y, w, h (at least 1×1).
-    pub fn pixels(&self, width: u32, height: u32) -> (u32, u32, u32, u32) {
-        // A hair of slack, so a box made from whole pixels comes back exact.
-        let lo = |v: f32, n: u32| {
-            ((v * n as f32 + 0.01).floor().max(0.0) as u32).min(n.saturating_sub(1))
-        };
-        let hi = |v: f32, n: u32| (v * n as f32 - 0.01).ceil().max(0.0) as u32;
-        let (x0, y0) = (lo(self.x0, width), lo(self.y0, height));
-        let x1 = hi(self.x1, width).clamp(x0 + 1, width.max(1));
-        let y1 = hi(self.y1, height).clamp(y0 + 1, height.max(1));
-        (x0, y0, x1 - x0, y1 - y0)
-    }
-
-    /// A box in pixels of a `width`×`height` frame, as fractions.
-    pub fn from_pixels(x: u32, y: u32, w: u32, h: u32, width: u32, height: u32) -> NBox {
-        let (fw, fh) = (width.max(1) as f32, height.max(1) as f32);
-        NBox::new(
-            x as f32 / fw,
-            y as f32 / fh,
-            (x + w) as f32 / fw,
-            (y + h) as f32 / fh,
-        )
-    }
-
-    /// This box (given in fractions of `inner`, which sits at `inner` within
-    /// a larger frame) in fractions of the larger frame.
-    pub fn within(&self, inner: &NBox) -> NBox {
-        NBox::new(
-            inner.x0 + self.x0 * inner.width(),
-            inner.y0 + self.y0 * inner.height(),
-            inner.x0 + self.x1 * inner.width(),
-            inner.y0 + self.y1 * inner.height(),
-        )
     }
 }
 

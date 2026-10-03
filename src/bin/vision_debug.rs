@@ -35,8 +35,8 @@ use ms::capture::capture_game_window_info;
 use ms::observe::dashboard::Dashboard;
 use ms::observe::frame_result::{FrameTimings, LatestFrame, VisionFrameResult};
 use ms::observe::preview::Preview;
-use ms::util::timing::FPSCounter;
 use ms::vision::snapshot::PerceptionPipeline;
+use syrup::timing::FPSCounter;
 
 /// How long the worker waits before retrying after the window disappears.
 const RECAPTURE_BACKOFF: Duration = Duration::from_millis(500);
@@ -510,12 +510,12 @@ fn explain(source: &str, image: RgbaImage) {
     println!("source : {source} ({}x{})", image.width(), image.height());
     println!(
         "engines: tesseract {} | windows-ocr {}",
-        if ms::vision::ocr::is_ocr_available() {
+        if syrup::ocr::engine() == Some(syrup::ocr::Engine::Tesseract) {
             "available"
         } else {
             "missing"
         },
-        if ms::vision::ocr_windows::is_available() {
+        if syrup::ocr::windows::is_available() {
             "available"
         } else {
             "missing"
