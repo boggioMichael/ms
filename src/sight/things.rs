@@ -212,6 +212,12 @@ pub struct Live {
     /// Checks in a row the alert's condition held, and whether it may fire.
     streak: u32,
     disarmed: bool,
+    /// Since when the condition has been clearly over (the alert arms
+    /// again once that has lasted).
+    over_since: Option<Instant>,
+    /// When the alert's condition was first checked: what holds in the
+    /// first moment is how things are, not something happening.
+    first_look: Option<Instant>,
     last_fired: Option<Instant>,
     previous_text: Option<String>,
 }
@@ -338,6 +344,14 @@ const GAUGE_EVERY: Duration = Duration::from_millis(250);
 const TEXT_EVERY: Duration = Duration::from_secs(3);
 /// An alert does not repeat sooner than this.
 const ALERT_COOLDOWN: Duration = Duration::from_secs(15);
+/// An alert arms again only once its condition has been over this long:
+/// a thing that is always on screen (the character, the minimap) and
+/// slips the tracker for a frame or two is not appearing.
+const ARM_AFTER: Duration = Duration::from_secs(2);
+/// The first moment an alert is checked (MapleSyrup just started, or the
+/// thing was just taught) only says how things are: long enough for a
+/// sweep of the frame to find what is already there.
+const BASELINE: Duration = Duration::from_millis(1500);
 
 fn slug(name: &str) -> String {
     let s: String = name
@@ -1031,11 +1045,24 @@ impl Things {
                 (changed, !changed)
             }
         };
-        if over {
-            live.streak = 0;
-            live.disarmed = false;
+        let first = *live.first_look.get_or_insert(now);
+        if now.duration_since(first) < BASELINE {
+            // The first moment: a condition that already holds is how
+            // things are, not something happening.
+            if holds {
+                live.disarmed = true;
+            }
             return None;
         }
+        if over {
+            live.streak = 0;
+            let since = *live.over_since.get_or_insert(now);
+            if now.duration_since(since) >= ARM_AFTER {
+                live.disarmed = false;
+            }
+            return None;
+        }
+        live.over_since = None;
         if !holds {
             live.streak = 0;
             return None;
@@ -1174,15 +1201,28 @@ mod tests {
         assert_eq!(again.list[0].images.len(), 1);
         let t0 = Instant::now();
         let at = |i: u64| t0 + Duration::from_millis(100 * i);
-        // None for a while (the sweep goes round once, the old track dies),
-        // then two appear: within a sweep both are found, and the alert
-        // fires once, after two looks at them.
-        for i in 0..SWEEP_STRIPES as u64 {
+        // On screen at the first look after starting: how things are, not
+        // something happening — no alert.
+        let two = field(&[(150, 100), (600, 320)]);
+        for i in 0..2 * SWEEP_STRIPES as u64 {
+            assert!(again.run(&two, at(i)).is_empty());
+        }
+        // Gone for a moment (the sweep goes round once, the old tracks
+        // die), then back: a thing that slips the tracker for a second is
+        // not appearing either.
+        for i in 24..24 + SWEEP_STRIPES as u64 {
             assert!(again.run(&field(&[]), at(i)).is_empty());
         }
-        let two = field(&[(150, 100), (600, 320)]);
+        for i in 36..36 + 2 * SWEEP_STRIPES as u64 {
+            assert!(again.run(&two, at(i)).is_empty());
+        }
+        // Gone for a while (two seconds), then two appear: within a sweep
+        // both are found, and the alert fires once, after two looks.
+        for i in 60..85 {
+            assert!(again.run(&field(&[]), at(i)).is_empty());
+        }
         let mut fired = Vec::new();
-        for i in 8..8 + 2 * SWEEP_STRIPES as u64 {
+        for i in 85..85 + 2 * SWEEP_STRIPES as u64 {
             fired.extend(again.run(&two, at(i)));
         }
         assert_eq!(fired.len(), 1, "{fired:?}");
@@ -1194,7 +1234,7 @@ mod tests {
         );
         // One goes: its track is dropped after a few frames; no alert.
         let one = field(&[(150, 100)]);
-        for i in 24..24 + 2 * SWEEP_STRIPES as u64 {
+        for i in 120..120 + 2 * SWEEP_STRIPES as u64 {
             assert!(again.run(&one, at(i)).is_empty());
         }
         assert!(

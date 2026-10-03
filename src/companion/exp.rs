@@ -21,8 +21,12 @@ const SAMPLE_EVERY_SECS: f64 = 2.0;
 const MAX_PAIRS_SAMPLES: usize = 150;
 
 /// Readings a fall must last for before it counts as a level-up when the
-/// level itself is not being read (one misread must not add 100%).
+/// level itself is not being read (one misread must not add 100%)…
 const WRAP_CONFIRMATIONS: usize = 3;
+/// …and how long, in seconds: a bar misread as full every other frame
+/// (something of its colour along the empty track) falls and recovers ten
+/// times a second; a level-up stays down.
+const WRAP_SECS: f64 = 2.0;
 /// Recent readings whose median is "where EXP is now".
 const RECENT: usize = 5;
 
@@ -95,7 +99,8 @@ impl ExpTracker {
         {
             // A fall from high to low: a level-up if it lasts, else a misread.
             self.pending.push((t, percent));
-            if self.pending.len() >= WRAP_CONFIRMATIONS {
+            let lasted = t - self.pending[0].0 >= WRAP_SECS;
+            if self.pending.len() >= WRAP_CONFIRMATIONS && lasted {
                 let confirmed = std::mem::take(&mut self.pending);
                 self.level_up(t, &confirmed);
                 return true;
@@ -295,6 +300,44 @@ mod tests {
         assert!(!tracker.add(18.0, 99.0));
         assert!(!tracker.add(20.0, 70.3));
         assert_eq!(tracker.levels_gained(), 0);
+    }
+
+    #[test]
+    fn a_bar_flapping_between_full_and_empty_is_not_a_level_up() {
+        // Ten readings a second, the bar misread as full every other frame
+        // (the game says 19%): never a level-up, whatever the frame rate.
+        let mut tracker = ExpTracker::new();
+        for i in 0..600 {
+            let t = i as f64 * 0.1;
+            let percent = if i % 2 == 0 { 99.0 } else { 19.0 };
+            assert!(!tracker.add(t, percent), "{t}");
+        }
+        assert_eq!(tracker.levels_gained(), 0);
+        // Misread as full for a second and a half, then right again: no.
+        let mut tracker = ExpTracker::new();
+        for i in 0..100 {
+            assert!(!tracker.add(i as f64 * 0.1, 99.0));
+        }
+        for i in 100..115 {
+            assert!(!tracker.add(i as f64 * 0.1, 19.0));
+        }
+        assert!(!tracker.add(11.5, 99.0));
+        assert_eq!(tracker.levels_gained(), 0);
+        // A real one at frame rate: down and staying down, counted once
+        // the fall has lasted two seconds.
+        let mut tracker = ExpTracker::new();
+        for i in 0..50 {
+            tracker.add(i as f64 * 0.1, 99.5);
+        }
+        let mut counted_at = None;
+        for i in 50..100 {
+            let t = i as f64 * 0.1;
+            if tracker.add(t, 0.4) {
+                counted_at = Some(t);
+            }
+        }
+        assert!((counted_at.unwrap() - 7.0).abs() < 0.11, "{counted_at:?}");
+        assert_eq!(tracker.levels_gained(), 1);
     }
 
     #[test]
