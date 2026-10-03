@@ -90,7 +90,15 @@ pub struct GameCapture {
     /// Frames through the CPU path only (on Windows, GDI rather than
     /// Windows.Graphics.Capture).
     cpu_only: bool,
+    /// The last few frames handed out: one nobody holds any more lends
+    /// its buffer to the next capture (a 4K frame is 33 MB; allocating
+    /// that afresh every frame is faulted in page by page).
+    spares: std::collections::VecDeque<std::sync::Arc<RgbaImage>>,
 }
+
+/// Frames kept for their buffers: the vision thread, the teacher's latest
+/// frame and the main loop each hold one for a frame or two.
+const SPARES: usize = 3;
 
 impl GameCapture {
     /// Find the MapleStory client by its title.
@@ -99,6 +107,7 @@ impl GameCapture {
             query: None,
             window: None,
             cpu_only: false,
+            spares: std::collections::VecDeque::new(),
         }
     }
 
@@ -108,6 +117,7 @@ impl GameCapture {
             query: Some(query.to_string()),
             window: None,
             cpu_only: false,
+            spares: std::collections::VecDeque::new(),
         }
     }
 
@@ -169,11 +179,25 @@ impl GameCapture {
         let Some(window) = self.window.as_mut() else {
             return Captured::NotFound;
         };
-        match window.capture() {
-            Ok(image) => Captured::Frame {
-                title: window.title().to_string(),
-                image: std::sync::Arc::new(image),
-            },
+        // A frame everyone has let go of lends its buffer.
+        let spare = self
+            .spares
+            .iter()
+            .position(|a| std::sync::Arc::strong_count(a) == 1)
+            .and_then(|i| self.spares.remove(i))
+            .and_then(|a| std::sync::Arc::try_unwrap(a).ok());
+        match window.capture_into(spare) {
+            Ok(image) => {
+                let image = std::sync::Arc::new(image);
+                self.spares.push_back(std::sync::Arc::clone(&image));
+                while self.spares.len() > SPARES {
+                    self.spares.pop_front();
+                }
+                Captured::Frame {
+                    title: window.title().to_string(),
+                    image,
+                }
+            }
             Err(CaptureError::Closed | CaptureError::NotFound) => {
                 self.window = None;
                 Captured::NotFound
