@@ -2,9 +2,10 @@
 //!
 //! Foothold platforms in MapleStory render as a strong horizontal
 //! brightness discontinuity (the ground texture edge) that spans a wide
-//! contiguous run of the frame. This detector looks for such edges via a
-//! simple vertical luminance gradient, which is resolution- and
-//! skin-independent (unlike matching a specific tile texture).
+//! contiguous run of the frame. This detector looks for such edges with
+//! Syrup's horizontal edge scan (a vertical luminance gradient), which is
+//! resolution- and skin-independent (unlike matching a specific tile
+//! texture).
 //!
 //! This is intentionally a coarse signal: it reports *candidate* horizontal
 //! line segments with a confidence based on length and gradient strength,
@@ -13,13 +14,14 @@
 
 use image::RgbaImage;
 
-use crate::vision::geometry::{Rect, group_segments};
+use crate::vision::geometry::{Rect, horizontal_edges};
 use crate::vision::types::{Confidence, Detection, Reliability};
 
 #[derive(Debug, Clone, Copy)]
 pub struct EnvironmentConfig {
-    /// Minimum luminance delta between adjacent rows to count as an edge pixel.
-    pub gradient_threshold: f32,
+    /// Minimum luminance delta (0-255) between adjacent rows to count as an
+    /// edge pixel.
+    pub gradient_threshold: u8,
     /// Minimum contiguous run width, in pixels, for a candidate platform edge.
     pub min_run_width: u32,
 }
@@ -27,7 +29,7 @@ pub struct EnvironmentConfig {
 impl Default for EnvironmentConfig {
     fn default() -> Self {
         Self {
-            gradient_threshold: 40.0,
+            gradient_threshold: 40,
             min_run_width: 60,
         }
     }
@@ -56,38 +58,14 @@ impl FootholdDetector {
             return Detection::missing("environment", "frame too small to scan for platform edges");
         }
 
-        let luminance = |x: u32, y: u32| -> f32 {
-            let pixel = image.get_pixel(x, y);
-            0.2126 * pixel[0] as f32 + 0.7152 * pixel[1] as f32 + 0.0722 * pixel[2] as f32
-        };
-
-        let mut rows = Vec::new();
-        for y in 0..(height - 1) {
-            let mut start: Option<u32> = None;
-            for x in 0..width {
-                let gradient = (luminance(x, y) - luminance(x, y + 1)).abs();
-                if gradient >= self.config.gradient_threshold {
-                    if start.is_none() {
-                        start = Some(x);
-                    }
-                } else if let Some(begin) = start {
-                    if x - begin >= self.config.min_run_width {
-                        rows.push((y, begin, x - 1));
-                    }
-                    start = None;
-                }
-            }
-            if let Some(begin) = start
-                && width - begin >= self.config.min_run_width
-            {
-                rows.push((y, begin, width - 1));
-            }
-        }
-
-        let edges: Vec<PlatformEdge> = group_segments(rows, 1, 0)
-            .into_iter()
-            .map(|bounds| PlatformEdge { bounds })
-            .collect();
+        let edges: Vec<PlatformEdge> = horizontal_edges(
+            image,
+            self.config.gradient_threshold,
+            self.config.min_run_width,
+        )
+        .into_iter()
+        .map(|bounds| PlatformEdge { bounds })
+        .collect();
 
         if edges.is_empty() {
             return Detection::missing("environment", "no strong horizontal edges found");
