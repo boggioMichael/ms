@@ -175,6 +175,16 @@ organization's Device Guard policy")
   (Since the April 2026 update it can be turned on again from the same place;
   MapleSyrup is then blocked again.)
 
+Updates
+  MapleSyrup updates itself. Now and then it looks at datta-syrup.ai for a
+  new version, fetches it in the background and installs it the next time
+  you start MapleSyrup (or right away: Settings on the phone -> Update now).
+  It only takes a version signed by the release key built into it, and keeps
+  the version you had beside it until the new one has run for a while; a
+  version that does not come up twice is rolled back, and the one after it
+  is tried instead. Turn it off in Settings on the phone, or start MapleSyrup
+  with --no-update.
+
 Privacy
   Your OpenAI key stays on this PC (a live call uses a key that works for a few
   minutes only, made for it). With a key, what you say to MapleSyrup (on a

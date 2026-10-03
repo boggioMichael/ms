@@ -20,6 +20,7 @@ STATUS = {
     "level": 152, "name": "WanWanBoggio", "job": None,
     "progress": {"seconds": 1200.0, "exp_per_hour": 1.2, "seconds_to_level": 7200.0, "levels_gained": 0, "marks": 0},
     "muted": False, "dead": False, "fps": 10.0, "wake": "syrup", "always_listen": True, "coach": True,
+    "update": {"version": "0.9.0", "state": "staged", "detail": "0.9.1", "latest": "0.9.1", "auto": True, "checked_secs_ago": 5, "notes": ""},
     "speaking": False, "speaking_pc": False, "thinking": False, "ai": "grok-4.3",
     "learned": {"things": [], "hud": True, "level": 152, "level_from": "screen"},
     "live": True, "recording": {"state": "off"}, "attitude": "savage",
@@ -79,6 +80,11 @@ with sync_playwright() as p:
     assert len(items) == 7, len(items)
     assert page.get_attribute("#voiceList li.sel", "data-id") == "v2"
     assert page.is_checked("#coachBox")
+    # The version row: this version, the one staged, and the button to take it now.
+    assert page.inner_text("#updateVersion") == "0.9.0"
+    assert "0.9.1" in page.inner_text("#updateState") and "next time" in page.inner_text("#updateState"), page.inner_text("#updateState")
+    assert page.is_visible("#updateBtn") and page.is_checked("#updateBox")
+    page.locator("#updateCard").screenshot(path=os.path.join(SHOTS, "phone-update-card.png"))
     page.fill("#voiceSearch", "female soft")
     page.wait_for_timeout(100)
     shown = [li.get_attribute("data-id") for li in page.query_selector_all("#voiceList li:not(.hidden)")]

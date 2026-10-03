@@ -102,6 +102,9 @@ OPTIONS
   --overlay-on-stream   let OBS and screenshots see the panel (by default it
                         keeps out of captures)
   --plain               no colours or redrawing in the console
+  --no-update           never look for a new version (it updates itself
+                        otherwise: fetched in the background, installed at
+                        the next start, rolled back if it does not come up)
   --self-test           check this PC: the engine, the phone link, the voice
   --record-test         check recording on this PC: a few seconds of the screen
                         with a flash and a tone, which must line up
@@ -141,6 +144,8 @@ struct Options {
     overlay: bool,
     overlay_on_stream: bool,
     plain: bool,
+    /// Looks for a new version of itself and installs it.
+    update: bool,
     self_test: bool,
     record_test: bool,
     /// How it talks (None: what the player picked on the phone).
@@ -178,6 +183,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         overlay: true,
         overlay_on_stream: false,
         plain: false,
+        update: std::env::var_os("MAPLESYRUP_NO_UPDATE").is_none(),
         self_test: false,
         record_test: false,
         attitude: None,
@@ -231,6 +237,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--no-overlay" => o.overlay = false,
             "--overlay-on-stream" => o.overlay_on_stream = true,
             "--plain" => o.plain = true,
+            "--no-update" => o.update = false,
             "--self-test" => o.self_test = true,
             "--record-test" => o.record_test = true,
             "--attitude" => {
@@ -276,7 +283,21 @@ fn main() {
     if options.record_test {
         std::process::exit(selftest::record_test());
     }
-    if let Err(e) = run(options) {
+    // A new version fetched last time goes in now (the previous one kept
+    // beside it), or the kept one comes back when the new one did not come
+    // up: either way the program in place is started, and this one leaves.
+    if options.update
+        && let Ok(exe) = std::env::current_exe()
+        && let ms::update::Start::Relaunch(exe) =
+            ms::update::at_start(&tls::settings_dir(), &exe, env!("CARGO_PKG_VERSION"))
+    {
+        println!("MapleSyrup: starting the version just put in place…");
+        match ms::update::relaunch(&exe, &args) {
+            Ok(()) => return,
+            Err(e) => eprintln!("{e}\nCarrying on with this one."),
+        }
+    }
+    if let Err(e) = run(options, args) {
         eprintln!("\nMapleSyrup stopped: {e}");
         pause_if_double_clicked();
         std::process::exit(1);
@@ -1397,7 +1418,7 @@ fn openai_key(options: &Options, settings: &Path) -> Option<String> {
     Some(key)
 }
 
-fn run(options: Options) -> Result<(), String> {
+fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     let console = platform::init("MapleSyrup (close this window or press Ctrl+C to stop)");
     let ansi = console.ansi && !options.plain;
     let start = Instant::now();
@@ -1412,6 +1433,22 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(attitude) = options.attitude {
         learning.memory().attitude = attitude;
     }
+    // New versions: looked for in the background and staged for the next
+    // start, unless asked not to (here, or on the phone, for good).
+    let (update_tx, update_rx) = mpsc::channel::<String>();
+    let updater = Arc::new(ms::update::Updater::new(
+        &settings_dir,
+        env!("CARGO_PKG_VERSION"),
+        options.update && learning.memory().updates.unwrap_or(true),
+    ));
+    if options.update {
+        Arc::clone(&updater).spawn(update_tx);
+    }
+    // The new version this is, until it has run long enough to be kept.
+    let mut update_committed = !options.update;
+    // "Update now" from the phone: the staged version put in place, to be
+    // started once this one has wound down.
+    let mut relaunch_as: Option<String> = None;
     // ElevenLabs voices, with a key: the account's voices are listed on the
     // phone (fetched on the side), and the one picked speaks.
     let elevenlabs_key = ai::load_elevenlabs_key(&settings_dir);
@@ -1866,7 +1903,24 @@ fn run(options: Options) -> Result<(), String> {
         if preview.as_ref().is_some_and(|p| !p.is_open()) {
             break;
         }
+        if relaunch_as.is_some() {
+            break;
+        }
         let now = start.elapsed().as_secs_f64();
+        // What the updater did; and this version, once it has run long
+        // enough, is kept for good (the previous one let go).
+        while let Ok(line) = update_rx.try_recv() {
+            out.session.line("update", &line);
+            out.push(Kind::Info, line);
+        }
+        if !update_committed && start.elapsed() >= ms::update::HEALTHY_AFTER {
+            update_committed = true;
+            if let Some(version) = ms::update::commit(&settings_dir) {
+                let line = format!("MapleSyrup {version} is in for good");
+                out.session.line("update", &line);
+                out.push(Kind::Info, line);
+            }
+        }
 
         if let Some(tick) = slot.take() {
             if let Some(frame) = &tick.frame {
@@ -2327,6 +2381,36 @@ fn run(options: Options) -> Result<(), String> {
                             );
                         }
                     }
+                    Inbound::Update(ask) => match ask {
+                        phone::UpdateAsk::Check => updater.check_now(),
+                        phone::UpdateAsk::Auto(on) => {
+                            updater.set_auto(on);
+                            let mut memory = learning.memory();
+                            memory.updates = Some(on);
+                            memory.save();
+                            out.session.line(
+                                "update",
+                                if on {
+                                    "updates itself again"
+                                } else {
+                                    "no more updates on its own"
+                                },
+                            );
+                        }
+                        phone::UpdateAsk::Install => match std::env::current_exe()
+                            .map_err(|e| e.to_string())
+                            .and_then(|exe| updater.install_now(&exe))
+                        {
+                            Ok(version) => {
+                                out.push(
+                                    Kind::Info,
+                                    format!("MapleSyrup {version} is in place: restarting"),
+                                );
+                                relaunch_as = Some(version);
+                            }
+                            Err(e) => out.push(Kind::Info, format!("couldn't update now: {e}")),
+                        },
+                    },
                     Inbound::Coach(on) => {
                         if on != coach.on {
                             set_coaching(&mut coach, &learning, &mut out, on);
@@ -2699,6 +2783,8 @@ fn run(options: Options) -> Result<(), String> {
                     "always_listen": companion.settings.always_listen,
                     // Whether it speaks up on its own (the coach).
                     "coach": coach.on,
+                    // This version, and whether a newer one is on its way.
+                    "update": updater.status().to_json(),
                     "speaking": out.mouth.speaking(),
                     // The PC's own voice (the phone keeps listening through it).
                     "speaking_pc": out.mouth.pc_speaking(),
@@ -2824,6 +2910,14 @@ fn run(options: Options) -> Result<(), String> {
         if progress.marks == 1 { "" } else { "s" },
         session_dir.display()
     );
+    if let Some(version) = relaunch_as {
+        println!("Starting MapleSyrup {version}…");
+        if let Ok(exe) = std::env::current_exe()
+            && let Err(e) = ms::update::relaunch(&exe, &args)
+        {
+            eprintln!("{e}");
+        }
+    }
     Ok(())
 }
 

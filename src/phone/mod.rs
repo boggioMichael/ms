@@ -155,6 +155,17 @@ pub enum Inbound {
     Attitude(crate::companion::Attitude),
     /// The voice to speak in: an ElevenLabs voice's id, or "openai".
     Speaker(String),
+    /// About updates: look now, install what is staged, or whether to
+    /// update on its own.
+    Update(UpdateAsk),
+}
+
+/// What the phone asks of the updater.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UpdateAsk {
+    Check,
+    Install,
+    Auto(bool),
 }
 
 /// What the phone's live call asks the PC for.
@@ -609,6 +620,25 @@ impl Hub {
                 }
                 None => Response::json(400, &json!({"error": "on must be true or false"})),
             },
+            ("POST", "/api/update") => {
+                let body = body();
+                let ask = match body.get("action").and_then(Value::as_str) {
+                    Some("check") => Some(UpdateAsk::Check),
+                    Some("install") => Some(UpdateAsk::Install),
+                    Some("auto") => body.get("on").and_then(Value::as_bool).map(UpdateAsk::Auto),
+                    _ => None,
+                };
+                match ask {
+                    Some(ask) => {
+                        self.lock().inbox.push(Inbound::Update(ask));
+                        Response::json(200, &json!({"ok": true}))
+                    }
+                    None => Response::json(
+                        400,
+                        &json!({"error": "action is check, install or auto (with on)"}),
+                    ),
+                }
+            }
             ("POST", "/api/audio") => {
                 let rate: u32 = request
                     .param("rate")
@@ -1125,6 +1155,8 @@ mod tests {
             ("/api/talking?k=k1", r#"{"on": true}"#),
             ("/api/talking?k=k1", r#"{"on": true, "who": "player"}"#),
             ("/api/coach?k=k1", r#"{"on": false}"#),
+            ("/api/update?k=k1", r#"{"action": "install"}"#),
+            ("/api/update?k=k1", r#"{"action": "auto", "on": false}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
             ("/api/attitude?k=k1", r#"{"attitude": "savage"}"#),
             ("/api/speaker?k=k1", r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#),
@@ -1165,6 +1197,8 @@ mod tests {
                 Inbound::Talking(true),
                 Inbound::PlayerTalking(true),
                 Inbound::Coach(false),
+                Inbound::Update(UpdateAsk::Install),
+                Inbound::Update(UpdateAsk::Auto(false)),
                 Inbound::Turn("jumped in".into()),
                 Inbound::Attitude(crate::companion::Attitude::Savage),
                 Inbound::Speaker("pNInz6obpgDQGcFmaJgB".into()),
@@ -1182,6 +1216,11 @@ mod tests {
                 r#"{"attitude": "loud"}"#
             ))
             .status,
+            400
+        );
+        assert_eq!(
+            hub.handle(&request("POST", "/api/update?k=k1", r#"{"action": "fly"}"#))
+                .status,
             400
         );
     }

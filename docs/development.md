@@ -189,6 +189,81 @@ Run a specific detector's tests:
 cargo test vision::detectors::hud::tests::
 ```
 
+## Releasing
+
+A release is a version in `Cargo.toml` and a tag `v<version>` on the commit
+that carries it; the two must agree, since the program reports
+`CARGO_PKG_VERSION` to the updater and the pipeline refuses a tag that says
+otherwise.
+
+1. Set the version in `Cargo.toml`, write the "New in" paragraph in
+   `installer/release-notes.md`, commit, push.
+2. Tag it (`git tag v0.9.0 && git push origin v0.9.0`). The
+   `MapleSyrup standalone` workflow builds the Windows package, lays the
+   files out under their version's names (`MapleSyrup-Setup-0.9.0.exe`,
+   `MapleSyrup-0.9.0-portable.zip`, `MapleSyrup-0.9.0.exe`, `SHA256SUMS`),
+   writes `manifest.json` (the version, the date, the commit, the notes,
+   each file's size and SHA-256 and where it will be served from) and signs
+   it with the release key (`manifest.json.sig`, Ed25519), and makes a
+   **draft** GitHub release with all of that. Nothing is public yet.
+3. Try the draft's files. Then, in Actions, run `MapleSyrup standalone` by
+   hand **on the tag** with *publish* ticked (and a line of notes, shown on
+   the phone): the GitHub release is made public and the files, the manifest
+   and its signature are committed to the company site's repository under
+   its downloads folder (versioned names, plus `MapleSyrup-Setup.exe` and
+   `MapleSyrup-portable.zip` with fixed names for the site's links). From
+   then on every MapleSyrup that looks at the channel fetches the new
+   version.
+
+The workflow needs, in the repository's settings:
+
+| what | where | holds |
+|---|---|---|
+| `RELEASE_SIGNING_KEY` | secret | the Ed25519 private key, PEM (`openssl genpkey -algorithm ed25519`); its public half is `update::PUBLIC_KEY` in `src/update.rs` — change both together, and know that a program built with the old key will never take a manifest signed with the new one |
+| `SITE_TOKEN` | secret | a token that may push to the site's repository (a fine-grained personal access token with *Contents: read and write* on that repository alone) |
+| `SITE_REPO` | variable | the site's repository, `owner/name` |
+| `SITE_URL` | variable | where the site is served (default `https://datta-syrup.ai`) |
+| `SITE_DOWNLOADS` | variable | the folder in the site's repository served as `/downloads/` (default `downloads`) |
+
+Without `SITE_TOKEN` and `SITE_REPO` the manifest points at the GitHub
+release's own files instead, and *publish* only makes the release public.
+
+### How the updater works (`src/update.rs`)
+
+The way Android updates its APEX modules, scaled to one program:
+
+- **The channel.** `https://datta-syrup.ai/downloads/manifest.json` and
+  `manifest.json.sig` beside it. The program looks 45 s after it starts and
+  every hour after that (later after a failure), and whenever the phone
+  asks. `MAPLESYRUP_UPDATE_URL` points it elsewhere (a `file://` URL will do
+  for a test of the whole way; `tests/update_channel.rs`).
+- **Verified, or nothing.** The signature must be the built-in key's over
+  exactly the manifest's bytes; the fetched program must have the manifest's
+  size and SHA-256 and start like a Windows program. Anything else is
+  dropped and said in the log.
+- **Staged.** The program is fetched into `%APPDATA%\MapleSyrup\updates\`
+  and `staged.json` written. The phone shows "0.9.1 is ready: it installs
+  the next time MapleSyrup starts", with *Update now*.
+- **Activated at the next start, atomically.** Before anything else,
+  `update::at_start` copies the staged program beside the running one, then
+  renames the running one to `MapleSyrup.old.exe` and the new one into its
+  place (a running program can be renamed on Windows; a rename on one volume
+  is atomic, so there is no moment without a program), writes
+  `pending.json`, starts the new program in a console of its own and leaves.
+- **Committed, or rolled back.** The new version counts its starts in
+  `pending.json`; after `HEALTHY_AFTER` (90 s) of running it commits: the
+  kept program is deleted. A version that is started `BOOTS_BEFORE_ROLLBACK`
+  (2) times without committing is put back at the start after them: the
+  kept program returns to its place, the version goes into `blocked.json`
+  and is never offered again (the one after it will be), and the kept
+  program is started.
+- **The player's say.** Settings on the phone: *Updates itself when a new
+  version is out* (kept in `memory.json` as `updates`), *Update now* (the
+  staged program put in place at once and MapleSyrup restarted);
+  `--no-update` or `MAPLESYRUP_NO_UPDATE=1` for a session without any of it.
+  Everything the updater does is in `updates/log.txt` and the session log
+  (`[update]` lines).
+
 ## Performance Notes
 
 - **Motion detector**: ~5-10ms per frame (frame diff + tracking)

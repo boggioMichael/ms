@@ -221,6 +221,9 @@ pub struct Memory {
     /// Whether it speaks up on its own while they play (the coach); None
     /// is the usual, on.
     pub coach: Option<bool>,
+    /// Whether it updates itself when a new version is out; None is the
+    /// usual, on.
+    pub updates: Option<bool>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }

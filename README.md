@@ -19,6 +19,7 @@ Download **`MapleSyrup-Setup-<version>.exe`** from [Releases](https://github.com
 - **Watches your back.** Low HP and MP warnings, a beating called as it happens ("Back off, you're getting shredded"), level-ups, EXP per hour and time to level, with MapleStory's sound turned down while it talks.
 - **Coaches on its own.** You play, it talks: it watches the game go by and speaks up when there is something worth saying — you just arrived somewhere new, you went up a level, your EXP hasn't moved for minutes, something on screen deserves a callout — one short instruction, never a question. It looks now and then (less often when there is nothing to say) and keeps quiet while anyone talks. Say "stop coaching" or "only talk when I ask" and it only answers; "coach me" turns it back on.
 - **Your phone is its microphone and a second screen**, in 14 languages.
+- **Updates itself.** A new version is fetched in the background, verified against the release key built in, and installed the next time it starts — the previous version kept beside it to go back to if the new one does not come up (the way Android updates its APEX modules). *Update now* on the phone, or `--no-update`.
 - **Records the session for you.** Tap *Record the session* on the phone (or say "start recording"): a video of the whole screen with every sound — the game, its voice and yours — each sound placed where it was heard, saved in the session folder.
 
 Everything it does, recording and streaming, and privacy: [package/README.txt](package/README.txt).

@@ -34,5 +34,6 @@ pub mod perceive;
 pub mod phone;
 pub mod platform;
 pub mod sight;
+pub mod update;
 pub mod util;
 pub mod vision;
