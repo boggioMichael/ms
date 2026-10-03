@@ -1982,6 +1982,10 @@ fn run(options: Options) -> Result<(), String> {
                             out.session.line("turn", "talked over (heard by the phone)");
                         }
                     }
+                    Inbound::Said { who, text } if who == "timing" => {
+                        // Where the time went on the call, from the phone.
+                        out.session.line("timing", &text);
+                    }
                     Inbound::Said { who, text } => {
                         // On a live call: shown here and kept in the log (the
                         // phone shows it itself).

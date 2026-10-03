@@ -290,9 +290,16 @@ impl Live {
                         .or(answer["client_secret"]["value"].as_str())
                         .ok_or_else(|| AiError::Parse("no key in the answer".into()))?;
                     self.remember(&model);
-                    return Ok(
-                        json!({"key": key, "url": self.calls_url, "model": model, "api": "ga"}),
-                    );
+                    // The hint goes to the phone too: on silence the
+                    // transcriber sometimes returns its own hint as what
+                    // the player said, and the phone drops those.
+                    return Ok(json!({
+                        "key": key,
+                        "url": self.calls_url,
+                        "model": model,
+                        "api": "ga",
+                        "hint": tuning.words.as_deref().unwrap_or(""),
+                    }));
                 }
                 Err(AiError::Http(400, message))
                     if speed && message.to_lowercase().contains("speed") =>

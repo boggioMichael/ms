@@ -719,7 +719,8 @@ impl Hub {
                 let who = text_field("who").unwrap_or_default();
                 match text_field("text") {
                     Some(text)
-                        if !text.trim().is_empty() && (who == "player" || who == "maplesyrup") =>
+                        if !text.trim().is_empty()
+                            && (who == "player" || who == "maplesyrup" || who == "timing") =>
                     {
                         self.lock().inbox.push(Inbound::Said {
                             who,

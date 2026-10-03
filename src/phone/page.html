@@ -1629,7 +1629,8 @@
   // microphone) and stops when talked over. The PC gives it the screen,
   // MapleSyrup's tools, and MapleSyrup's own lines to say.
   const liveCall = { pc: null, dc: null, audio: null, on: false, starting: false, userTalking: false, talking: false,
-    pending: [], eyesAt: 0, pictureAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false };
+    pending: [], eyesAt: 0, pictureAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false, hint: "",
+    stoppedAt: 0, firstSoundTold: true };
   function canLive() { return !!status.live && !!window.RTCPeerConnection && status.always_listen !== false; }
   // The live call can be turned off (liveWanted, with the settings): then
   // Grok answers and the voice picked speaks, on the phone too.
@@ -1659,6 +1660,7 @@
       const r = await postJson("/api/live", { recent: liveCall.recent.slice(-12), lang: locale });
       const call = await r.json().catch(() => ({}));
       if (!r.ok || !call.key) throw new Error(call.error || ("PC " + r.status));
+      liveCall.hint = call.hint || "";
       const track = stream && stream.getAudioTracks()[0];
       if (!track) throw new Error("no microphone");
       const pc = new RTCPeerConnection();
@@ -1716,6 +1718,8 @@
         break;
       case "input_audio_buffer.speech_stopped":
         liveCall.userTalking = false;
+        liveCall.stoppedAt = Date.now();
+        liveCall.firstSoundTold = false;
         setTimeout(flushSay, 400);
         break;
       case "conversation.item.input_audio_transcription.completed":
@@ -1726,6 +1730,12 @@
         liveLine("maplesyrup", ev.transcript);
         break;
       case "output_audio_buffer.started":
+        // How long the player waited for the first sound of the answer,
+        // for the session log: where the time goes on a call.
+        if (liveCall.stoppedAt && !liveCall.firstSoundTold) {
+          liveCall.firstSoundTold = true;
+          liveTiming("live: first sound " + ((Date.now() - liveCall.stoppedAt) / 1000).toFixed(1) + " s after the player stopped");
+        }
         liveTalking(true);
         break;
       case "output_audio_buffer.stopped":
@@ -1733,7 +1743,7 @@
         liveTalking(false);
         break;
       case "response.done":
-        liveCalls(ev.response);
+        liveCalls(ev.response, Date.now());
         break;
       case "error":
         if (ev.error && ev.error.message) note(ev.error.message);
@@ -1741,10 +1751,24 @@
     }
   }
 
+  // On silence, the transcriber sometimes hands back its own vocabulary
+  // hint ("MapleStory. Names and words the player uses: …") as what the
+  // player said. Nobody said that.
+  function isHintEcho(text) {
+    const hint = liveCall.hint;
+    if (!hint) return false;
+    const squash = (s) => s.toLowerCase().replace(/[\s.,:;!?"'“”‘’]+/g, " ").trim();
+    const a = squash(text), b = squash(hint);
+    if (!a || !b) return false;
+    const head = b.slice(0, Math.min(24, b.length));
+    return a === b || (a.length >= 12 && b.startsWith(a)) || a.startsWith(head);
+  }
+
   // What was said: shown here, and kept by the PC.
   function liveLine(who, text) {
     text = (text || "").trim();
     if (!text) return;
+    if (who === "player" && isHintEcho(text)) return;
     liveCall.recent.push((who === "player" ? "Player: " : "MapleSyrup: ") + text);
     if (liveCall.recent.length > 30) liveCall.recent.splice(0, liveCall.recent.length - 30);
     addMessage({ kind: who === "player" ? "heard" : "reply", text, t: nowT() }, false);
@@ -1780,7 +1804,7 @@
 
   // The tools the model asked for run on the PC; the answers go back and it
   // carries on.
-  async function liveCalls(response) {
+  async function liveCalls(response, doneAt) {
     const calls = ((response && response.output) || []).filter((o) => o && o.type === "function_call");
     if (!calls.length) return;
     const outputs = await Promise.all(calls.map(async (c) => {
@@ -1796,6 +1820,15 @@
       liveSend({ type: "conversation.item.create", item: { type: "function_call_output", call_id: id, output } });
     }
     liveSend({ type: "response.create" });
+    // The call answers again after the tools: the player waits for that too.
+    liveCall.stoppedAt = doneAt || Date.now();
+    liveCall.firstSoundTold = false;
+    liveTiming("live: " + calls.map((c) => c.name).join(", ") + " ran in " + ((Date.now() - (doneAt || Date.now())) / 1000).toFixed(1) + " s; the answer after them is timed from here");
+  }
+
+  // A line for the PC's session log about where the time went.
+  function liveTiming(text) {
+    postJson("/api/said", { who: "timing", text }).catch(() => {});
   }
 
   // MapleSyrup's own lines, said by the call at the next quiet moment.
