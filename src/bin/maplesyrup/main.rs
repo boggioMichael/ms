@@ -45,7 +45,7 @@ use ms::platform::sound::Player;
 use ms::platform::{self, voice::Voice};
 use ms::sight::Sight;
 use ms::sight::things::Fired;
-use ms::vision::snapshot::PerceptionPipeline;
+use ms::vision::snapshot::{Detectors, PerceptionPipeline};
 use serde_json::json;
 use syrup::timing::FPSCounter;
 
@@ -383,7 +383,7 @@ enum Source {
     Game(GameCapture),
     Still {
         label: String,
-        image: RgbaImage,
+        image: Arc<RgbaImage>,
     },
     Frames {
         label: String,
@@ -427,7 +427,7 @@ impl Source {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "image".into()),
-                image,
+                image: Arc::new(image),
             });
         }
         Ok(Source::Game(match &options.window {
@@ -441,7 +441,7 @@ impl Source {
             Source::Game(capture) => capture.capture(),
             Source::Still { label, image } => Captured::Frame {
                 title: label.clone(),
-                image: image.clone(),
+                image: Arc::clone(image),
             },
             Source::Frames {
                 label,
@@ -457,7 +457,7 @@ impl Source {
                             (*cursor - 1) % paths.len() + 1,
                             paths.len()
                         ),
-                        image: img.to_rgba8(),
+                        image: Arc::new(img.to_rgba8()),
                     },
                     Err(e) => Captured::Unavailable(format!("{}: {e}", path.display())),
                 }
@@ -475,12 +475,16 @@ struct Shared {
 }
 
 /// Capture and the vision engine, on a thread of their own.
+///
+/// `wanted` says which detectors run on every frame: the HUD alone when
+/// nothing shows the rest, everything when the preview window does.
 fn watch(
     mut source: Source,
     slot: Arc<TickSlot>,
     running: Arc<AtomicBool>,
     start: Instant,
     fps: f64,
+    wanted: Detectors,
     shared: Shared,
 ) {
     let Shared {
@@ -502,8 +506,7 @@ fn watch(
                 let vision_start = Instant::now();
                 let frame_span = tracing::trace_span!("frame").entered();
                 let world = tracing::trace_span!("vision")
-                    .in_scope(|| pipeline.detect_frame(&image, frame_id));
-                let image = Arc::new(image);
+                    .in_scope(|| pipeline.detect_some(&image, frame_id, wanted));
                 let mut obs = tracing::trace_span!("observation")
                     .in_scope(|| Observation::from_world(&title, &world));
                 // What MapleSyrup learned about this screen replaces the
@@ -1580,9 +1583,16 @@ fn run(options: Options) -> Result<(), String> {
             latest: Arc::clone(&latest),
             in_front: Arc::clone(&in_front),
         };
+        // Only the HUD reaches the companion; the other detectors are for
+        // the preview window, and run only when it was asked for.
+        let wanted = if options.preview {
+            Detectors::ALL
+        } else {
+            Detectors::HUD
+        };
         std::thread::Builder::new()
             .name("vision".into())
-            .spawn(move || watch(source, slot, running, start, fps, shared))
+            .spawn(move || watch(source, slot, running, start, fps, wanted, shared))
             .map_err(|e| e.to_string())?
     };
 

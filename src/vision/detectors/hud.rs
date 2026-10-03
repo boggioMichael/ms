@@ -56,6 +56,25 @@ pub struct HudReading {
     pub level: Detection<String>,
 }
 
+impl HudReading {
+    /// A HUD that was not looked at this frame.
+    pub fn not_run() -> HudReading {
+        fn skipped<T>() -> Detection<T> {
+            Detection::missing("hud", "not run: nothing is showing it")
+        }
+        HudReading {
+            markers: UiMarkers::default(),
+            ocr: Vec::new(),
+            hp: skipped(),
+            mp: skipped(),
+            exp: skipped(),
+            player_name: skipped(),
+            character_class: skipped(),
+            level: skipped(),
+        }
+    }
+}
+
 /// Score how trustworthy a metric reading is: geometry-only detections are
 /// `Heuristic`, and detections where OCR also produced a raw value that
 /// contains digits are treated as `Corroborated` (two independent signals

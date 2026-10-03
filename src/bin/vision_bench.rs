@@ -1,7 +1,7 @@
 //! The companion's per-frame vision path, timed stage by stage.
 //!
 //! Runs exactly what the `maplesyrup` binary runs on every captured frame
-//! (`PerceptionPipeline::detect_frame` → `Observation::from_world` →
+//! (`PerceptionPipeline::detect_some` → `Observation::from_world` →
 //! `Sight::observe` + `Sight::apply`), minus capture and the phone, over a
 //! still frame and over frames from a gameplay recording, each at the
 //! window sizes asked for, and reports every stage's count, mean, median
@@ -43,8 +43,8 @@ use ms::sight::Sight;
 use ms::sight::teacher::{Calibration, HudValues};
 use ms::sight::things::{Kind, Teach};
 use ms::util::stages::{StageRecorder, StageStats};
-use ms::vision::PerceptionPipeline;
 use ms::vision::hud_geometry::detect_ui_markers;
+use ms::vision::{Detectors, PerceptionPipeline};
 
 /// How long the teacher waits between near-miss confirmations
 /// (`ai::teaching`): the most such calls an hour can hold.
@@ -59,6 +59,8 @@ struct Options {
     ffmpeg: Option<PathBuf>,
     json: Option<PathBuf>,
     teach: bool,
+    /// Every detector, as with the preview window open, rather than the HUD alone.
+    all: bool,
 }
 
 fn usage() -> ! {
@@ -75,7 +77,9 @@ fn usage() -> ! {
   --ffmpeg PATH   ffmpeg to decode videos with (default: on the PATH, or the
                   copy MapleSyrup downloaded)
   --json FILE     write the results as JSON too
-  --no-teach      do not teach objects or learn the HUD bars"
+  --no-teach      do not teach objects or learn the HUD bars
+  --all           run every detector, as the companion does with --preview
+                  (by default only the HUD, as it runs without)"
     );
     std::process::exit(2);
 }
@@ -90,6 +94,7 @@ fn parse(args: &[String]) -> Options {
         ffmpeg: None,
         json: None,
         teach: true,
+        all: false,
     };
     let mut explicit_inputs = false;
     let mut i = 0;
@@ -124,6 +129,7 @@ fn parse(args: &[String]) -> Options {
             "--ffmpeg" => o.ffmpeg = Some(PathBuf::from(value(&mut i))),
             "--json" => o.json = Some(PathBuf::from(value(&mut i))),
             "--no-teach" => o.teach = false,
+            "--all" => o.all = true,
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("unknown argument {other}");
@@ -250,6 +256,8 @@ struct Run {
     width: u32,
     height: u32,
     frames: usize,
+    /// Whether every detector ran, or the HUD alone.
+    all_detectors: bool,
     /// Simulated frames per second (the clock the sight paces by).
     fps: f64,
     hud_learned: bool,
@@ -337,7 +345,14 @@ fn prepare_sight(dir: &Path, first: &RgbaImage, teach: bool) -> (Sight, bool, us
     (sight, learned, taught)
 }
 
-fn run(name: &str, frames: &[RgbaImage], fps: f64, teach: bool, recorder: &StageRecorder) -> Run {
+fn run(
+    name: &str,
+    frames: &[RgbaImage],
+    fps: f64,
+    teach: bool,
+    wanted: Detectors,
+    recorder: &StageRecorder,
+) -> Run {
     let (width, height) = frames[0].dimensions();
     let dir = scratch(&format!("{}x{}", width, height));
     let (mut sight, hud_learned, taught) = prepare_sight(&dir, &frames[0], teach);
@@ -351,8 +366,8 @@ fn run(name: &str, frames: &[RgbaImage], fps: f64, teach: bool, recorder: &Stage
         // them at the cadence of a real session rather than of this loop.
         let clock = start + period * i as u32;
         let frame_span = tracing::trace_span!("frame").entered();
-        let world =
-            tracing::trace_span!("vision").in_scope(|| pipeline.detect_frame(frame, i as u64 + 1));
+        let world = tracing::trace_span!("vision")
+            .in_scope(|| pipeline.detect_some(frame, i as u64 + 1, wanted));
         let mut obs =
             tracing::trace_span!("observation").in_scope(|| Observation::from_world(name, &world));
         {
@@ -391,6 +406,7 @@ fn run(name: &str, frames: &[RgbaImage], fps: f64, teach: bool, recorder: &Stage
         width,
         height,
         frames: frames.len(),
+        all_detectors: wanted == Detectors::ALL,
         fps,
         hud_learned,
         taught,
@@ -408,12 +424,17 @@ fn run(name: &str, frames: &[RgbaImage], fps: f64, teach: bool, recorder: &Stage
 fn print_run(run: &Run) {
     println!();
     println!(
-        "{} at {}x{}: {} frames, {:.0} fps simulated, HUD bars learned: {}, taught objects: {}",
+        "{} at {}x{}: {} frames, {:.0} fps simulated, {}, HUD bars learned: {}, taught objects: {}",
         run.input,
         run.width,
         run.height,
         run.frames,
         run.fps,
+        if run.all_detectors {
+            "every detector"
+        } else {
+            "the HUD alone"
+        },
         if run.hud_learned { "yes" } else { "no" },
         run.taught
     );
@@ -463,6 +484,11 @@ fn main() {
             .unwrap_or(1)
     );
 
+    let wanted = if options.all {
+        Detectors::ALL
+    } else {
+        Detectors::HUD
+    };
     let mut runs = Vec::new();
     for path in &options.images {
         let image = match image::open(path) {
@@ -482,7 +508,14 @@ fn main() {
             // differencing and the cadenced stages need a run of frames.
             let frames: Vec<RgbaImage> =
                 std::iter::repeat_n(frame, options.frames.clamp(30, 300)).collect();
-            let run = run(&name, &frames, options.fps, options.teach, &recorder);
+            let run = run(
+                &name,
+                &frames,
+                options.fps,
+                options.teach,
+                wanted,
+                &recorder,
+            );
             print_run(&run);
             runs.push(run);
         }
@@ -499,8 +532,14 @@ fn main() {
                     for &(w, h) in &options.sizes {
                         match video_frames(&ffmpeg, path, w, h, options.frames) {
                             Ok(frames) => {
-                                let run =
-                                    run(&name, &frames, options.fps, options.teach, &recorder);
+                                let run = run(
+                                    &name,
+                                    &frames,
+                                    options.fps,
+                                    options.teach,
+                                    wanted,
+                                    &recorder,
+                                );
                                 print_run(&run);
                                 runs.push(run);
                             }

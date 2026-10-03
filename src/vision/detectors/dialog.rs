@@ -7,6 +7,11 @@
 //! moment the UI skin changes), this detector finds the largest
 //! near-uniform-color rectangular region within the likely dialog band and
 //! then classifies its OCR'd text against [`crate::knowledge::dialogs`].
+//!
+//! OCR costs a process (or the OS engine) per call, so a panel's text is
+//! read when the panel appears or moves and then every
+//! [`DialogConfig::ocr_every`] frames; in between, the last text read is
+//! carried with the panel.
 
 use image::RgbaImage;
 
@@ -29,6 +34,8 @@ pub struct DialogConfig {
     pub quantization: u8,
     /// Minimum panel area as a fraction of the search band's area.
     pub min_area_fraction: f32,
+    /// Frames between OCR passes over a panel that stays where it is.
+    pub ocr_every: u64,
 }
 
 impl Default for DialogConfig {
@@ -36,21 +43,56 @@ impl Default for DialogConfig {
         Self {
             quantization: 12,
             min_area_fraction: 0.06,
+            ocr_every: 30,
         }
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+/// The last text read from a panel, and where and when.
+#[derive(Debug, Clone)]
+struct LastRead {
+    bounds: Rect,
+    frame_id: u64,
+    text: Option<String>,
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct DialogDetector {
     config: DialogConfig,
+    last: Option<LastRead>,
 }
 
 impl DialogDetector {
     pub fn new(config: DialogConfig) -> Self {
-        Self { config }
+        Self { config, last: None }
     }
 
-    pub fn detect(&self, image: &RgbaImage) -> Detection<DialogReading> {
+    /// The panel's text: read now when the panel is new, has moved, or the
+    /// cadence has come round; otherwise what was read last.
+    fn text_of(&mut self, image: &RgbaImage, panel: Rect, frame_id: u64) -> Option<String> {
+        let moved = |a: Rect, b: Rect| {
+            a.x.abs_diff(b.x) > 4
+                || a.y.abs_diff(b.y) > 4
+                || a.w.abs_diff(b.w) > 8
+                || a.h.abs_diff(b.h) > 8
+        };
+        if let Some(last) = &self.last
+            && !moved(last.bounds, panel)
+            && frame_id.wrapping_sub(last.frame_id) < self.config.ocr_every
+        {
+            return last.text.clone();
+        }
+        let text =
+            ocr::ocr_region(image, panel.x, panel.y, panel.w, panel.h).map(|result| result.text);
+        self.last = Some(LastRead {
+            bounds: panel,
+            frame_id,
+            text: text.clone(),
+        });
+        text
+    }
+
+    pub fn detect(&mut self, image: &RgbaImage, frame_id: u64) -> Detection<DialogReading> {
         let width = image.width();
         let height = image.height();
         if width == 0 || height == 0 {
@@ -81,8 +123,7 @@ impl DialogDetector {
             return Detection::missing("dialog", "candidate panel too small to be a dialog");
         }
 
-        let text =
-            ocr::ocr_region(image, panel.x, panel.y, panel.w, panel.h).map(|result| result.text);
+        let text = self.text_of(image, panel, frame_id);
         let kind = text.as_deref().map(classify).unwrap_or(DialogKind::None);
 
         let (confidence, reliability) = match (&text, kind) {
@@ -123,8 +164,8 @@ mod tests {
     #[test]
     fn detects_uniform_panel_region() {
         let image = frame_with_panel(false);
-        let detector = DialogDetector::new(DialogConfig::default());
-        let detection = detector.detect(&image);
+        let mut detector = DialogDetector::new(DialogConfig::default());
+        let detection = detector.detect(&image, 1);
         assert!(detection.is_present());
         let reading = detection.value.unwrap();
         assert!(reading.bounds.w >= 100 && reading.bounds.h >= 40);
@@ -133,8 +174,42 @@ mod tests {
     #[test]
     fn empty_frame_is_reported_as_missing_not_panicking() {
         let image = RgbaImage::new(0, 0);
-        let detector = DialogDetector::new(DialogConfig::default());
-        let detection = detector.detect(&image);
+        let mut detector = DialogDetector::new(DialogConfig::default());
+        let detection = detector.detect(&image, 1);
         assert!(!detection.is_present());
+    }
+
+    #[test]
+    fn a_panel_that_stays_put_is_read_on_a_cadence() {
+        let image = frame_with_panel(false);
+        let mut detector = DialogDetector::new(DialogConfig {
+            ocr_every: 10,
+            ..Default::default()
+        });
+        let panel = detector.detect(&image, 1).value.unwrap().bounds;
+        // Pretend the first read, on frame 1, gave some text.
+        detector.last = Some(LastRead {
+            bounds: panel,
+            frame_id: 1,
+            text: Some("You have died".into()),
+        });
+        let carried = detector.detect(&image, 5).value.unwrap();
+        assert_eq!(carried.text.as_deref(), Some("You have died"));
+        assert_eq!(detector.last.as_ref().unwrap().frame_id, 1);
+        // The cadence comes round: read again, whatever the engine says.
+        let _ = detector.detect(&image, 11);
+        assert_eq!(detector.last.as_ref().unwrap().frame_id, 11);
+        // The panel moves: read at once.
+        let moved = Rect {
+            x: panel.x + 60,
+            ..panel
+        };
+        detector.last = Some(LastRead {
+            bounds: moved,
+            frame_id: 11,
+            text: Some("old".into()),
+        });
+        let _ = detector.detect(&image, 12);
+        assert_eq!(detector.last.as_ref().unwrap().frame_id, 12);
     }
 }

@@ -22,6 +22,6 @@ pub mod types;
 // downstream imports (e.g. `crate::vision::Detection<T>` rather than
 // `crate::vision::types::Detection<T>`).
 pub use geometry::Rect;
-pub use snapshot::{PerceptionPipeline, WorldState};
+pub use snapshot::{Detectors, PerceptionPipeline, WorldState};
 pub use syrup::tracking::{ObjectTracker, Track};
 pub use types::{Confidence, Detection, Reliability, Timestamp};

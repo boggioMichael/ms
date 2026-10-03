@@ -68,10 +68,11 @@ pub fn pick_game_window(titles: &[String]) -> Option<String> {
 
 /// What one attempt to capture the game gave.
 pub enum Captured {
-    /// The game window's title and its pixels.
+    /// The game window's title and its pixels (shared: the frame goes to
+    /// the vision engine, the teacher and the preview without a copy).
     Frame {
         title: String,
-        image: image::RgbaImage,
+        image: std::sync::Arc<RgbaImage>,
     },
     /// No window that looks like the game.
     NotFound,
@@ -140,7 +141,7 @@ impl GameCapture {
         match window.capture() {
             Ok(image) => Captured::Frame {
                 title: window.title().to_string(),
-                image,
+                image: std::sync::Arc::new(image),
             },
             Err(CaptureError::Closed | CaptureError::NotFound) => {
                 self.window = None;
