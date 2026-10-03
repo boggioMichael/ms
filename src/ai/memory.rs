@@ -213,6 +213,8 @@ pub struct Memory {
     /// What the player told it to forget (a look back that was under way
     /// may hand it back).
     pub forgotten: Vec<String>,
+    /// How it talks to the player (picked on the phone).
+    pub attitude: super::style::Attitude,
     #[serde(skip)]
     path: Option<PathBuf>,
 }

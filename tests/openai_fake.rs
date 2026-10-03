@@ -74,6 +74,32 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                         match req.path.as_str() {
                             "/v1/models" => Response::json(200, &json!({"data": []})),
                             "/v1/responses" => match body["model"].as_str() {
+                                // A fast brain having a bad day.
+                                Some("grok-broken") => Response::json(
+                                    400,
+                                    &json!({"error": {"message": "Grok is having a bad day"}}),
+                                ),
+                                // The background check of a quick answer.
+                                Some(model)
+                                    if body["instructions"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .starts_with("You check a MapleStory") =>
+                                {
+                                    let wrong = body["input"].to_string().contains("level 90");
+                                    let text = if wrong {
+                                        "Actually, Easy Zakum needs level 50."
+                                    } else {
+                                        "OK"
+                                    };
+                                    let _ = model;
+                                    Response::json(
+                                        200,
+                                        &json!({"output": [{"type": "message", "role": "assistant", "content": [
+                                            {"type": "output_text", "text": text}
+                                        ]}]}),
+                                    )
+                                }
                                 Some("gpt-6-luna") => Response::json(
                                     404,
                                     &json!({"error": {"message": "The model `gpt-6-luna` does not exist or you do not have access to it.", "code": "model_not_found"}}),
@@ -107,9 +133,40 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                                     let mut events = String::from(
                                         "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
                                     );
-                                    // Asked to look it up: a web search first.
-                                    if said.contains("look it up") {
-                                        events.push_str("event: response.web_search_call.in_progress\ndata: {\"type\":\"response.web_search_call.in_progress\"}\n\n");
+                                    // Asked to look it up: a quick answer, then the
+                                    // look-up (once: not after its output).
+                                    let looked = body["input"].as_array().is_some_and(|items| {
+                                        items.iter().any(|i| i["type"] == "function_call_output")
+                                    });
+                                    if said.contains("look it up") && !looked {
+                                        let mut events = String::from(
+                                            "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+                                        );
+                                        events.push_str(&format!(
+                                            "event: response.output_text.delta\ndata: {}\n\n",
+                                            json!({"type": "response.output_text.delta", "delta": "Probably level 90."})
+                                        ));
+                                        let call = json!({"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "look_it_up",
+                                            "arguments": json!({"question": "Easy Zakum level", "said": "Probably level 90.", "asked": true}).to_string()});
+                                        events.push_str(&format!(
+                                            "event: response.output_item.done\ndata: {}\n\n",
+                                            json!({"type": "response.output_item.done", "item": call})
+                                        ));
+                                        events.push_str("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n");
+                                        if conn
+                                            .write_response(
+                                                &Response::new(
+                                                    200,
+                                                    "text/event-stream",
+                                                    events.into_bytes(),
+                                                ),
+                                                !req.wants_close(),
+                                            )
+                                            .is_err()
+                                        {
+                                            return;
+                                        }
+                                        continue;
                                     }
                                     let chars: Vec<char> = reply.chars().collect();
                                     for piece in chars.chunks(5) {
@@ -309,6 +366,7 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
             Ok(Done::Shown { text, .. }) => panic!("shown: {text}"),
             Ok(Done::Command { word }) => panic!("command: {word}"),
             Ok(Done::Warn { what, .. }) => panic!("warn: {what}"),
+            Ok(Done::LookUp { question, .. }) => panic!("look-up: {question}"),
             Err(e) => panic!("{e}: {reply:?} {lines:?}"),
         }
     }
@@ -597,18 +655,22 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
         None,
     ));
     let live = ms::ai::live::Live::new(Arc::clone(&ai), "cedar");
-    let instructions =
-        ms::ai::live::instructions("- Their class is Night Lord.", &[], Some("he-IL"));
-    let tools = ms::ai::live::tools(
-        vec![
-            json!({"type": "function", "name": "remember_fact", "strict": true, "parameters": {}}),
-        ],
-        true,
+    let instructions = ms::ai::live::instructions(
+        "- Their class is Night Lord.",
+        &[],
+        Some("he-IL"),
+        Default::default(),
     );
-    // As it adapted to the player: a little less eager, their words.
+    let tools = ms::ai::live::tools(vec![
+        json!({"type": "function", "name": "remember_fact", "strict": true, "parameters": {}}),
+        json!({"type": "function", "name": "look_it_up", "strict": true, "parameters": {}}),
+    ]);
+    // As it adapted to the player: a little less eager, their words; and
+    // quick speech.
     let tuning = ms::ai::live::Tuning {
         eagerness: "medium".into(),
         words: Some("MapleStory. Names and words the player uses: Zakum, MoonWalker77.".into()),
+        speed: 1.15,
     };
     let call = live.session(&instructions, &tools, &tuning).unwrap();
     // The full model isn't there for this key: the smaller one is used.
@@ -631,6 +693,7 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
     let session = &asked["body"]["session"];
     assert_eq!(session["type"], "realtime");
     assert_eq!(session["audio"]["output"]["voice"], "cedar");
+    assert_eq!(session["audio"]["output"]["speed"], 1.15);
     assert_eq!(
         session["audio"]["input"]["turn_detection"]["type"],
         "semantic_vad"
@@ -658,7 +721,7 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    assert_eq!(names, ["remember_fact", "search_web"]);
+    assert_eq!(names, ["remember_fact", "look_it_up"]);
     // The model that worked is kept.
     let again = live
         .session(&instructions, &tools, &Default::default())
@@ -675,7 +738,7 @@ fn scratch(name: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn every_reply_knows_what_it_learned_and_keeps_what_it_looked_up() {
+fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
     if !have_curl() {
         return;
     }
@@ -692,12 +755,13 @@ fn every_reply_knows_what_it_learned_and_keeps_what_it_looked_up() {
         "Easy Zakum needs level 50.",
         ms::ai::knowledge::Source::Player,
     );
+    learning.memory().attitude = ms::companion::Attitude::Savage;
     let mut brain = Brain::new();
     brain.learning = Some(learning.clone());
     let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
     let worker = ms::ai::spawn(ai, brain);
     let id = worker.send(Job::Converse {
-        heard: "what level is easy zakum, look it up".into(),
+        heard: "what level is easy zakum".into(),
         snapshot: "HP is about 80%.".into(),
         speak: false,
         eyes: None,
@@ -722,9 +786,11 @@ fn every_reply_knows_what_it_learned_and_keeps_what_it_looked_up() {
         .find(|r| r["path"] == "/v1/responses")
         .cloned()
         .unwrap();
-    // Who it is first (cached), what it learned last.
+    // Who it is and its rules first (cached), what it learned last.
     let instructions = asked["body"]["instructions"].as_str().unwrap();
     assert!(instructions.starts_with("You are MapleSyrup"));
+    assert!(instructions.contains("MapleSyrup's rules"));
+    assert!(instructions.contains("Your attitude: savage"));
     let learned = instructions
         .find("What you learned from playing together")
         .unwrap();
@@ -739,6 +805,8 @@ fn every_reply_knows_what_it_learned_and_keeps_what_it_looked_up() {
         instructions[learned..]
             .contains("Easy Zakum needs level 50. (the player corrected you; trust this)")
     );
+    // Short answers: a small cap.
+    assert_eq!(asked["body"]["max_output_tokens"], 150);
     // What may help with this question goes with it.
     let last = asked["body"]["input"].as_array().unwrap().last().unwrap();
     let parts: Vec<&str> = last["content"]
@@ -753,14 +821,218 @@ fn every_reply_knows_what_it_learned_and_keeps_what_it_looked_up() {
             .any(|p| p.starts_with("[What you learned before") && p.contains("level 50")),
         "{parts:?}"
     );
-    // It searched: what it found is kept for next time.
-    assert_eq!(learning.knowledge().looked_up(), 1);
-    let found = learning
-        .knowledge()
-        .find("easy zakum level, look it up")
-        .unwrap();
-    assert!(found.answer.contains("you said"));
     let _ = std::fs::remove_dir_all(settings);
+}
+
+/// Tools for a test: nothing learned on screen, eyes that are never asked.
+fn toolbox(base: &str, settings: &std::path::Path, learning: &ms::ai::Learning) -> ms::ai::Toolbox {
+    ms::ai::Toolbox {
+        sight: Arc::new(Mutex::new(ms::sight::Sight::load(
+            &settings.join("learned"),
+        ))),
+        eyes: Arc::new(OpenAi::new(
+            "sk-test-key-0123456789abcdef",
+            base,
+            "cedar",
+            None,
+        )),
+        settings: settings.to_path_buf(),
+        web: true,
+        learning: Some(learning.clone()),
+    }
+}
+
+#[test]
+fn a_look_up_never_holds_the_answer_up_and_corrects_it_later() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let settings = scratch("look-up");
+    let learning = ms::ai::Learning::load(&settings);
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn_with(ai, Brain::new(), Some(toolbox(&base, &settings, &learning)));
+    let id = worker.send(Job::Converse {
+        heard: "what level is easy zakum, look it up".into(),
+        snapshot: String::new(),
+        speak: false,
+        eyes: None,
+        language: Some("he-IL".into()),
+    });
+    let (mut reply, mut look_up) = (None, None);
+    while reply.is_none() || look_up.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id: of, text, .. }) => {
+                assert_eq!(of, id);
+                reply = Some(text);
+            }
+            Ok(Done::LookUp {
+                question,
+                said,
+                asked,
+                language,
+            }) => look_up = Some((question, said, asked, language)),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}: {reply:?} {look_up:?}"),
+        }
+    }
+    // The quick answer at once; the look-up goes behind it, and the reply
+    // doesn't wait for it (one request, no second round).
+    assert_eq!(reply.as_deref(), Some("Probably level 90."));
+    assert_eq!(
+        look_up,
+        Some((
+            "Easy Zakum level".to_string(),
+            "Probably level 90.".to_string(),
+            true,
+            Some("he-IL".to_string())
+        ))
+    );
+    let second_round = seen.lock().unwrap().iter().any(|r| {
+        r["body"]["input"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|i| i["type"] == "function_call_output"))
+    });
+    assert!(!second_round);
+    // No web search waited for in the conversation itself.
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|r| r["path"] == "/v1/responses")
+        .cloned()
+        .unwrap();
+    assert!(
+        asked["body"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|t| t["type"] == "function")
+    );
+    // The background check: wrong, so it says the right answer, and keeps it.
+    let (lookups, found) = ms::ai::lookup::Lookups::new(
+        Arc::new(OpenAi::new(
+            "sk-test-key-0123456789abcdef",
+            &base,
+            "cedar",
+            None,
+        )),
+        Some(learning.clone()),
+    );
+    lookups.start(
+        "Easy Zakum level",
+        "Probably level 90.",
+        false,
+        Some("he-IL"),
+    );
+    assert_eq!(
+        found.recv_timeout(Duration::from_secs(30)).unwrap(),
+        ms::ai::lookup::Found::Say("Actually, Easy Zakum needs level 50.".into())
+    );
+    assert!(
+        learning
+            .knowledge()
+            .find("easy zakum level")
+            .unwrap()
+            .answer
+            .contains("50")
+    );
+    let check = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| {
+            r["body"]["instructions"]
+                .as_str()
+                .is_some_and(|i| i.starts_with("You check"))
+        })
+        .cloned()
+        .unwrap();
+    assert_eq!(check["body"]["tools"][0]["type"], "web_search");
+    assert!(
+        check["body"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Hebrew")
+    );
+    // Right: nothing to say.
+    lookups.start("Easy Zakum level", "Easy Zakum is level 50.", false, None);
+    assert_eq!(
+        found.recv_timeout(Duration::from_secs(30)).unwrap(),
+        ms::ai::lookup::Found::Right
+    );
+    let _ = std::fs::remove_dir_all(settings);
+}
+
+#[test]
+fn grok_answers_and_openai_steps_in_when_it_fails() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let key = "sk-test-key-0123456789abcdef";
+    // Grok answering.
+    let worker = ms::ai::spawn_hybrid(
+        OpenAi::new(key, &base, "cedar", None),
+        Some(OpenAi::with_models(
+            key,
+            &base,
+            "cedar",
+            vec!["grok-ok".into()],
+        )),
+        Brain::new(),
+        None,
+    );
+    worker.send(Job::Converse {
+        heard: "yo".into(),
+        snapshot: String::new(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    let text = loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { text, .. }) => break text,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert!(text.contains("(grok-ok)"), "{text}");
+    assert_eq!(worker.model.lock().unwrap().as_deref(), Some("grok-ok"));
+    // Grok failing: OpenAI answers, and it says so once.
+    let worker = ms::ai::spawn_hybrid(
+        OpenAi::new(key, &base, "cedar", None),
+        Some(OpenAi::with_models(
+            key,
+            &base,
+            "cedar",
+            vec!["grok-broken".into()],
+        )),
+        Brain::new(),
+        None,
+    );
+    worker.send(Job::Converse {
+        heard: "yo".into(),
+        snapshot: String::new(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    let (mut text, mut noted) = (None, None);
+    while text.is_none() || noted.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { text: t, .. }) => text = Some(t),
+            Ok(Done::Noted { line }) => noted = Some(line),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}: {text:?} {noted:?}"),
+        }
+    }
+    assert!(text.unwrap().contains("(gpt-6.1-sol)"));
+    assert!(noted.unwrap().starts_with("Grok didn't answer"));
 }
 
 #[test]

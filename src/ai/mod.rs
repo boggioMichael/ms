@@ -27,8 +27,10 @@ pub mod images;
 pub mod knowledge;
 pub mod language;
 pub mod live;
+pub mod lookup;
 pub mod memory;
 pub mod openai;
+pub mod style;
 pub mod teaching;
 pub mod tools;
 
@@ -103,6 +105,55 @@ pub fn load_key(settings: &Path) -> Option<String> {
         .map(|k| clean_key(&k).to_string())
 }
 
+/// A key for another service: from the environment variable `env`, from
+/// `file` next to MapleSyrup (moved into the settings folder, which no
+/// desktop sync or screen share shows), or from the settings folder.
+fn load_secret(settings: &Path, env: &str, file: &str, prefix: &str) -> Option<String> {
+    let valid = |text: &str| {
+        let t = clean_key(text);
+        t.starts_with(prefix) && t.len() >= 20 && !t.contains(char::is_whitespace)
+    };
+    if let Ok(key) = std::env::var(env)
+        && valid(&key)
+    {
+        return Some(clean_key(&key).to_string());
+    }
+    let kept = settings.join(file);
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let beside = dir.join(file);
+        if let Ok(key) = std::fs::read_to_string(&beside)
+            && valid(&key)
+        {
+            let key = clean_key(&key).to_string();
+            if std::fs::create_dir_all(settings).is_ok() && std::fs::write(&kept, &key).is_ok() {
+                let _ = std::fs::remove_file(&beside);
+            }
+            return Some(key);
+        }
+    }
+    std::fs::read_to_string(kept)
+        .ok()
+        .filter(|k| valid(k))
+        .map(|k| clean_key(&k).to_string())
+}
+
+/// The xAI key (Grok): `XAI_API_KEY`, or `xai-key.txt`.
+pub fn load_xai_key(settings: &Path) -> Option<String> {
+    load_secret(settings, "XAI_API_KEY", "xai-key.txt", "xai-")
+}
+
+/// The ElevenLabs key (voices): `ELEVENLABS_API_KEY`, or
+/// `elevenlabs-key.txt`.
+pub fn load_elevenlabs_key(settings: &Path) -> Option<String> {
+    load_secret(settings, "ELEVENLABS_API_KEY", "elevenlabs-key.txt", "sk_")
+}
+
+/// Grok's API, and its fast model (no reasoning: it answers at once).
+pub const XAI_BASE: &str = "https://api.x.ai/v1";
+pub const GROK_MODEL: &str = "grok-4.3";
+
 pub fn save_key(settings: &Path, key: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(settings)?;
     std::fs::write(key_file(settings), clean_key(key))
@@ -156,6 +207,10 @@ pub enum Job {
     /// The phone just connected: say hi, picking up from what it knows of
     /// the player (shown and spoken, in their language).
     Greet { language: Option<String> },
+    /// Say `text` as MapleSyrup (already in the player's language): shown,
+    /// spoken, and kept in the conversation (with `heard`, what it answers,
+    /// when it answers something).
+    Say { heard: Option<String>, text: String },
 }
 
 /// What the worker did. Each carries the number of the job it came from
@@ -203,6 +258,14 @@ pub enum Done {
     /// The player asked to be warned at another HP or MP (`below`: the
     /// percent, 0 for never, None for the usual).
     Warn { what: String, below: Option<f32> },
+    /// Look `question` up in the background: `said` was the quick answer,
+    /// `asked` whether the player asked for the look-up.
+    LookUp {
+        question: String,
+        said: String,
+        asked: bool,
+        language: Option<String>,
+    },
 }
 
 pub struct Worker {
@@ -247,13 +310,27 @@ impl Worker {
     }
 }
 
+/// After this many failures in a row, the fast brain is given up on.
+const FAST_GIVE_UP: u32 = 3;
+
 /// Start the worker thread (no tools).
 pub fn spawn(openai: OpenAi, brain: Brain) -> Worker {
     spawn_with(openai, brain, None)
 }
 
 /// Start the worker thread, with the tools the model may use.
-pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) -> Worker {
+pub fn spawn_with(openai: OpenAi, brain: Brain, toolbox: Option<Toolbox>) -> Worker {
+    spawn_hybrid(openai, None, brain, toolbox)
+}
+
+/// Start the worker thread: `openai` speaks (and answers when there is no
+/// `fast` brain, or when it fails); `fast` (Grok) answers the conversation.
+pub fn spawn_hybrid(
+    openai: OpenAi,
+    fast: Option<OpenAi>,
+    mut brain: Brain,
+    toolbox: Option<Toolbox>,
+) -> Worker {
     let (jobs, rx) = channel::<(u64, Job)>();
     let (tx, done) = channel::<Done>();
     let busy = Arc::new(AtomicBool::new(false));
@@ -266,6 +343,8 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
             // MapleSyrup's own lines come back often ("Level up!"): each is
             // translated once.
             let mut translations = std::collections::HashMap::new();
+            // The fast brain failing again and again is given up on.
+            let mut fast_failures = 0u32;
             while let Ok(first) = rx.recv() {
                 busy_flag.store(true, Ordering::Relaxed);
                 let mut queue = vec![first];
@@ -292,16 +371,49 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
                             &openai,
                             id,
                             &stop,
-                            &text,
-                            language.as_deref(),
-                            show,
-                            speak,
+                            Line {
+                                text: &text,
+                                language: language.as_deref(),
+                                show,
+                                aloud: speak,
+                                style: brain::voice_style(brain.attitude()),
+                            },
                             &mut translations,
                             &tx,
                         ),
                         Job::Cut { heard } => brain.cut_short(&heard),
-                        Job::Greet { language } => {
-                            greet(&openai, &mut brain, id, &stop, language.as_deref(), &tx)
+                        Job::Greet { language } => greet(
+                            fast.as_ref().unwrap_or(&openai),
+                            &openai,
+                            &mut brain,
+                            id,
+                            &stop,
+                            language.as_deref(),
+                            &tx,
+                        ),
+                        Job::Say { heard, text } => {
+                            let text = brain::for_speech(&text);
+                            if text.is_empty() {
+                                continue;
+                            }
+                            if let Some(heard) = heard {
+                                brain.heard(&heard);
+                            }
+                            brain.said(&text);
+                            let _ = tx.send(Done::Shown {
+                                kind: crate::companion::Kind::Reply,
+                                text: text.clone(),
+                            });
+                            let style = brain::voice_style(brain.attitude());
+                            if let Err(error) =
+                                speak_line(&openai, id, &stop, &text, style, Instant::now(), false, &tx)
+                            {
+                                let _ = tx.send(Done::Failed {
+                                    id,
+                                    heard: None,
+                                    error,
+                                });
+                            }
                         }
                         Job::Converse { .. } if Some(i) != newest => {}
                         Job::Converse {
@@ -319,8 +431,9 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
                                     "\n(The player's language setting is {name}: answer in the language they speak to you; when it isn't clear, in {name}.)"
                                 ));
                             }
-                            converse(
+                            let (used, fell_back) = converse(
                                 &openai,
+                                fast.as_ref().filter(|_| fast_failures < FAST_GIVE_UP),
                                 toolbox.as_ref(),
                                 &mut brain,
                                 Talk {
@@ -336,7 +449,23 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
                                 &busy_flag,
                             );
                             if let Ok(mut slot) = model_slot.lock() {
-                                *slot = openai.model();
+                                *slot = used.model();
+                            }
+                            match fell_back {
+                                Some(why) => {
+                                    fast_failures += 1;
+                                    if fast_failures == 1 || fast_failures == FAST_GIVE_UP {
+                                        let _ = tx.send(Done::Noted {
+                                            line: if fast_failures == FAST_GIVE_UP {
+                                                format!("Grok keeps failing ({why}): OpenAI answers from now on")
+                                            } else {
+                                                format!("Grok didn't answer ({why}): OpenAI did")
+                                            },
+                                        });
+                                    }
+                                }
+                                None if !std::ptr::eq(used, &openai) => fast_failures = 0,
+                                None => {}
                             }
                         }
                     }
@@ -354,38 +483,47 @@ pub fn spawn_with(openai: OpenAi, mut brain: Brain, toolbox: Option<Toolbox>) ->
     }
 }
 
+/// One of MapleSyrup's own lines, and how to say it.
+struct Line<'a> {
+    text: &'a str,
+    /// The player's language: translated into it when it isn't English.
+    language: Option<&'a str>,
+    /// Shown (it comes back as `Shown`, translated).
+    show: Option<crate::companion::Kind>,
+    /// Said aloud too.
+    aloud: bool,
+    /// How the voice sounds.
+    style: &'a str,
+}
+
 /// One of MapleSyrup's own lines: translated into the player's language
-/// when it is not English, shown when `show`, said when `aloud`.
-#[allow(clippy::too_many_arguments)]
+/// when it is not English, shown, said.
 fn say_line(
     openai: &OpenAi,
     id: u64,
     stop: &Stop,
-    text: &str,
-    language: Option<&str>,
-    show: Option<crate::companion::Kind>,
-    aloud: bool,
+    line: Line,
     translations: &mut std::collections::HashMap<(String, String), String>,
     tx: &Sender<Done>,
 ) {
     let asked = Instant::now();
-    let text = match language {
-        Some(l) if !language::is_english(l) => translate(openai, text, l, stop, translations),
-        _ => text.to_string(),
+    let text = match line.language {
+        Some(l) if !language::is_english(l) => translate(openai, line.text, l, stop, translations),
+        _ => line.text.to_string(),
     };
     if stop.stopped() {
         return;
     }
-    if let Some(kind) = show {
+    if let Some(kind) = line.show {
         let _ = tx.send(Done::Shown {
             kind,
             text: text.clone(),
         });
     }
-    if !aloud {
+    if !line.aloud {
         return;
     }
-    if let Err(error) = speak_line(openai, id, stop, &text, asked, false, tx) {
+    if let Err(error) = speak_line(openai, id, stop, &text, line.style, asked, false, tx) {
         let _ = tx.send(Done::Failed {
             id,
             heard: None,
@@ -395,18 +533,24 @@ fn say_line(
 }
 
 /// Say `text` in the natural voice, handing it over a piece at a time as it
-/// is made. Returns whether any of it was made (it may be called off).
+/// is made. Returns whether any of it was made (it may be called off, and
+/// there is nothing to say for an empty line).
+#[allow(clippy::too_many_arguments)]
 fn speak_line(
     openai: &OpenAi,
     id: u64,
     stop: &Stop,
     text: &str,
+    style: &str,
     asked: Instant,
     first: bool,
     tx: &Sender<Done>,
 ) -> Result<bool, AiError> {
+    if !text.chars().any(char::is_alphanumeric) {
+        return Ok(false);
+    }
     let mut start = true;
-    let result = openai.speech_stream(text, brain::VOICE_STYLE, Some(stop), &mut |samples| {
+    let result = openai.speech_stream(text, style, Some(stop), &mut |samples| {
         let _ = tx.send(Done::Audio {
             id,
             text: if start {
@@ -457,14 +601,12 @@ const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
 - forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
 - mark_moment when the player asks you to mark or save the moment (for their video); set_muted when they ask you to be quiet, or to talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
-After using a tool, confirm briefly in your own words.";
+Never announce a tool before using it; after one, a few words at most.";
 
-/// How the model is told it can search the web.
-const WEB_GUIDE: &str = "\n- You can search the web, but it's slow (seconds of silence for the player): search only when they \
-ask you to look something up or check, or when you truly have no idea (a new event, a name you've never heard). \
-Otherwise answer from what you know. When you search, it's about the current global version (GMS): prefer \
-maplestorywiki.net and maplestory.nexon.net. Never put links, sources or citations in your answer: it is spoken \
-aloud.";
+/// How the model is told about looking things up.
+const LOOKUP_GUIDE: &str = "\n- look_it_up never makes the player wait: when you're not sure of a MapleStory fact (or they \
+ask you to look something up), say your best answer first, then call look_it_up with the question and what you \
+said. It checks in the background; you'll speak again only if you were wrong. Never mention it.";
 
 /// How the model is told what it learned is there.
 const LEARNED_GUIDE: &str =
@@ -491,9 +633,10 @@ fn translate(
     let name = language::name(locale);
     let ask = Ask {
         instructions: format!(
-            "Translate what a friendly companion app says out loud to someone playing MapleStory into {name}. \
-Keep it short, casual and natural, as a friend would say it; keep the numbers, and game words the way players \
-say them. Reply with the translation only."
+            "Translate what a gaming buddy app says out loud to someone playing MapleStory into {name}. \
+Keep it short, casual and natural, as a friend would say it, and keep its tone: bossy stays bossy, rude stays \
+rude, swearing stays swearing. Keep the numbers, and game words the way players say them. Reply with the \
+translation only."
         ),
         input: vec![json!({"role": "user", "content": text})],
         max_output_tokens: 150,
@@ -511,55 +654,6 @@ say them. Reply with the translation only."
             done
         }
         _ => text.to_string(),
-    }
-}
-
-/// What to say while the web is searched, in the player's language (the
-/// one they spoke in, else their setting).
-fn searching_line(heard: &str, language: Option<&str>) -> &'static str {
-    let script = |range: std::ops::RangeInclusive<char>| heard.chars().any(|c| range.contains(&c));
-    let code = if script('\u{0590}'..='\u{05FF}') {
-        "he"
-    } else if script('\u{AC00}'..='\u{D7AF}') {
-        "ko"
-    } else if script('\u{3040}'..='\u{30FF}') {
-        "ja"
-    } else if script('\u{0E00}'..='\u{0E7F}') {
-        "th"
-    } else if script('\u{0400}'..='\u{04FF}') {
-        "ru"
-    } else if script('\u{4E00}'..='\u{9FFF}') {
-        match language {
-            Some(l) if l.starts_with("ja") => "ja",
-            Some(l) if l.contains("TW") || l.contains("HK") || l.contains("Hant") => "zh-Hant",
-            _ => "zh",
-        }
-    } else {
-        match language.map(|l| l.split(['-', '_']).next().unwrap_or("")) {
-            Some("es") => "es",
-            Some("pt") => "pt",
-            Some("fr") => "fr",
-            Some("de") => "de",
-            Some("vi") => "vi",
-            Some("id" | "in") => "id",
-            _ => "en",
-        }
-    };
-    match code {
-        "he" => "רגע, בודק.",
-        "ko" => "잠깐, 찾아볼게.",
-        "ja" => "ちょっと調べるね。",
-        "th" => "แป๊บนึง ขอเช็กก่อนนะ",
-        "ru" => "Секунду, гляну.",
-        "zh" => "等一下，我查查。",
-        "zh-Hant" => "等一下，我查查。",
-        "es" => "Espera, lo busco.",
-        "pt" => "Peraí, vou ver.",
-        "fr" => "Attends, je regarde.",
-        "de" => "Moment, ich schau nach.",
-        "vi" => "Đợi chút, để mình xem.",
-        "id" => "Bentar, aku cek dulu.",
-        _ => "Hang on, let me check.",
     }
 }
 
@@ -613,18 +707,24 @@ struct Talk<'a> {
 /// Answer the player. The reply is streamed and cut into sentences; they
 /// are turned into speech (on a second thread) as soon as they are complete:
 /// the first sentence alone, so it is heard soon, then whatever was written
-/// meanwhile in one piece, so it flows. When the model calls tools, they
-/// are run and their results handed back for it to go on, up to a few
-/// rounds. Called off (the player talked over it), it stops at once and
-/// keeps in the conversation only what was said.
-fn converse(
-    openai: &OpenAi,
+/// meanwhile in one piece, so it flows. The `fast` brain (Grok) answers when
+/// there is one, and OpenAI when it fails before a word of its answer. When
+/// the model calls tools, they are run and their results handed back for it
+/// to go on, up to a few rounds; a look-up never holds the answer up (it runs
+/// in the background, `Done::LookUp`). Called off (the player talked over
+/// it), it stops at once and keeps in the conversation only what was said.
+/// Returns the brain that answered, and why the fast one didn't, if it
+/// failed.
+#[allow(clippy::too_many_arguments)]
+fn converse<'a>(
+    openai: &'a OpenAi,
+    fast: Option<&'a OpenAi>,
     toolbox: Option<&Toolbox>,
     brain: &mut Brain,
     talk: Talk,
     tx: &Sender<Done>,
     busy: &AtomicBool,
-) {
+) -> (&'a OpenAi, Option<String>) {
     let Talk {
         id,
         stop,
@@ -635,14 +735,14 @@ fn converse(
         language,
     } = talk;
     let started = Instant::now();
-    // What never changes first, what changes now and then last: OpenAI
-    // keeps the start cached, and answers sooner.
+    // What never changes first, what changes now and then last: the model's
+    // service keeps the start cached, and answers sooner.
     let mut instructions = brain.persona();
     instructions.push_str(EYES_GUIDE);
     if let Some(toolbox) = toolbox {
         instructions.push_str(TOOLS_GUIDE);
         if toolbox.web {
-            instructions.push_str(WEB_GUIDE);
+            instructions.push_str(LOOKUP_GUIDE);
         }
     }
     let learned = brain.learned();
@@ -651,6 +751,7 @@ fn converse(
         instructions.push('\n');
         instructions.push_str(&learned);
     }
+    let style = brain::voice_style(brain.attitude());
     // The player's sentence joins the conversation once it is answered (or
     // was talked over after part of the answer was said).
     let mut turns = brain.turns();
@@ -664,9 +765,10 @@ fn converse(
         .map(|l| l.helps(&heard))
         .unwrap_or_default();
     let mut input = input_of(&turns, snapshot, eyes, &helps);
-    // Whether it searched the web for this (what it found is kept).
-    let mut searched = false;
     let tools = toolbox.map(|t| t.definitions()).unwrap_or_default();
+    // The brain for this reply.
+    let mut chat = fast.unwrap_or(openai);
+    let mut fast_failed = None;
     std::thread::scope(|scope| {
         let (lines, to_say) = channel::<String>();
         let voice = speak.then(|| {
@@ -687,7 +789,7 @@ fn converse(
                     if stop.stopped() {
                         break;
                     }
-                    match speak_line(openai, id, stop, &text, started, first, &tx) {
+                    match speak_line(openai, id, stop, &text, style, started, first, &tx) {
                         Ok(true) => {
                             first = false;
                             if !spoken.is_empty() {
@@ -712,20 +814,23 @@ fn converse(
         let mut sentences = brain::Sentences::default();
         let mut said = String::new();
         let mut failed = None;
-        for round in 0..4 {
+        let mut round = 0;
+        while round < 4 {
             let ask = Ask {
                 instructions: instructions.clone(),
                 input: input.clone(),
                 tools: if round < 3 { tools.clone() } else { Vec::new() },
-                max_output_tokens: 500,
-                timeout: Duration::from_secs(60),
+                // One or two short sentences; a cap keeps a ramble short.
+                max_output_tokens: 150,
+                // A brain that hangs gives way to the other soon.
+                timeout: Duration::from_secs(if std::ptr::eq(chat, openai) { 40 } else { 12 }),
                 stop: Some(stop.clone()),
                 ..Default::default()
             };
-            let answer = openai.ask(
+            let answer = chat.ask(
                 &ask,
-                Some(&mut |piece| match piece {
-                    Piece::Text(t) => {
+                Some(&mut |piece| {
+                    if let Piece::Text(t) = piece {
                         said.push_str(t);
                         if speak {
                             for sentence in sentences.push(t) {
@@ -733,21 +838,27 @@ fn converse(
                             }
                         }
                     }
-                    Piece::Searching => {
-                        searched = true;
-                        if speak && said.trim().is_empty() {
-                            let _ = lines.send(searching_line(&heard, language).to_string());
-                        }
-                    }
                 }),
             );
             let answer = match answer {
                 Ok(answer) => answer,
+                // The fast brain failed before a word of its answer: OpenAI
+                // answers instead.
+                Err(error)
+                    if !matches!(error, AiError::Cancelled)
+                        && !std::ptr::eq(chat, openai)
+                        && said.trim().is_empty() =>
+                {
+                    fast_failed = Some(error.to_string());
+                    chat = openai;
+                    continue;
+                }
                 Err(error) => {
                     failed = Some(error);
                     break;
                 }
             };
+            round += 1;
             if answer.calls.is_empty() {
                 break;
             }
@@ -760,12 +871,17 @@ fn converse(
                     }
                 }
             }
+            // Only look-ups, after the answer was said: nothing to wait for.
+            let mut go_on = false;
             let mut outputs = Vec::new();
             for call in &answer.calls {
-                let (output, effect) = match toolbox {
+                let (mut output, effect) = match toolbox {
                     Some(toolbox) => toolbox.run(call, eyes.map(|e| e.frame.as_ref())),
                     None => ("No tools here.".to_string(), None),
                 };
+                if call.name != "look_it_up" {
+                    go_on = true;
+                }
                 match effect {
                     Some(Effect::Fact(fact)) => {
                         let about = &mut brain.about_player;
@@ -786,9 +902,41 @@ fn converse(
                     Some(Effect::Warn { what, below }) => {
                         let _ = tx.send(Done::Warn { what, below });
                     }
-                    None => {}
+                    Some(Effect::LookUp {
+                        question,
+                        said: quick,
+                        asked,
+                    }) => {
+                        let quick = if quick.trim().is_empty() {
+                            said.trim().to_string()
+                        } else {
+                            quick
+                        };
+                        let _ = tx.send(Done::LookUp {
+                            question,
+                            said: quick,
+                            asked,
+                            language: language.map(String::from),
+                        });
+                        if said.trim().is_empty() {
+                            // Asked before answering: the answer comes now.
+                            output = "It's being looked up in the background. Say your best answer now, in a few \
+words (\"probably\" if you're not sure)."
+                                .into();
+                            go_on = true;
+                        }
+                    }
+                    None => {
+                        // Known already (it answered from what it was taught).
+                        if call.name == "look_it_up" && output.starts_with("Known:") {
+                            go_on = true;
+                        }
+                    }
                 }
                 outputs.push(json!({"type": "function_call_output", "call_id": call.call_id, "output": output}));
+            }
+            if !go_on {
+                break;
             }
             input.extend(openai::follow_up(&answer));
             input.extend(outputs);
@@ -829,16 +977,6 @@ fn converse(
                     let _ = lines.send(brain::for_speech(&rest));
                 }
                 let text = brain::for_speech(&said);
-                // Looked up: kept, so the same question is answered at once
-                // next time.
-                if searched
-                    && !text.is_empty()
-                    && let Some(learning) = &brain.learning
-                {
-                    learning
-                        .knowledge()
-                        .add(&heard, &text, knowledge::Source::Web);
-                }
                 brain.heard(&heard);
                 brain.said(&text);
                 let _ = tx.send(Done::Reply {
@@ -852,15 +990,18 @@ fn converse(
         // The words are out; the voice may still be on its last lines.
         busy.store(false, Ordering::Relaxed);
     });
+    (chat, fast_failed)
 }
 
 /// The usual hello, when the model has nothing of its own to say.
 const HELLO: &str = "Hey! I'm here. Just talk to me.";
 
-/// Say hi when the phone connects: from the model when it knows the player
-/// (it may pick up from last time), else the usual line; shown, and said.
+/// Say hi when the phone connects: from the model (`chat`) when it knows
+/// the player (it may pick up from last time), else the usual line; shown,
+/// and said in `voice`.
 fn greet(
-    openai: &OpenAi,
+    chat: &OpenAi,
+    voice: &OpenAi,
     brain: &mut Brain,
     id: u64,
     stop: &Stop,
@@ -869,6 +1010,7 @@ fn greet(
 ) {
     let asked = Instant::now();
     let learned = brain.learned();
+    let style = brain::voice_style(brain.attitude());
     let mut text = String::new();
     if !learned.is_empty() {
         let tongue = language
@@ -879,15 +1021,22 @@ fn greet(
             instructions: format!("{}{LEARNED_GUIDE}\n{learned}", brain.persona()),
             input: vec![json!({"role": "user", "content": format!(
                 "[The player just connected their phone to talk with you; not said by them.] Say hi in one short, \
-            natural line in their language{tongue}. If you know what they were up to lately, you may pick up from there in a \
-            few words."
+            natural line in their language{tongue}, in your attitude. If you know what they were up to lately, you may pick up \
+            from there in a few words."
             )})],
             max_output_tokens: 80,
             timeout: Duration::from_secs(15),
             stop: Some(stop.clone()),
             ..Default::default()
         };
-        if let Ok(answer) = openai.ask(&ask, None)
+        let answer = chat.ask(&ask, None).or_else(|e| {
+            if std::ptr::eq(chat, voice) || matches!(e, AiError::Cancelled) {
+                Err(e)
+            } else {
+                voice.ask(&ask, None)
+            }
+        });
+        if let Ok(answer) = answer
             && !brain::is_silent(&answer.text)
         {
             text = brain::for_speech(&answer.text);
@@ -900,13 +1049,16 @@ fn greet(
         // The usual line, in their language.
         let mut translations = std::collections::HashMap::new();
         say_line(
-            openai,
+            voice,
             id,
             stop,
-            HELLO,
-            language,
-            Some(crate::companion::Kind::Reply),
-            true,
+            Line {
+                text: HELLO,
+                language,
+                show: Some(crate::companion::Kind::Reply),
+                aloud: true,
+                style,
+            },
             &mut translations,
             tx,
         );
@@ -917,7 +1069,7 @@ fn greet(
         text: text.clone(),
     });
     brain.said(&text);
-    if let Err(error) = speak_line(openai, id, stop, &text, asked, false, tx) {
+    if let Err(error) = speak_line(voice, id, stop, &text, style, asked, false, tx) {
         let _ = tx.send(Done::Failed {
             id,
             heard: None,

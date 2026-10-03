@@ -142,6 +142,8 @@ pub enum Inbound {
     /// How a turn went on a live call ("jumped in": MapleSyrup answered
     /// before the player had finished), for the log it learns from.
     Turn(String),
+    /// How MapleSyrup should talk to the player from now on.
+    Attitude(crate::companion::Attitude),
 }
 
 /// What the phone's live call asks the PC for.
@@ -729,6 +731,21 @@ impl Hub {
                 }
                 _ => Response::json(400, &json!({"error": "what is \"jumped in\""})),
             },
+            ("POST", "/api/attitude") => match text_field("attitude")
+                .as_deref()
+                .and_then(crate::companion::Attitude::parse)
+            {
+                Some(attitude) => {
+                    let mut state = self.lock();
+                    state.inbox.retain(|i| !matches!(i, Inbound::Attitude(_)));
+                    state.inbox.push(Inbound::Attitude(attitude));
+                    Response::json(200, &json!({"ok": true, "attitude": attitude}))
+                }
+                None => Response::json(
+                    400,
+                    &json!({"error": "attitude is friendly, blunt or savage"}),
+                ),
+            },
             ("POST", "/api/interrupt") => {
                 self.lock().inbox.push(Inbound::Interrupt);
                 Response::json(200, &json!({"ok": true}))
@@ -1039,6 +1056,7 @@ mod tests {
             ("/api/mode?k=k1", r#"{"live": true}"#),
             ("/api/talking?k=k1", r#"{"on": true}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
+            ("/api/attitude?k=k1", r#"{"attitude": "savage"}"#),
         ] {
             assert_eq!(
                 hub.handle(&request("POST", path, body)).status,
@@ -1075,7 +1093,17 @@ mod tests {
                 Inbound::Live(true),
                 Inbound::Talking(true),
                 Inbound::Turn("jumped in".into()),
+                Inbound::Attitude(crate::companion::Attitude::Savage),
             ]
+        );
+        assert_eq!(
+            hub.handle(&request(
+                "POST",
+                "/api/attitude?k=k1",
+                r#"{"attitude": "loud"}"#
+            ))
+            .status,
+            400
         );
     }
 

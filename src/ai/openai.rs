@@ -149,6 +149,8 @@ struct Choice {
     images: bool,
     /// The hosted web search tool.
     web: bool,
+    /// Strict function schemas (not every service takes them).
+    strict: bool,
 }
 
 impl Choice {
@@ -158,6 +160,7 @@ impl Choice {
             reasoning: true,
             images: true,
             web: true,
+            strict: true,
         }
     }
 }
@@ -524,10 +527,19 @@ impl OpenAi {
                 } else {
                     ask.input.iter().map(without_images).collect()
                 };
-                let tools: Vec<&Value> = ask
+                let tools: Vec<Value> = ask
                     .tools
                     .iter()
                     .filter(|t| choice.web || t["type"] == "function")
+                    .map(|t| {
+                        let mut t = t.clone();
+                        if !choice.strict
+                            && let Some(object) = t.as_object_mut()
+                        {
+                            object.remove("strict");
+                        }
+                        t
+                    })
                     .collect();
                 let mut body = json!({
                     "model": choice.model,
@@ -638,6 +650,11 @@ impl OpenAi {
                         && (message.contains("reasoning") || message.contains("effort"))
                     {
                         choice.reasoning = false;
+                        continue;
+                    }
+                    // Function schemas without "strict".
+                    if choice.strict && message.contains("strict") && !ask.tools.is_empty() {
+                        choice.strict = false;
                         continue;
                     }
                     // No web search for this model or key.
