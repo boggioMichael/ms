@@ -61,6 +61,9 @@ Same machine, the recording at 1366×768 unless said; milliseconds per frame
 | phase 3: the numbers read in the game's font, no OCR per frame | 14.0 / 6.5 / 44.3 (max 61) | 5.6 / 5.4 / 6.7 | 12.5 |
 | phase 4: objects followed every frame, HUD found from the pixels | 17.6 / 17.6 / 25.0 (max 37) | 5.0 / 5.0 / 5.7 | 3.7 per object per frame |
 | phase 4, at 1920×1080 | 31.6 / 32.3 / 42.0 | 10.1 / 9.9 / 13.3 | 7.0 per object per frame |
+| phase 6 (CPU): kernels, shared pyramids, the detector rests | 5.2 / 4.9 / 9.0 (max 15) | 0.06 (3 runs in 300 frames) | 1.6 per object per frame |
+| phase 6 (CPU), at 1920×1080 | 9.0 / 8.7 / 14.5 (max 23) | 0.06 (2 runs) | 2.9 per object per frame |
+| phase 6 (CPU), the still at 1366×768 | 7.9 / 7.8 / 10.8 | 0 | 2.4 per object per frame |
 
 Phase 1: HUD geometry 13.7 → 5.4 ms, minimap 3.6 → 1.1, chat log 1.2 →
 0.65, the taught objects 111 → 11.8; motion 8 → 50 ms, because Syrup's
@@ -84,6 +87,27 @@ work is even (p95 25 ms, down from 44) at a higher mean; the matching
 itself is Phase 6's to speed up. The HUD is found from the pixels alone and
 the model is not asked about a stable HUD: 0 calls an hour for it; the
 near-miss confirmations remain (at most 180 an hour).
+
+Phase 6, the CPU half (`phase6-cpu-linux.json`): once the sight sees the
+HUD — a layout that fits and bars it measured last frame — the HUD
+geometry detector rests (`ms::perceive`), 5.6 ms a frame gone; it ran on 3
+of 300 frames, when the bars could not be measured. The template matching
+runs on `syrup::kernels` (AVX2 here; SSE2 and plain loops give the same
+integers), the three objects share one prepared band of the frame per
+sweep, a tracked object is looked for at full resolution where its track
+expects it before its window is searched, a small window is scored
+everywhere rather than refined candidate by candidate, and the coarse
+floor is 0.15 under the requested score rather than 0.25 (measured on
+this recording: 7,904 confident refinements, 5 of them below the new
+floor at half resolution; the matches kept were the same to within one
+near miss in 4,312). The glyph reader sums its cells in eight lanes, and
+a line that has not read for ten frames is tried every fifth frame until
+it reads again. The things are looked for on a bounded pool of worker
+threads (one fewer than the cores, at most eight, below-normal priority on
+Windows); this machine has two cores, so that is one worker and the
+numbers above are single-threaded. Whole-program optimisation
+(`lto = "fat"`, one codegen unit) was measured and dropped: no difference
+beyond the noise, four times the build time.
 
 ## Phase 5: the frames from the compositor, on the GPU
 

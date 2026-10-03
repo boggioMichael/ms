@@ -39,6 +39,7 @@ use ms::companion::commands::{self, Heard};
 use ms::companion::{Action, Command, Companion, GameView, Kind, Observation, Settings};
 use ms::observe::frame_result::{FrameTimings, VisionFrameResult};
 use ms::observe::preview::Preview;
+use ms::perceive::{Look, Perceived, perceive};
 use ms::phone::{self, Hub, Inbound, VoiceOn, qr, tls, tunnel};
 use ms::platform::overlay::{self, Overlay};
 use ms::platform::sound::Player;
@@ -484,16 +485,97 @@ struct Shared {
     in_front: Arc<AtomicBool>,
 }
 
-/// Capture and the vision engine, on a thread of their own.
+/// What the capture thread hands the vision thread: one attempt to
+/// capture, how long it took, and a line to show if the frames' source
+/// changed.
+struct Grabbed {
+    captured: Captured,
+    took: Duration,
+    note: Option<String>,
+}
+
+/// The newest capture, waiting for the vision thread: a mailbox of one.
+/// A frame the vision thread has not taken by the time the next arrives is
+/// dropped — the companion wants the latest picture, not a backlog.
+#[derive(Default)]
+struct Mailbox {
+    slot: Mutex<Option<Grabbed>>,
+    arrived: std::sync::Condvar,
+}
+
+impl Mailbox {
+    fn put(&self, grabbed: Grabbed) {
+        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(grabbed);
+        self.arrived.notify_one();
+    }
+
+    /// The newest capture, waiting up to `timeout` for one.
+    fn take(&self, timeout: Duration) -> Option<Grabbed> {
+        let guard = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut guard, _) = self
+            .arrived
+            .wait_timeout_while(guard, timeout, |slot| slot.is_none())
+            .unwrap_or_else(|e| e.into_inner());
+        guard.take()
+    }
+}
+
+/// Capture, on a thread of its own: a frame every `1/fps` seconds (half a
+/// second between tries while the game cannot be captured) into the
+/// mailbox, so the vision thread never waits on the compositor or on GDI,
+/// and a slow frame of vision costs the next capture nothing.
+fn grab(mut source: Source, mailbox: Arc<Mailbox>, running: Arc<AtomicBool>, fps: f64) {
+    let period = Duration::from_secs_f64(1.0 / fps);
+    let mut capture_path: Option<String> = None;
+    while running.load(Ordering::Relaxed) {
+        let began = Instant::now();
+        let captured = source.next();
+        let took = began.elapsed();
+        let seen = matches!(captured, Captured::Frame { .. });
+        // Said once, and again if the path changes (the GPU path giving
+        // up, say): where the frames are coming from.
+        let note = match &captured {
+            Captured::Frame { image, .. } => {
+                let path = source.path();
+                (path != capture_path).then(|| {
+                    capture_path = path;
+                    capture_path.as_ref().map(|path| {
+                        format!(
+                            "capture: {}x{} frames from {path}",
+                            image.width(),
+                            image.height()
+                        )
+                    })
+                })
+            }
+            _ => None,
+        };
+        mailbox.put(Grabbed {
+            captured,
+            took,
+            note: note.flatten(),
+        });
+        let rest = if seen {
+            period.checked_sub(began.elapsed())
+        } else {
+            Some(Duration::from_millis(500))
+        };
+        if let Some(rest) = rest {
+            std::thread::sleep(rest);
+        }
+    }
+}
+
+/// The vision engine, on a thread of its own: every frame the capture
+/// thread puts in the mailbox goes through `perceive` and out as a tick.
 ///
 /// `wanted` says which detectors run on every frame: the HUD alone when
 /// nothing shows the rest, everything when the preview window does.
 fn watch(
-    mut source: Source,
+    mailbox: Arc<Mailbox>,
     slot: Arc<TickSlot>,
     running: Arc<AtomicBool>,
     start: Instant,
-    fps: f64,
     wanted: Detectors,
     shared: Shared,
 ) {
@@ -506,57 +588,49 @@ fn watch(
     let mut counter = FPSCounter::new(30);
     let mut frame_id: u64 = 0;
     let mut previous = Instant::now();
-    let mut capture_path: Option<String> = None;
-    let period = Duration::from_secs_f64(1.0 / fps);
     while running.load(Ordering::Relaxed) {
-        let began = Instant::now();
-        match source.next() {
+        let Some(Grabbed {
+            captured,
+            took: capture,
+            note,
+        }) = mailbox.take(Duration::from_millis(250))
+        else {
+            continue;
+        };
+        match captured {
             Captured::Frame { title, image } => {
-                let capture = began.elapsed();
                 frame_id += 1;
-                // Said once, and again if the path changes (the GPU path
-                // giving up, say): where the frames are coming from.
-                let path = source.path();
-                let note = (path != capture_path).then(|| {
-                    capture_path = path;
-                    capture_path.as_ref().map(|path| {
-                        format!(
-                            "capture: {}x{} frames from {path}",
-                            image.width(),
-                            image.height()
-                        )
-                    })
-                });
                 let vision_start = Instant::now();
-                let frame_span = tracing::trace_span!("frame").entered();
-                let world = tracing::trace_span!("vision")
-                    .in_scope(|| pipeline.detect_some(&image, frame_id, wanted));
-                let mut obs = tracing::trace_span!("observation")
-                    .in_scope(|| Observation::from_world(&title, &world));
                 // What MapleSyrup learned about this screen replaces the
                 // old HUD reader's guesses. Only while the game is the window
                 // in front: the capture is of the screen where the game is,
                 // so another window over it would be measured (and sent to
                 // OpenAI) instead.
-                let mut fired = Vec::new();
                 let in_view = in_front.load(Ordering::Relaxed);
                 if in_view {
                     latest.put(Arc::clone(&image));
                 } else {
                     latest.clear();
                 }
-                if let Some(sight) = &sight {
-                    let _sight_span = tracing::trace_span!("sight").entered();
-                    let mut sight = sight.lock().unwrap_or_else(|e| e.into_inner());
-                    let seen = if in_view {
-                        sight.observe(&image, Instant::now())
-                    } else {
-                        Default::default()
-                    };
-                    sight.apply(&mut obs, &seen);
-                    fired = seen.fired;
-                }
-                drop(frame_span);
+                let Perceived { world, obs, seen } = {
+                    let _frame_span = tracing::trace_span!("frame").entered();
+                    let mut sight = sight
+                        .as_ref()
+                        .map(|s| s.lock().unwrap_or_else(|e| e.into_inner()));
+                    perceive(
+                        &mut pipeline,
+                        sight.as_deref_mut(),
+                        wanted,
+                        &Look {
+                            title: &title,
+                            frame: &image,
+                            frame_id,
+                            now: Instant::now(),
+                            in_view,
+                        },
+                    )
+                };
+                let fired = seen.fired;
                 let vision = vision_start.elapsed();
                 let now = Instant::now();
                 let interval = now.duration_since(previous);
@@ -580,11 +654,8 @@ fn watch(
                     obs,
                     frame: Some(frame),
                     fired,
-                    note: note.flatten(),
+                    note,
                 });
-                if let Some(rest) = period.checked_sub(began.elapsed()) {
-                    std::thread::sleep(rest);
-                }
             }
             Captured::NotFound => {
                 latest.clear();
@@ -595,7 +666,6 @@ fn watch(
                     fired: Vec::new(),
                     note: None,
                 });
-                std::thread::sleep(Duration::from_millis(500));
             }
             Captured::Unavailable(why) => {
                 latest.clear();
@@ -606,7 +676,6 @@ fn watch(
                     fired: Vec::new(),
                     note: None,
                 });
-                std::thread::sleep(Duration::from_millis(500));
             }
         }
     }
@@ -1630,9 +1699,17 @@ fn run(options: Options) -> Result<(), String> {
         } else {
             Detectors::HUD
         };
+        let mailbox = Arc::new(Mailbox::default());
+        {
+            let (mailbox, running) = (Arc::clone(&mailbox), Arc::clone(&running));
+            std::thread::Builder::new()
+                .name("capture".into())
+                .spawn(move || grab(source, mailbox, running, fps))
+                .map_err(|e| e.to_string())?;
+        }
         std::thread::Builder::new()
             .name("vision".into())
-            .spawn(move || watch(source, slot, running, start, fps, wanted, shared))
+            .spawn(move || watch(mailbox, slot, running, start, wanted, shared))
             .map_err(|e| e.to_string())?
     };
 
