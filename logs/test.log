@@ -1,0 +1,392 @@
+   Compiling ms v0.8.0 (D:\a\ms\ms)
+    Finished `release` profile [optimized] target(s) in 1m 18s
+     Running unittests src\lib.rs (target\release\deps\ms-34daa359ebe8e0bf.exe)
+
+running 272 tests
+test ai::brain::tests::citations_and_links_are_not_read_out ... ok
+test ai::brain::tests::the_conversation_is_kept_and_starts_with_the_player ... ok
+test ai::brain::tests::silence_and_speech_cleanup ... ok
+test ai::brain::tests::a_streamed_reply_is_cut_into_sentences ... ok
+test ai::brain::tests::the_snapshot_says_what_is_seen_and_what_is_estimated ... ok
+test ai::eleven::tests::hebrew_and_thai_go_to_the_model_that_speaks_them ... ok
+test ai::eleven::tests::a_line_is_asked_for_lively_and_quick ... ok
+test ai::eleven::tests::a_lively_voice_is_picked_to_start_with ... ok
+test ai::images::tests::base64_matches_the_standard ... ok
+test ai::images::tests::boxes_go_between_fractions_pixels_and_thousandths ... ok
+test ai::knowledge::tests::a_correction_replaces_what_it_corrects_and_wins ... ok
+test ai::knowledge::tests::something_looked_up_answers_the_same_question_next_time ... ok
+test ai::knowledge::tests::the_words_of_a_question_leave_out_the_common_ones ... ok
+test ai::knowledge::tests::what_helps_is_found_by_the_words_it_shares ... ok
+test ai::images::tests::pictures_encode_and_rulers_frame_them ... ok
+test ai::language::tests::locales_have_names ... ok
+test ai::live::tests::a_call_is_told_who_it_is_what_it_knows_and_what_was_said ... ok
+test ai::live::tests::a_call_listens_the_way_it_adapted_to ... ok
+test ai::knowledge::tests::it_is_kept_between_sessions ... ok
+test ai::live::tests::a_call_takes_functions_only ... ok
+test ai::memory::tests::it_adapts_to_how_the_player_talks ... ok
+test ai::memory::tests::it_looks_back_when_there_is_enough_new_talk_without_asking_every_minute ... ok
+test ai::memory::tests::the_look_back_asks_for_the_whole_notebook ... ok
+test ai::memory::tests::the_notebook_comes_back_whole_and_its_lessons_go_to_knowledge ... ok
+test ai::openai::tests::a_stream_is_read_whatever_pieces_it_arrives_in ... ok
+test ai::openai::tests::error_answers_are_read_from_every_service ... ok
+test ai::openai::tests::reads_the_text_out_of_a_responses_answer ... ok
+test ai::memory::tests::it_is_kept_and_read_back ... ok
+test ai::style::tests::every_attitude_gets_the_rules_and_its_own_voice ... ok
+test ai::tests::keys_are_recognised ... ok
+test ai::tests::wav_in_memory_has_a_correct_header ... ok
+test ai::tools::tests::warnings_move_when_the_player_asks ... ok
+test ai::tools::tests::a_correction_is_kept_for_good ... ok
+test ai::memory::tests::the_logs_are_read_from_where_the_last_reading_stopped ... ok
+test app::dog::tests::the_mouth_follows_how_loud_the_voice_is ... ok
+test app::dog::tests::turning_round_a_point_keeps_the_point ... ok
+test ai::memory::tests::what_it_learned_is_told_shown_and_forgotten_on_the_phone ... ok
+test app::dog::tests::the_parts_are_inside_and_put_together_make_the_dog ... ok
+test app::panel::tests::the_panel_is_premultiplied_with_see_through_corners ... ok
+test app::panel::tests::the_dog_sits_to_the_left ... ok
+test app::panel::tests::the_panel_grows_with_the_game ... ok
+test app::recorder::tests::ffmpeg_is_told_to_record_the_screen_and_the_sound_on_one_clock ... ok
+test app::recorder::tests::pieces_go_where_they_were_heard_and_follow_each_other_smoothly ... ok
+test app::recorder::tests::a_spoken_line_stopped_short_is_cut_where_it_stopped ... ok
+test app::recorder::tests::progress_reports_are_read_from_the_end ... ok
+test app::recorder::tests::a_short_recording_has_a_picture_and_the_phones_sound ... ok
+test app::recorder::tests::the_phone_is_placed_by_when_it_was_heard ... ok
+test app::screen::layout_tests::columns_line_up_and_the_height_is_kept ... ok
+test app::screen::layout_tests::lines_are_cut_to_the_console_with_escape_codes_whole ... ok
+test app::screen::tests::durations_and_truncation ... ok
+test app::recorder::tests::the_phone_is_heard_when_the_player_talks_not_when_the_room_is_heard ... ok
+test app::screen::tests::the_block_has_the_same_height_whatever_it_shows ... ok
+test app::recorder::tests::the_sound_goes_to_ffmpeg_as_matroska_with_each_blocks_time ... ok
+test capture::pick_tests::a_decorated_title_is_taken_when_nothing_is_exact ... ok
+test capture::pick_tests::no_game_no_pick ... ok
+test capture::pick_tests::the_exact_title_wins_over_lookalikes_above_it ... ok
+test companion::attitude::tests::attitudes_are_named_and_picked ... ok
+test companion::chat::tests::answers_say_what_is_seen ... ok
+test companion::chat::tests::long_unknown_sentences_get_no_answer ... ok
+test companion::chat::tests::what_was_said_on_the_first_try_is_understood ... ok
+test app::session::tests::the_installer_can_choose_the_sessions_folder ... ok
+test companion::commands::tests::buttons_name_commands_by_word ... ok
+test companion::commands::tests::hebrew_works_too ... ok
+test companion::commands::tests::marking_and_muting_are_done_locally ... ok
+test companion::commands::tests::normalizes_punctuation_and_case ... ok
+test companion::commands::tests::start_and_stop_recording_are_heard_in_short_sentences ... ok
+test companion::commands::tests::specific_phrases_beat_general_ones ... ok
+test companion::commands::tests::talk_without_the_wake_word_is_ignored ... ok
+test companion::commands::tests::the_wake_word_and_a_command ... ok
+test companion::commands::tests::the_wake_word_alone_waits_for_the_command ... ok
+test companion::exp::tests::a_few_misreads_do_not_move_the_rate ... ok
+test companion::exp::tests::a_level_read_as_risen_counts_once ... ok
+test companion::exp::tests::a_level_up_is_seen_without_a_level_reading ... ok
+test companion::commands::tests::words_inside_other_words_do_not_match ... ok
+test companion::exp::tests::a_misread_fall_is_not_a_level_up ... ok
+test companion::exp::tests::a_level_up_keeps_the_total_rising ... ok
+test companion::exp::tests::durations_are_spoken_naturally ... ok
+test companion::exp::tests::a_steady_pace_is_measured ... ok
+test companion::exp::tests::not_enough_play_gives_no_rate ... ok
+test companion::instant::tests::the_answer_is_in_their_language_and_attitude ... ok
+test companion::observation::tests::a_trusted_reading_wins_over_the_bar ... ok
+test companion::observation::tests::an_untrusted_reading_falls_back_to_the_bar_estimate ... ok
+test companion::observation::tests::levels_come_only_from_trusted_plausible_reads ... ok
+test companion::observation::tests::nothing_seen_gives_no_gauge ... ok
+test companion::tests::a_death_is_said_once ... ok
+test companion::instant::tests::only_questions_about_the_players_own_numbers_are_answered_at_once ... ok
+test companion::tests::a_death_no_warning_came_before_moves_the_warning_sooner ... ok
+test companion::tests::a_level_misread_for_a_moment_is_not_believed ... ok
+test companion::tests::a_level_read_rising_without_an_exp_fall_is_celebrated ... ok
+test companion::tests::a_level_up_is_celebrated_once ... ok
+test companion::tests::a_long_line_heard_back_with_a_few_words_written_differently_is_all_its_own ... ok
+test companion::tests::announces_the_game_once_and_its_loss_after_a_while ... ok
+test companion::tests::everything_said_is_answered_like_a_conversation ... ok
+test companion::tests::its_own_voice_coming_back_is_not_answered ... ok
+test companion::tests::low_hp_is_said_once_until_it_recovers ... ok
+test companion::tests::low_mp_is_its_own_warning ... ok
+test companion::tests::mute_and_mark ... ok
+test companion::tests::percents_are_said_with_sensible_precision ... ok
+test companion::tests::printed_numbers_are_quoted_exactly ... ok
+test companion::tests::questions_about_an_unseen_game_say_so ... ok
+test companion::tests::staying_low_is_repeated_only_after_a_long_while ... ok
+test companion::tests::talking_over_it_is_told_from_its_own_voice_coming_back ... ok
+test companion::tests::the_players_answer_is_kept_when_the_echo_runs_into_it ... ok
+test companion::tests::what_was_heard_over_it_needs_enough_of_the_players_own_words ... ok
+test companion::tests::the_rate_needs_some_play_first ... ok
+test game_state::tests::display_string_is_readable ... ok
+test game_state::tests::serializes_to_json ... ok
+test companion::tests::with_the_wake_word_required_talk_is_ignored_and_addressed_commands_answered ... ok
+test knowledge::dialogs::tests::empty_text_classifies_as_none ... ok
+test knowledge::dialogs::tests::recognizes_level_up_banner ... ok
+test knowledge::dialogs::tests::unrelated_text_has_no_dialog_kind ... ok
+test knowledge::tests::classifies_death_prompt_text ... ok
+test knowledge::tests::looks_up_known_monster_case_insensitively ... ok
+test observe::dashboard::tests::a_bar_that_contradicts_the_reading_is_flagged_not_hidden ... ok
+test observe::dashboard::tests::a_carried_value_is_labelled_with_the_frame_it_came_from ... ok
+test observe::dashboard::tests::a_failed_read_shows_unknown_and_never_the_bar_percentage_as_a_value ... ok
+test observe::dashboard::tests::a_read_value_is_shown_as_the_value_and_the_bar_only_as_a_check ... ok
+test observe::dashboard::tests::amounts_prefer_current_and_max_over_a_bare_number ... ok
+test observe::dashboard::tests::an_invalid_read_shows_the_raw_text_so_the_misread_is_visible ... ok
+test observe::dashboard::tests::bar_fills_proportionally_and_clamps ... ok
+test app::session::tests::marks_and_lines_are_written ... ok
+test observe::dashboard::tests::format_int_inserts_thousands_separators ... ok
+test observe::dashboard::tests::dashboard_reports_frame_and_timing_values ... ok
+test observe::dashboard::tests::absent_detectors_render_as_absent_not_as_values ... ok
+test observe::dashboard::tests::missing_percent_still_renders_a_full_width_bar ... ok
+test observe::font::tests::glyphs_stay_within_their_cell ... ok
+test observe::font::tests::known_characters_have_glyphs ... ok
+test observe::font::tests::lowercase_falls_back_to_uppercase_glyph ... ok
+test observe::font::tests::scale_expands_pixel_count_quadratically ... ok
+test observe::font::tests::space_draws_nothing_but_still_advances ... ok
+test observe::font::tests::text_width_accounts_for_spacing ... ok
+test observe::font::tests::unmapped_characters_are_skipped_not_panicking ... ok
+test observe::frame_result::tests::fps_derives_from_frame_interval ... ok
+test observe::frame_result::tests::mailbox_is_empty_after_taking ... ok
+test observe::frame_result::tests::total_latency_is_capture_plus_vision ... ok
+test observe::frame_result::tests::zero_interval_reports_zero_fps_rather_than_infinity ... ok
+test observe::overlay::tests::drawing_clips_at_frame_edges_instead_of_panicking ... ok
+test observe::overlay::tests::labels_are_clamped_into_the_frame ... ok
+test observe::dashboard::tests::line_count_is_stable_across_different_frames ... ok
+test observe::overlay::tests::overlay_does_not_mutate_the_captured_frame ... ok
+test observe::frame_result::tests::mailbox_returns_newest_and_counts_dropped ... ok
+test observe::preview::tests::degenerate_sizes_do_not_divide_by_zero ... ok
+test observe::preview::tests::large_frames_scale_down_preserving_aspect_ratio ... ok
+test observe::preview::tests::portrait_frames_clamp_on_their_longest_edge ... ok
+test observe::preview::tests::small_frames_are_not_scaled_up ... ok
+test phone::audio::tests::a_wav_reads_back_as_its_samples ... ok
+test phone::audio::tests::loudness_in_db ... ok
+test phone::audio::tests::samples_are_little_endian ... ok
+test phone::audio::tests::speech_stands_out_from_the_room ... ok
+test observe::overlay::tests::overlay_draws_something_over_a_blank_frame ... ok
+test phone::http::tests::decodes_percent_escapes ... ok
+test phone::http::tests::parses_requests_arriving_in_pieces_and_pipelined ... ok
+test phone::http::tests::refuses_oversized_bodies_and_garbage ... ok
+test phone::http::tests::writes_a_response_with_its_length ... ok
+test phone::net::tests::private_addresses_are_recognised ... ok
+test phone::audio::tests::the_wav_file_is_valid_while_it_grows ... ok
+test phone::qr::tests::a_link_fits_in_a_console ... ok
+test phone::net::tests::the_lan_address_is_not_loopback ... ok
+test phone::qr::tests::the_image_has_finder_patterns ... ok
+test phone::tests::audio_moves_the_meter ... ok
+test observe::overlay::tests::overlay_preserves_frame_dimensions ... ok
+test phone::tests::each_clip_comes_with_how_loud_it_is_for_the_dogs_mouth ... ok
+test phone::tests::sentences_and_buttons_reach_the_inbox ... ok
+test phone::tests::messages_are_delivered_once_and_a_fresh_page_gets_the_latest ... ok
+test phone::tests::the_phone_gets_spoken_clips_the_dog_and_the_listen_switch ... ok
+test phone::tests::the_page_is_public_and_the_api_needs_the_key ... ok
+test phone::tests::the_voice_setting_round_trips ... ok
+test phone::tests::while_recording_the_phones_sound_goes_into_the_recording ... ok
+test phone::tls::tests::the_link_key_is_random_and_kept ... ok
+test phone::tunnel::tests::finds_the_address_in_cloudflareds_banner ... ok
+test platform::loopback::tests::sound_comes_out_as_stereo_at_48k_whatever_it_went_in_as ... ok
+test phone::tls::tests::a_certificate_is_made_saved_and_reused ... ok
+test platform::sound::tests::a_short_line_plays_when_it_is_complete_and_stopping_drops_the_rest ... ok
+test platform::sound::tests::the_player_knows_how_long_it_speaks ... ok
+test sight::bars::tests::a_bar_is_learned_from_a_rough_box_and_measured ... ok
+test sight::bars::tests::a_covered_or_empty_bar_gives_no_number ... ok
+test sight::matcher::tests::a_taught_picture_is_found_both_ways_round ... ok
+test phone::tests::a_live_call_gets_a_key_the_screen_and_the_tools_from_the_pc ... ok
+test sight::matcher::tests::correlation_is_one_for_the_same_picture_and_ignores_brightness ... ok
+test sight::teacher::tests::answers_are_read_and_checked ... ok
+test sight::matcher::tests::something_else_is_not_found ... ok
+test sight::tests::bars_that_disagree_twice_send_it_looking_again ... ok
+test sight::tests::the_exp_bar_wrapping_is_a_level_up_and_corrections_stick ... ok
+test sight::tests::the_hud_is_learned_measured_kept_and_checked ... ok
+test sight::things::tests::a_gauge_warns_below_its_threshold_once ... ok
+test sight::teacher::tests::questions_carry_pictures_and_a_strict_schema ... ok
+test sight::things::tests::foreground_trims_the_background ... ok
+test util::image_ops::tests::draw_rect_runs ... ok
+test util::timing::tests::moving_avg_works ... ok
+test vision::bar_geometry::tests::empty_pixel_detection ... ok
+test vision::bar_geometry::tests::filled_pixel_detection ... ok
+test vision::bar_geometry::tests::hsv_conversion_red ... ok
+test vision::bar_geometry::tests::hsv_conversion_white ... ok
+test vision::bar_geometry::tests::hsv_matches_shared_implementation ... ok
+test vision::bar_geometry::tests::measure_bar_clamps_region_to_image ... ok
+test vision::bar_geometry::tests::measure_bar_outside_image_is_not_nan ... ok
+test vision::detectors::combat::tests::no_motion_reads_idle ... ok
+test vision::detectors::combat::tests::sustained_high_motion_and_entities_reads_heavy ... ok
+test vision::detectors::dialog::tests::detects_uniform_panel_region ... ok
+test vision::detectors::dialog::tests::empty_frame_is_reported_as_missing_not_panicking ... ok
+test vision::detectors::environment::tests::detects_a_strong_horizontal_edge ... ok
+test vision::detectors::environment::tests::flat_scene_reports_no_edges ... ok
+test vision::detectors::hud::tests::metric_with_geometry_only_is_heuristic ... ok
+test vision::detectors::hud::tests::metric_with_ocr_value_is_corroborated ... ok
+test vision::detectors::hud::tests::missing_metric_reports_failure_reason ... ok
+test vision::detectors::motion::tests::first_call_reports_warmup_not_failure_masquerading_as_empty ... ok
+test vision::detectors::motion::tests::moving_square_is_tracked_with_stable_id ... ok
+test vision::detectors::motion::tests::static_scene_reports_no_motion_confidently ... ok
+test vision::detectors::panels::tests::icon_row_detector_rejects_empty_row ... ok
+test vision::detectors::panels::tests::minimap_detector_rejects_empty_region ... ok
+test vision::geometry::tests::a_completely_full_bar_reads_full_not_diluted_by_background ... ok
+test vision::geometry::tests::find_color_bar_locates_solid_block ... ok
+test vision::geometry::tests::measure_bar_fill_handles_a_bar_touching_the_frame_edge ... ok
+test vision::geometry::tests::measure_bar_fill_handles_a_light_groove_not_only_a_dark_one ... ok
+test vision::geometry::tests::measure_bar_fill_is_independent_of_track_width_and_position ... ok
+test vision::geometry::tests::measure_bar_fill_reports_true_fill_ratio ... ok
+test vision::geometry::tests::measure_bar_fill_returns_none_without_a_track ... ok
+test vision::geometry::tests::segment_row_finds_runs_above_min_width ... ok
+test vision::hud_geometry::tests::detect_synthetic_name_job_level_blocks ... ok
+test vision::hud_geometry::tests::detect_synthetic_ui_markers ... ok
+test vision::hud_geometry::tests::parses_percentages_and_exp_values ... ok
+test vision::hud_geometry::tests::reads_labeled_player_text_without_consuming_the_next_label ... ok
+test vision::hud_ocr::tests::a_complete_reading_from_sharp_pixels_is_trusted ... ok
+test vision::hud_ocr::tests::a_lone_number_has_no_maximum_and_no_percent ... ok
+test vision::hud_ocr::tests::a_lone_number_scores_below_a_complete_pair ... ok
+test vision::hud_ocr::tests::a_printed_percentage_is_reported_exactly ... ok
+test vision::hud_ocr::tests::a_reading_from_blurred_pixels_is_never_trusted ... ok
+test vision::hud_ocr::tests::absent_text_is_distinguished_from_invalid_text ... ok
+test vision::hud_ocr::tests::agreement_flags_a_bar_that_contradicts_the_reading ... ok
+test vision::hud_ocr::tests::an_amount_exposes_current_max_and_a_derived_percent ... ok
+test vision::hud_ocr::tests::an_unparsed_reading_scores_zero ... ok
+test vision::hud_ocr::tests::carried_forward_values_report_their_origin_frame ... ok
+test vision::hud_ocr::tests::provenance_traces_a_value_back_to_pixels ... ok
+test vision::hud_ocr::tests::unreadable_text_is_invalid_and_unusable ... ok
+test vision::hud_text::tests::a_carried_value_keeps_its_original_frame_and_is_relabelled ... ok
+test vision::hud_text::tests::a_failed_field_is_never_carried_forward ... ok
+test vision::hud_text::tests::a_lone_number_still_reports_a_current_value ... ok
+test vision::hud_text::tests::a_rejected_region_reports_the_layout_fault_not_a_read_failure ... ok
+test vision::hud_text::tests::cadence_refreshes_on_the_first_frame_then_on_interval ... ok
+test vision::hud_text::tests::cadence_treats_zero_interval_as_every_frame ... ok
+test vision::hud_text::tests::level_must_be_a_number_in_range ... ok
+test vision::hud_text::tests::parses_a_trailing_percentage ... ok
+test vision::hud_text::tests::parses_current_and_max_with_separators ... ok
+test vision::hud_text::tests::picks_nothing_when_no_candidate_is_plausible ... ok
+test vision::hud_text::tests::picks_the_value_even_when_ocr_mangles_the_label ... ok
+test vision::hud_text::tests::picks_two_word_values_before_single_tokens ... ok
+test vision::hud_text::tests::regions_too_small_or_too_tall_for_text_are_rejected ... ok
+test vision::hud_text::tests::rejects_ocr_spill_as_a_character_name ... ok
+test vision::hud_text::tests::rejects_ocr_spill_as_a_job_name ... ok
+test vision::hud_text::tests::rejects_out_of_range_percentages ... ok
+test vision::hud_text::tests::results_are_projected_onto_the_flat_text_shape ... ok
+test vision::hud_text::tests::returns_none_when_there_are_no_digits ... ok
+test vision::hud_text::tests::strips_plate_labels ... ok
+test vision::hud_text::tests::tolerates_ocr_confusing_the_slash ... ok
+test vision::ocr::tests::temp_image_is_removed_on_drop ... ok
+test vision::ocr::tests::tsv_config_comes_after_option_flags ... ok
+test vision::quality::tests::a_flat_region_is_reported_as_having_no_text ... ok
+test vision::quality::tests::assessment_is_clipped_to_the_image ... ok
+test vision::quality::tests::native_pixel_text_reads_as_sharp ... ok
+test vision::quality::tests::rescaled_text_reads_as_blurred ... ok
+test sight::things::tests::an_object_is_taught_once_and_found_again_and_alerts ... ok
+test vision::temporal::tests::confidence_accumulator_rises_and_decays ... ok
+test vision::temporal::tests::ema_tracks_toward_new_samples ... ok
+test vision::temporal::tests::tracker_assigns_stable_ids_across_frames ... ok
+test vision::temporal::tests::tracker_drops_object_after_grace_period ... ok
+test vision::temporal::tests::tracker_survives_brief_occlusion ... ok
+test vision::types::tests::confidence_clamps_and_combines ... ok
+test vision::types::tests::detection_found_round_trips_value ... ok
+test vision::types::tests::detection_missing_has_no_value_and_a_reason ... ok
+test vision::snapshot::tests::pipeline_produces_world_state_on_empty_frame ... ok
+test app::dog::tests::its_mouth_opens_with_the_voice ... ok
+test platform::sound::tests::a_streamed_line_starts_once_enough_has_come_and_pieces_follow_without_a_gap ... ok
+
+test result: ok. 272 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s
+
+     Running unittests src\bin\demo_realtime.rs (target\release\deps\demo_realtime-cab3e52a28707bff.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\demo_video.rs (target\release\deps\demo_video-9d92abe55030ca4d.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\maplesyrup\main.rs (target\release\deps\maplesyrup-4c7cbaa95ecea719.exe)
+
+running 3 tests
+test recording::tests::the_phone_hears_how_the_recording_is_going ... ok
+test tests::words_held_for_the_rest_of_a_sentence_join_it ... ok
+test tests::a_line_cut_short_keeps_the_words_heard ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\measure_evidence.rs (target\release\deps\measure_evidence-cf000abe9fdfdd62.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\release\deps\ms-0f0625ca44cbef2e.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\vision_debug.rs (target\release\deps\vision_debug-d4df9891812719ef.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\eleven_fake.rs (target\release\deps\eleven_fake-cff83c12c447bd25.exe)
+
+running 4 tests
+test the_voices_on_the_account_come_by_name_with_what_they_are ... ok
+test failing_again_and_again_it_rests_and_no_credits_rests_longer ... ok
+test the_worker_speaks_in_the_picked_voice_and_openai_stands_in_when_it_cant ... ok
+test speech_streams_and_models_the_account_cant_use_are_skipped ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+
+     Running tests\hp_bar_integration.rs (target\release\deps\hp_bar_integration-cae58a30d14f759a.exe)
+
+running 1 test
+test finds_hp_bar_in_resource_photo ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests\hud_accuracy.rs (target\release\deps\hud_accuracy-e2f25307165452ce.exe)
+
+running 4 tests
+test bars_are_not_all_reported_as_identical ... ok
+test exp_bar_reads_about_a_third_full ... ok
+test mp_bar_reads_nearly_full_on_a_1291_of_1351_capture ... ok
+test hp_bar_reads_full_on_a_400_of_400_capture ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests\openai_fake.rs (target\release\deps\openai_fake-a62ec78c25b433ce.exe)
+
+running 16 tests
+test a_refused_key_says_so ... ok
+test a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use ... ok
+test a_look_up_never_holds_the_answer_up_and_corrects_it_later ... ok
+test a_streamed_reply_arrives_in_pieces_after_the_same_fallbacks ... ok
+test every_reply_knows_the_rules_the_attitude_and_what_it_learned ... ok
+test grok_answers_and_openai_steps_in_when_it_fails ... ok
+test its_own_lines_are_translated_shown_and_spoken ... ok
+test a_request_is_called_off_at_once ... ok
+test replies_fall_back_through_the_models_and_drop_reasoning_when_refused ... ok
+test speech_comes_back_as_samples ... ok
+test a_reply_talked_over_stops_and_the_next_is_answered ... ok
+test the_hello_picks_up_from_last_time_when_it_knows_the_player ... ok
+test the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made ... ok
+test speech_arrives_in_pieces_while_it_is_made ... ok
+test nothing_listening_is_a_network_error ... ok
+test the_learner_looks_back_on_the_sessions_and_keeps_what_it_learned ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.56s
+
+     Running tests\phone_link.rs (target\release\deps\phone_link-52b5202c12b8d739.exe)
+
+running 4 tests
+test the_local_door_for_a_tunnel_serves_plain_http ... ok
+test plain_http_on_the_tls_port_is_sent_to_https ... ok
+test a_certificate_other_than_ours_is_refused_by_the_pinned_client ... ok
+test the_page_and_the_api_work_over_tls ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests\probe.rs (target\release\deps\probe-9f92b3301b864c26.exe)
+
+running 1 test
+test probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+   Doc-tests ms
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+TESTS PASSED: 305

@@ -1,0 +1,35 @@
+/c/Users/runneradmin/AppData/Local/Programs/MapleSyrup:
+total 17337
+-rwxr-xr-x 1 runneradmin 197121 9118720 Oct  3 06:04 MapleSyrup.exe
+-rw-r--r-- 1 runneradmin 197121   12216 Oct  3 06:04 README.txt
+-rw-r--r-- 1 runneradmin 197121  130816 Oct  3 06:00 maplesyrup.ico
+-rw-r--r-- 1 runneradmin 197121      55 Oct  3 06:04 sessions-folder.txt
+-rw-r--r-- 1 runneradmin 197121   12057 Oct  3 06:04 unins000.dat
+-rwxr-xr-x 1 runneradmin 197121 4495106 Oct  3 06:04 unins000.exe
+-rwxr-xr-x 1 runneradmin 197121 3974656 Oct  3 06:04 vision_debug.exe
+
+/c/Users/runneradmin/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/MapleSyrup:
+total 24
+-rwxr-xr-x 1 runneradmin 197121 2269 Oct  3 06:04 MapleSyrup (phone over the internet).lnk
+-rwxr-xr-x 1 runneradmin 197121 2335 Oct  3 06:04 MapleSyrup (recording and streaming).lnk
+-rwxr-xr-x 1 runneradmin 197121  687 Oct  3 06:04 MapleSyrup sessions.lnk
+-rwxr-xr-x 1 runneradmin 197121 2251 Oct  3 06:04 MapleSyrup.lnk
+-rwxr-xr-x 1 runneradmin 197121 1301 Oct  3 06:04 Read me.lnk
+-rwxr-xr-x 1 runneradmin 197121 1313 Oct  3 06:04 Uninstall MapleSyrup.lnk
+INSTALLED: /c/Users/runneradmin/AppData/Local/Programs/MapleSyrup
+sessions folder: ﻿C:\Users\runneradmin\Documents\MapleSyrup sessions
+SHORTCUT: MapleSyrup.lnk
+MapleSyrup self-test (v0.8.0)
+  ok    console: escape codes off (output is not a console), DPI aware true
+  ok    vision: HP 96%, MP 94%, EXP 38.5% found on the screenshot in 56 ms
+  ok    companion: "syrup status" → HP about 96 percent, MP about 94 percent, EXP about 38 percent.
+  ok    text reading: the OCR engine built into Windows (Tesseract is not installed)
+  note  OpenAI: no key: simple answers and the Windows voice
+  ok    phone link: HTTPS on port 48443 with a certificate made here; "syrup help" from the phone → "Just talk to me. Ask how you're doing, about your HP, MP, EXP or level, or how long until you level. Say mark to save a moment, or mute to quiet me."
+  ok    network: the phone would open https://10.1.0.114:8443
+  ok    QR code: 17 lines tall
+  ok    voice: the Windows voice started (a line was spoken)
+  ok    capture: 3 windows listed, no MapleStory among them
+All checks passed.
+INSTALLED COPY: self-test passed
+UNINSTALLED
