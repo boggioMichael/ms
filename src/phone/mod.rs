@@ -58,6 +58,10 @@ use image::RgbaImage;
 
 /// The phone page, with its script and styles.
 pub const PAGE: &str = include_str!("page.html");
+/// The dog on the page: brought to life there (dog.js), from the
+/// mascot's parts (dog-parts.png).
+pub const DOG_JS: &str = include_str!("dog.js");
+pub const DOG_PARTS: &[u8] = crate::app::dog::PARTS_PNG;
 
 /// Audio chunks larger than this are refused (a quarter second is ~8 kB).
 const MAX_AUDIO_BODY: usize = 256 * 1024;
@@ -144,6 +148,8 @@ pub enum Inbound {
     Turn(String),
     /// How MapleSyrup should talk to the player from now on.
     Attitude(crate::companion::Attitude),
+    /// The voice to speak in: an ElevenLabs voice's id, or "openai".
+    Speaker(String),
 }
 
 /// What the phone's live call asks the PC for.
@@ -238,6 +244,8 @@ struct State {
     /// The latest spoken lines as WAVs, for the phone to play in turn, with
     /// their numbers.
     clips: VecDeque<(u64, Arc<Vec<u8>>)>,
+    /// How loud each clip is as it goes (for the dog's mouth).
+    mouths: VecDeque<(u64, Vec<u8>)>,
     last_clip: u64,
     /// How many times a reply was cut short: the phone stops its clips.
     cut: u64,
@@ -290,6 +298,7 @@ impl Hub {
                 browser: None,
                 requests: 0,
                 clips: VecDeque::new(),
+                mouths: VecDeque::new(),
                 last_clip: 0,
                 cut: 0,
                 sight: Sight::default(),
@@ -346,12 +355,17 @@ impl Hub {
     /// Hand the phone a spoken line (a WAV) to play after the ones before
     /// it. Returns its number.
     pub fn set_clip(&self, wav: Vec<u8>) -> u64 {
+        let mouth = crate::app::dog::mouth_of_wav(&wav);
         let mut state = self.lock();
         state.last_clip += 1;
         let seq = state.last_clip;
         state.clips.push_back((seq, Arc::new(wav)));
+        state.mouths.push_back((seq, mouth));
         while state.clips.len() > CLIPS_KEPT {
             state.clips.pop_front();
+        }
+        while state.mouths.len() > CLIPS_KEPT {
+            state.mouths.pop_front();
         }
         drop(state);
         self.changed.notify_all();
@@ -439,10 +453,10 @@ impl Hub {
                     .with_header("Referrer-Policy", "no-referrer")
             }
             ("GET", "/health") => Response::text(200, "ok maplesyrup"),
-            ("GET", "/dog.png") => Response::new(200, "image/png", crate::app::dog::SHEET_PNG)
-                .with_header("Cache-Control", "max-age=86400"),
-            ("GET", "/dog.json") => {
-                Response::new(200, "application/json", crate::app::dog::SHEET_JSON)
+            ("GET", "/dog.js") => Response::new(200, "text/javascript; charset=utf-8", DOG_JS)
+                .with_header("Cache-Control", "no-cache"),
+            ("GET", "/dog-parts.png") => {
+                Response::new(200, "image/png", DOG_PARTS).with_header("Cache-Control", "no-cache")
             }
             ("GET", "/favicon.ico") => Response::empty(204),
             (_, path) if path.starts_with("/api/") => {
@@ -539,6 +553,24 @@ impl Hub {
                 };
                 match clip {
                     Some((_, wav)) => Response::new(200, "audio/wav", wav.as_slice()),
+                    None => Response::json(404, &json!({"error": "no such clip"})),
+                }
+            }
+            ("GET", "/api/mouth") => {
+                // How loud a clip is as it goes: the dog's mouth follows it.
+                let wanted: Option<u64> = request.param("seq").and_then(|s| s.parse().ok());
+                let mouth = wanted.and_then(|seq| {
+                    self.lock()
+                        .mouths
+                        .iter()
+                        .find(|(n, _)| *n == seq)
+                        .map(|(_, m)| m.clone())
+                });
+                match mouth {
+                    Some(levels) => Response::json(
+                        200,
+                        &json!({"step_ms": crate::app::dog::MOUTH_STEP_MS, "levels": levels}),
+                    ),
                     None => Response::json(404, &json!({"error": "no such clip"})),
                 }
             }
@@ -745,6 +777,21 @@ impl Hub {
                     400,
                     &json!({"error": "attitude is friendly, blunt or savage"}),
                 ),
+            },
+            ("POST", "/api/speaker") => match text_field("id").filter(|id| {
+                !id.is_empty()
+                    && id.len() <= 64
+                    && id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            }) {
+                Some(id) => {
+                    let mut state = self.lock();
+                    state.inbox.retain(|i| !matches!(i, Inbound::Speaker(_)));
+                    state.inbox.push(Inbound::Speaker(id));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                None => Response::json(400, &json!({"error": "which voice?"})),
             },
             ("POST", "/api/interrupt") => {
                 self.lock().inbox.push(Inbound::Interrupt);
@@ -1057,6 +1104,7 @@ mod tests {
             ("/api/talking?k=k1", r#"{"on": true}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
             ("/api/attitude?k=k1", r#"{"attitude": "savage"}"#),
+            ("/api/speaker?k=k1", r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#),
         ] {
             assert_eq!(
                 hub.handle(&request("POST", path, body)).status,
@@ -1094,7 +1142,13 @@ mod tests {
                 Inbound::Talking(true),
                 Inbound::Turn("jumped in".into()),
                 Inbound::Attitude(crate::companion::Attitude::Savage),
+                Inbound::Speaker("pNInz6obpgDQGcFmaJgB".into()),
             ]
+        );
+        assert_eq!(
+            hub.handle(&request("POST", "/api/speaker?k=k1", r#"{"id": "../x"}"#))
+                .status,
+            400
         );
         assert_eq!(
             hub.handle(&request(
@@ -1308,6 +1362,35 @@ mod tests {
     }
 
     #[test]
+    fn each_clip_comes_with_how_loud_it_is_for_the_dogs_mouth() {
+        let hub = hub();
+        let mut samples = vec![0i16; 960];
+        samples.extend((0..960).map(|i| if i % 2 == 0 { 9_000 } else { -9_000 }));
+        let seq = hub.set_clip(crate::ai::wav_bytes(&samples, 24_000));
+        let mouth = body(&hub.handle(&request("GET", &format!("/api/mouth?k=k1&seq={seq}"), "")));
+        assert_eq!(mouth["step_ms"], 40);
+        let levels: Vec<u64> = mouth["levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l.as_u64().unwrap())
+            .collect();
+        assert_eq!(levels.len(), 2);
+        assert!(levels[0] == 0 && levels[1] > 200, "{levels:?}");
+        assert_eq!(
+            hub.handle(&request("GET", "/api/mouth?k=k1&seq=99", ""))
+                .status,
+            404
+        );
+        // Only with the key.
+        assert_eq!(
+            hub.handle(&request("GET", &format!("/api/mouth?seq={seq}"), ""))
+                .status,
+            403
+        );
+    }
+
+    #[test]
     fn the_phone_gets_spoken_clips_the_dog_and_the_listen_switch() {
         let hub = hub();
         assert_eq!(
@@ -1332,9 +1415,14 @@ mod tests {
                 .status,
             404
         );
-        let dog = hub.handle(&request("GET", "/dog.png", ""));
-        assert_eq!(dog.status, 200);
-        assert_eq!(&dog.body[1..4], b"PNG");
+        let dog = hub.handle(&request("GET", "/dog.js", ""));
+        assert_eq!(
+            (dog.status, dog.content_type),
+            (200, "text/javascript; charset=utf-8")
+        );
+        assert!(String::from_utf8_lossy(&dog.body).contains("MSDog"));
+        let parts = hub.handle(&request("GET", "/dog-parts.png", ""));
+        assert_eq!((parts.status, &parts.body[1..4]), (200, &b"PNG"[..]));
         hub.handle(&request("POST", "/api/listen?k=k1", r#"{"always":false}"#));
         assert_eq!(hub.take_inbox(), vec![Inbound::Listen(false)]);
         // Taught things: their pictures, and forgetting one.

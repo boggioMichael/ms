@@ -23,6 +23,7 @@
 //! to its own answers and the Windows voice.
 
 pub mod brain;
+pub mod eleven;
 pub mod images;
 pub mod knowledge;
 pub mod language;
@@ -328,9 +329,38 @@ pub fn spawn_with(openai: OpenAi, brain: Brain, toolbox: Option<Toolbox>) -> Wor
 pub fn spawn_hybrid(
     openai: OpenAi,
     fast: Option<OpenAi>,
-    mut brain: Brain,
+    brain: Brain,
     toolbox: Option<Toolbox>,
 ) -> Worker {
+    spawn_brains(
+        Brains {
+            openai,
+            fast,
+            eleven: None,
+        },
+        brain,
+        toolbox,
+    )
+}
+
+/// What answers and what speaks.
+pub struct Brains {
+    /// Speaks, translates, and answers when there is no `fast` brain or it
+    /// fails.
+    pub openai: OpenAi,
+    /// Answers the conversation (Grok).
+    pub fast: Option<OpenAi>,
+    /// Speaks in the voice the player picked (ElevenLabs).
+    pub eleven: Option<eleven::Eleven>,
+}
+
+/// Start the worker thread with these brains.
+pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) -> Worker {
+    let Brains {
+        openai,
+        fast,
+        eleven,
+    } = brains;
     let (jobs, rx) = channel::<(u64, Job)>();
     let (tx, done) = channel::<Done>();
     let busy = Arc::new(AtomicBool::new(false));
@@ -345,6 +375,8 @@ pub fn spawn_hybrid(
             let mut translations = std::collections::HashMap::new();
             // The fast brain failing again and again is given up on.
             let mut fast_failures = 0u32;
+            // ElevenLabs failing is said once.
+            let eleven_failed = AtomicBool::new(false);
             while let Ok(first) = rx.recv() {
                 busy_flag.store(true, Ordering::Relaxed);
                 let mut queue = vec![first];
@@ -361,6 +393,13 @@ pub fn spawn_hybrid(
                     if stop.stopped() {
                         continue;
                     }
+                    // The voice the player picked, when it's ElevenLabs's.
+                    let voice_id = brain.voice_id();
+                    let mouth = Mouth {
+                        openai: &openai,
+                        eleven: eleven.as_ref().zip(voice_id.as_deref()),
+                        failed: &eleven_failed,
+                    };
                     match job {
                         Job::Speak {
                             text,
@@ -368,7 +407,7 @@ pub fn spawn_hybrid(
                             show,
                             speak,
                         } => say_line(
-                            &openai,
+                            mouth,
                             id,
                             &stop,
                             Line {
@@ -384,7 +423,7 @@ pub fn spawn_hybrid(
                         Job::Cut { heard } => brain.cut_short(&heard),
                         Job::Greet { language } => greet(
                             fast.as_ref().unwrap_or(&openai),
-                            &openai,
+                            mouth,
                             &mut brain,
                             id,
                             &stop,
@@ -406,7 +445,7 @@ pub fn spawn_hybrid(
                             });
                             let style = brain::voice_style(brain.attitude());
                             if let Err(error) =
-                                speak_line(&openai, id, &stop, &text, style, Instant::now(), false, &tx)
+                                speak_line(mouth, id, &stop, &text, style, Instant::now(), false, &tx)
                             {
                                 let _ = tx.send(Done::Failed {
                                     id,
@@ -432,7 +471,7 @@ pub fn spawn_hybrid(
                                 ));
                             }
                             let (used, fell_back) = converse(
-                                &openai,
+                                mouth,
                                 fast.as_ref().filter(|_| fast_failures < FAST_GIVE_UP),
                                 toolbox.as_ref(),
                                 &mut brain,
@@ -483,6 +522,16 @@ pub fn spawn_hybrid(
     }
 }
 
+/// What speaks: OpenAI's voice, or the ElevenLabs voice the player picked
+/// (with OpenAI's standing in when it can't).
+#[derive(Clone, Copy)]
+struct Mouth<'a> {
+    openai: &'a OpenAi,
+    eleven: Option<(&'a eleven::Eleven, &'a str)>,
+    /// ElevenLabs failed already (said once).
+    failed: &'a AtomicBool,
+}
+
 /// One of MapleSyrup's own lines, and how to say it.
 struct Line<'a> {
     text: &'a str,
@@ -499,7 +548,7 @@ struct Line<'a> {
 /// One of MapleSyrup's own lines: translated into the player's language
 /// when it is not English, shown, said.
 fn say_line(
-    openai: &OpenAi,
+    mouth: Mouth,
     id: u64,
     stop: &Stop,
     line: Line,
@@ -508,7 +557,9 @@ fn say_line(
 ) {
     let asked = Instant::now();
     let text = match line.language {
-        Some(l) if !language::is_english(l) => translate(openai, line.text, l, stop, translations),
+        Some(l) if !language::is_english(l) => {
+            translate(mouth.openai, line.text, l, stop, translations)
+        }
         _ => line.text.to_string(),
     };
     if stop.stopped() {
@@ -523,7 +574,7 @@ fn say_line(
     if !line.aloud {
         return;
     }
-    if let Err(error) = speak_line(openai, id, stop, &text, line.style, asked, false, tx) {
+    if let Err(error) = speak_line(mouth, id, stop, &text, line.style, asked, false, tx) {
         let _ = tx.send(Done::Failed {
             id,
             heard: None,
@@ -537,7 +588,7 @@ fn say_line(
 /// there is nothing to say for an empty line).
 #[allow(clippy::too_many_arguments)]
 fn speak_line(
-    openai: &OpenAi,
+    mouth: Mouth,
     id: u64,
     stop: &Stop,
     text: &str,
@@ -549,24 +600,49 @@ fn speak_line(
     if !text.chars().any(char::is_alphanumeric) {
         return Ok(false);
     }
-    let mut start = true;
-    let result = openai.speech_stream(text, style, Some(stop), &mut |samples| {
+    let start = std::cell::Cell::new(true);
+    let mut send = |samples: &[i16]| {
+        let opens = start.replace(false);
         let _ = tx.send(Done::Audio {
             id,
-            text: if start {
+            text: if opens {
                 text.to_string()
             } else {
                 String::new()
             },
             samples: samples.to_vec(),
             after: asked.elapsed(),
-            first: first && start,
-            start,
+            first: first && opens,
+            start: opens,
             end: false,
         });
-        start = false;
-    });
-    let made = !start;
+    };
+    let result = match mouth.eleven {
+        // ElevenLabs, unless it is resting after failing.
+        Some((eleven, voice)) if !eleven.resting() => {
+            match eleven.speech_stream(text, voice, Some(stop), &mut send) {
+                // ElevenLabs couldn't: OpenAI's voice says it.
+                Err(error) if start.get() && !matches!(error, AiError::Cancelled) => {
+                    if !mouth.failed.swap(true, Ordering::Relaxed) {
+                        let _ = tx.send(Done::Noted {
+                            line: format!(
+                                "ElevenLabs didn't speak ({}): OpenAI's voice did",
+                                error.detail()
+                            ),
+                        });
+                    }
+                    mouth
+                        .openai
+                        .speech_stream(text, style, Some(stop), &mut send)
+                }
+                other => other,
+            }
+        }
+        _ => mouth
+            .openai
+            .speech_stream(text, style, Some(stop), &mut send),
+    };
+    let made = !start.get();
     if made {
         let _ = tx.send(Done::Audio {
             id,
@@ -717,7 +793,7 @@ struct Talk<'a> {
 /// failed.
 #[allow(clippy::too_many_arguments)]
 fn converse<'a>(
-    openai: &'a OpenAi,
+    mouth: Mouth<'a>,
     fast: Option<&'a OpenAi>,
     toolbox: Option<&Toolbox>,
     brain: &mut Brain,
@@ -734,6 +810,7 @@ fn converse<'a>(
         speak,
         language,
     } = talk;
+    let openai = mouth.openai;
     let started = Instant::now();
     // What never changes first, what changes now and then last: the model's
     // service keeps the start cached, and answers sooner.
@@ -789,7 +866,7 @@ fn converse<'a>(
                     if stop.stopped() {
                         break;
                     }
-                    match speak_line(openai, id, stop, &text, style, started, first, &tx) {
+                    match speak_line(mouth, id, stop, &text, style, started, first, &tx) {
                         Ok(true) => {
                             first = false;
                             if !spoken.is_empty() {
@@ -849,7 +926,7 @@ fn converse<'a>(
                         && !std::ptr::eq(chat, openai)
                         && said.trim().is_empty() =>
                 {
-                    fast_failed = Some(error.to_string());
+                    fast_failed = Some(error.detail());
                     chat = openai;
                     continue;
                 }
@@ -1001,7 +1078,7 @@ const HELLO: &str = "Hey! I'm here. Just talk to me.";
 /// and said in `voice`.
 fn greet(
     chat: &OpenAi,
-    voice: &OpenAi,
+    mouth: Mouth,
     brain: &mut Brain,
     id: u64,
     stop: &Stop,
@@ -1030,10 +1107,10 @@ fn greet(
             ..Default::default()
         };
         let answer = chat.ask(&ask, None).or_else(|e| {
-            if std::ptr::eq(chat, voice) || matches!(e, AiError::Cancelled) {
+            if std::ptr::eq(chat, mouth.openai) || matches!(e, AiError::Cancelled) {
                 Err(e)
             } else {
-                voice.ask(&ask, None)
+                mouth.openai.ask(&ask, None)
             }
         });
         if let Ok(answer) = answer
@@ -1049,7 +1126,7 @@ fn greet(
         // The usual line, in their language.
         let mut translations = std::collections::HashMap::new();
         say_line(
-            voice,
+            mouth,
             id,
             stop,
             Line {
@@ -1069,7 +1146,7 @@ fn greet(
         text: text.clone(),
     });
     brain.said(&text);
-    if let Err(error) = speak_line(voice, id, stop, &text, style, asked, false, tx) {
+    if let Err(error) = speak_line(mouth, id, stop, &text, style, asked, false, tx) {
         let _ = tx.send(Done::Failed {
             id,
             heard: None,

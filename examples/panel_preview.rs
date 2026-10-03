@@ -18,7 +18,7 @@ fn main() {
     let scale = panel::scale_for(game.height() as i32);
     let (_, h) = panel::size(scale);
     let mut dog = Dog::load().unwrap();
-    let frame = dog.frame(10, h).clone();
+    let frame = dog.frame(h, ms::app::dog::Mood::default());
     let painted = panel::paint(
         &Content {
             obs: Some(&obs),

@@ -135,6 +135,14 @@ impl Brain {
             .unwrap_or(self.attitude)
     }
 
+    /// The ElevenLabs voice the player picked, if they did.
+    pub fn voice_id(&self) -> Option<String> {
+        self.learning
+            .as_ref()
+            .and_then(|l| l.memory().voice.clone())
+            .filter(|v| !v.is_empty() && v != "openai")
+    }
+
     /// What it learned so far, for the end of the instructions (it changes
     /// now and then, so it goes after what never does). Empty when nothing.
     pub fn learned(&self) -> String {

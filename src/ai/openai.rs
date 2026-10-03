@@ -50,6 +50,8 @@ pub enum AiError {
     Parse(String),
     /// Called off before it was done (the player talked over it).
     Cancelled,
+    /// The service can't do this one (no model for the language, say).
+    Unsupported(String),
 }
 
 impl std::fmt::Display for AiError {
@@ -62,6 +64,48 @@ impl std::fmt::Display for AiError {
             AiError::Http(code, m) => write!(f, "OpenAI error {code}: {m}"),
             AiError::Parse(e) => write!(f, "unexpected answer from OpenAI ({e})"),
             AiError::Cancelled => write!(f, "called off"),
+            AiError::Unsupported(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+/// The message in an error answer: OpenAI's and xAI's (`error.message`), or
+/// ElevenLabs's (`detail`: a status and a message, or what was wrong with
+/// the request).
+fn message_of(answer: &Value) -> Option<String> {
+    if let Some(m) = answer["error"]["message"].as_str() {
+        return Some(m.to_string());
+    }
+    let detail = &answer["detail"];
+    if let Some(m) = detail.as_str() {
+        return Some(m.to_string());
+    }
+    if let Some(m) = detail["message"].as_str() {
+        return Some(match detail["status"].as_str() {
+            Some(status) => format!("{status}: {m}"),
+            None => m.to_string(),
+        });
+    }
+    let first = detail.as_array()?.first()?;
+    let at: Vec<String> = first["loc"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| l.as_str().map(String::from))
+        .collect();
+    Some(format!("{} ({})", first["msg"].as_str()?, at.join(".")))
+}
+
+impl AiError {
+    /// What went wrong, without naming OpenAI (for Grok's and ElevenLabs's
+    /// errors).
+    pub fn detail(&self) -> String {
+        match self {
+            AiError::Network(e) => format!("couldn't reach it ({e})"),
+            AiError::Http(401, m) => format!("the key was refused ({m})"),
+            AiError::Http(code, m) => format!("error {code}: {m}"),
+            AiError::Parse(e) => format!("unexpected answer ({e})"),
+            other => other.to_string(),
         }
     }
 }
@@ -212,6 +256,8 @@ pub enum Piece<'a> {
 
 pub struct OpenAi {
     key: String,
+    /// The header the key goes in (`None`: `Authorization: Bearer`).
+    key_header: Option<String>,
     base: String,
     pub voice: String,
     curl: String,
@@ -238,6 +284,7 @@ impl OpenAi {
     pub fn with_models(key: &str, base: &str, voice: &str, models: Vec<String>) -> Self {
         Self {
             key: key.trim().to_string(),
+            key_header: None,
             base: base.trim_end_matches('/').to_string(),
             voice: voice.to_string(),
             curl: if cfg!(windows) {
@@ -248,6 +295,13 @@ impl OpenAi {
             choice: Mutex::new(None),
             models,
         }
+    }
+
+    /// The key goes in header `name` instead of `Authorization: Bearer`
+    /// (another service, such as ElevenLabs's `xi-api-key`).
+    pub fn with_key_header(mut self, name: &str) -> Self {
+        self.key_header = Some(name.to_string());
+        self
     }
 
     pub fn model(&self) -> Option<String> {
@@ -298,7 +352,13 @@ impl OpenAi {
             ])
             .arg(timeout.as_secs().max(1).to_string())
             .args(["-X", method])
-            .args(["-H", &format!("Authorization: Bearer {}", self.key)])
+            .args([
+                "-H",
+                &match &self.key_header {
+                    Some(name) => format!("{name}: {}", self.key),
+                    None => format!("Authorization: Bearer {}", self.key),
+                },
+            ])
             .args(["-w", "%{stderr}HTTPSTATUS:%{http_code}"]);
         if via.headers {
             command.args(["-i", "--suppress-connect-headers"]);
@@ -420,7 +480,7 @@ impl OpenAi {
     fn error_of(status: u16, body: &[u8]) -> AiError {
         let message = serde_json::from_slice::<Value>(body)
             .ok()
-            .and_then(|v| v["error"]["message"].as_str().map(String::from))
+            .and_then(|v| message_of(&v))
             .unwrap_or_else(|| String::from_utf8_lossy(body).chars().take(200).collect());
         AiError::Http(status, message)
     }
@@ -716,62 +776,76 @@ impl OpenAi {
                 "instructions": style,
                 "response_format": "pcm",
             });
-            let mut head = Head::default();
-            let mut error = Vec::new();
-            let mut odd: Option<u8> = None;
-            let mut count = 0;
-            let status = self.call_with(
-                "POST",
-                "/audio/speech",
-                Some(&body),
-                Duration::from_secs(40),
-                Via {
-                    stop,
-                    headers: true,
-                },
-                &mut |chunk| {
-                    let bytes = head.feed(chunk);
-                    if bytes.is_empty() {
-                        return;
-                    }
-                    if head.status != Some(200) {
-                        if error.len() < 4096 {
-                            error.extend_from_slice(&bytes);
-                        }
-                        return;
-                    }
-                    // A sample can be split between two pieces.
-                    let mut joined = Vec::with_capacity(bytes.len() + 1);
-                    joined.extend(odd.take());
-                    joined.extend_from_slice(&bytes);
-                    if joined.len() % 2 == 1 {
-                        odd = joined.pop();
-                    }
-                    let samples: Vec<i16> = joined
-                        .as_chunks::<2>()
-                        .0
-                        .iter()
-                        .map(|b| i16::from_le_bytes(*b))
-                        .collect();
-                    count += samples.len();
-                    if !samples.is_empty() {
-                        on_samples(&samples);
-                    }
-                },
-            )?;
-            if status == 200 && head.status.is_none_or(|s| s == 200) {
-                return Ok(count);
+            match self.audio_stream("/audio/speech", &body, stop, on_samples) {
+                // A voice this account does not have: fall back to a standard one.
+                Err(AiError::Http(400, message))
+                    if attempt == 0 && message.to_lowercase().contains("voice") =>
+                {
+                    voice = "alloy".into();
+                }
+                other => return other,
             }
-            let error = Self::error_of(status, &error);
-            // A voice this account does not have: fall back to a standard one.
-            if attempt == 0 && status == 400 && format!("{error}").to_lowercase().contains("voice")
-            {
-                voice = "alloy".into();
-                continue;
-            }
-            return Err(error);
         }
         Err(AiError::Parse("no speech".into()))
+    }
+
+    /// POST `body` to `path` and hand the 16-bit little-endian PCM that comes
+    /// back to `on_samples` a piece at a time, as it arrives. Returns how
+    /// many samples there were.
+    pub fn audio_stream(
+        &self,
+        path: &str,
+        body: &Value,
+        stop: Option<&Stop>,
+        on_samples: &mut dyn FnMut(&[i16]),
+    ) -> Result<usize, AiError> {
+        let mut head = Head::default();
+        let mut error = Vec::new();
+        let mut odd: Option<u8> = None;
+        let mut count = 0;
+        let status = self.call_with(
+            "POST",
+            path,
+            Some(body),
+            Duration::from_secs(40),
+            Via {
+                stop,
+                headers: true,
+            },
+            &mut |chunk| {
+                let bytes = head.feed(chunk);
+                if bytes.is_empty() {
+                    return;
+                }
+                if head.status != Some(200) {
+                    if error.len() < 4096 {
+                        error.extend_from_slice(&bytes);
+                    }
+                    return;
+                }
+                // A sample can be split between two pieces.
+                let mut joined = Vec::with_capacity(bytes.len() + 1);
+                joined.extend(odd.take());
+                joined.extend_from_slice(&bytes);
+                if joined.len() % 2 == 1 {
+                    odd = joined.pop();
+                }
+                let samples: Vec<i16> = joined
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|b| i16::from_le_bytes(*b))
+                    .collect();
+                count += samples.len();
+                if !samples.is_empty() {
+                    on_samples(&samples);
+                }
+            },
+        )?;
+        if status == 200 && head.status.is_none_or(|s| s == 200) {
+            return Ok(count);
+        }
+        Err(Self::error_of(head.status.unwrap_or(status), &error))
     }
 }
 
@@ -1010,6 +1084,35 @@ pub fn output_text(raw: &[u8]) -> Result<String, AiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_answers_are_read_from_every_service() {
+        let read = |raw: &str| message_of(&serde_json::from_str(raw).unwrap());
+        assert_eq!(
+            read(r#"{"error":{"message":"Incorrect API key provided"}}"#).as_deref(),
+            Some("Incorrect API key provided")
+        );
+        assert_eq!(
+            read(r#"{"detail":{"status":"quota_exceeded","message":"This request exceeds your quota."}}"#)
+                .as_deref(),
+            Some("quota_exceeded: This request exceeds your quota.")
+        );
+        assert_eq!(
+            read(r#"{"detail":[{"loc":["body","voice_settings","speed"],"msg":"Input should be less than or equal to 1.2","type":"less_than_equal"}]}"#)
+                .as_deref(),
+            Some("Input should be less than or equal to 1.2 (body.voice_settings.speed)")
+        );
+        assert_eq!(
+            read(r#"{"detail":"Not Found"}"#).as_deref(),
+            Some("Not Found")
+        );
+        assert_eq!(read(r#"{"ok":true}"#), None);
+        // Said without naming OpenAI, for the others.
+        assert_eq!(
+            AiError::Http(401, "quota_exceeded: no credits".into()).detail(),
+            "the key was refused (quota_exceeded: no credits)"
+        );
+    }
 
     #[test]
     fn reads_the_text_out_of_a_responses_answer() {

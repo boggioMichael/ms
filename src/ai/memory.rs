@@ -215,6 +215,9 @@ pub struct Memory {
     pub forgotten: Vec<String>,
     /// How it talks to the player (picked on the phone).
     pub attitude: super::style::Attitude,
+    /// The voice it speaks in (an ElevenLabs voice's id; `None` or
+    /// "openai": OpenAI's).
+    pub voice: Option<String>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }

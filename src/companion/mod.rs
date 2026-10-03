@@ -544,6 +544,11 @@ impl Companion {
         self.muted
     }
 
+    /// The character is dead (HP at zero), until HP comes back.
+    pub fn dead(&self) -> bool {
+        self.dead
+    }
+
     /// The most recent frame's observation.
     pub fn last(&self) -> Option<&Observation> {
         self.last.as_ref()

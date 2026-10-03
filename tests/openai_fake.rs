@@ -1001,7 +1001,16 @@ fn grok_answers_and_openai_steps_in_when_it_fails() {
         }
     };
     assert!(text.contains("(grok-ok)"), "{text}");
-    assert_eq!(worker.model.lock().unwrap().as_deref(), Some("grok-ok"));
+    // Which brain answered is noted right after the reply goes out.
+    let noted = Instant::now();
+    let model = loop {
+        let model = worker.model.lock().unwrap().clone();
+        if model.is_some() || noted.elapsed() > Duration::from_secs(5) {
+            break model;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(model.as_deref(), Some("grok-ok"));
     // Grok failing: OpenAI answers, and it says so once.
     let worker = ms::ai::spawn_hybrid(
         OpenAi::new(key, &base, "cedar", None),

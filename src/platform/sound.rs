@@ -34,6 +34,9 @@ pub struct Player {
     held: Vec<i16>,
     /// When what was handed to the sound card so far ends.
     ends: Option<Instant>,
+    /// How loud what was handed over is as it goes (for the dog's mouth):
+    /// when each piece starts, and how loud it is every 40 ms.
+    loudness: std::collections::VecDeque<(Instant, Vec<u8>)>,
     ducked: bool,
 }
 
@@ -51,6 +54,7 @@ impl Player {
             rate: crate::ai::openai::SPEECH_RATE,
             held: Vec::new(),
             ends: None,
+            loudness: std::collections::VecDeque::new(),
             ducked: false,
         }
     }
@@ -138,6 +142,11 @@ impl Player {
         let now = Instant::now();
         let from = self.ends.filter(|ends| *ends > now).unwrap_or(now);
         self.ends = Some(from + Duration::from_secs_f64(samples.len() as f64 / self.rate as f64));
+        self.loudness
+            .push_back((from, crate::app::dog::mouth_levels(samples, self.rate)));
+        while self.loudness.len() > 2 && self.loudness[1].0 + Duration::from_secs(2) < now {
+            self.loudness.pop_front();
+        }
     }
 
     /// Stop at once, dropping what was still to come; the game comes back up.
@@ -148,6 +157,7 @@ impl Player {
         }
         self.held.clear();
         self.ends = None;
+        self.loudness.clear();
         if self.ducked {
             restore();
             self.ducked = false;
@@ -162,6 +172,19 @@ impl Player {
     /// Whether it is speaking, counting the moment after the last word.
     pub fn speaking(&self) -> bool {
         !self.held.is_empty() || self.ends.is_some_and(|ends| Instant::now() < ends + TAIL)
+    }
+
+    /// How loud the voice is right now (0..1), while it plays.
+    pub fn loudness(&self) -> Option<f32> {
+        let now = Instant::now();
+        let (start, levels) = self
+            .loudness
+            .iter()
+            .rev()
+            .find(|(start, _)| *start <= now)?;
+        let step = now.duration_since(*start).as_millis() / crate::app::dog::MOUTH_STEP_MS as u128;
+        // Past the end of a piece: quiet (a pause between lines).
+        Some(levels.get(step as usize).map_or(0.0, |l| *l as f32 / 255.0))
     }
 
     /// How long until what was handed over has been played.
