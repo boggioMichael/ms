@@ -126,6 +126,8 @@ pub enum Inbound {
     Voice(VoiceOn),
     /// Answer everything said (true), or only after "syrup" (false).
     Listen(bool),
+    /// Speak up on its own while they play (true), or only when asked.
+    Coach(bool),
     /// Forget a thing it was taught (by its id).
     Forget(String),
     /// The player's language (a locale such as `he-IL`).
@@ -599,6 +601,13 @@ impl Hub {
                     Response::json(200, &json!({"ok": true}))
                 }
                 None => Response::json(400, &json!({"error": "always must be true or false"})),
+            },
+            ("POST", "/api/coach") => match body().get("on").and_then(Value::as_bool) {
+                Some(on) => {
+                    self.lock().inbox.push(Inbound::Coach(on));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                None => Response::json(400, &json!({"error": "on must be true or false"})),
             },
             ("POST", "/api/audio") => {
                 let rate: u32 = request
@@ -1115,6 +1124,7 @@ mod tests {
             ("/api/mode?k=k1", r#"{"live": true}"#),
             ("/api/talking?k=k1", r#"{"on": true}"#),
             ("/api/talking?k=k1", r#"{"on": true, "who": "player"}"#),
+            ("/api/coach?k=k1", r#"{"on": false}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
             ("/api/attitude?k=k1", r#"{"attitude": "savage"}"#),
             ("/api/speaker?k=k1", r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#),
@@ -1154,6 +1164,7 @@ mod tests {
                 Inbound::Live(true),
                 Inbound::Talking(true),
                 Inbound::PlayerTalking(true),
+                Inbound::Coach(false),
                 Inbound::Turn("jumped in".into()),
                 Inbound::Attitude(crate::companion::Attitude::Savage),
                 Inbound::Speaker("pNInz6obpgDQGcFmaJgB".into()),

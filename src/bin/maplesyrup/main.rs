@@ -2327,6 +2327,11 @@ fn run(options: Options) -> Result<(), String> {
                             );
                         }
                     }
+                    Inbound::Coach(on) => {
+                        if on != coach.on {
+                            set_coaching(&mut coach, &learning, &mut out, on);
+                        }
+                    }
                     Inbound::Listen(always) => {
                         companion.set_always_listen(always);
                         out.tell(
@@ -2692,6 +2697,8 @@ fn run(options: Options) -> Result<(), String> {
                     "fps": fps,
                     "wake": "syrup",
                     "always_listen": companion.settings.always_listen,
+                    // Whether it speaks up on its own (the coach).
+                    "coach": coach.on,
                     "speaking": out.mouth.speaking(),
                     // The PC's own voice (the phone keeps listening through it).
                     "speaking_pc": out.mouth.pc_speaking(),
