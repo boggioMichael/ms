@@ -109,6 +109,43 @@ numbers above are single-threaded. Whole-program optimisation
 (`lto = "fat"`, one codegen unit) was measured and dropped: no difference
 beyond the noise, four times the build time.
 
+### Phase 6, the GPU half: measured, and not built (pending the owner's word)
+
+The plan's rule for this phase: keep a change only if it wins end to end,
+data transfers included, and a GPU stage must beat the optimised CPU path
+three times over on a discrete GPU to be on by default. The stages it
+names as candidates for compute shaders — the pyramid, colour masks, the
+motion difference, template correlation at the coarse pyramid levels, the
+text-evidence maps — cost this much on the companion's per-frame path now
+(the recording at 1366×768, after the CPU work above):
+
+| stage | per frame | where |
+|---|--:|---|
+| the sweep band converted to luma and halved twice (one band, shared by the three objects) | 0.26 ms | `template::Prepared` |
+| correlation at the coarsest level, every position (6 variants: 3 pictures and their mirrors) | 0.66 ms | `template::score_everywhere` |
+| colour masks: the three bars measured | 0.08 ms | `bars::BarModel` |
+| text evidence for the three number lines | ≈ 0.1 ms | `glyphs::Line::extract` |
+| the motion difference | 0 (preview only; 5.2 ms with `--all`) | `motion` |
+| **everything a shader could take** | **≈ 1.1 ms** | |
+| the rest: refining 20–40 candidates per variant at half and full resolution, the glyph classification, the tracker | ≈ 4 ms | not full-frame, not data-parallel |
+
+A compute dispatch and its readback are a round trip through the driver
+and a fence: typically 0.3–1 ms of latency on Windows before any work is
+done, and the frame or the band has to be uploaded unless the capture's
+texture is shared into the compute device (D3D11 to D3D12 interop). The
+most a shader could save is the 1.1 ms above; the round trip costs most
+or all of it back; and the GPU is the game's — on a laptop the game is
+GPU-bound, and every millisecond of compute is taken from its frame. So
+the GPU half cannot be a three-times win end to end, and by the plan's
+own rule it is not on by default; whether to build it at all as an
+opt-in (`gpu` feature, wgpu/WGSL, parity tests on WARP) is the owner's
+call, asked in the pull request. The GPU does the part where it helps:
+the capture (Phase 5).
+
+Not done on the CPU side either: zero allocations per frame (the searches
+still allocate their planes and score buffers; not a measured cost), and
+PGO (no Windows toolchain here to profile with).
+
 ## Phase 5: the frames from the compositor, on the GPU
 
 Capture is not in the offline runs above (they start from decoded frames),
