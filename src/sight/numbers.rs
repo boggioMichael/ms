@@ -172,8 +172,20 @@ pub struct Numbers {
     state: HashMap<Field, FieldState>,
 }
 
+/// How surely a glyph must match a character the font knows. The game
+/// draws its HUD font pixel for pixel the same every frame, so a known
+/// character scores 0.99 or better; a character the font has not learned
+/// yet scores up to 0.90 against the most alike one it has (a 9 read as a
+/// 3, on the player's own frames), which the general default of 0.72
+/// would have believed. Over the bar a wrong digit is worse than none:
+/// none asks for an example and learns the character.
+const MIN_SCORE: f32 = 0.95;
+
 fn options() -> GlyphOptions {
-    GlyphOptions::default()
+    GlyphOptions {
+        min_score: MIN_SCORE,
+        ..GlyphOptions::default()
+    }
 }
 
 fn now_text() -> String {
@@ -739,6 +751,40 @@ pub(crate) mod tests {
         again.forget();
         assert_eq!(again.glyphs(), 0);
         assert!(!dir.join("font/hp-1.png").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_character_the_font_has_not_learned_is_not_read_as_the_most_alike_one() {
+        let dir = temp_dir("alike");
+        let mut numbers = Numbers::load(&dir);
+        let now = Instant::now();
+        // Every digit but 0 is learned.
+        let (frame, bands) = hud((1234, 5678), (9, 9), 37.51);
+        numbers
+            .learn(&frame, Field::Hp, &bands[0], "HP[1234/5678]", "ocr", now)
+            .unwrap();
+        numbers
+            .learn(&frame, Field::Mp, &bands[1], "MP[9/9]", "ocr", now)
+            .unwrap();
+        assert_eq!(
+            numbers.glyphs(),
+            15,
+            "H, P, M, the brackets, the slash, nine digits"
+        );
+        // In this font a 0 is most like an 8, alike enough for a general
+        // reader to believe; over the HUD it must stay unread instead, so an
+        // example gets asked for and the 0 learned.
+        let (frame, bands) = hud((1000, 5678), (9, 9), 37.51);
+        assert!(numbers.read(&frame, Field::Hp, &bands[0]).is_none());
+        assert!(numbers.wants_sample(Field::Hp, now + SAMPLE_EVERY));
+        numbers
+            .learn(&frame, Field::Hp, &bands[0], "HP[1000/5678]", "ocr", now)
+            .unwrap();
+        let read = numbers
+            .read(&frame, Field::Hp, &bands[0])
+            .expect("read once learned");
+        assert_eq!(read.text, "HP[1000/5678]");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
