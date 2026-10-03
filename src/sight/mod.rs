@@ -135,6 +135,10 @@ const UNLABELLED_FOR: Duration = Duration::from_secs(15);
 /// doubles each time, up to [`ASK_BACKOFF_MAX`].
 const ASK_BACKOFF: Duration = Duration::from_secs(60);
 const ASK_BACKOFF_MAX: Duration = Duration::from_secs(900);
+/// How many readings in a row the EXP bar must have shown nearly full for
+/// its emptying to count as a level-up: half a second at the companion's
+/// frame rate, which a misreading does not last.
+const FULL_FOR_FRAMES: usize = 5;
 
 pub struct Sight {
     dir: PathBuf,
@@ -146,6 +150,8 @@ pub struct Sight {
     want: Option<Want>,
     /// Recent EXP measurements, to see the bar wrap at a level-up.
     exp_trail: VecDeque<(Instant, f32)>,
+    /// The EXP percent as last read from the numbers, and when.
+    exp_read_at: Option<(Instant, f32)>,
     /// Since when the bars could not be found though the game is seen.
     lost_since: Option<Instant>,
     /// Readings in a row that disagreed with the bars by a lot.
@@ -161,6 +167,11 @@ pub struct Sight {
     /// The model was last asked at, and the wait before asking again.
     asked: Option<Instant>,
     ask_backoff: Duration,
+    /// The model was last asked to spell the lines out and could not help,
+    /// at; and the wait before asking for that reason again, which doubles
+    /// each time. Other reasons to ask are not held back by it.
+    labels_asked: Option<Instant>,
+    label_backoff: Duration,
     /// When a bar's track was last refitted from the number beside it.
     refit_at: Option<Instant>,
 }
@@ -187,6 +198,7 @@ impl Sight {
             numbers: Numbers::load(dir),
             want: None,
             exp_trail: VecDeque::new(),
+            exp_read_at: None,
             lost_since: None,
             disagreements: 0,
             last: Seen::default(),
@@ -195,6 +207,8 @@ impl Sight {
             find_failing_since: None,
             unlabelled_since: None,
             asked: None,
+            labels_asked: None,
+            label_backoff: ASK_BACKOFF,
             ask_backoff: ASK_BACKOFF,
             refit_at: None,
         }
@@ -239,9 +253,13 @@ impl Sight {
         if let Some(want) = self.want {
             return Some(want);
         }
-        if self
-            .unlabelled_since
-            .is_some_and(|t| now.duration_since(t) >= UNLABELLED_FOR)
+        let labels_held_back = self
+            .labels_asked
+            .is_some_and(|t| now.duration_since(t) < self.label_backoff);
+        if !labels_held_back
+            && self
+                .unlabelled_since
+                .is_some_and(|t| now.duration_since(t) >= UNLABELLED_FOR)
         {
             return Some(Want::Verify);
         }
@@ -255,10 +273,36 @@ impl Sight {
         self.asked = Some(Instant::now());
     }
 
-    fn answered(&mut self) {
+    /// The model answered. When its answer `helped` — every line that
+    /// wanted an example got one that reads — the next ask waits the usual
+    /// time; when it did not (the same label again, learned from nothing),
+    /// the next ask waits twice as long as the last, so a line the model
+    /// cannot spell out does not cost a call every half minute.
+    fn answered(&mut self, helped: bool) {
         self.asked = None;
         self.ask_backoff = ASK_BACKOFF;
-        self.unlabelled_since = None;
+        if helped {
+            self.unlabelled_since = None;
+            self.labels_asked = None;
+            self.label_backoff = ASK_BACKOFF;
+        } else {
+            self.labels_asked = Some(Instant::now());
+            self.label_backoff = (self.label_backoff * 2).min(ASK_BACKOFF_MAX);
+        }
+    }
+
+    /// Does a line the layout has still want the model to spell it out?
+    fn still_unlabelled(&self) -> bool {
+        let Some(layout) = &self.layout else {
+            return false;
+        };
+        [
+            (Field::Hp, layout.hp.is_some()),
+            (Field::Mp, layout.mp.is_some()),
+            (Field::Exp, layout.exp.is_some()),
+        ]
+        .into_iter()
+        .any(|(field, has_bar)| has_bar && self.numbers.wants_label(field))
     }
 
     /// The model could not be asked, or did not answer usefully: try
@@ -499,7 +543,16 @@ impl Sight {
         }
         drop(numbers_span);
         // A level-up: the EXP bar goes from nearly full to nearly empty, and
-        // stays there.
+        // stays there. The full must have lasted — a run of readings, not
+        // one frame's misreading (something of the bar's colour over it) —
+        // and the number, when it was read lately, has the last word.
+        if let Some(Value::Percent(p)) = &seen.exp_number {
+            self.exp_read_at = Some((now, *p));
+        } else if let Some(Value::Amount { current, max }) = &seen.exp_number
+            && *max > 0
+        {
+            self.exp_read_at = Some((now, *current as f32 / *max as f32 * 100.0));
+        }
         if let Some(exp) = seen.exp {
             self.exp_trail.push_back((now, exp));
             while self
@@ -512,8 +565,18 @@ impl Sight {
             let n = self.exp_trail.len();
             if n >= 3 {
                 let recent_low = self.exp_trail.iter().skip(n - 2).all(|(_, e)| *e < 25.0);
-                let before_high = self.exp_trail.iter().take(n - 2).any(|(_, e)| *e > 70.0);
-                if recent_low && before_high {
+                let before_high = {
+                    let (mut run, mut longest) = (0usize, 0usize);
+                    for (_, e) in self.exp_trail.iter().take(n - 2) {
+                        run = if *e > 70.0 { run + 1 } else { 0 };
+                        longest = longest.max(run);
+                    }
+                    longest >= FULL_FOR_FRAMES
+                };
+                let number_disagrees = self.exp_read_at.is_some_and(|(t, p)| {
+                    now.duration_since(t) <= Duration::from_secs(2) && p >= 25.0
+                });
+                if recent_low && before_high && !number_disagrees {
                     seen.leveled = true;
                     self.exp_trail.clear();
                     if let Some(level) = self.facts.level {
@@ -676,7 +739,8 @@ impl Sight {
         self.lost_since = None;
         self.find_failing_since = None;
         self.last_look = Some(Instant::now());
-        self.answered();
+        // Finding the HUD is help enough; the lines' examples come later.
+        self.answered(true);
         self.save();
         Ok(parts.join("; "))
     }
@@ -722,7 +786,7 @@ impl Sight {
     pub fn verified(&mut self, frame: &RgbaImage, v: &HudValues) -> String {
         self.last_look = Some(Instant::now());
         self.want = None;
-        self.answered();
+        let wanted_labels = self.still_unlabelled();
         let mut notes = Vec::new();
         let mut off = 0;
         if let Some(layout) = self.layout.as_mut() {
@@ -763,6 +827,16 @@ impl Sight {
         }
         notes.extend(self.learn_font(frame, v));
         self.take_values(v);
+        // Asked to spell the lines out and none of them learned: the next
+        // ask waits longer, and says so.
+        let helped = !wanted_labels || !self.still_unlabelled();
+        self.answered(helped);
+        if !helped {
+            notes.push(format!(
+                "no line learned from this; the lines are next asked about in {} s",
+                self.label_backoff.as_secs()
+            ));
+        }
         if off > 0 {
             self.disagreements += 1;
             if self.disagreements >= 2 {
@@ -1061,15 +1135,34 @@ mod tests {
         sight.calibrated(&frame, &c).unwrap();
         let exp_seen = sight.observe(&frame, Instant::now()).exp.unwrap();
         assert!((exp_seen - 86.25).abs() < 1.0, "{exp_seen}");
+        // Nearly full for a while (frames a tenth of a second apart), then
+        // nearly empty: a level-up on the second empty frame. One frame of
+        // "full" would not have been one (something of the bar's colour
+        // drawn over it).
         let t0 = Instant::now();
-        for (i, exp) in [90.0, 95.0, 98.0, 3.0, 4.0].into_iter().enumerate() {
+        let steps: Vec<f32> = [90.0, 95.0, 98.0, 98.0, 98.0, 98.0, 98.0, 3.0, 4.0].into();
+        let last = steps.len() - 1;
+        for (i, exp) in steps.into_iter().enumerate() {
             let seen = sight.observe(
                 &status_bar_exp(60.0, 100.0, exp),
-                t0 + Duration::from_secs(i as u64),
+                t0 + Duration::from_millis(100 * i as u64),
             );
-            assert_eq!(seen.leveled, i == 4, "{i}: {seen:?}");
+            assert_eq!(seen.leveled, i == last, "{i}: {seen:?}");
         }
         assert_eq!(sight.facts.level, Some(62));
+        // A moment of "full" in a bar that then empties is not one.
+        let mut quiet = Sight::load(&temp_dir("level-quiet"));
+        quiet.calibrated(&frame, &c).unwrap();
+        let t1 = Instant::now();
+        for (i, exp) in [20.0, 20.0, 85.0, 20.0, 19.0].into_iter().enumerate() {
+            let seen = quiet.observe(
+                &status_bar_exp(60.0, 100.0, exp),
+                t1 + Duration::from_millis(100 * i as u64),
+            );
+            assert!(!seen.leveled, "{i}: {seen:?}");
+        }
+        assert_eq!(quiet.facts.level, Some(61));
+        let _ = std::fs::remove_dir_all(temp_dir("level-quiet"));
         assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
         // The player corrects it; a later reading wins again.
         assert_eq!(
@@ -1187,6 +1280,33 @@ mod tests {
             assert_eq!(seen.hp, Some(100.0));
         }
         assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn labels_that_teach_nothing_are_asked_for_less_and_less_often() {
+        let dir = temp_dir("unhelpful");
+        let mut sight = Sight::load(&dir);
+        let frame = status_bar(60.0, 100.0);
+        sight.calibrated(&frame, &calibration()).unwrap();
+        // The lines want examples (no OCR engine here), and the model's
+        // spelling fits nothing on the made-up bar.
+        assert!(sight.still_unlabelled());
+        let useless = HudValues {
+            hp: Some((3000, 5000)),
+            hp_text: Some("HP [3000/5000]".into()),
+            ..Default::default()
+        };
+        let first = sight.verified(&frame, &useless);
+        assert!(first.contains("next asked about in 120 s"), "{first}");
+        assert_eq!(sight.label_backoff, Duration::from_secs(120));
+        // Held back for the lines' sake only; other reasons still ask.
+        assert_eq!(sight.wants(1280, 720), None);
+        sight.want = Some(Want::Verify);
+        assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
+        sight.want = None;
+        let second = sight.verified(&frame, &useless);
+        assert!(second.contains("next asked about in 240 s"), "{second}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
