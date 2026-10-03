@@ -9,6 +9,8 @@
 //! - **hud**: Convenience re-export of HUD detection API for backwards compatibility.
 //! - **observe**: Live terminal dashboard and graphical preview of the running pipeline.
 //! - **companion**: What MapleSyrup says and when: warnings, level-ups, voice commands, EXP/hour.
+//! - **coach**: When MapleSyrup speaks up on its own while the player plays — what it watches for, and
+//!   how often a model gets to look.
 //! - **phone**: The phone link — the page that makes a phone the companion's microphone and second screen.
 //! - **platform**: The console, DPI awareness and the voice (Windows; quiet stand-ins elsewhere).
 //! - **app**: The standalone companion's screen and session files (`maplesyrup` binary).
@@ -20,6 +22,7 @@
 pub mod ai;
 pub mod app;
 pub mod capture;
+pub mod coach;
 pub mod companion;
 pub mod config;
 pub mod game_state;
