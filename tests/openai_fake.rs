@@ -110,6 +110,25 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                                         &json!({"error": {"message": "Unsupported parameter: 'reasoning.effort' is not supported with this model."}}),
                                     )
                                 }
+                                // A fast brain going round in circles: the
+                                // same lines whatever was said.
+                                Some("grok-loop") if body["stream"] == true => {
+                                    let reply = "Temple of Time, Gate of the Future. Quest marker left four times. Follow it. \
+Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
+                                    let mut events = String::from(
+                                        "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
+                                    );
+                                    let chars: Vec<char> = reply.chars().collect();
+                                    for piece in chars.chunks(7) {
+                                        let delta: String = piece.iter().collect();
+                                        events.push_str(&format!(
+                                            "event: response.output_text.delta\ndata: {}\n\n",
+                                            json!({"type": "response.output_text.delta", "delta": delta})
+                                        ));
+                                    }
+                                    events.push_str("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n");
+                                    Response::new(200, "text/event-stream", events.into_bytes())
+                                }
                                 Some(model) if body["stream"] == true => {
                                     let last = body["input"]
                                         .as_array()
@@ -1213,6 +1232,114 @@ fn grok_answers_and_openai_steps_in_when_it_fails() {
     }
     assert!(text.unwrap().contains("(gpt-6.1-sol)"));
     assert!(noted.unwrap().starts_with("Grok didn't answer"));
+}
+
+#[test]
+fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let key = "sk-test-key-0123456789abcdef";
+    let worker = ms::ai::spawn_hybrid(
+        OpenAi::new(key, &base, "cedar", None),
+        Some(OpenAi::with_models(
+            key,
+            &base,
+            "cedar",
+            vec!["grok-loop".into()],
+        )),
+        Brain::new(),
+        None,
+    );
+    let ask = |heard: &str| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            speak: false,
+            eyes: None,
+            language: None,
+        })
+    };
+    // The first reply says each thing once; the half it said twice goes,
+    // and the fast brain is rested for it.
+    ask("where to");
+    let (mut reply, mut notes) = (None, Vec::new());
+    while reply.is_none() || notes.len() < 2 {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { text, .. }) => reply = Some(text),
+            Ok(Done::Noted { line }) => notes.push(line),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}: {reply:?} {notes:?}"),
+        }
+    }
+    assert_eq!(
+        reply.as_deref(),
+        Some("Temple of Time, Gate of the Future. Quest marker left four times. Follow it.")
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.starts_with("3 of 6 sentences said before")),
+        "{notes:?}"
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.starts_with("Grok is repeating itself")),
+        "{notes:?}"
+    );
+    // The next question goes to OpenAI while Grok rests.
+    ask("and now");
+    let text = loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { text, .. }) => break text,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert!(text.contains("(gpt-6.1-sol)"), "{text}");
+    let models: Vec<String> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|r| r["path"] == "/v1/responses")
+        .filter_map(|r| r["body"]["model"].as_str().map(String::from))
+        .collect();
+    assert_eq!(models.first().map(String::as_str), Some("grok-loop"));
+    assert!(!models.last().unwrap().contains("grok"), "{models:?}");
+    // Asked to hear it again, the same lines are said again.
+    let worker = ms::ai::spawn_hybrid(
+        OpenAi::with_models(key, &base, "cedar", vec!["grok-loop".into()]),
+        None,
+        Brain::new(),
+        None,
+    );
+    for (heard, expect_reply) in [
+        ("where to", true),
+        ("where to now", false),
+        ("say it again", true),
+    ] {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            speak: false,
+            eyes: None,
+            language: None,
+        });
+        let got = loop {
+            match worker.done.recv_timeout(Duration::from_secs(30)) {
+                Ok(Done::Reply { .. }) => break true,
+                Ok(Done::Silent { .. }) => break false,
+                Ok(Done::Failed { error, .. }) => panic!("{error}"),
+                Ok(_) => {}
+                Err(e) => panic!("{e}"),
+            }
+        };
+        assert_eq!(got, expect_reply, "{heard}: a reply came back = {got}");
+    }
 }
 
 #[test]

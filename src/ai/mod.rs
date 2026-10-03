@@ -336,6 +336,9 @@ impl Worker {
 
 /// After this many failures in a row, the fast brain is given up on.
 const FAST_GIVE_UP: u32 = 3;
+/// How long the fast brain rests after a reply that was mostly things it
+/// had said before.
+const FAST_REST: Duration = Duration::from_secs(10 * 60);
 
 /// Start the worker thread (no tools).
 pub fn spawn(openai: OpenAi, brain: Brain) -> Worker {
@@ -396,8 +399,10 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
             // MapleSyrup's own lines come back often ("Level up!"): each is
             // translated once.
             let mut translations = std::collections::HashMap::new();
-            // The fast brain failing again and again is given up on.
+            // The fast brain failing again and again is given up on; one
+            // going round in circles rests a while.
             let mut fast_failures = 0u32;
+            let mut fast_paused_until: Option<Instant> = None;
             // ElevenLabs failing is said once.
             let eleven_failed = AtomicBool::new(false);
             while let Ok(first) = rx.recv() {
@@ -472,6 +477,10 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                 brain.heard(&heard);
                             }
                             brain.said(&text);
+                            // Said now: the model saying it again would be twice.
+                            for sentence in brain::sentences_of(&text) {
+                                brain.recent.fresh(&sentence);
+                            }
                             let _ = tx.send(Done::Shown {
                                 kind: crate::companion::Kind::Reply,
                                 text: text.clone(),
@@ -496,9 +505,10 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             language,
                             speak,
                         } => {
+                            let fast_rested = fast_paused_until.is_none_or(|t| Instant::now() >= t);
                             let chat = fast
                                 .as_ref()
-                                .filter(|_| fast_failures < FAST_GIVE_UP)
+                                .filter(|_| fast_failures < FAST_GIVE_UP && fast_rested)
                                 .unwrap_or(&openai);
                             coach(
                                 chat,
@@ -534,9 +544,15 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     "\n(The player's language setting is {name}: answer in the language they speak to you; when it isn't clear, in {name}.)"
                                 ));
                             }
-                            let (used, fell_back) = converse(
+                            let fast_rested = fast_paused_until.is_none_or(|t| Instant::now() >= t);
+                            let Replied {
+                                used,
+                                fast_failed: fell_back,
+                                looped,
+                            } = converse(
                                 mouth,
-                                fast.as_ref().filter(|_| fast_failures < FAST_GIVE_UP),
+                                fast.as_ref()
+                                    .filter(|_| fast_failures < FAST_GIVE_UP && fast_rested),
                                 toolbox.as_ref(),
                                 &mut brain,
                                 Talk {
@@ -553,6 +569,18 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             );
                             if let Ok(mut slot) = model_slot.lock() {
                                 *slot = used.model();
+                            }
+                            // A fast brain going round in circles (the same
+                            // lines for every question) rests a while;
+                            // OpenAI answers meanwhile.
+                            if looped && !std::ptr::eq(used, &openai) {
+                                fast_paused_until = Some(Instant::now() + FAST_REST);
+                                let _ = tx.send(Done::Noted {
+                                    line: format!(
+                                        "Grok is repeating itself: OpenAI answers for the next {} minutes",
+                                        FAST_REST.as_secs() / 60
+                                    ),
+                                });
                             }
                             match fell_back {
                                 Some(why) => {
@@ -948,7 +976,18 @@ engine:\n{snapshot}\n\n{reason}"
         }
         Ok(answer) if brain::is_silent(&answer.text) => {}
         Ok(answer) => {
-            let line = brain::for_speech(&answer.text);
+            // Nothing it said lately is said again: a coach that keeps
+            // calling the same thing out is cut to what is new.
+            let filtered = brain.recent.filter(&brain::for_speech(&answer.text));
+            if filtered.dropped > 0 {
+                let _ = tx.send(Done::Noted {
+                    line: format!(
+                        "{label}: {} of {} sentences said before, left out",
+                        filtered.dropped, filtered.total
+                    ),
+                });
+            }
+            let line = filtered.text;
             if !line.is_empty() && !stop.stopped() {
                 brain.heard(&format!("[Your game watcher, not the player: {label}.]"));
                 brain.said(&line);
@@ -1003,6 +1042,15 @@ struct Talk<'a> {
 /// Returns the brain that answered, and why the fast one didn't, if it
 /// failed.
 #[allow(clippy::too_many_arguments)]
+/// How a reply went: which brain answered, why the fast one didn't (when
+/// it didn't), and whether the reply was mostly things said before (the
+/// brain going round in circles).
+struct Replied<'a> {
+    used: &'a OpenAi,
+    fast_failed: Option<String>,
+    looped: bool,
+}
+
 fn converse<'a>(
     mouth: Mouth<'a>,
     fast: Option<&'a OpenAi>,
@@ -1011,7 +1059,7 @@ fn converse<'a>(
     talk: Talk,
     tx: &Sender<Done>,
     busy: &AtomicBool,
-) -> (&'a OpenAi, Option<String>) {
+) -> Replied<'a> {
     let Talk {
         id,
         stop,
@@ -1057,6 +1105,12 @@ fn converse<'a>(
     // The brain for this reply.
     let mut chat = fast.unwrap_or(openai);
     let mut fast_failed = None;
+    // Nothing said lately is said again (unless they asked to hear it
+    // again): the sentences kept, and how many went.
+    let again = brain::asks_again(&heard);
+    let mut kept: Vec<String> = Vec::new();
+    let (mut total, mut dropped) = (0usize, 0usize);
+    let mut looped = false;
     std::thread::scope(|scope| {
         let (lines, to_say) = channel::<String>();
         let voice = speak.then(|| {
@@ -1122,7 +1176,13 @@ fn converse<'a>(
                         said.push_str(t);
                         if speak {
                             for sentence in sentences.push(t) {
-                                let _ = lines.send(brain::for_speech(&sentence));
+                                total += 1;
+                                if again || brain.recent.fresh(&sentence) {
+                                    kept.push(sentence.clone());
+                                    let _ = lines.send(brain::for_speech(&sentence));
+                                } else {
+                                    dropped += 1;
+                                }
                             }
                         }
                     }
@@ -1155,7 +1215,13 @@ fn converse<'a>(
                 said.push(' ');
                 if speak {
                     for sentence in sentences.push(" ") {
-                        let _ = lines.send(brain::for_speech(&sentence));
+                        total += 1;
+                        if again || brain.recent.fresh(&sentence) {
+                            kept.push(sentence.clone());
+                            let _ = lines.send(brain::for_speech(&sentence));
+                        } else {
+                            dropped += 1;
+                        }
                     }
                 }
             }
@@ -1261,24 +1327,59 @@ words (\"probably\" if you're not sure)."
                 let _ = tx.send(Done::Silent { id, heard });
             }
             None => {
-                if speak && let Some(rest) = sentences.finish() {
-                    let _ = lines.send(brain::for_speech(&rest));
+                let text = if speak {
+                    if let Some(rest) = sentences.finish() {
+                        total += 1;
+                        if again || brain.recent.fresh(&rest) {
+                            kept.push(rest.clone());
+                            let _ = lines.send(brain::for_speech(&rest));
+                        } else {
+                            dropped += 1;
+                        }
+                    }
+                    brain::for_speech(&brain::without_announcement(&kept.join(" ")))
+                } else {
+                    let whole = brain::for_speech(&brain::without_announcement(&said));
+                    if again {
+                        whole
+                    } else {
+                        let filtered = brain.recent.filter(&whole);
+                        total = filtered.total;
+                        dropped = filtered.dropped;
+                        filtered.text
+                    }
+                };
+                looped = total >= 2 && dropped * 2 >= total;
+                if dropped > 0 {
+                    let _ = tx.send(Done::Noted {
+                        line: format!("{dropped} of {total} sentences said before, left out"),
+                    });
                 }
-                let text = brain::for_speech(&brain::without_announcement(&said));
                 brain.heard(&heard);
-                brain.said(&text);
-                let _ = tx.send(Done::Reply {
-                    id,
-                    heard,
-                    text,
-                    took: started.elapsed(),
-                });
+                if text.is_empty() {
+                    // Nothing new in it: better quiet than the same again.
+                    // The conversation keeps none of it, so the model has
+                    // no loop of its own to follow.
+                    let _ = tx.send(Done::Silent { id, heard });
+                } else {
+                    brain.said(&text);
+                    let _ = tx.send(Done::Reply {
+                        id,
+                        heard,
+                        text,
+                        took: started.elapsed(),
+                    });
+                }
             }
         }
         // The words are out; the voice may still be on its last lines.
         busy.store(false, Ordering::Relaxed);
     });
-    (chat, fast_failed)
+    Replied {
+        used: chat,
+        fast_failed,
+        looped,
+    }
 }
 
 /// The usual hello, when the model has nothing of its own to say.

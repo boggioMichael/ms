@@ -3,6 +3,7 @@
 //! talk about the game the way a friend watching it would.
 
 use std::collections::VecDeque;
+use std::time::{Duration, Instant};
 
 use super::memory::Learning;
 use super::openai::Turn;
@@ -11,6 +12,176 @@ use crate::companion::{GameView, Gauge, Observation, Progress};
 
 /// Turns of conversation kept (a turn is one sentence each way).
 const KEEP_TURNS: usize = 16;
+
+/// How much of one reply the conversation keeps: the model reads its own
+/// last replies as the example to follow, and a long one (forty sentences
+/// of ASMR, a ramble that hit the cap) would teach it to ramble.
+const REMEMBER_REPLY_CHARS: usize = 240;
+
+/// How long a sentence said counts as said lately, and how many are kept.
+const RECENT_FOR: Duration = Duration::from_secs(10 * 60);
+const RECENT_MAX: usize = 80;
+
+/// Two sentences of at least this many words that share this share of
+/// their words are the same sentence said twice.
+const ALIKE_WORDS: usize = 4;
+const ALIKE_SHARE: f32 = 0.8;
+
+/// What MapleSyrup said lately, so that nothing is said twice: a model
+/// that loops — the same line for every question, the map's name at the
+/// start of every reply, a quest marker called out again and again — is cut
+/// to what is new, by the program, whatever its instructions say. A sentence
+/// said in the last [`RECENT_FOR`] is not said again; neither is one said
+/// twice in the same reply.
+#[derive(Default)]
+pub struct Recent {
+    said: VecDeque<(Instant, String)>,
+}
+
+/// A reply with what was said lately left out, and the count.
+#[derive(Debug, Default, PartialEq)]
+pub struct Filtered {
+    pub text: String,
+    /// Sentences left out as said before.
+    pub dropped: usize,
+    /// Sentences the reply had.
+    pub total: usize,
+}
+
+impl Filtered {
+    /// Whether the reply was mostly repetition: a model going round in
+    /// circles.
+    pub fn looped(&self) -> bool {
+        self.total >= 2 && self.dropped * 2 >= self.total
+    }
+}
+
+impl Recent {
+    /// Whether `sentence` is new — not said lately, nor just now — and,
+    /// when it is, that it is being said.
+    pub fn fresh(&mut self, sentence: &str) -> bool {
+        let now = Instant::now();
+        while self.said.front().is_some_and(|(at, _)| {
+            now.duration_since(*at) > RECENT_FOR || self.said.len() > RECENT_MAX
+        }) {
+            self.said.pop_front();
+        }
+        let plain = normalised(sentence);
+        if plain.is_empty() {
+            return true;
+        }
+        if self.said.iter().any(|(_, said)| alike(said, &plain)) {
+            return false;
+        }
+        self.said.push_back((now, plain));
+        true
+    }
+
+    /// `reply` with the sentences said lately (and the ones it says twice)
+    /// left out.
+    pub fn filter(&mut self, reply: &str) -> Filtered {
+        let mut filtered = Filtered::default();
+        let mut kept: Vec<String> = Vec::new();
+        for sentence in sentences_of(reply) {
+            filtered.total += 1;
+            if self.fresh(&sentence) {
+                kept.push(sentence);
+            } else {
+                filtered.dropped += 1;
+            }
+        }
+        filtered.text = kept.join(" ");
+        filtered
+    }
+
+    /// Nothing counts as said (the player asked to hear it again).
+    pub fn clear(&mut self) {
+        self.said.clear();
+    }
+}
+
+/// Whether the player asked to hear something again, so that saying it
+/// again is the point.
+pub fn asks_again(heard: &str) -> bool {
+    let lower = heard.to_lowercase();
+    [
+        "again",
+        "repeat",
+        "once more",
+        "one more time",
+        "what did you say",
+        "didn't hear",
+        "didn't catch",
+        "שוב",
+        "עוד פעם",
+        "תחזור",
+        "חזור",
+        "לא שמעתי",
+        "מה אמרת",
+    ]
+    .iter()
+    .any(|w| lower.contains(w))
+}
+
+/// A sentence, for comparing: lower case, no stage directions in brackets,
+/// letters and digits only, one space between words.
+fn normalised(sentence: &str) -> String {
+    let mut out = String::new();
+    let mut depth = 0;
+    let mut space = true;
+    for c in sentence.chars() {
+        match c {
+            '[' | '(' => depth += 1,
+            ']' | ')' => depth = (depth - 1).max(0),
+            _ if depth > 0 => {}
+            _ if c.is_alphanumeric() => {
+                for l in c.to_lowercase() {
+                    out.push(l);
+                }
+                space = false;
+            }
+            _ if !space => {
+                out.push(' ');
+                space = true;
+            }
+            _ => {}
+        }
+    }
+    out.trim().to_string()
+}
+
+/// Whether two normalised sentences are the same sentence.
+fn alike(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let (wa, wb): (Vec<&str>, Vec<&str>) = (a.split(' ').collect(), b.split(' ').collect());
+    if wa.len() < ALIKE_WORDS || wb.len() < ALIKE_WORDS {
+        return false;
+    }
+    let shared = wa.iter().filter(|w| wb.contains(w)).count();
+    let union = wa.len() + wb.len() - shared;
+    union > 0 && shared as f32 / union as f32 >= ALIKE_SHARE
+}
+
+/// `text` cut into sentences (the last may lack its full stop).
+pub fn sentences_of(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text.trim().to_string();
+    while let Some(end) = sentence_end(&rest, 1) {
+        let sentence: String = rest.drain(..end).collect();
+        let sentence = sentence.trim();
+        if !sentence.is_empty() {
+            out.push(sentence.to_string());
+        }
+        rest = rest.trim_start().to_string();
+    }
+    let rest = rest.trim();
+    if !rest.is_empty() {
+        out.push(rest.to_string());
+    }
+    out
+}
 
 /// How the voice should sound, for the attitude the player picked.
 pub fn voice_style(attitude: Attitude) -> &'static str {
@@ -52,6 +223,8 @@ that you didn't catch it; don't guess what they meant.
 
 pub struct Brain {
     turns: VecDeque<Turn>,
+    /// What it said lately, so nothing is said twice.
+    pub recent: Recent,
     /// What the player wants it to know about them (`about-me.txt`), when
     /// there is no `learning` to read it from.
     pub about_player: String,
@@ -73,6 +246,7 @@ impl Brain {
     pub fn new() -> Self {
         Self {
             turns: VecDeque::new(),
+            recent: Recent::default(),
             about_player: String::new(),
             learning: None,
             attitude: Attitude::default(),
@@ -83,8 +257,30 @@ impl Brain {
         self.push("user", text);
     }
 
+    /// One of its replies, into the conversation — cut to
+    /// [`REMEMBER_REPLY_CHARS`]: a ramble kept whole would be the model's
+    /// example for its next reply.
     pub fn said(&mut self, text: &str) {
-        self.push("assistant", text);
+        let mut text = text.trim().to_string();
+        if text.chars().count() > REMEMBER_REPLY_CHARS {
+            let mut cut = String::new();
+            for sentence in sentences_of(&text) {
+                if !cut.is_empty()
+                    && (cut.chars().count() + sentence.chars().count()) > REMEMBER_REPLY_CHARS
+                {
+                    break;
+                }
+                if !cut.is_empty() {
+                    cut.push(' ');
+                }
+                cut.push_str(&sentence);
+            }
+            if cut.is_empty() {
+                cut = text.chars().take(REMEMBER_REPLY_CHARS).collect();
+            }
+            text = format!("{}…", cut.trim_end_matches(['.', ' ', '…']));
+        }
+        self.push("assistant", &text);
     }
 
     /// The last reply was talked over: only `heard` of it was heard (cut
@@ -555,6 +751,83 @@ pub fn for_speech(reply: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nothing_said_lately_is_said_again() {
+        let mut recent = Recent::default();
+        // A reply that says the same thing twice says it once.
+        let first = recent.filter(
+            "Temple of Time, Gate of the Future. Quest marker left four times. Follow it. \
+Temple of Time, Gate of the Future. Quest marker left four times. Follow it.",
+        );
+        assert_eq!(
+            first.text,
+            "Temple of Time, Gate of the Future. Quest marker left four times. Follow it."
+        );
+        assert_eq!((first.total, first.dropped), (6, 3));
+        assert!(first.looped());
+        // Said again later, with a stage direction and other punctuation:
+        // the same sentences, left out; what is new stays.
+        let next = recent.filter(
+            "[whispering softly] Temple of Time, Gate of the Future! Quest marker left four times... \
+Pot now, you're at 20.",
+        );
+        assert_eq!(next.text, "Pot now, you're at 20.");
+        assert_eq!((next.total, next.dropped), (3, 2));
+        assert!(next.looped());
+        // Nearly the same sentence is the same sentence; a short one must
+        // match whole.
+        let close = recent.filter("Quest marker left four times, again. Go left. Go.");
+        assert_eq!(close.text, "Go left. Go.");
+        assert!(!recent.filter("Go left.").looped());
+        assert_eq!(recent.filter("Go left.").text, "");
+        // Everything said: nothing kept.
+        let all = recent.filter("Follow it. Pot now, you're at 20.");
+        assert_eq!(all.text, "");
+        assert!(all.looped());
+    }
+
+    #[test]
+    fn asking_to_hear_it_again_is_the_one_time_to_repeat() {
+        assert!(asks_again("say that again"));
+        assert!(asks_again("what did you say?"));
+        assert!(asks_again("תגיד שוב"));
+        assert!(asks_again("לא שמעתי"));
+        assert!(!asks_again("where am I"));
+        assert!(!asks_again("איפה אני"));
+    }
+
+    #[test]
+    fn a_reply_is_cut_into_sentences() {
+        assert_eq!(
+            sentences_of("Pot now. You're at 20! Go left… now? ok"),
+            vec!["Pot now.", "You're at 20!", "Go left…", "now?", "ok"]
+        );
+        assert_eq!(sentences_of("  "), Vec::<String>::new());
+        assert_eq!(
+            sentences_of("Temple keeper says: \"Please. Go.\" Fine."),
+            vec!["Temple keeper says: \"Please.", "Go.\"", "Fine."]
+        );
+    }
+
+    #[test]
+    fn the_conversation_keeps_a_ramble_short() {
+        let mut brain = Brain::new();
+        brain.heard("whisper forty sentences");
+        let ramble = "Stay here. ".repeat(60);
+        brain.said(&ramble);
+        let kept = brain.turns().last().unwrap().text.clone();
+        assert!(
+            kept.chars().count() <= REMEMBER_REPLY_CHARS + 1,
+            "{}",
+            kept.chars().count()
+        );
+        assert!(kept.ends_with('…'));
+        assert!(kept.starts_with("Stay here. Stay here."));
+        // A short reply is kept whole.
+        brain.said("Pot now.");
+        assert_eq!(brain.turns().last().unwrap().text, "Pot now.");
+    }
 
     #[test]
     fn the_snapshot_says_what_is_seen_and_what_is_estimated() {

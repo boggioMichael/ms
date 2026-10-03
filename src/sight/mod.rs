@@ -1064,7 +1064,9 @@ impl Sight {
         let things = self.things.describe();
         if !things.is_empty() {
             lines.push(format!(
-                "Things the player taught you to recognise: {}.",
+                "Things the player taught you to recognise, as your vision engine sees them now (for when they \
+ask or it matters; not to be read out, and a count of several is often the same thing or a look-alike seen more \
+than once): {}.",
                 things.join("; ")
             ));
         }
