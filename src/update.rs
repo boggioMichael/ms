@@ -954,7 +954,7 @@ impl Updater {
             .arg(max.to_string())
             // HTTPS only; a file on this PC too, for tests of the whole way
             // (whoever can write files here can replace the program anyway).
-            .args(["--proto", "=https,file"])
+            .args(["--proto", "=https,file", "--proto-redir", "=https"])
             .arg(url)
             .stdin(Stdio::null());
         #[cfg(windows)]
