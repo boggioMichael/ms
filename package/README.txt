@@ -43,8 +43,9 @@ How it talks
   (Settings -> Voice: the voices on your ElevenLabs account, or OpenAI's).
   Put the key in a file named elevenlabs-key.txt next to MapleSyrup.exe; it
   moves itself into %APPDATA%\MapleSyrup. The voice you pick says everything
-  except a live call (that one speaks in OpenAI's own voice), so picking one
-  turns the live call off; turn it back on under "Live call on the phone".
+  except a live call, which speaks in its own voice (the call stays on when
+  you pick a voice; turn it off under "Live call on the phone" if you want
+  the picked voice for replies too).
   Hebrew is spoken by ElevenLabs' Eleven v4; when your account can't use it,
   or ElevenLabs is down or out of credit, OpenAI's voice says the line.
 

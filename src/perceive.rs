@@ -108,14 +108,28 @@ mod tests {
             "the detector was skipped before the sight saw anything"
         );
         assert!(sight.sees_hud(frame.width(), frame.height()));
-        // From here the sight's bars answer and the detector rests.
+        // From here the sight's bars answer and the detector rests. The
+        // bars say nothing until a reading fits their tracks (where a fill
+        // ends is seen; where its track ends is not).
         let second = perceive(&mut pipeline, Some(&mut sight), Detectors::HUD, &look(2));
         assert_eq!(second.world.hud.hp.failure_reason.as_deref(), NOT_RUN);
-        let hp = second.obs.hp.expect("the sight's HP");
+        assert!(second.obs.hp.is_none(), "{:?}", second.obs.hp);
+        sight.verified(
+            &frame,
+            &crate::sight::teacher::HudValues {
+                hp: Some((320, 400)),
+                mp: Some((675, 1351)),
+                exp_percent: Some(30.0),
+                ..Default::default()
+            },
+        );
+        let third = perceive(&mut pipeline, Some(&mut sight), Detectors::HUD, &look(3));
+        assert_eq!(third.world.hud.hp.failure_reason.as_deref(), NOT_RUN);
+        let hp = third.obs.hp.expect("the sight's HP");
         assert!((hp.percent - 80.0).abs() < 3.0, "{hp:?}");
         assert!(!hp.read);
         // The preview wants the detector's picture whatever the sight sees.
-        let shown = perceive(&mut pipeline, Some(&mut sight), Detectors::ALL, &look(3));
+        let shown = perceive(&mut pipeline, Some(&mut sight), Detectors::ALL, &look(4));
         assert_ne!(shown.world.hud.hp.failure_reason.as_deref(), NOT_RUN);
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -87,8 +87,9 @@ with sync_playwright() as p:
     page.click("#voiceList li[data-id=v4]")
     page.wait_for_timeout(100)
     assert page.get_attribute("#voiceList li.sel", "data-id") == "v4"
-    # Picking a voice of its own turns the live call off.
-    assert not page.is_checked("#liveCall")
+    # Picking a voice of its own leaves the live call on (it speaks in its
+    # own voice; the picked one is for the PC's replies and alerts).
+    assert page.is_checked("#liveCall")
     page.click("#sheetDone")
     page.wait_for_timeout(100)
     assert page.is_hidden("#sheet")

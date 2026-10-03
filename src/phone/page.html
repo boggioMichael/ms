@@ -332,7 +332,7 @@
       level_n: "Level {n}.", told_me: "(you told me)",
       teach_hint: "Teach me by talking: “see that? that's an Orange Mushroom”, “that's the boss's HP, tell me when it's under 20%”, “I'm level 61”.",
       forget: "Forget", sure: "Sure?", says: "says",
-      woof: "Woof!", voice_pick: "Voice", voice_openai: "OpenAI (built in)", live_call: "Live call on the phone (fastest, but OpenAI's own voice and brain)",
+      woof: "Woof!", voice_pick: "Voice", voice_openai: "OpenAI (built in)", live_call: "Live call on the phone (fastest, understands any language; speaks in its own voice)",
       attitude: "How it talks to you", a_friendly: "Friendly", a_blunt: "Blunt", a_savage: "Savage", attitude_hint: "Savage swears and roasts you, personally.",
       h_memory: "What I know about you", mem_told: "you told me", mem_style: "How you like me to talk", mem_lately: "Lately", mem_lessons: "What you corrected me on",
       mem_empty: "Nothing yet. I learn as we play: what you're working on, how you like me to talk, and what you correct me on. It all stays on your PC.", mem_sessions: "learned from {n} sessions", mem_looked: "{n} answers I looked up, kept", mem_wait: "I answer {n} s after you stop talking",
@@ -369,7 +369,7 @@
       level_n: "רמה {n}.", told_me: "(אמרת לי)",
       teach_hint: "למד אותי בדיבור: „רואה את זה? זה Orange Mushroom”, „זה ה-HP של הבוס, תגיד לי כשהוא מתחת ל-20%”, „אני ברמה 61”.",
       forget: "שכח", sure: "בטוח?", says: "אומר",
-      woof: "הב!", voice_pick: "קול", voice_openai: "OpenAI (מובנה)", live_call: "שיחה חיה בטלפון (הכי מהיר, אבל בקול ובמוח של OpenAI)",
+      woof: "הב!", voice_pick: "קול", voice_openai: "OpenAI (מובנה)", live_call: "שיחה חיה בטלפון (הכי מהיר, מבין כל שפה; מדבר בקול שלו)",
       attitude: "איך הוא מדבר אליך", a_friendly: "נחמד", a_blunt: "ישיר", a_savage: "פרוע", attitude_hint: "פרוע מקלל ויורד עליך אישית.",
       h_memory: "מה שאני יודע עליך", mem_told: "אמרת לי", mem_style: "איך אתה אוהב שאני מדבר", mem_lately: "לאחרונה", mem_lessons: "במה תיקנת אותי",
       mem_empty: "עדיין כלום. אני לומד תוך כדי משחק: על מה אתה עובד, איך אתה אוהב שאדבר, ובמה אתה מתקן אותי. הכל נשאר במחשב שלך.", mem_sessions: "למדתי מ-{n} סשנים", mem_looked: "{n} תשובות שחיפשתי שמורות", mem_wait: "אני עונה {n} שניות אחרי שאתה מסיים לדבר",
@@ -1412,14 +1412,10 @@
     voiceChosen = id;
     markVoice();
     postJson("/api/speaker", { id }).catch(() => {});
-    // A voice of its own is heard without the live call (that one speaks
-    // in OpenAI's voice).
-    if (id !== "openai" && liveWanted && $("liveCallRow").style.display !== "none") {
-      liveWanted = false;
-      $("liveCall").checked = false;
-      remember("live", "0");
-      if (listening) restartListening();
-    }
+    // The voice is for MapleSyrup's own lines and the PC's replies; a live
+    // call keeps speaking in its own voice. (Picking a voice used to turn
+    // the call off, which silently dropped the player into the browser's
+    // speech recognition, in one fixed language.)
   }
   // Whether it speaks up on its own (the PC keeps it, for good).
   let coachHeldUntil = 0;

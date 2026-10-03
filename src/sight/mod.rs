@@ -139,6 +139,19 @@ const ASK_BACKOFF_MAX: Duration = Duration::from_secs(900);
 /// its emptying to count as a level-up: half a second at the companion's
 /// frame rate, which a misreading does not last.
 const FULL_FOR_FRAMES: usize = 5;
+/// The three bars' colours: a hue range to search (it wraps: 325 to 15 is
+/// pink through red), the least saturation and brightness of the fill, and
+/// the hue each model is expected to have. Narrow enough to keep lava
+/// (20–40°) out of the HP and EXP searches.
+const BAR_COLOURS: [((f32, f32), f32, f32, f32); 3] = [
+    ((325.0, 15.0), 0.35, 0.30, 350.0),
+    ((180.0, 235.0), 0.30, 0.30, 205.0),
+    ((48.0, 80.0), 0.25, 0.25, 62.0),
+];
+/// A learned bar whose hue is farther than this from the colour expected
+/// of it was learned from the scenery, and is dropped when the layout is
+/// loaded (a layout from before the bars were checked this way).
+const BAR_HUE_OFF: f32 = 30.0;
 
 pub struct Sight {
     dir: PathBuf,
@@ -202,9 +215,30 @@ impl Sight {
     /// `learned`).
     pub fn load(dir: &Path) -> Sight {
         let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok();
+        let layout: Option<Layout> = read("layout.json")
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .and_then(|mut layout: Layout| {
+                // Bars of the wrong colour were learned from the scenery
+                // (lava for HP): dropped, so they are looked for again.
+                let off = |bar: &Option<BarModel>, expected: f32| {
+                    bar.as_ref()
+                        .is_some_and(|b| syrup::bars::hue_distance(b.hue, expected) > BAR_HUE_OFF)
+                };
+                if off(&layout.hp, BAR_COLOURS[0].3) {
+                    layout.hp = None;
+                }
+                if off(&layout.mp, BAR_COLOURS[1].3) {
+                    layout.mp = None;
+                }
+                if off(&layout.exp, BAR_COLOURS[2].3) {
+                    layout.exp = None;
+                }
+                (layout.hp.is_some() || layout.mp.is_some() || layout.exp.is_some())
+                    .then_some(layout)
+            });
         Sight {
             dir: dir.to_path_buf(),
-            layout: read("layout.json").and_then(|t| serde_json::from_str(&t).ok()),
+            layout,
             facts: read("facts.json")
                 .and_then(|t| serde_json::from_str(&t).ok())
                 .unwrap_or_default(),
@@ -336,8 +370,8 @@ impl Sight {
     /// own fill. The level, name and job stay unknown until the model, if
     /// there is one, reads them. Returns what was found, for the log.
     pub fn find_hud(&mut self, frame: &RgbaImage) -> Result<String, String> {
-        use syrup::color::is_color_pixel;
-        use syrup::geometry::{Rect, find_color_bar, measure_bar_fill};
+        use syrup::bars::find_bar;
+        use syrup::geometry::Rect;
         let (fw, fh) = frame.dimensions();
         if fw < 64 || fh < 64 {
             return Err("the frame is too small to hold a HUD".into());
@@ -348,32 +382,22 @@ impl Sight {
             w: fw.saturating_mul(3) / 4,
             h: fh - fh.saturating_mul(9) / 10,
         };
-        // The three bars' colours as hue ranges (for the search) and the
-        // hue each model is expected to have.
-        let colours = [
-            ((340.0, 30.0), 0.35, 0.30, 0.0),
-            ((190.0, 250.0), 0.30, 0.30, 215.0),
-            ((40.0, 80.0), 0.25, 0.25, 55.0),
-        ];
         let mut models: [Option<BarModel>; 3] = [None, None, None];
-        for (i, (hue, sat, val, expected)) in colours.into_iter().enumerate() {
-            let Some(fill) = find_color_bar(frame, band, hue, sat, val) else {
+        for (i, (hue, sat, val, expected)) in BAR_COLOURS.into_iter().enumerate() {
+            // A band of rows of the colour, not its biggest blob: on a
+            // lava map the biggest blob is the lava.
+            let Some(fill) = find_bar(frame, band, hue, sat, val) else {
                 continue;
             };
-            let percent = measure_bar_fill(frame, fill, band, |p| is_color_pixel(p, hue, sat, val));
-            // The track runs as far past the fill as the fill's share says.
-            let track_end = match percent {
-                Some(p) if p > 1.0 => fill.x + (fill.w as f32 * 100.0 / p).round() as u32,
-                _ => fill.x + fill.w,
-            }
-            .min(fw);
-            let approx = NBox::from_pixels(fill.x, fill.y, track_end - fill.x, fill.h, fw, fh);
-            let Some(mut model) = BarModel::learn(frame, &approx, Some(expected)) else {
+            // Where the fill is; where the track ends is not known from
+            // the pixels (what lies past the fill may be the scene behind
+            // a translucent panel) — the first reading of the number
+            // beside it, or the teacher's, says. Until then the bar is
+            // not reported (`observe`).
+            let approx = NBox::from_pixels(fill.x, fill.y, fill.w, fill.h, fw, fh);
+            let Some(model) = BarModel::learn(frame, &approx, Some(expected)) else {
                 continue;
             };
-            if let Some(p) = percent {
-                model.reading(frame, p);
-            }
             models[i] = Some(model);
         }
         let found = models.iter().filter(|m| m.is_some()).count();
@@ -450,9 +474,19 @@ impl Sight {
             .as_ref()
             .filter(|l| l.fits(frame.width(), frame.height()))
         {
-            seen.hp = layout.hp.as_ref().and_then(|b| b.measure(frame));
-            seen.mp = layout.mp.as_ref().and_then(|b| b.measure(frame));
-            seen.exp = layout.exp.as_ref().and_then(|b| b.measure(frame));
+            // A bar found from the pixels knows where its fill ends, not
+            // where its track does, until a reading says: it measures
+            // "full" whatever the fill, and is not reported until then
+            // (a 100% that falls to 19% at the first reading would be a
+            // level-up to the companion).
+            let raw = [&layout.hp, &layout.mp, &layout.exp]
+                .map(|b| b.as_ref().and_then(|b| b.measure(frame)));
+            let fitted = |b: &Option<BarModel>, m: Option<f32>| {
+                m.filter(|_| b.as_ref().is_some_and(|b| !b.readings.is_empty()))
+            };
+            seen.hp = fitted(&layout.hp, raw[0]);
+            seen.mp = fitted(&layout.mp, raw[1]);
+            seen.exp = fitted(&layout.exp, raw[2]);
             // A bar that jumped since the last frame: a picture for a look.
             let now_bars = [seen.hp, seen.mp, seen.exp];
             let jumped = now_bars
@@ -468,11 +502,9 @@ impl Sight {
                 layout.mp.as_ref().map(|b| b.band),
                 layout.exp.as_ref().map(|b| b.band),
             ];
+            // (A bar seen but not yet fitted counts as seen.)
             let expected = bands.iter().filter(|b| b.is_some()).count();
-            let measured = [seen.hp, seen.mp, seen.exp]
-                .iter()
-                .filter(|v| v.is_some())
-                .count();
+            let measured = raw.iter().filter(|v| v.is_some()).count();
             if expected > 0 && measured == 0 {
                 let since = *self.lost_since.get_or_insert(now);
                 if now.duration_since(since) >= LOST_FOR && self.want.is_none() {
@@ -507,11 +539,23 @@ impl Sight {
             // it, the way a reading by the teacher refits it. Only a new
             // bar (under three readings): a well-fitted one that suddenly
             // disagrees is more likely misread than wrong, and is not bent.
-            if streak > 0
-                && let Some(p) = percent
+            // A bar not fitted at all takes the number at once.
+            let unfitted = bar.is_none()
                 && self
-                    .refit_at
-                    .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1))
+                    .layout
+                    .as_ref()
+                    .and_then(|l| match field {
+                        Field::Hp => l.hp.as_ref(),
+                        Field::Mp => l.mp.as_ref(),
+                        Field::Exp => l.exp.as_ref(),
+                    })
+                    .is_some_and(|b| b.readings.is_empty());
+            if (streak > 0 || unfitted)
+                && let Some(p) = percent
+                && (unfitted
+                    || self
+                        .refit_at
+                        .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1)))
             {
                 refit.push((field, p));
             }
@@ -831,6 +875,12 @@ impl Sight {
                 let (Some(bar), Some(percent)) = (bar, percent) else {
                     continue;
                 };
+                // A bar found from the pixels, not yet fitted: this reading
+                // fits it; there is nothing to disagree with yet.
+                if bar.readings.is_empty() {
+                    bar.reading(frame, percent);
+                    continue;
+                }
                 let measured = bar.measure(frame);
                 let agrees = match measured {
                     Some(m) if (m - percent).abs() > 12.0 => {
@@ -1166,14 +1216,29 @@ mod tests {
         let mut sight = Sight::load(&dir);
         let (frame, _) = numbers::tests::hud((240, 400), (1351, 1351), 86.25);
         let seen = sight.observe(&frame, Instant::now());
-        assert!(sight.layout.is_some(), "the bars were found");
+        let layout = sight.layout.as_ref().expect("the bars were found");
+        assert!(layout.hp.is_some() && layout.mp.is_some() && layout.exp.is_some());
+        // Where each fill is, is known; where its track ends is not until
+        // a reading says, and a bar is not reported before then.
+        assert_eq!((seen.hp, seen.mp, seen.exp), (None, None, None), "{seen:?}");
+        assert_eq!(
+            sight.wants(1280, 720),
+            None,
+            "nothing for the model to do yet"
+        );
+        // The teacher reads the numbers: the tracks are fitted to them,
+        // and from then on the bars measure right on any frame.
+        let values = HudValues {
+            hp: Some((240, 400)),
+            mp: Some((1351, 1351)),
+            exp_percent: Some(86.25),
+            ..Default::default()
+        };
+        sight.verified(&frame, &values);
+        let seen = sight.observe(&frame, Instant::now());
         assert!((seen.hp.unwrap() - 60.0).abs() < 3.0, "{seen:?}");
         assert!((seen.mp.unwrap() - 100.0).abs() < 3.0, "{seen:?}");
         assert!((seen.exp.unwrap() - 86.25).abs() < 3.0, "{seen:?}");
-        assert_eq!(sight.wants(1280, 720), None, "nothing for the model to do");
-        // The next frames measure the bars where they were found. A bar
-        // found full has its track end where its fill ended; the first
-        // frame it is seen less than full the measurement is right.
         let (other, _) = numbers::tests::hud((100, 400), (675, 1351), 10.0);
         let seen = sight.observe(&other, Instant::now());
         assert!((seen.hp.unwrap() - 25.0).abs() < 3.0, "{seen:?}");
@@ -1185,6 +1250,73 @@ mod tests {
         sight.apply(&mut obs, &Seen::default());
         assert_eq!(obs.level, Some(7));
         assert!(obs.hp.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_hud_is_found_on_a_lava_map_and_a_lava_bar_is_dropped_at_load() {
+        use image::Rgba;
+        let dir = temp_dir("lava");
+        let mut sight = Sight::load(&dir);
+        // The status strip on a lava map: orange everywhere the bars are
+        // not (the HUD is translucent), a red border line under a panel,
+        // and the bars themselves as before.
+        let (mut frame, bands) = numbers::tests::hud((240, 400), (1351, 1351), 19.0);
+        for y in 648..720u32 {
+            for x in 0..1280u32 {
+                let inside = bands.iter().any(|b| {
+                    let (bx, by, bw, bh) = b.pixels(1280, 720);
+                    x >= bx && x < bx + bw && y >= by.saturating_sub(12) && y < by + bh
+                });
+                if !inside {
+                    frame.put_pixel(x, y, Rgba([179, 106, 0, 255]));
+                }
+            }
+        }
+        for y in [660u32, 661] {
+            for x in 100..600 {
+                frame.put_pixel(x, y, Rgba([255, 0, 0, 255]));
+            }
+        }
+        sight.observe(&frame, Instant::now());
+        let layout = sight.layout.as_ref().expect("the bars were found");
+        for (bar, expected) in [
+            (&layout.hp, 350.0),
+            (&layout.mp, 205.0),
+            (&layout.exp, 62.0),
+        ] {
+            let bar = bar.as_ref().expect("each bar");
+            assert!(
+                syrup::bars::hue_distance(bar.hue, expected) < 25.0,
+                "hue {} for {expected}",
+                bar.hue
+            );
+        }
+        // Fitted by the teacher's reading, the bars measure right, the
+        // lava showing through the EXP bar's track notwithstanding.
+        let values = HudValues {
+            hp: Some((240, 400)),
+            mp: Some((1351, 1351)),
+            exp_percent: Some(19.0),
+            ..Default::default()
+        };
+        sight.verified(&frame, &values);
+        let seen = sight.observe(&frame, Instant::now());
+        assert!((seen.hp.unwrap() - 60.0).abs() < 3.0, "{seen:?}");
+        assert!((seen.mp.unwrap() - 100.0).abs() < 3.0, "{seen:?}");
+        assert!((seen.exp.unwrap() - 19.0).abs() < 3.0, "{seen:?}");
+        // A layout from before, whose HP bar was learned from the lava:
+        // that bar is dropped at load, the others kept.
+        let mut lava = sight.layout.clone().unwrap();
+        lava.hp.as_mut().unwrap().hue = 22.0;
+        std::fs::write(
+            dir.join("layout.json"),
+            serde_json::to_string(&lava).unwrap(),
+        )
+        .unwrap();
+        let again = Sight::load(&dir);
+        let layout = again.layout.as_ref().expect("the other bars stay");
+        assert!(layout.hp.is_none() && layout.mp.is_some() && layout.exp.is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

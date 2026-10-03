@@ -20,7 +20,7 @@ rayon = "1"
 # The generic engine MapleSyrup is the MapleStory edition of. Pinned to the
 # newest syrup (PR #2, "compiled operations"): its window capture keeps the
 # window between frames and says why a capture failed.
-syrup = { git = "https://github.com/boggioMichael/syrup", rev = "fabb950349cd609de6773c1cde170953c0d49667", features = ["serde"] }
+syrup = { git = "https://github.com/boggioMichael/syrup", rev = "c7218d99f8fb316a831065fe58b14199e3711821", features = ["serde"] }
 
 # The phone link: HTTPS on the local network (a phone browser only opens the
 # microphone for a secure page), with a self-signed certificate made on the

@@ -112,7 +112,8 @@ impl Toolbox {
                 "learn_thing",
                 "Learn to recognise something on the game screen that the player shows you or names (a monster, \
 NPC, item, portal, icon, the boss's HP bar, a counter...), so you can notice it yourself from now on, and \
-optionally speak up when it appears, disappears, or a bar or number crosses a threshold.",
+optionally speak up when it appears, disappears, or a bar or number crosses a threshold. Not the player's own \
+character (always on screen), and never with an alert about something else (level-ups are watched already).",
                 json!({
                     "name": {"type": "string", "description": "What the player calls it."},
                     "kind": {"type": "string", "enum": ["object", "indicator", "gauge", "number", "text"],
