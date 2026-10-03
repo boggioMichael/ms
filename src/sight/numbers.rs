@@ -185,6 +185,89 @@ fn normalised(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
+/// The ways `label` (already normalised) might be printed on the line: as
+/// given first, then without the field's own name in front, without the
+/// brackets, with the thousands grouped by commas and without — every
+/// combination, each once. The value in it is never changed.
+fn spellings(field: Field, label: &str) -> Vec<String> {
+    let prefix = field.label();
+    let without_prefix = |s: &str| -> Option<String> {
+        let upper = s.to_ascii_uppercase();
+        upper
+            .strip_prefix(prefix)
+            .map(|rest| s[s.len() - rest.len()..].to_string())
+    };
+    // Brackets go only where dropping them does not run two numbers
+    // together: "8,954,288[18.99%]" without its brackets is not a line
+    // anyone prints.
+    let without_brackets = |s: &str| -> Option<String> {
+        let chars: Vec<char> = s.chars().collect();
+        let joins = (1..chars.len().saturating_sub(1)).any(|i| {
+            matches!(chars[i], '[' | ']' | '(' | ')')
+                && chars[i - 1].is_ascii_digit()
+                && chars[i + 1].is_ascii_digit()
+        });
+        (!joins).then(|| {
+            chars
+                .iter()
+                .filter(|c| !matches!(c, '[' | ']' | '(' | ')'))
+                .collect()
+        })
+    };
+    let without_commas = |s: &str| -> String { s.chars().filter(|c| *c != ',').collect() };
+    let with_commas = |s: &str| -> String {
+        // Every run of four or more digits gets its thousands separators;
+        // the digits after a decimal point are left alone.
+        let mut out = String::new();
+        let chars: Vec<char> = s.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i].is_ascii_digit() && (i == 0 || chars[i - 1] != '.') {
+                let start = i;
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+                let run: String = chars[start..i].iter().collect();
+                if run.len() >= 4 {
+                    for (k, c) in run.chars().enumerate() {
+                        if k > 0 && (run.len() - k).is_multiple_of(3) {
+                            out.push(',');
+                        }
+                        out.push(c);
+                    }
+                } else {
+                    out.push_str(&run);
+                }
+            } else {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+        out
+    };
+    let mut out: Vec<String> = vec![label.to_string()];
+    let mut add = |s: String| {
+        if !s.is_empty() && !out.contains(&s) {
+            out.push(s);
+        }
+    };
+    let bases: Vec<String> = [Some(label.to_string()), without_prefix(label)]
+        .into_iter()
+        .flatten()
+        .collect();
+    for base in &bases {
+        for bracketed in [Some(base.clone()), without_brackets(base)]
+            .into_iter()
+            .flatten()
+        {
+            add(bracketed.clone());
+            add(without_commas(&bracketed));
+            add(with_commas(&without_commas(&bracketed)));
+        }
+    }
+    out
+}
+
 /// The number a line says, if it says one that makes sense for `field`.
 pub fn parse(field: Field, text: &str) -> Option<Value> {
     match field {
@@ -403,28 +486,41 @@ impl Numbers {
         let first = self.line_for(field);
         let mut lines = vec![first];
         lines.extend(Line::ALL.iter().copied().filter(|l| *l != first));
+        // A labeller reads the value right and the dressing wrong: "HP
+        // [6370/6370]" for a line that shows 6370 / 6370, or 8954288 for
+        // 8,954,288. The line decides, among the ways the value could be
+        // printed; the glyph reader keeps only what reads back.
+        let labels = spellings(field, &label);
         let mut why = String::new();
         for line in lines {
             let region = line.region(band, fw, fh);
             if region.w < 8 || region.h < 6 {
                 continue;
             }
-            match self.font.learn(frame, region, &label) {
-                Ok(count) => {
-                    let crop =
-                        image::imageops::crop_imm(frame, region.x, region.y, region.w, region.h)
-                            .to_image();
-                    self.keep(field, &label, crop, line, from);
-                    self.lines.insert(field, line);
-                    self.state.entry(field).or_default().attempts = 0;
-                    return Ok(format!(
-                        "learned {count} glyphs of \"{label}\" ({:?} the {} bar, from the {from}); the font knows {} characters",
-                        line,
-                        field.label(),
-                        self.glyphs()
-                    ));
+            for spelling in &labels {
+                match self.font.learn(frame, region, spelling) {
+                    Ok(count) => {
+                        let crop = image::imageops::crop_imm(
+                            frame, region.x, region.y, region.w, region.h,
+                        )
+                        .to_image();
+                        self.keep(field, spelling, crop, line, from);
+                        self.lines.insert(field, line);
+                        self.state.entry(field).or_default().attempts = 0;
+                        let as_said = if *spelling == label {
+                            String::new()
+                        } else {
+                            format!(" (the {from} said \"{label}\")")
+                        };
+                        return Ok(format!(
+                            "learned {count} glyphs of \"{spelling}\"{as_said} ({:?} the {} bar, from the {from}); the font knows {} characters",
+                            line,
+                            field.label(),
+                            self.glyphs()
+                        ));
+                    }
+                    Err(e) => why = e.to_string(),
                 }
-                Err(e) => why = e.to_string(),
             }
         }
         Err(format!("\"{label}\" could not be learned: {why}"))
@@ -714,6 +810,34 @@ pub(crate) mod tests {
         assert_eq!(numbers.cross_check(Field::Hp, Some(100.0), Some(97.0)), 0);
         assert_eq!(numbers.cross_check(Field::Hp, None, Some(97.0)), 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_label_is_tried_in_every_spelling_the_line_might_use() {
+        let hp = spellings(Field::Hp, "HP[6370/6370]");
+        assert_eq!(hp[0], "HP[6370/6370]", "as said, first");
+        for want in ["[6370/6370]", "6370/6370", "6,370/6,370", "HP6,370/6,370"] {
+            assert!(hp.iter().any(|s| s == want), "{want} in {hp:?}");
+        }
+        let exp = spellings(Field::Exp, "EXP8954288[18.99%]");
+        for want in [
+            "8,954,288[18.99%]",
+            "8954288[18.99%]",
+            "EXP8,954,288[18.99%]",
+        ] {
+            assert!(exp.iter().any(|s| s == want), "{want} in {exp:?}");
+        }
+        // Not without its brackets: that would run the two numbers together.
+        assert!(exp.iter().all(|s| s.contains('[')), "{exp:?}");
+        assert!(
+            exp.iter()
+                .all(|s| !s.contains("18,.99") && !s.contains("18.,99")),
+            "{exp:?}"
+        );
+        let mut sorted = hp.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), hp.len(), "each once");
     }
 
     #[test]

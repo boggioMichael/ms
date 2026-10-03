@@ -131,15 +131,15 @@ fn value_properties() -> serde_json::Map<String, Value> {
     p.insert("exp_percent".into(), nullable("number"));
     p.insert(
         "hp_text".into(),
-        json!({"type": ["string", "null"], "description": "the HP line exactly as printed, character for character, label and brackets included (for example \"HP [4200/5000]\"), or null if any character is unclear"}),
+        json!({"type": ["string", "null"], "description": "the characters drawn on or by the HP bar, exactly as drawn and nothing more: no label, brackets, commas or percent sign that is not on the screen (\"6370 / 6370\" when that is all the bar shows; \"HP [4200/5000]\" only when the screen shows the letters and the brackets), or null if any character is unclear"}),
     );
     p.insert(
         "mp_text".into(),
-        json!({"type": ["string", "null"], "description": "the MP line exactly as printed, character for character, or null"}),
+        json!({"type": ["string", "null"], "description": "the characters drawn on or by the MP bar, exactly as drawn and nothing more (no label or brackets the screen does not show), or null"}),
     );
     p.insert(
         "exp_text".into(),
-        json!({"type": ["string", "null"], "description": "the EXP line exactly as printed, character for character (for example \"EXP 35900 [37.51%]\"), or null"}),
+        json!({"type": ["string", "null"], "description": "the characters drawn on or by the EXP bar, exactly as drawn and nothing more (for example \"8,954,288 [18.99%]\" when that is what the screen shows, without an EXP label the screen does not show), or null"}),
     );
     p.insert("map".into(), nullable("string"));
     p.insert("name".into(), nullable("string"));
