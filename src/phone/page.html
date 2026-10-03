@@ -1713,11 +1713,14 @@
         // PC counts these, and makes calls wait a little longer).
         if (liveCall.talking && Date.now() - liveCall.talkingAt < 1000) postJson("/api/turn", { what: "jumped in" }).catch(() => {});
         liveCall.userTalking = true;
+        // The PC hears of it too (its coach keeps quiet while they talk).
+        postJson("/api/talking", { on: true, who: "player" }).catch(() => {});
         $("heard").textContent = "…";
         liveEyes();
         break;
       case "input_audio_buffer.speech_stopped":
         liveCall.userTalking = false;
+        postJson("/api/talking", { on: false, who: "player" }).catch(() => {});
         liveCall.stoppedAt = Date.now();
         liveCall.firstSoundTold = false;
         setTimeout(flushSay, 400);

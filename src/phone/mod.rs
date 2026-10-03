@@ -138,6 +138,9 @@ pub enum Inbound {
     Live(bool),
     /// MapleSyrup's voice on the phone started (true) or stopped (false).
     Talking(bool),
+    /// The player started (true) or stopped (false) talking on a live call
+    /// (the call hears them directly; the PC learns of it from this).
+    PlayerTalking(bool),
     /// A tool run for the call changed something: a line to show, or a
     /// command (mark, mute, unmute).
     Effect(crate::ai::Effect),
@@ -739,6 +742,14 @@ impl Hub {
                 None => Response::json(400, &json!({"error": "live must be true or false"})),
             },
             ("POST", "/api/talking") => match body().get("on").and_then(Value::as_bool) {
+                Some(on) if body().get("who").and_then(Value::as_str) == Some("player") => {
+                    let mut state = self.lock();
+                    state
+                        .inbox
+                        .retain(|i| !matches!(i, Inbound::PlayerTalking(_)));
+                    state.inbox.push(Inbound::PlayerTalking(on));
+                    Response::json(200, &json!({"ok": true}))
+                }
                 Some(on) => {
                     let mut state = self.lock();
                     state.inbox.retain(|i| !matches!(i, Inbound::Talking(_)));
@@ -1103,6 +1114,7 @@ mod tests {
             ),
             ("/api/mode?k=k1", r#"{"live": true}"#),
             ("/api/talking?k=k1", r#"{"on": true}"#),
+            ("/api/talking?k=k1", r#"{"on": true, "who": "player"}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
             ("/api/attitude?k=k1", r#"{"attitude": "savage"}"#),
             ("/api/speaker?k=k1", r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#),
@@ -1141,6 +1153,7 @@ mod tests {
                 },
                 Inbound::Live(true),
                 Inbound::Talking(true),
+                Inbound::PlayerTalking(true),
                 Inbound::Turn("jumped in".into()),
                 Inbound::Attitude(crate::companion::Attitude::Savage),
                 Inbound::Speaker("pNInz6obpgDQGcFmaJgB".into()),

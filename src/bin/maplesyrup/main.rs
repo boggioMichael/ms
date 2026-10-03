@@ -1840,6 +1840,9 @@ fn run(options: Options) -> Result<(), String> {
     // When the player was last heard (talking, or talked), and the last
     // level-up the companion announced: the coach keeps out of the way.
     let mut player_heard = Instant::now() - Duration::from_secs(60);
+    // Since when the player has been talking on a call (None: they aren't;
+    // a start the phone never ends is forgotten after a while).
+    let mut player_talking_since: Option<Instant> = None;
     let mut level_up_seen = f64::NEG_INFINITY;
     // The coach's look under way, to call it off when the player talks.
     let mut coach_job: Option<u64> = None;
@@ -1905,7 +1908,8 @@ fn run(options: Options) -> Result<(), String> {
                 let talking = out.mouth.speaking()
                     || worker.busy()
                     || turns.busy()
-                    || player_heard.elapsed() < Duration::from_secs(3);
+                    || player_heard.elapsed() < Duration::from_secs(3)
+                    || player_talking_since.is_some_and(|t| t.elapsed() < Duration::from_secs(30));
                 let glance = ms::coach::Glance {
                     now,
                     obs: &tick.obs,
@@ -2144,6 +2148,18 @@ fn run(options: Options) -> Result<(), String> {
                         }
                     }
                     Inbound::Talking(on) => out.phone_talking(on),
+                    Inbound::PlayerTalking(on) => {
+                        // On a call the player's words reach the PC only once
+                        // written down; the coach keeps out of the way from
+                        // their first sound.
+                        if on {
+                            player_talking_since = Some(Instant::now());
+                        } else {
+                            player_talking_since = None;
+                            player_heard = Instant::now();
+                        }
+                        coach.someone_spoke(now);
+                    }
                     // (The learner reads it from the log.)
                     Inbound::Turn(what) => out.session.line("turn", &what),
                     Inbound::Speaker(id) => {
