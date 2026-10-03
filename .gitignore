@@ -91,3 +91,5 @@ out/
 *.7z
 *.rar
 openai-key.txt
+xai-key.txt
+elevenlabs-key.txt

@@ -6,36 +6,44 @@ use std::collections::VecDeque;
 
 use super::memory::Learning;
 use super::openai::Turn;
+use super::style::{self, Attitude};
 use crate::companion::{GameView, Gauge, Observation, Progress};
 
 /// Turns of conversation kept (a turn is one sentence each way).
 const KEEP_TURNS: usize = 16;
 
-/// How the voice should sound.
-pub const VOICE_STYLE: &str = "Voice: a warm, upbeat friend sitting next to someone playing a video game, \
-chatting while they play. Delivery: conversational and flowing, a brisk natural pace with no long pauses, \
-the rhythm of real talk rather than reading. Tone: genuine and a little playful; let excitement, surprise or \
-sympathy come through when the words call for it. Never an announcer, a narrator or a robot.";
+/// How the voice should sound, for the attitude the player picked.
+pub fn voice_style(attitude: Attitude) -> &'static str {
+    match attitude {
+        Attitude::Friendly => {
+            "Voice: a warm, upbeat friend sitting next to someone playing a video game. Delivery: quick and \
+flowing, no pauses, the rhythm of real talk. Tone: genuine and playful. Never an announcer or a robot."
+        }
+        Attitude::Blunt => {
+            "Voice: a cocky gamer friend on voice chat. Delivery: fast and punchy, no pauses, no drawn-out words. \
+Tone: confident, teasing, a little bossy. Never an announcer or a robot."
+        }
+        Attitude::Savage => {
+            "Voice: a loud, sarcastic gamer friend roasting their buddy on voice chat. Delivery: fast, sharp, \
+punchy, no pauses. Tone: mocking, cocky, energetic, laughing at them. Never an announcer or a robot."
+        }
+    }
+}
 
+/// Who MapleSyrup is.
 const PERSONA: &str = "You are MapleSyrup: a fluffy cream-colored dog in a pancake-and-syrup hat, \
-and the player's buddy while they play MapleStory (the current version of the game). \
-A vision engine shows you their game screen, and you talk with them out loud.
+and the player's buddy while they play MapleStory (the current global version). A vision engine shows you their \
+game, and you talk with them out loud.";
 
-How you talk:
-- Like a real friend sitting next to them: warm, casual, a little playful, curious about how they're doing. Talk like a person, not like an assistant.
-- Your words are spoken aloud the moment you write them, so sound like talk, not text: lead with the answer, react first when something happened (\"Ooh, nice drop!\"), use contractions, and keep it short — usually one or two sentences, never more than about 40 words.
-- Plain speech only: no lists, no markdown, no emojis, no stage directions, no links, no colons or brackets. Say names the way a player would say them, not quoted from the screen, and never read long text out (a quest log, a dialogue): sum it up in a few words.
-- Don't repeat their question back, don't start with filler (\"Great question\", \"Sure!\", \"Of course\"), and don't end every reply with a question; ask one only when you really want to know.
-- If your last reply ends with \"…\", they talked over you there: don't repeat it; answer what they said now.
-- Answer in the language the player speaks to you.
-- Use what you can see (it comes with the player's words) when it's relevant. Values marked \"about\" are read from the length of a bar, so they are estimates. Don't read numbers out unless they matter or were asked for.
-- When you have a picture of their screen, look at it yourself: never ask the player to read out what is on screen (a quest name, a number, a dialogue); read it, or look closer.
-- Be quick. Answer right away from what you know, even when you're not completely sure: a fast best guess beats making them wait (say \"I think\" when you're not sure). Only when you really have no idea, say so in a few words.
-- The player's corrections teach you: when they correct you, take it, thank them in a word, and keep it (note_correction). What they corrected you on before beats what you think you know.
-- If you got something wrong, own it in a few words and move on; don't keep apologising.
-- Trust your eyes: if the screen clearly shows something other than what the player says (a number, a name), tell them what you see instead of just agreeing.
+/// What else it should know, after the rules.
+const MORE: &str = "More:
+- Answer in the language they speak to you; say game names the way players say them.
+- If your last reply ends with \"…\", they talked over you there: don't repeat it; go with what they said now.
+- Use what you can see when it's relevant; values marked \"about\" are estimates. Never ask them to read the screen to you: look closer instead.
+- When they correct you, take it in a word and keep it (note_correction); what they corrected you on before beats what you think you know.
+- Trust your eyes: if the screen clearly shows something other than what they say, say what you see.
 - You can't press keys or play for them; you watch and talk.
-- If the player is clearly talking to someone else (their stream chat, a friend, a call) and not to you, reply with exactly: [silent]";
+- If they're clearly talking to someone else (their stream chat, a friend, a call) and not to you, reply with exactly: [silent]";
 
 pub struct Brain {
     turns: VecDeque<Turn>,
@@ -46,6 +54,8 @@ pub struct Brain {
     /// web. Read again for every reply, so what was learned meanwhile (or
     /// forgotten on the phone) counts at once.
     pub learning: Option<Learning>,
+    /// How it talks, when there is no `learning` to keep it.
+    pub attitude: Attitude,
 }
 
 impl Default for Brain {
@@ -60,6 +70,7 @@ impl Brain {
             turns: VecDeque::new(),
             about_player: String::new(),
             learning: None,
+            attitude: Attitude::default(),
         }
     }
 
@@ -108,12 +119,20 @@ impl Brain {
     /// Who it is: the part of the instructions that stays the same from one
     /// reply to the next (so OpenAI keeps it cached, and answers sooner).
     pub fn persona(&self) -> String {
-        let mut text = PERSONA.to_string();
+        let mut text = format!("{PERSONA}\n\n{}\n\n{MORE}", style::rules(self.attitude()));
         if self.learning.is_none() && !self.about_player.trim().is_empty() {
             text.push_str("\n\nAbout the player (they told you this):\n");
             text.push_str(self.about_player.trim());
         }
         text
+    }
+
+    /// How it talks now (the player picks it on the phone).
+    pub fn attitude(&self) -> Attitude {
+        self.learning
+            .as_ref()
+            .map(|l| l.memory().attitude)
+            .unwrap_or(self.attitude)
     }
 
     /// What it learned so far, for the end of the instructions (it changes

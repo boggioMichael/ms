@@ -79,6 +79,10 @@ OPTIONS
                         speakers), both, off (default phone with an OpenAI
                         key, else pc)
   --no-live             no live call on the phone: replies on the PC instead
+  --attitude HOW        how it talks to you: friendly, blunt or savage (default:
+                        what you picked on the phone, else blunt)
+  --no-grok             don't use Grok even with an xAI key (xai-key.txt)
+  --grok-model NAME     the Grok model (default grok-4.3, without reasoning)
   --wake-word           answer only sentences that say \"syrup\" (for streams)
   --no-ai               no OpenAI, even with a key
   --no-web              don't let it search the web for MapleStory facts
@@ -137,6 +141,11 @@ struct Options {
     plain: bool,
     self_test: bool,
     record_test: bool,
+    /// How it talks (None: what the player picked on the phone).
+    attitude: Option<ms::companion::Attitude>,
+    /// Grok answers the conversation when there is an xAI key.
+    grok: bool,
+    grok_model: Option<String>,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -169,6 +178,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
         plain: false,
         self_test: false,
         record_test: false,
+        attitude: None,
+        grok: true,
+        grok_model: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -219,6 +231,14 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--plain" => o.plain = true,
             "--self-test" => o.self_test = true,
             "--record-test" => o.record_test = true,
+            "--attitude" => {
+                let text = value("--attitude")?;
+                o.attitude = Some(ms::companion::Attitude::parse(&text).ok_or(format!(
+                    "--attitude is friendly, blunt or savage, not {text:?}"
+                ))?)
+            }
+            "--no-grok" => o.grok = false,
+            "--grok-model" => o.grok_model = Some(value("--grok-model")?),
             "-h" | "--help" | "/?" => return Err(String::new()),
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             path => o.input = Some(PathBuf::from(path)),
@@ -652,22 +672,23 @@ impl Mouth {
 struct LiveService {
     live: ai::live::Live,
     toolbox: Toolbox,
-    /// For the web search (the call's model can't search itself).
-    chat: Arc<OpenAi>,
-    /// What it learned: told to every call; what it looked up, kept.
+    /// What it learned: told to every call.
     learning: ai::Learning,
 }
 
 impl phone::Service for LiveService {
     fn live(&self, recent: &[String], language: Option<&str>) -> Result<serde_json::Value, String> {
-        let instructions = ai::live::instructions(&self.learning.prompt(), recent, language);
-        let tools = ai::live::tools(self.toolbox.definitions(), self.toolbox.web);
+        let attitude = self.learning.memory().attitude;
+        let instructions =
+            ai::live::instructions(&self.learning.prompt(), recent, language, attitude);
+        let tools = ai::live::tools(self.toolbox.definitions());
         // How it adapted to the player: how soon to answer, their words.
         let tuning = {
             let memory = self.learning.memory();
             ai::live::Tuning {
                 eagerness: memory.adapt.eagerness.clone(),
                 words: memory.words_hint(),
+                speed: ai::live::SPEED,
             }
         };
         self.live
@@ -681,30 +702,6 @@ impl phone::Service for LiveService {
         arguments: &str,
         frame: Option<&RgbaImage>,
     ) -> (String, Option<ai::Effect>) {
-        if name == "search_web" {
-            let query = serde_json::from_str::<serde_json::Value>(arguments)
-                .ok()
-                .and_then(|v| v["query"].as_str().map(String::from))
-                .unwrap_or_default();
-            // Asked before: the answer at once, without searching again.
-            let known = self.learning.knowledge().find(&query);
-            if let Some(known) = known {
-                let whose = match known.from {
-                    ai::knowledge::Source::Player => "the player told you this; trust it",
-                    ai::knowledge::Source::Web => "you looked this up before",
-                };
-                return (format!("{} ({whose})", known.answer), None);
-            }
-            return match ai::live::search(&self.chat, &query) {
-                Ok(answer) => {
-                    self.learning
-                        .knowledge()
-                        .add(&query, &answer, ai::knowledge::Source::Web);
-                    (answer, None)
-                }
-                Err(why) => (why, None),
-            };
-        }
         let call = ai::openai::Call {
             call_id: String::new(),
             name: name.to_string(),
@@ -1251,14 +1248,24 @@ fn run(options: Options) -> Result<(), String> {
     // corrections, what it looked up, how they like to talk (all on this PC).
     let learning = ai::Learning::load(&settings_dir);
     let (learned_tx, learned_rx) = mpsc::channel::<String>();
+    // How it talks: as asked on the command line, else as picked before.
+    if let Some(attitude) = options.attitude {
+        learning.memory().attitude = attitude;
+    }
+    // (The ElevenLabs key is put away in the settings folder now; the voices
+    // that use it come later.)
+    let _elevenlabs_key = ai::load_elevenlabs_key(&settings_dir);
 
     // The brain: OpenAI when there is a key that works. With it come the
-    // eyes: a vision model that teaches MapleSyrup the player's screen.
+    // eyes: a vision model that teaches MapleSyrup the player's screen; and,
+    // with an xAI key, Grok answering the conversation (faster, and freer).
+    // Look-ups run in the background.
     let mut ai_note = String::from("no OpenAI key: simple answers, Windows voice");
     let latest = Arc::new(Latest::default());
     let (news_tx, news_rx) = mpsc::channel::<News>();
     let mut sight: Option<Arc<Mutex<Sight>>> = None;
     let mut live_service: Option<Arc<LiveService>> = None;
+    let mut lookups: Option<(ai::lookup::Lookups, mpsc::Receiver<ai::lookup::Found>)> = None;
     let worker = match openai_key(&options, &settings_dir) {
         Some(key) => {
             println!("Connecting to OpenAI…");
@@ -1334,7 +1341,6 @@ fn run(options: Options) -> Result<(), String> {
                                 web: options.web,
                                 learning: Some(learning.clone()),
                             },
-                            chat,
                             learning: learning.clone(),
                         }));
                     }
@@ -1346,7 +1352,43 @@ fn run(options: Options) -> Result<(), String> {
                         learning: Some(learning.clone()),
                     };
                     sight = Some(learned);
-                    Some(ai::spawn_with(client, brain, Some(toolbox)))
+                    lookups = Some(ai::lookup::Lookups::new(
+                        Arc::new(OpenAi::new(
+                            &key,
+                            &options.openai_base,
+                            &options.voice_name,
+                            options.model.as_deref(),
+                        )),
+                        Some(learning.clone()),
+                    ));
+                    // Grok answers when there is an xAI key that works.
+                    let grok = ai::load_xai_key(&settings_dir)
+                        .filter(|_| options.grok)
+                        .and_then(|xai| {
+                            let model = options
+                                .grok_model
+                                .clone()
+                                .unwrap_or_else(|| ai::GROK_MODEL.to_string());
+                            let base = std::env::var("XAI_BASE_URL")
+                                .unwrap_or_else(|_| ai::XAI_BASE.to_string());
+                            let grok = OpenAi::with_models(
+                                &xai,
+                                &base,
+                                &options.voice_name,
+                                vec![model.clone()],
+                            );
+                            match grok.check() {
+                                Err(AiError::Http(401 | 403, why)) => {
+                                    ai_note.push_str(&format!("; xAI refused the key ({why})"));
+                                    None
+                                }
+                                _ => {
+                                    ai_note.push_str(&format!("; Grok ({model}) answers"));
+                                    Some(grok)
+                                }
+                            }
+                        });
+                    Some(ai::spawn_hybrid(client, grok, brain, Some(toolbox)))
                 }
             }
         }
@@ -1482,8 +1524,11 @@ fn run(options: Options) -> Result<(), String> {
         always_listen: !options.wake_word,
         ..Settings::default()
     });
+    companion.settings.attitude = learning.memory().attitude;
     // The warnings as kept (a death no warning came before moves them).
     let mut warn_at = (hp_low, mp_low);
+    // Answers said at once (varied by how many there were).
+    let mut instant_count = 0u32;
     // What the phone shows of what it learned (looked at every few seconds).
     let mut memory_status = serde_json::Value::Null;
     let mut memory_checked = Instant::now() - Duration::from_secs(60);
@@ -1667,6 +1712,29 @@ fn run(options: Options) -> Result<(), String> {
                                 || !matches!(commands::interpret(&text, false), Heard::NotForUs)
                             {
                                 let text = turns.heard(&mut out, text);
+                                // Their own numbers: answered at once, without
+                                // a model.
+                                let instant = ms::companion::instant::asks(&text).and_then(|ask| {
+                                    ms::companion::instant::answer(
+                                        ask,
+                                        &text,
+                                        companion.last(),
+                                        &companion.progress(),
+                                        companion.settings.attitude,
+                                        instant_count,
+                                    )
+                                });
+                                if let Some(line) = instant {
+                                    instant_count += 1;
+                                    out.session.line("timing", "instant answer");
+                                    if let Some(worker) = &out.mouth.ai {
+                                        worker.send(Job::Say {
+                                            heard: Some(text),
+                                            text: line,
+                                        });
+                                    }
+                                    continue;
+                                }
                                 let job = conversation_job(
                                     text.clone(),
                                     &companion,
@@ -1738,12 +1806,33 @@ fn run(options: Options) -> Result<(), String> {
                     Inbound::Talking(on) => out.phone_talking(on),
                     // (The learner reads it from the log.)
                     Inbound::Turn(what) => out.session.line("turn", &what),
+                    Inbound::Attitude(attitude) => {
+                        {
+                            let mut memory = learning.memory();
+                            memory.attitude = attitude;
+                            memory.save();
+                        }
+                        companion.settings.attitude = attitude;
+                        memory_checked = Instant::now() - Duration::from_secs(60);
+                        out.session
+                            .line("info", &format!("attitude: {}", attitude.word()));
+                        out.push(Kind::Info, format!("attitude: {}", attitude.word()));
+                    }
                     Inbound::Record(true) => recording.start(&mut out),
                     Inbound::Record(false) => recording.stop(&mut out, panel_window.as_mut()),
                     Inbound::Effect(effect) => match effect {
                         ai::Effect::Note(line) => out.show(Kind::Info, &line),
                         ai::Effect::Fact(fact) => {
                             out.show(Kind::Info, &format!("remembered: {fact}"))
+                        }
+                        ai::Effect::LookUp {
+                            question,
+                            said,
+                            asked,
+                        } => {
+                            if let Some((runner, _)) = &lookups {
+                                runner.start(&question, &said, asked, player_language.as_deref());
+                            }
                         }
                         ai::Effect::Warn { what, below } => {
                             let line = set_warning(
@@ -1913,6 +2002,16 @@ fn run(options: Options) -> Result<(), String> {
                     companion.remember_spoken(now, &text);
                     out.show(kind, &text);
                 }
+                Done::LookUp {
+                    question,
+                    said,
+                    asked,
+                    language,
+                } => {
+                    if let Some((runner, _)) = &lookups {
+                        runner.start(&question, &said, asked, language.as_deref());
+                    }
+                }
                 Done::Warn { what, below } => {
                     let line = set_warning(
                         &mut companion,
@@ -2030,6 +2129,33 @@ fn run(options: Options) -> Result<(), String> {
             }
         }
 
+        // What the look-ups found: said only when the quick answer was
+        // wrong, or the player asked for it.
+        let found: Vec<ai::lookup::Found> = lookups
+            .as_ref()
+            .map(|(_, rx)| rx.try_iter().collect())
+            .unwrap_or_default();
+        for found in found {
+            match found {
+                ai::lookup::Found::Say(text) => {
+                    out.session.line("lookup", &text);
+                    if out.live {
+                        // The call says it, in its own words.
+                        out.tell(Kind::Info, &text, true, &mut companion);
+                    } else if let Some(worker) = &out.mouth.ai {
+                        worker.send(Job::Say { heard: None, text });
+                    }
+                }
+                ai::lookup::Found::Right => {
+                    out.session.line("lookup", "the quick answer was right")
+                }
+                ai::lookup::Found::Failed(why) => {
+                    out.session.line("lookup", &why);
+                    out.push(Kind::Info, why);
+                }
+            }
+        }
+
         // What the learner learned or adapted to.
         while let Ok(line) = learned_rx.try_recv() {
             memory_checked = Instant::now() - Duration::from_secs(60);
@@ -2136,6 +2262,8 @@ fn run(options: Options) -> Result<(), String> {
                     // Live calls can be made.
                     "live": out.live_ok,
                     "recording": recording.status(),
+                    // How it talks, and who answers.
+                    "attitude": companion.settings.attitude,
                     // How long the phone waits after the words stop (it adapts).
                     "settle_ms": learning.memory().adapt.settle_ms,
                     // What it learned about the player (with an OpenAI key).

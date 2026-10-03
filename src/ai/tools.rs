@@ -48,6 +48,13 @@ pub enum Effect {
     /// Warn about low HP or MP (`what`: "hp" or "mp") below this percent:
     /// 0 never, None the usual.
     Warn { what: String, below: Option<f32> },
+    /// Look `question` up in the background (`said`: the quick answer
+    /// already given; `asked`: the player asked for the look-up).
+    LookUp {
+        question: String,
+        said: String,
+        asked: bool,
+    },
 }
 
 /// Ask the vision model one of the teacher's questions.
@@ -173,8 +180,18 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
             ),
         ];
         if self.web {
-            // Low context: quicker, and a sentence or two is all it says.
-            tools.push(json!({"type": "web_search", "search_context_size": "low"}));
+            // Never waited for: it answers first, the look-up runs behind.
+            tools.push(function(
+                "look_it_up",
+                "Check a MapleStory fact in the background (the web, and what you were taught). Give your best answer \
+FIRST, out loud, then call this with the question and what you said: it never makes the player wait, and you \
+speak again only if you were wrong. Also when the player asks you to look something up.",
+                json!({
+                    "question": {"type": "string", "description": "The question, in English, with the game names."},
+                    "said": {"type": "string", "description": "What you just told the player."},
+                    "asked": {"type": "boolean", "description": "Whether the player asked you to look it up."},
+                }),
+            ));
         }
         tools
     }
@@ -312,6 +329,42 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
                     None => format!("{name} warnings are back to the usual."),
                 };
                 (done, Some(Effect::Warn { what, below }))
+            }
+            "look_it_up" => {
+                let question = text("question");
+                if question.is_empty() {
+                    return ("Nothing to look up.".into(), None);
+                }
+                let asked = args["asked"].as_bool().unwrap_or(false);
+                // Known already: the answer at once.
+                let known = self
+                    .learning
+                    .as_ref()
+                    .and_then(|l| l.knowledge().find(&question));
+                if let Some(known) = known {
+                    let whose = match known.from {
+                        Source::Player => "the player taught you this; trust it",
+                        Source::Web => "you looked it up before",
+                    };
+                    return (
+                        format!(
+                            "Known: {} ({whose}). If that differs from what you said, correct yourself in a few \
+words now; otherwise say nothing more.",
+                            known.answer
+                        ),
+                        None,
+                    );
+                }
+                (
+                    "Looking it up in the background. Say nothing more about it now; you'll be told if you were \
+wrong."
+                        .into(),
+                    Some(Effect::LookUp {
+                        question,
+                        said: text("said"),
+                        asked,
+                    }),
+                )
             }
             "mark_moment" => ("Marked.".into(), Some(Effect::Command("mark".into()))),
             "set_recording" => {

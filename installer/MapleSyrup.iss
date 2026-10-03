@@ -9,7 +9,7 @@
 ; Uninstalling leaves the user's settings, key, what it learned and the
 ; sessions in place.
 ;
-; Built by CI:  ISCC /DAppVersion=0.6.0 /DSourceDir=<the package folder> MapleSyrup.iss
+; Built by CI:  ISCC /DAppVersion=0.7.0 /DSourceDir=<the package folder> MapleSyrup.iss
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"

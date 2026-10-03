@@ -10,10 +10,14 @@
 //! death, and the game window coming and going. Everything else waits to be
 //! asked.
 
+pub mod attitude;
 pub mod chat;
 pub mod commands;
 pub mod exp;
+pub mod instant;
 pub mod observation;
+
+pub use attitude::Attitude;
 
 use serde::Serialize;
 
@@ -40,6 +44,8 @@ pub struct Settings {
     /// Answer everything said to it (true), or only sentences with the wake
     /// word "syrup" in them (for streams, where most talk is to the chat).
     pub always_listen: bool,
+    /// How its own lines sound (warnings, deaths, level-ups).
+    pub attitude: Attitude,
 }
 
 impl Default for Settings {
@@ -53,6 +59,7 @@ impl Default for Settings {
             lost_after: 5.0,
             listen_for: 8.0,
             always_listen: true,
+            attitude: Attitude::Friendly,
         }
     }
 }
@@ -408,12 +415,27 @@ impl Companion {
             .collect();
         kept.dedup();
         let left = echo.iter().filter(|e| !**e).count();
-        (left >= 2).then(|| {
-            kept.iter()
-                .map(|&i| tokens[i])
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
+        if left < 2 {
+            return None;
+        }
+        let rest = kept
+            .iter()
+            .map(|&i| tokens[i])
+            .collect::<Vec<_>>()
+            .join(" ");
+        // Mostly its own voice: the few words left are its own too, written
+        // differently ("Monster פארק שקד" for "Monster Park Shuttle"), unless
+        // they stop it or ask for something.
+        let mostly_echo = left <= 3 && left * 10 < words.len() * 3;
+        if mostly_echo {
+            let stops = commands::normalize(&rest)
+                .split(' ')
+                .any(|w| STOP_WORDS.contains(&w));
+            if !stops && commands::local_command(&rest).is_none() {
+                return None;
+            }
+        }
+        Some(rest)
     }
 
     /// What the phone is hearing right now, while MapleSyrup may be
@@ -598,7 +620,21 @@ impl Companion {
             self.zero_hp_frames += 1;
             if self.zero_hp_frames >= 3 && !self.dead {
                 self.dead = true;
-                let mut line = "Your HP hit zero. Time to revive and head back.".to_string();
+                let mut line = self
+                    .settings
+                    .attitude
+                    .pick(
+                        [
+                            &["Your HP hit zero. Time to revive and head back."],
+                            &["You died. Revive and get back in there."],
+                            &[
+                                "Dead. Wow. Revive and try not to suck this time.",
+                                "You died, genius. Revive and get back in.",
+                            ],
+                        ],
+                        self.warnings,
+                    )
+                    .to_string();
                 if let Some(sooner) = self.sooner_warning(now) {
                     self.settings.hp_low = sooner;
                     self.settings.hp_rearm = (sooner + 15.0).min(95.0);
@@ -637,11 +673,26 @@ impl Companion {
         if self.hp_low_frames >= 3 && now - self.hp_low_since >= LOW_HOLD_SECS && due {
             self.hp_warning = Warning::Warned(now);
             let amount = low_words(hp);
-            let line = match self.warnings % 3 {
-                0 => format!("Careful, your HP's down to {amount}. Drink a potion!"),
-                1 => format!("HP's at {amount}, potion time!"),
-                _ => format!("Whoa, {amount} HP. Drink something!"),
-            };
+            let line = self
+                .settings
+                .attitude
+                .pick(
+                    [
+                        &[
+                            "Careful, your HP's down to {}. Drink a potion!",
+                            "HP's at {}, potion time!",
+                            "Whoa, {} HP. Drink something!",
+                        ],
+                        &["HP {}. Pot now!", "Pot! You're at {}.", "{} HP. Drink!"],
+                        &[
+                            "{} HP. Drink, you idiot!",
+                            "Pot NOW, you're at {}, genius.",
+                            "{} HP. Are you trying to die?",
+                        ],
+                    ],
+                    self.warnings,
+                )
+                .replace("{}", &amount);
             self.warnings += 1;
             out.push(Action::Say(Say::alert(line)));
         }
@@ -689,11 +740,26 @@ impl Companion {
         {
             self.mp_warning = Warning::Warned(now);
             let amount = low_words(mp);
-            let line = match self.warnings % 3 {
-                0 => format!("Your MP's down to {amount}."),
-                1 => format!("MP's at {amount}, might want a potion."),
-                _ => format!("Heads up, only {amount} MP left."),
-            };
+            let line = self
+                .settings
+                .attitude
+                .pick(
+                    [
+                        &[
+                            "Your MP's down to {}.",
+                            "MP's at {}, might want a potion.",
+                            "Heads up, only {} MP left.",
+                        ],
+                        &["MP {}. Pot.", "Mana's at {}. Drink.", "{} MP left. Drink."],
+                        &[
+                            "{} MP. Drink before you're useless.",
+                            "Out of mana again? {}. Pot, genius.",
+                            "{} MP. Drink something, clown.",
+                        ],
+                    ],
+                    self.warnings,
+                )
+                .replace("{}", &amount);
             self.warnings += 1;
             out.push(Action::Say(Say::alert(line)));
         }
@@ -723,8 +789,30 @@ impl Companion {
         if announce {
             self.announced_level_up = now;
             let text = match self.last_level {
-                Some(level) if level_rose => format!("Level up! You're level {level}."),
-                _ => "Level up! Nice.".to_string(),
+                Some(level) if level_rose => self
+                    .settings
+                    .attitude
+                    .pick(
+                        [
+                            &["Level up! You're level {}."],
+                            &["Level {}! Nice."],
+                            &["Level {}. Took you long enough.", "Level {}. Finally."],
+                        ],
+                        self.warnings,
+                    )
+                    .replace("{}", &level.to_string()),
+                _ => self
+                    .settings
+                    .attitude
+                    .pick(
+                        [
+                            &["Level up! Nice."],
+                            &["Level up!"],
+                            &["Level up. Finally."],
+                        ],
+                        self.warnings,
+                    )
+                    .to_string(),
             };
             out.push(Action::Say(Say::alert(text)));
         } else if level_rose && let Some(level) = self.last_level {
@@ -1310,6 +1398,31 @@ mod tests {
         );
         // With AI off, the simple answers get the player's part only.
         assert!(!said(&c.heard(9.5, "How are you doing what's my hp")).is_empty());
+    }
+
+    #[test]
+    fn a_long_line_heard_back_with_a_few_words_written_differently_is_all_its_own() {
+        let mut c = Companion::new(Settings::default());
+        c.remember_spoken(
+            1.0,
+            "אני לא מצליח לקרוא את שם המפה מהמסך כרגע; נראה שאתה עדיין באזור של Monster Park Shuttle, אבל אני לא בטוח.",
+        );
+        assert_eq!(
+            c.strip_echo(
+                8.0,
+                "אני לא מצליח לקרוא את שם המפה מהמסך כרגע נראה שאתה עדיין באזור של Monster פארק שקד אבל אני לא בטוח"
+            ),
+            None
+        );
+        // "Wait" over it still stops it.
+        assert_eq!(
+            c.strip_echo(
+                8.0,
+                "אני לא מצליח לקרוא את שם המפה מהמסך כרגע נראה שאתה עדיין באזור של Monster רגע עצור"
+            )
+            .as_deref(),
+            Some("רגע עצור")
+        );
     }
 
     #[test]

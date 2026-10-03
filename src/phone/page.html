@@ -81,6 +81,7 @@
   .buttons button:active, .seg button:active { transform: scale(.97); }
   .buttons button.mark { border-color: var(--syrup-dark); color: var(--syrup); }
   .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+  .seg.three { grid-template-columns: repeat(3, 1fr); }
   .seg button { border: 1px solid var(--line); background: var(--card2); color: var(--dim); border-radius: 10px; padding: 9px 4px; font-size: 14px; }
   .seg button.sel { background: var(--syrup); color: #1a1209; border-color: var(--syrup); font-weight: 700; }
   label.opt { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; color: var(--dim); font-size: 14px; }
@@ -206,6 +207,11 @@
   <div class="seg" id="voiceSeg">
     <button data-on="pc" data-t="v_pc">PC</button><button data-on="phone" data-t="v_phone">Phone</button><button data-on="both" data-t="v_both">Both</button><button data-on="off" data-t="v_off">Off</button>
   </div>
+  <div class="sub" style="margin:12px 0 8px" data-t="attitude">How it talks to you</div>
+  <div class="seg three" id="attitudeSeg">
+    <button data-a="friendly" data-t="a_friendly">Friendly</button><button data-a="blunt" data-t="a_blunt">Blunt</button><button data-a="savage" data-t="a_savage">Savage</button>
+  </div>
+  <div class="sub" style="margin:6px 0 0" data-t="attitude_hint">Savage swears and roasts you, personally.</div>
   <div class="sub" id="liveHint" style="margin:8px 0 4px; display:none" data-t="live_hint">On the phone it's a live call: talk any time, in any language, and interrupt him. On the PC: his voice on the PC speakers.</div>
   <label class="opt"><span data-t="answer_all">Answer everything I say</span> <input type="checkbox" id="always" checked></label>
   <label class="opt"><span data-t="send_audio">Send the microphone's audio to the PC</span> <input type="checkbox" id="sendAudio" checked></label>
@@ -248,6 +254,7 @@
       level_n: "Level {n}.", told_me: "(you told me)",
       teach_hint: "Teach me by talking: “see that? that's an Orange Mushroom”, “that's the boss's HP, tell me when it's under 20%”, “I'm level 61”.",
       forget: "Forget", sure: "Sure?", says: "says",
+      attitude: "How it talks to you", a_friendly: "Friendly", a_blunt: "Blunt", a_savage: "Savage", attitude_hint: "Savage swears and roasts you, personally.",
       h_memory: "What I know about you", mem_told: "you told me", mem_style: "How you like me to talk", mem_lately: "Lately", mem_lessons: "What you corrected me on",
       mem_empty: "Nothing yet. I learn as we play: what you're working on, how you like me to talk, and what you correct me on. It all stays on your PC.", mem_sessions: "learned from {n} sessions", mem_looked: "{n} answers I looked up, kept", mem_wait: "I answer {n} s after you stop talking",
       replies_on: "Replies spoken on", v_pc: "PC", v_phone: "Phone", v_both: "Both", v_off: "Off",
@@ -282,6 +289,7 @@
       level_n: "רמה {n}.", told_me: "(אמרת לי)",
       teach_hint: "למד אותי בדיבור: „רואה את זה? זה Orange Mushroom”, „זה ה-HP של הבוס, תגיד לי כשהוא מתחת ל-20%”, „אני ברמה 61”.",
       forget: "שכח", sure: "בטוח?", says: "אומר",
+      attitude: "איך הוא מדבר אליך", a_friendly: "נחמד", a_blunt: "ישיר", a_savage: "פרוע", attitude_hint: "פרוע מקלל ויורד עליך אישית.",
       h_memory: "מה שאני יודע עליך", mem_told: "אמרת לי", mem_style: "איך אתה אוהב שאני מדבר", mem_lately: "לאחרונה", mem_lessons: "במה תיקנת אותי",
       mem_empty: "עדיין כלום. אני לומד תוך כדי משחק: על מה אתה עובד, איך אתה אוהב שאדבר, ובמה אתה מתקן אותי. הכל נשאר במחשב שלך.", mem_sessions: "למדתי מ-{n} סשנים", mem_looked: "{n} תשובות שחיפשתי שמורות", mem_wait: "אני עונה {n} שניות אחרי שאתה מסיים לדבר",
       replies_on: "איפה לשמוע את התשובות", v_pc: "מחשב", v_phone: "טלפון", v_both: "שניהם", v_off: "כבוי",
@@ -316,6 +324,7 @@
       level_n: "Nivel {n}.", told_me: "(me lo dijiste)",
       teach_hint: "Enséñame hablando: «¿ves eso? es un Orange Mushroom», «esa es la vida del jefe, avísame cuando baje del 20 %», «soy nivel 61».",
       forget: "Olvidar", sure: "¿Seguro?", says: "dice",
+      attitude: "Cómo te habla", a_friendly: "Amable", a_blunt: "Directo", a_savage: "Salvaje", attitude_hint: "Salvaje dice palabrotas y se burla de ti sin piedad.",
       h_memory: "Lo que sé de ti", mem_told: "me lo dijiste", mem_style: "Cómo te gusta que hable", mem_lately: "Últimamente", mem_lessons: "En qué me corregiste",
       mem_empty: "Nada todavía. Aprendo mientras jugamos: en qué estás, cómo te gusta que hable y en qué me corriges. Todo se queda en tu PC.", mem_sessions: "aprendí de {n} sesiones", mem_looked: "{n} respuestas que busqué, guardadas", mem_wait: "Respondo {n} s después de que dejas de hablar",
       replies_on: "Respuestas habladas en", v_pc: "PC", v_phone: "Móvil", v_both: "Ambos", v_off: "No",
@@ -350,6 +359,7 @@
       level_n: "Nível {n}.", told_me: "(você me disse)",
       teach_hint: "Me ensine falando: “tá vendo? é um Orange Mushroom”, “esse é o HP do chefe, me avisa quando ficar abaixo de 20%”, “sou nível 61”.",
       forget: "Esquecer", sure: "Certeza?", says: "diz",
+      attitude: "Como ele fala com você", a_friendly: "Gentil", a_blunt: "Direto", a_savage: "Selvagem", attitude_hint: "Selvagem xinga e zoa você sem dó.",
       h_memory: "O que eu sei sobre você", mem_told: "você me contou", mem_style: "Como você gosta que eu fale", mem_lately: "Ultimamente", mem_lessons: "Onde você me corrigiu",
       mem_empty: "Nada ainda. Eu aprendo enquanto a gente joga: no que você está, como gosta que eu fale e onde você me corrige. Tudo fica no seu PC.", mem_sessions: "aprendi com {n} sessões", mem_looked: "{n} respostas que pesquisei, guardadas", mem_wait: "Respondo {n} s depois que você para de falar",
       replies_on: "Respostas faladas no", v_pc: "PC", v_phone: "Celular", v_both: "Ambos", v_off: "Nenhum",
@@ -384,6 +394,7 @@
       level_n: "Niveau {n}.", told_me: "(tu me l'as dit)",
       teach_hint: "Apprends-moi en parlant : « tu vois ça ? c'est un Orange Mushroom », « c'est la vie du boss, préviens-moi sous 20 % », « je suis niveau 61 ».",
       forget: "Oublier", sure: "Sûr ?", says: "dit",
+      attitude: "Comment il te parle", a_friendly: "Sympa", a_blunt: "Direct", a_savage: "Sauvage", attitude_hint: "Sauvage jure et te clashe sans pitié.",
       h_memory: "Ce que je sais de toi", mem_told: "tu me l'as dit", mem_style: "Comment tu aimes que je parle", mem_lately: "Dernièrement", mem_lessons: "Ce sur quoi tu m'as corrigé",
       mem_empty: "Rien pour l'instant. J'apprends en jouant : ce que tu fais, comment tu aimes que je parle et ce sur quoi tu me corriges. Tout reste sur ton PC.", mem_sessions: "appris de {n} sessions", mem_looked: "{n} réponses cherchées, gardées", mem_wait: "Je réponds {n} s après que tu as fini de parler",
       replies_on: "Réponses parlées sur", v_pc: "PC", v_phone: "Téléphone", v_both: "Les deux", v_off: "Aucun",
@@ -418,6 +429,7 @@
       level_n: "Level {n}.", told_me: "(hast du mir gesagt)",
       teach_hint: "Bring es mir im Gespräch bei: „Siehst du das? Das ist ein Orange Mushroom“, „das sind die HP vom Boss, sag mir unter 20 % Bescheid“, „ich bin Level 61“.",
       forget: "Vergessen", sure: "Sicher?", says: "sagt",
+      attitude: "Wie er mit dir redet", a_friendly: "Freundlich", a_blunt: "Direkt", a_savage: "Gnadenlos", attitude_hint: "Gnadenlos flucht und disst dich persönlich.",
       h_memory: "Was ich über dich weiß", mem_told: "hast du mir gesagt", mem_style: "Wie ich mit dir reden soll", mem_lately: "Zuletzt", mem_lessons: "Wo du mich korrigiert hast",
       mem_empty: "Noch nichts. Ich lerne beim Spielen: woran du gerade bist, wie ich mit dir reden soll und wo du mich korrigierst. Alles bleibt auf deinem PC.", mem_sessions: "aus {n} Sitzungen gelernt", mem_looked: "{n} nachgeschlagene Antworten gespeichert", mem_wait: "Ich antworte {n} s, nachdem du aufhörst zu sprechen",
       replies_on: "Antworten gesprochen auf", v_pc: "PC", v_phone: "Handy", v_both: "Beiden", v_off: "Aus",
@@ -452,6 +464,7 @@
       level_n: "레벨 {n}.", told_me: "(네가 알려 줌)",
       teach_hint: "말로 가르쳐 줘: “저거 보여? 주황버섯이야”, “저게 보스 HP야, 20% 아래로 떨어지면 알려 줘”, “나 61레벨이야”.",
       forget: "잊기", sure: "확실해?", says: "말:",
+      attitude: "말투", a_friendly: "친절", a_blunt: "직설", a_savage: "독설", attitude_hint: "독설 모드는 욕도 하고 대놓고 놀려.",
       h_memory: "내가 너에 대해 아는 것", mem_told: "네가 말해 줬어", mem_style: "네가 좋아하는 말투", mem_lately: "최근", mem_lessons: "네가 고쳐 준 것",
       mem_empty: "아직 없어. 같이 플레이하면서 배워: 네가 하고 있는 것, 좋아하는 말투, 네가 고쳐 준 것. 전부 네 PC에만 저장돼.", mem_sessions: "{n}개 세션에서 배움", mem_looked: "찾아본 답 {n}개 저장", mem_wait: "말이 끝나고 {n}초 뒤에 대답해",
       replies_on: "대답을 들을 곳", v_pc: "PC", v_phone: "휴대폰", v_both: "둘 다", v_off: "끄기",
@@ -486,6 +499,7 @@
       level_n: "レベル{n}。", told_me: "（君が教えてくれた）",
       teach_hint: "話して教えてね:「あれ見える？オレンジマッシュルームだよ」「あれがボスのHP、20%を切ったら教えて」「僕はレベル61」。",
       forget: "忘れる", sure: "本当に？", says: "セリフ:",
+      attitude: "話し方", a_friendly: "やさしい", a_blunt: "ストレート", a_savage: "毒舌", attitude_hint: "毒舌モードは悪口も言うし、容赦なくいじるよ。",
       h_memory: "きみについて知っていること", mem_told: "きみが教えてくれた", mem_style: "好きな話し方", mem_lately: "最近", mem_lessons: "きみが直してくれたこと",
       mem_empty: "まだ何もないよ。一緒に遊びながら覚えるね：今やっていること、好きな話し方、直してくれたこと。全部きみのPCに保存されるよ。", mem_sessions: "{n}回のセッションから学習", mem_looked: "調べた答え{n}件を保存", mem_wait: "話し終わってから{n}秒で答えるよ",
       replies_on: "返事を話す場所", v_pc: "PC", v_phone: "スマホ", v_both: "両方", v_off: "オフ",
@@ -520,6 +534,7 @@
       level_n: "{n} 级。", told_me: "（你告诉我的）",
       teach_hint: "用说话来教我：“看到那个了吗？那是绿水灵”，“那是Boss的血条，低于 20% 时告诉我”，“我 61 级”。",
       forget: "忘掉", sure: "确定？", says: "会说",
+      attitude: "说话方式", a_friendly: "友好", a_blunt: "直接", a_savage: "毒舌", attitude_hint: "毒舌模式会骂人，还会毫不留情地损你。",
       h_memory: "我对你的了解", mem_told: "你告诉我的", mem_style: "你喜欢我怎么说话", mem_lately: "最近", mem_lessons: "你纠正过我的",
       mem_empty: "还没有。我们一起玩的时候我会学：你在做什么、你喜欢我怎么说话、你纠正过我什么。全部只保存在你的电脑上。", mem_sessions: "从 {n} 次会话中学习", mem_looked: "已保存 {n} 个查到的答案", mem_wait: "你说完 {n} 秒后我就回答",
       replies_on: "在哪里说出回答", v_pc: "电脑", v_phone: "手机", v_both: "都要", v_off: "关闭",
@@ -554,6 +569,7 @@
       level_n: "{n} 等。", told_me: "（你告訴我的）",
       teach_hint: "用說話來教我：「看到那個了嗎？那是橘子菇菇」、「那是王的血條，低於 20% 時告訴我」、「我 61 等」。",
       forget: "忘掉", sure: "確定？", says: "會說",
+      attitude: "說話方式", a_friendly: "友善", a_blunt: "直接", a_savage: "毒舌", attitude_hint: "毒舌模式會罵人，還會毫不留情地損你。",
       h_memory: "我對你的了解", mem_told: "你告訴我的", mem_style: "你喜歡我怎麼說話", mem_lately: "最近", mem_lessons: "你糾正過我的",
       mem_empty: "還沒有。我們一起玩的時候我會學：你在做什麼、你喜歡我怎麼說話、你糾正過我什麼。全部只存在你的電腦上。", mem_sessions: "從 {n} 次工作階段中學習", mem_looked: "已儲存 {n} 個查到的答案", mem_wait: "你說完 {n} 秒後我就回答",
       replies_on: "在哪裡說出回答", v_pc: "電腦", v_phone: "手機", v_both: "都要", v_off: "關閉",
@@ -588,6 +604,7 @@
       level_n: "เลเวล {n}", told_me: "(คุณบอกฉัน)",
       teach_hint: "สอนฉันด้วยการพูด: “เห็นนั่นไหม? นั่นคือ Orange Mushroom”, “นั่นคือ HP ของบอส บอกฉันเมื่อต่ำกว่า 20%”, “ฉันเลเวล 61”",
       forget: "ลืม", sure: "แน่ใจไหม?", says: "พูดว่า",
+      attitude: "สไตล์การพูด", a_friendly: "ใจดี", a_blunt: "ตรงๆ", a_savage: "โหด", attitude_hint: "โหดจะด่าและแซวคุณแบบไม่ยั้ง",
       h_memory: "สิ่งที่ฉันรู้เกี่ยวกับคุณ", mem_told: "คุณบอกฉัน", mem_style: "คุณชอบให้ฉันพูดแบบไหน", mem_lately: "ช่วงนี้", mem_lessons: "เรื่องที่คุณแก้ให้ฉัน",
       mem_empty: "ยังไม่มีเลย ฉันเรียนรู้ระหว่างที่เราเล่นด้วยกัน: คุณกำลังทำอะไร ชอบให้ฉันพูดแบบไหน และเรื่องที่คุณแก้ให้ฉัน ทั้งหมดเก็บไว้ในพีซีของคุณเท่านั้น", mem_sessions: "เรียนรู้จาก {n} เซสชัน", mem_looked: "เก็บคำตอบที่ค้นมาแล้ว {n} ข้อ", mem_wait: "ฉันตอบหลังจากคุณหยุดพูด {n} วินาที",
       replies_on: "พูดคำตอบที่", v_pc: "คอม", v_phone: "มือถือ", v_both: "ทั้งสอง", v_off: "ปิด",
@@ -622,6 +639,7 @@
       level_n: "Cấp {n}.", told_me: "(bạn đã nói với mình)",
       teach_hint: "Dạy mình bằng lời nói: “thấy cái đó không? đó là Orange Mushroom”, “đó là máu của boss, báo mình khi dưới 20%”, “mình cấp 61”.",
       forget: "Quên", sure: "Chắc chưa?", says: "sẽ nói",
+      attitude: "Cách nói chuyện", a_friendly: "Thân thiện", a_blunt: "Thẳng thắn", a_savage: "Gắt", attitude_hint: "Gắt sẽ chửi thề và cà khịa bạn thẳng mặt.",
       h_memory: "Những gì mình biết về bạn", mem_told: "bạn đã kể", mem_style: "Bạn thích mình nói chuyện thế nào", mem_lately: "Gần đây", mem_lessons: "Những điều bạn đã sửa cho mình",
       mem_empty: "Chưa có gì. Mình học trong lúc chơi cùng bạn: bạn đang làm gì, bạn thích mình nói thế nào và những gì bạn sửa cho mình. Tất cả chỉ lưu trên PC của bạn.", mem_sessions: "học từ {n} phiên", mem_looked: "đã lưu {n} câu trả lời mình tra", mem_wait: "Mình trả lời {n} giây sau khi bạn ngừng nói",
       replies_on: "Đọc câu trả lời trên", v_pc: "PC", v_phone: "Điện thoại", v_both: "Cả hai", v_off: "Tắt",
@@ -656,6 +674,7 @@
       level_n: "Level {n}.", told_me: "(kamu yang bilang)",
       teach_hint: "Ajari aku lewat obrolan: “lihat itu? itu Orange Mushroom”, “itu HP bos, kasih tahu aku kalau di bawah 20%”, “aku level 61”.",
       forget: "Lupakan", sure: "Yakin?", says: "akan bilang",
+      attitude: "Cara dia bicara", a_friendly: "Ramah", a_blunt: "Blak-blakan", a_savage: "Sadis", attitude_hint: "Sadis bakal ngumpat dan nge-roast kamu habis-habisan.",
       h_memory: "Yang kutahu tentangmu", mem_told: "kamu yang bilang", mem_style: "Cara bicara yang kamu suka", mem_lately: "Belakangan ini", mem_lessons: "Yang kamu koreksi",
       mem_empty: "Belum ada. Aku belajar sambil kita main: apa yang sedang kamu kejar, cara bicara yang kamu suka, dan apa yang kamu koreksi. Semuanya tetap di PC-mu.", mem_sessions: "belajar dari {n} sesi", mem_looked: "{n} jawaban yang kucari, disimpan", mem_wait: "Aku menjawab {n} dtk setelah kamu berhenti bicara",
       replies_on: "Jawaban diucapkan di", v_pc: "PC", v_phone: "Ponsel", v_both: "Keduanya", v_off: "Mati",
@@ -690,6 +709,7 @@
       level_n: "Уровень {n}.", told_me: "(ты мне сказал)",
       teach_hint: "Научи меня голосом: «видишь? это Orange Mushroom», «это HP босса, скажи, когда станет меньше 20%», «у меня 61 уровень».",
       forget: "Забыть", sure: "Точно?", says: "скажет",
+      attitude: "Как он с тобой говорит", a_friendly: "Дружелюбно", a_blunt: "Прямо", a_savage: "Жёстко", attitude_hint: "Жёстко — матерится и подкалывает тебя лично.",
       h_memory: "Что я о тебе знаю", mem_told: "ты мне сказал", mem_style: "Как тебе нравится, чтобы я говорил", mem_lately: "В последнее время", mem_lessons: "В чём ты меня поправил",
       mem_empty: "Пока ничего. Я учусь, пока мы играем: чем ты занят, как тебе нравится, чтобы я говорил, и в чём ты меня поправляешь. Всё остаётся на твоём ПК.", mem_sessions: "выучено за {n} сессий", mem_looked: "{n} найденных ответов сохранено", mem_wait: "Я отвечаю через {n} с после того, как ты замолчишь",
       replies_on: "Где озвучивать ответы", v_pc: "ПК", v_phone: "Телефон", v_both: "Оба", v_off: "Нигде",
@@ -827,6 +847,9 @@
     mb.dataset.cmd = muted ? "unmute" : "mute";
     voiceOn = state.voice_on || voiceOn;
     for (const b of $("voiceSeg").children) b.classList.toggle("sel", b.dataset.on === voiceOn);
+    if (status.attitude && Date.now() > attitudeHeldUntil) {
+      for (const b of $("attitudeSeg").children) b.classList.toggle("sel", b.dataset.a === status.attitude);
+    }
     if (typeof status.always_listen === "boolean" && document.activeElement !== $("always")) $("always").checked = status.always_listen;
     // The dog talks while the PC (or this phone) speaks; dots while it thinks.
     dog.talking = !!status.speaking || !player.paused || liveCall.talking;
@@ -1143,6 +1166,14 @@
     postJson("/api/voice", { on: voiceOn }).catch(() => {});
     // A live call on the phone, or the regular mode with the voice elsewhere.
     if (listening && wantLive() !== (liveCall.on || liveCall.starting)) restartListening();
+  });
+  // How it talks: the PC keeps it; a live call starts again in the new voice.
+  let attitudeHeldUntil = 0;
+  for (const b of $("attitudeSeg").children) b.addEventListener("click", () => {
+    attitudeHeldUntil = Date.now() + 2000;
+    for (const x of $("attitudeSeg").children) x.classList.toggle("sel", x === b);
+    postJson("/api/attitude", { attitude: b.dataset.a }).catch(() => {});
+    if (listening && (liveCall.on || liveCall.starting)) setTimeout(() => { if (listening) restartListening(); }, 400);
   });
   $("always").addEventListener("change", () => postJson("/api/listen", { always: $("always").checked }).catch(() => {}));
   const lang = $("lang");

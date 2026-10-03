@@ -22,6 +22,22 @@ Start
   If Windows asks whether MapleSyrup may use the network, allow private networks.
 
 How it talks
+  Like a gamer friend on voice chat, not an assistant: one short sentence,
+  the point first, no "let me check", and it tells you what to do. Pick how
+  it talks to you on the phone (Settings -> "How it talks to you"):
+    Friendly  warm and fun, no swearing
+    Blunt     the usual: bossy, cocky, teases you, swears a little
+    Savage    swears and roasts you personally (you asked for it); it still
+              won't go after who you are (religion, origin, gender and so on)
+  Your own numbers are answered at once, without asking a model: "how much HP
+  do I have", "what level am I", "how long to level" (English or Hebrew).
+  When it isn't sure of a game fact, it says its best guess right away and
+  checks it in the background; it speaks again only if it was wrong.
+  Grok: with an xAI key, Grok answers the conversation (quick, and freer with
+  its words). Put the key in a file named xai-key.txt next to MapleSyrup.exe;
+  it moves itself into %APPDATA%\MapleSyrup. OpenAI still makes the voice,
+  the look-ups and the live call, and answers whenever Grok can't.
+
   With an OpenAI key, talking to it is a live call, like ChatGPT's voice mode:
   its voice comes from the phone (or earbuds on the phone), and the phone
   listens while it talks. Speak any language, switch or mix languages
@@ -145,7 +161,9 @@ Privacy
   OpenAI to answer you; pictures only while MapleStory is the window in front.
   To learn, every few minutes it sends the text of the conversation (not the
   pictures) to OpenAI to update its notebook; what it learns is kept on your
-  PC only.
+  PC only. With an xAI key, what you say and a small picture of the game go to
+  xAI (Grok) for the regular replies. Your keys stay on this PC
+  (%APPDATA%\MapleSyrup).
   OpenAI bills your account: a live call costs more than the PC voice (very
   roughly a dollar or two per hour of play, depending on how much you talk). Without a key, nothing leaves your PC
   except the phone link on your own network.
