@@ -76,6 +76,9 @@ pub fn look(eyes: &OpenAi, look: &Look) -> Result<String, String> {
 /// The commands the recording tool hands the main loop.
 pub const RECORD_ON: &str = "record";
 pub const RECORD_OFF: &str = "stop recording";
+/// …and to speak up on its own, or only when asked.
+pub const COACH_ON: &str = "coach";
+pub const COACH_OFF: &str = "stop coaching";
 
 fn function(name: &str, description: &str, properties: Value) -> Value {
     let required: Vec<String> = properties
@@ -164,6 +167,11 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
                 "set_muted",
                 "Stop speaking aloud (muted: true) or speak again (muted: false), when the player asks you to be quiet or to talk again.",
                 json!({"muted": {"type": "boolean"}}),
+            ),
+            function(
+                "set_coaching",
+                "Whether you speak up on your own while they play (tips, callouts, what to do next), when they ask you to stop doing that (\"only talk when I ask\", \"no more tips\") or to start again.",
+                json!({"on": {"type": "boolean"}}),
             ),
             function(
                 "set_recording",
@@ -378,6 +386,20 @@ wrong."
                     .into(),
                     Some(Effect::Command(
                         if on { RECORD_ON } else { RECORD_OFF }.into(),
+                    )),
+                )
+            }
+            "set_coaching" => {
+                let on = args["on"].as_bool().unwrap_or(true);
+                (
+                    if on {
+                        "Coaching on: you'll speak up on your own again."
+                    } else {
+                        "Coaching off: from now on you speak only when spoken to (and for low HP or MP)."
+                    }
+                    .into(),
+                    Some(Effect::Command(
+                        if on { COACH_ON } else { COACH_OFF }.into(),
                     )),
                 )
             }

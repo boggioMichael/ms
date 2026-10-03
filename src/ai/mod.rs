@@ -212,6 +212,20 @@ pub enum Job {
     /// spoken, and kept in the conversation (with `heard`, what it answers,
     /// when it answers something).
     Say { heard: Option<String>, text: String },
+    /// Nobody said anything: the coach is watching the game and asks
+    /// whether there is one line worth saying now (`reason`: why it asks,
+    /// `label`: the same in a few words for the log), given what is on
+    /// screen and what it said on its own lately (`said`). The line is
+    /// said here when `speak` (not on a live call: the call says it).
+    Coach {
+        reason: String,
+        label: String,
+        snapshot: String,
+        eyes: Option<Eyes>,
+        said: Vec<String>,
+        language: Option<String>,
+        speak: bool,
+    },
 }
 
 /// What the worker did. Each carries the number of the job it came from
@@ -266,6 +280,15 @@ pub enum Done {
         said: String,
         asked: bool,
         language: Option<String>,
+    },
+    /// The coach looked: the line it has to say (None: nothing worth
+    /// saying, or `error`), and how long the look took.
+    Coached {
+        id: u64,
+        label: String,
+        text: Option<String>,
+        error: Option<String>,
+        took: Duration,
     },
 }
 
@@ -391,6 +414,16 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                 for (i, (id, job)) in queue.into_iter().enumerate() {
                     let stop = Stop::new(Arc::clone(&marks), id);
                     if stop.stopped() {
+                        // (The coach waits to hear back from every look.)
+                        if let Job::Coach { label, .. } = job {
+                            let _ = tx.send(Done::Coached {
+                                id,
+                                label,
+                                text: None,
+                                error: None,
+                                took: Duration::ZERO,
+                            });
+                        }
                         continue;
                     }
                     // The voice the player picked, when it's ElevenLabs's.
@@ -453,6 +486,37 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     error,
                                 });
                             }
+                        }
+                        Job::Coach {
+                            reason,
+                            label,
+                            snapshot,
+                            eyes,
+                            said,
+                            language,
+                            speak,
+                        } => {
+                            let chat = fast
+                                .as_ref()
+                                .filter(|_| fast_failures < FAST_GIVE_UP)
+                                .unwrap_or(&openai);
+                            coach(
+                                chat,
+                                mouth,
+                                &mut brain,
+                                Watch {
+                                    id,
+                                    stop: &stop,
+                                    reason: &reason,
+                                    label,
+                                    snapshot: &snapshot,
+                                    eyes: eyes.as_ref(),
+                                    said: &said,
+                                    language: language.as_deref(),
+                                    speak,
+                                },
+                                &tx,
+                            );
                         }
                         Job::Converse { .. } if Some(i) != newest => {}
                         Job::Converse {
@@ -677,12 +741,21 @@ const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
 - forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
 - mark_moment when the player asks you to mark or save the moment (for their video); set_muted when they ask you to be quiet, or to talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
+- set_coaching when they ask you to stop speaking up on your own (\"only talk when I ask\", \"no more tips\"), or to start again.
 Never announce a tool before using it; after one, a few words at most.";
 
 /// How the model is told about looking things up.
 const LOOKUP_GUIDE: &str = "\n- look_it_up never makes the player wait: when you're not sure of a MapleStory fact (or they \
 ask you to look something up), say your best answer first, then call look_it_up with the question and what you \
 said. It checks in the background; you'll speak again only if you were wrong. Never mention it.";
+
+/// How the model is told it is watching on its own.
+const COACH_GUIDE: &str = "\n\nRight now nobody said anything to you. You're watching them play, and you may speak up \
+on your own, like a friend on voice chat who sees something: danger coming, a wasted buff or potion, loot left on \
+the ground, a map that's giving nothing, a wrong move, what to do next. One short line, direct, an instruction \
+when you can give one (\"Go left, the portal's there.\" \"Rebuff.\" \"This map's dead, move.\"). Most of the \
+time there is nothing worth interrupting them for: then reply with exactly [silent]. Never describe the screen, \
+never comment for the sake of it, never ask them anything, never repeat what you said lately, and never greet.";
 
 /// How the model is told what it learned is there.
 const LEARNED_GUIDE: &str =
@@ -767,6 +840,144 @@ fn input_of(
             json!({"role": "user", "content": content})
         })
         .collect()
+}
+
+/// The coach's look: why, and what goes with it.
+struct Watch<'a> {
+    id: u64,
+    stop: &'a Stop,
+    reason: &'a str,
+    label: String,
+    snapshot: &'a str,
+    eyes: Option<&'a Eyes>,
+    said: &'a [String],
+    language: Option<&'a str>,
+    speak: bool,
+}
+
+/// The coach looks at the game and says one line if there is one worth
+/// saying (`Done::Coached`): nobody asked anything. The line is said here
+/// when `speak`, and joins the conversation either way, so a "why?" after
+/// it makes sense.
+fn coach(chat: &OpenAi, mouth: Mouth, brain: &mut Brain, watch: Watch, tx: &Sender<Done>) {
+    let Watch {
+        id,
+        stop,
+        reason,
+        label,
+        snapshot,
+        eyes,
+        said,
+        language,
+        speak,
+    } = watch;
+    let started = Instant::now();
+    let mut instructions = brain.persona();
+    instructions.push_str(COACH_GUIDE);
+    let learned = brain.learned();
+    if !learned.is_empty() {
+        instructions.push_str(LEARNED_GUIDE);
+        instructions.push('\n');
+        instructions.push_str(&learned);
+    }
+    let mut text = format!(
+        "[Not the player: your game watcher. Nobody said anything.]\nThe game right now, read by your vision \
+engine:\n{snapshot}\n\n{reason}"
+    );
+    if !said.is_empty() {
+        text.push_str("\n\nWhat you said on your own lately (don't repeat it, don't nag):");
+        for line in said {
+            text.push_str(&format!("\n- {line}"));
+        }
+    }
+    if let Some(l) = language.filter(|l| !language::is_english(l)) {
+        let name = language::name(l);
+        text.push_str(&format!(
+            "\n\n(The player's language setting is {name}: speak the language of the conversation; when there is none yet, {name}.)"
+        ));
+    }
+    let mut content = vec![json!({"type": "input_text", "text": text})];
+    if let Some(eyes) = eyes {
+        content.extend(eyes.pictures());
+    }
+    // The conversation so far, so it knows what was talked about (the
+    // player said they're bossing; it was told to shut up about potions).
+    let mut input: Vec<Value> = brain
+        .turns()
+        .iter()
+        .map(|t| json!({"role": t.role, "content": t.text}))
+        .collect();
+    input.push(json!({"role": "user", "content": content}));
+    let ask = Ask {
+        instructions,
+        input,
+        max_output_tokens: 60,
+        timeout: Duration::from_secs(if std::ptr::eq(chat, mouth.openai) {
+            20
+        } else {
+            12
+        }),
+        stop: Some(stop.clone()),
+        ..Default::default()
+    };
+    let answer = chat.ask(&ask, None).or_else(|e| {
+        // The fast brain couldn't: OpenAI looks instead.
+        if std::ptr::eq(chat, mouth.openai) || matches!(e, AiError::Cancelled) {
+            Err(e)
+        } else {
+            mouth.openai.ask(&ask, None)
+        }
+    });
+    let mut done = Done::Coached {
+        id,
+        label: label.clone(),
+        text: None,
+        error: None,
+        took: started.elapsed(),
+    };
+    match answer {
+        Err(AiError::Cancelled) => {}
+        Err(error) => {
+            done = Done::Coached {
+                id,
+                label,
+                text: None,
+                error: Some(error.detail()),
+                took: started.elapsed(),
+            };
+        }
+        Ok(answer) if brain::is_silent(&answer.text) => {}
+        Ok(answer) => {
+            let line = brain::for_speech(&answer.text);
+            if !line.is_empty() && !stop.stopped() {
+                brain.heard(&format!("[Your game watcher, not the player: {label}.]"));
+                brain.said(&line);
+                if speak {
+                    let _ = tx.send(Done::Shown {
+                        kind: crate::companion::Kind::Alert,
+                        text: line.clone(),
+                    });
+                    let style = brain::voice_style(brain.attitude());
+                    if let Err(error) = speak_line(mouth, id, stop, &line, style, started, true, tx)
+                    {
+                        let _ = tx.send(Done::Failed {
+                            id,
+                            heard: None,
+                            error,
+                        });
+                    }
+                }
+                done = Done::Coached {
+                    id,
+                    label,
+                    text: Some(line),
+                    error: None,
+                    took: started.elapsed(),
+                };
+            }
+        }
+    }
+    let _ = tx.send(done);
 }
 
 /// What the player said, and what goes with it.

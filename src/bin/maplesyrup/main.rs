@@ -365,6 +365,8 @@ struct Tick {
     fired: Vec<Fired>,
     /// A line worth showing once: where the frames come from.
     note: Option<String>,
+    /// What the frame's fingerprint says: how much changed, a new scene.
+    scene: Option<ms::coach::scene::Verdict>,
 }
 
 /// The newest tick; an unread one is replaced (the main loop is never
@@ -588,6 +590,7 @@ fn watch(
     let mut counter = FPSCounter::new(30);
     let mut frame_id: u64 = 0;
     let mut previous = Instant::now();
+    let mut scenes = ms::coach::scene::Scenes::default();
     while running.load(Ordering::Relaxed) {
         let Some(Grabbed {
             captured,
@@ -631,6 +634,15 @@ fn watch(
                     )
                 };
                 let fired = seen.fired;
+                // One scene from the next, for the coach (a few thousand
+                // pixels, whatever the frame's size).
+                let scene = in_view.then(|| {
+                    let _span = tracing::trace_span!("scene").entered();
+                    scenes.observe(
+                        start.elapsed().as_secs_f64(),
+                        ms::coach::scene::Fingerprint::of(&image),
+                    )
+                });
                 let vision = vision_start.elapsed();
                 let now = Instant::now();
                 let interval = now.duration_since(previous);
@@ -655,6 +667,7 @@ fn watch(
                     frame: Some(frame),
                     fired,
                     note,
+                    scene,
                 });
             }
             Captured::NotFound => {
@@ -665,6 +678,7 @@ fn watch(
                     frame: None,
                     fired: Vec::new(),
                     note: None,
+                    scene: None,
                 });
             }
             Captured::Unavailable(why) => {
@@ -675,6 +689,7 @@ fn watch(
                     frame: None,
                     fired: Vec::new(),
                     note: None,
+                    scene: None,
                 });
             }
         }
@@ -922,6 +937,11 @@ impl Turns {
         }
     }
 
+    /// A reply is being made (or words wait for the rest of a sentence).
+    fn busy(&self) -> bool {
+        self.held.is_some() || self.reply.as_ref().is_some_and(|r| !r.done)
+    }
+
     fn asked(&mut self, id: u64, heard: &str) {
         self.reply = Some(Asked {
             id,
@@ -987,6 +1007,32 @@ fn heard_of(line: &str, played: Duration) -> String {
         heard.push_str(word);
     }
     heard
+}
+
+/// Coaching on or off, for good (the player asked, by voice or through the
+/// model), said back in a word.
+fn set_coaching(
+    coach: &mut ms::coach::Coach,
+    learning: &ai::Learning,
+    out: &mut Outputs,
+    on: bool,
+) {
+    coach.set_on(on);
+    {
+        let mut memory = learning.memory();
+        memory.coach = Some(on);
+        memory.save();
+    }
+    out.session
+        .line("coach", if on { "coaching on" } else { "coaching off" });
+    out.show(
+        Kind::Info,
+        if on {
+            "Coaching on: I'll speak up on my own when I see something."
+        } else {
+            "Coaching off: I'll only talk when you ask (and for low HP or MP)."
+        },
+    );
 }
 
 /// What is on screen, as a few lines for a model: what the vision engine
@@ -1788,6 +1834,15 @@ fn run(options: Options) -> Result<(), String> {
     let mut model_logged = false;
     let mut player_language: Option<String> = None;
     let mut turns = Turns::default();
+    // The coach: MapleSyrup speaking up on its own (off when the player
+    // asked for that, for good).
+    let mut coach = ms::coach::Coach::new(learning.memory().coach.unwrap_or(true));
+    // When the player was last heard (talking, or talked), and the last
+    // level-up the companion announced: the coach keeps out of the way.
+    let mut player_heard = Instant::now() - Duration::from_secs(60);
+    let mut level_up_seen = f64::NEG_INFINITY;
+    // The coach's look under way, to call it off when the player talks.
+    let mut coach_job: Option<u64> = None;
 
     let mut preview: Option<Preview> = None;
     let mut preview_failed = false;
@@ -1832,8 +1887,65 @@ fn run(options: Options) -> Result<(), String> {
                     p.show(frame);
                 }
             }
-            let actions = companion.observe(tick.at, tick.obs);
+            let actions = companion.observe(tick.at, tick.obs.clone());
+            if actions
+                .iter()
+                .any(|a| matches!(a, Action::Say(s) if s.speak && s.kind != Kind::Heard))
+            {
+                coach.someone_spoke(now);
+            }
             out.apply(actions, &mut companion, latest_image.clone());
+            if companion.last_level_up() > level_up_seen {
+                level_up_seen = companion.last_level_up();
+                coach.leveled(now, companion.level());
+            }
+            // The coach: is it time for a look at the game, and why?
+            if let Some(worker) = &out.mouth.ai {
+                let in_view = in_front.load(Ordering::Relaxed);
+                let talking = out.mouth.speaking()
+                    || worker.busy()
+                    || turns.busy()
+                    || player_heard.elapsed() < Duration::from_secs(3);
+                let glance = ms::coach::Glance {
+                    now,
+                    obs: &tick.obs,
+                    scene: tick.scene.as_ref(),
+                    in_view,
+                    talking,
+                    muted: companion.muted(),
+                };
+                if let Some(reason) = coach.observe(&glance) {
+                    let snapshot = snapshot_text(&companion, sight.as_ref());
+                    let status = sight.as_ref().and_then(|s| {
+                        s.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .layout
+                            .as_ref()
+                            .and_then(|l| l.status)
+                    });
+                    let eyes = latest_image
+                        .clone()
+                        .filter(|_| in_view)
+                        .map(|frame| Eyes { frame, status });
+                    out.session.line(
+                        "coach",
+                        &format!(
+                            "looking: {} (activity {:.3})",
+                            reason.label(),
+                            tick.scene.as_ref().map(|s| s.activity).unwrap_or(0.0)
+                        ),
+                    );
+                    coach_job = Some(worker.send(Job::Coach {
+                        reason: reason.describe(),
+                        label: reason.label(),
+                        snapshot,
+                        eyes,
+                        said: coach.lines(),
+                        language: player_language.clone(),
+                        speak: !out.live,
+                    }));
+                }
+            }
             // Died without a warning: HP warnings come sooner now, for good.
             if companion.settings.hp_low != warn_at.0 {
                 warn_at.0 = companion.settings.hp_low;
@@ -1874,6 +1986,12 @@ fn run(options: Options) -> Result<(), String> {
             for inbound in hub.take_inbox() {
                 match inbound {
                     Inbound::Heard(heard) => {
+                        player_heard = Instant::now();
+                        coach.someone_spoke(now);
+                        // A look under way gives way to the player.
+                        if let (Some(id), Some(worker)) = (coach_job.take(), &out.mouth.ai) {
+                            worker.cancel(id);
+                        }
                         // MapleSyrup's own voice, heard back by the phone, is
                         // taken out; what is left is the player's. Heard while
                         // it was talking, there must be enough of the player's
@@ -1911,6 +2029,11 @@ fn run(options: Options) -> Result<(), String> {
                             } else {
                                 recording.stop(&mut out, panel_window.as_mut());
                             }
+                            continue;
+                        }
+                        if let Some(on) = commands::coaching_request(&text) {
+                            out.show(Kind::Heard, &text);
+                            set_coaching(&mut coach, &learning, &mut out, on);
                             continue;
                         }
                         if out.mouth.ai.is_some() {
@@ -1964,6 +2087,7 @@ fn run(options: Options) -> Result<(), String> {
                         }
                     }
                     Inbound::Hearing(text) => {
+                        player_heard = Instant::now();
                         // Words as they are said: talked over, or still
                         // talking. (Without a natural voice there is nothing
                         // to stop.)
@@ -1989,7 +2113,9 @@ fn run(options: Options) -> Result<(), String> {
                     Inbound::Said { who, text } => {
                         // On a live call: shown here and kept in the log (the
                         // phone shows it itself).
+                        coach.someone_spoke(now);
                         let kind = if who == "player" {
+                            player_heard = Instant::now();
                             Kind::Heard
                         } else {
                             companion.remember_spoken(now, &text);
@@ -2086,6 +2212,12 @@ fn run(options: Options) -> Result<(), String> {
                                 below,
                             );
                             out.show(Kind::Info, &line);
+                        }
+                        ai::Effect::Command(word)
+                            if word == ai::tools::COACH_ON || word == ai::tools::COACH_OFF =>
+                        {
+                            let on = word == ai::tools::COACH_ON;
+                            set_coaching(&mut coach, &learning, &mut out, on);
                         }
                         ai::Effect::Command(word) if word == ai::tools::RECORD_ON => {
                             recording.start(&mut out)
@@ -2224,6 +2356,7 @@ fn run(options: Options) -> Result<(), String> {
                 Done::Reply { id, text, took, .. } => {
                     turns.finished(id);
                     companion.remember_spoken(now, &text);
+                    coach.someone_spoke(now);
                     out.show(Kind::Reply, &text);
                     out.session
                         .line("timing", &format!("reply in {:.1} s", took.as_secs_f64()));
@@ -2239,6 +2372,39 @@ fn run(options: Options) -> Result<(), String> {
                     }
                 }
                 Done::Noted { line } => out.show(Kind::Info, &line),
+                Done::Coached {
+                    id,
+                    label,
+                    text,
+                    error,
+                    took,
+                } => {
+                    if coach_job == Some(id) {
+                        coach_job = None;
+                    }
+                    coach.answered(now, text.as_deref());
+                    let took = took.as_secs_f64();
+                    match (text, error) {
+                        (Some(line), _) => {
+                            companion.remember_spoken(now, &line);
+                            out.session
+                                .line("coach", &format!("{label}: said in {took:.1} s"));
+                            if out.live {
+                                // The call says it, in its own words.
+                                out.tell(Kind::Alert, &line, true, &mut companion);
+                            }
+                            // (Else the worker showed and said it already.)
+                        }
+                        (None, Some(error)) => {
+                            out.session
+                                .line("coach", &format!("{label}: couldn't look ({error})"));
+                        }
+                        (None, None) => {
+                            out.session
+                                .line("coach", &format!("{label}: nothing to say ({took:.1} s)"));
+                        }
+                    }
+                }
                 Done::Shown { kind, text } => {
                     // Its own line, translated: what the phone may hear back.
                     companion.remember_spoken(now, &text);
@@ -2264,6 +2430,12 @@ fn run(options: Options) -> Result<(), String> {
                         below,
                     );
                     out.show(Kind::Info, &line);
+                }
+                Done::Command { word }
+                    if word == ai::tools::COACH_ON || word == ai::tools::COACH_OFF =>
+                {
+                    let on = word == ai::tools::COACH_ON;
+                    set_coaching(&mut coach, &learning, &mut out, on);
                 }
                 Done::Command { word } if word == ai::tools::RECORD_ON => recording.start(&mut out),
                 Done::Command { word } if word == ai::tools::RECORD_OFF => {

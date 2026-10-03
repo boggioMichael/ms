@@ -218,6 +218,9 @@ pub struct Memory {
     /// The voice it speaks in (an ElevenLabs voice's id; `None` or
     /// "openai": OpenAI's).
     pub voice: Option<String>,
+    /// Whether it speaks up on its own while they play (the coach); None
+    /// is the usual, on.
+    pub coach: Option<bool>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }

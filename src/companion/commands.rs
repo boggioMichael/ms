@@ -377,6 +377,65 @@ pub fn recording_request(sentence: &str) -> Option<bool> {
     }
 }
 
+/// Whether to go on coaching: "stop coaching" / "no more tips" (false),
+/// "coach me" / "give me tips" (true), said in a short sentence (in English
+/// or Hebrew; a model understands the rest).
+pub fn coaching_request(sentence: &str) -> Option<bool> {
+    let text = normalize(sentence);
+    let text = match after_wake_word(&text) {
+        Some(end) => text[end..].trim().to_string(),
+        None => text,
+    };
+    if text.split(' ').filter(|w| !w.is_empty()).count() > 6 {
+        return None;
+    }
+    const STOP: &[&str] = &[
+        "stop coaching",
+        "no coaching",
+        "no more coaching",
+        "no more tips",
+        "no tips",
+        "stop the tips",
+        "stop giving tips",
+        "stop telling me what to do",
+        "dont tell me what to do",
+        "only answer when i ask",
+        "only talk when i ask",
+        "תפסיק לאמן",
+        "בלי אימון",
+        "בלי טיפים",
+        "תפסיק עם הטיפים",
+        "די עם הטיפים",
+        "תפסיק להגיד לי מה לעשות",
+        "אל תגיד לי מה לעשות",
+        "תדבר רק כששואלים",
+        "רק כשאני שואל",
+    ];
+    const START: &[&str] = &[
+        "start coaching",
+        "coach me",
+        "coaching on",
+        "give me tips",
+        "tips on",
+        "tell me what to do",
+        "speak up on your own",
+        "talk on your own",
+        "תאמן אותי",
+        "תתחיל לאמן",
+        "תן לי טיפים",
+        "תן טיפים",
+        "תגיד לי מה לעשות",
+        "תדבר מעצמך",
+    ];
+    if STOP.iter().any(|p| has_phrase(&text, p)) {
+        Some(false)
+    } else if START.iter().any(|p| has_phrase(&text, p)) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
 /// Read one heard sentence. `listening` is true when the wake word was said
 /// on its own a moment ago, so this sentence counts as addressed.
 pub fn interpret(sentence: &str, listening: bool) -> Heard {
@@ -527,6 +586,25 @@ mod tests {
         assert_eq!(recording_request("what's my hp"), None);
         assert_eq!(
             recording_request("yesterday I forgot to start recording my run on the stream"),
+            None
+        );
+    }
+
+    #[test]
+    fn coaching_is_turned_off_and_on_in_short_sentences() {
+        assert_eq!(coaching_request("stop coaching"), Some(false));
+        assert_eq!(coaching_request("Syrup, no more tips."), Some(false));
+        assert_eq!(coaching_request("stop telling me what to do"), Some(false));
+        assert_eq!(coaching_request("only talk when I ask"), Some(false));
+        assert_eq!(coaching_request("די עם הטיפים"), Some(false));
+        assert_eq!(coaching_request("coach me"), Some(true));
+        assert_eq!(coaching_request("ok give me tips again"), Some(true));
+        assert_eq!(coaching_request("תאמן אותי"), Some(true));
+        assert_eq!(coaching_request("what's my hp"), None);
+        assert_eq!(
+            coaching_request(
+                "my friend's coach told me to stop coaching the kids and give me tips"
+            ),
             None
         );
     }

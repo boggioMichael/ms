@@ -179,6 +179,32 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                                     events.push_str("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{}}\n\n");
                                     Response::new(200, "text/event-stream", events.into_bytes())
                                 }
+                                // The coach's look: a word when the watcher
+                                // saw something, silence otherwise.
+                                Some(_)
+                                    if body["instructions"]
+                                        .as_str()
+                                        .unwrap_or("")
+                                        .contains("nobody said anything to you") =>
+                                {
+                                    let last = body["input"]
+                                        .as_array()
+                                        .and_then(|a| a.last())
+                                        .cloned()
+                                        .unwrap_or_default();
+                                    let watcher = last["content"][0]["text"].as_str().unwrap_or("");
+                                    let text = if watcher.contains("nothing is happening") {
+                                        "[silent]"
+                                    } else {
+                                        "Rebuff, you're naked."
+                                    };
+                                    Response::json(
+                                        200,
+                                        &json!({"output": [{"type": "message", "role": "assistant", "content": [
+                                            {"type": "output_text", "text": text}
+                                        ]}]}),
+                                    )
+                                }
                                 // The learner's look back: the notebook, updated.
                                 Some(_) if body["text"]["format"]["name"] == "notebook" => {
                                     let notebook = json!({
@@ -367,6 +393,7 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
             Ok(Done::Command { word }) => panic!("command: {word}"),
             Ok(Done::Warn { what, .. }) => panic!("warn: {what}"),
             Ok(Done::LookUp { question, .. }) => panic!("look-up: {question}"),
+            Ok(Done::Coached { label, .. }) => panic!("coached: {label}"),
             Err(e) => panic!("{e}: {reply:?} {lines:?}"),
         }
     }
@@ -592,6 +619,150 @@ fn its_own_lines_are_translated_shown_and_spoken() {
             .iter()
             .all(|r| r["path"] == "/v1/audio/speech")
     );
+}
+
+#[test]
+fn the_coach_speaks_only_when_there_is_something_to_say() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A look at a quiet game: nothing to say, nothing shown or spoken.
+    let quiet = worker.send(Job::Coach {
+        reason:
+            "Nothing in particular happened (nothing is happening); a callout only if deserved."
+                .into(),
+        label: "a look".into(),
+        snapshot: "HP 80%".into(),
+        eyes: None,
+        said: Vec::new(),
+        language: None,
+        speak: true,
+    });
+    match worker.done.recv_timeout(Duration::from_secs(30)) {
+        Ok(Done::Coached {
+            id, text, error, ..
+        }) => {
+            assert_eq!(id, quiet);
+            assert_eq!(text, None);
+            assert_eq!(error, None);
+        }
+        other => panic!("{}", describe(other)),
+    }
+    // Somewhere new: a line, shown as an alert, said, and reported.
+    let scene = worker.send(Job::Coach {
+        reason: "They just arrived somewhere new.".into(),
+        label: "new scene".into(),
+        snapshot: "HP 80%".into(),
+        eyes: None,
+        said: vec!["Go left.".into()],
+        language: Some("he-IL".into()),
+        speak: true,
+    });
+    let (mut shown, mut spoken, mut coached) = (None, None, None);
+    while shown.is_none() || spoken.is_none() || coached.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, kind }) => {
+                assert_eq!(kind, ms::companion::Kind::Alert);
+                shown = Some(text);
+            }
+            Ok(Done::Audio {
+                id,
+                text,
+                start: true,
+                ..
+            }) => {
+                assert_eq!(id, scene);
+                spoken = Some(text);
+            }
+            Ok(Done::Coached { id, text, .. }) => {
+                assert_eq!(id, scene);
+                coached = Some(text);
+            }
+            Ok(Done::Audio { .. }) => {}
+            other => panic!("{}", describe(other)),
+        }
+    }
+    assert_eq!(shown.as_deref(), Some("Rebuff, you're naked."));
+    assert_eq!(spoken, shown);
+    assert_eq!(coached, Some(shown));
+    // What the model was asked: the watcher's message, with what was said
+    // lately and the language, no tools, a short answer.
+    let requests = seen.lock().unwrap();
+    let looks: Vec<&Value> = requests
+        .iter()
+        .filter(|r| r["path"] == "/v1/responses")
+        .collect();
+    // (Two looks, each through the model fallback.)
+    assert_eq!(looks.len(), 4, "{looks:?}");
+    let body = &looks[3]["body"];
+    assert_eq!(body["max_output_tokens"], 60);
+    assert!(
+        body.get("tools")
+            .is_none_or(|t| t.as_array().is_none_or(|a| a.is_empty()))
+    );
+    let message = body["input"].as_array().unwrap().last().unwrap().clone();
+    let text = message["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("[Not the player: your game watcher."),
+        "{text}"
+    );
+    assert!(
+        text.contains("HP 80%") && text.contains("somewhere new"),
+        "{text}"
+    );
+    assert!(
+        text.contains("don't repeat it") && text.contains("- Go left."),
+        "{text}"
+    );
+    assert!(text.contains("Hebrew"), "{text}");
+    // Its line joined the conversation, after the watcher's word.
+    drop(requests);
+    worker.send(Job::Converse {
+        heard: "why?".into(),
+        snapshot: "HP 80%".into(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { .. }) => break,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    let requests = seen.lock().unwrap();
+    let why = requests
+        .iter()
+        .rfind(|r| r["path"] == "/v1/responses")
+        .unwrap();
+    let input = why["body"]["input"].to_string();
+    assert!(
+        input.contains("game watcher, not the player: new scene"),
+        "{input}"
+    );
+    assert!(input.contains("Rebuff, you're naked."), "{input}");
+}
+
+/// A `Done` (or the lack of one) in a few words, for a failing test.
+fn describe(done: Result<Done, std::sync::mpsc::RecvTimeoutError>) -> String {
+    match done {
+        Ok(Done::Reply { text, .. }) => format!("reply: {text}"),
+        Ok(Done::Silent { heard, .. }) => format!("silent: {heard}"),
+        Ok(Done::Audio { text, .. }) => format!("audio: {text}"),
+        Ok(Done::Failed { error, .. }) => format!("failed: {error}"),
+        Ok(Done::Noted { line }) => format!("noted: {line}"),
+        Ok(Done::Shown { text, .. }) => format!("shown: {text}"),
+        Ok(Done::Command { word }) => format!("command: {word}"),
+        Ok(Done::Warn { what, .. }) => format!("warn: {what}"),
+        Ok(Done::LookUp { question, .. }) => format!("look-up: {question}"),
+        Ok(Done::Coached { label, text, .. }) => format!("coached: {label}: {text:?}"),
+        Err(e) => e.to_string(),
+    }
 }
 
 #[test]

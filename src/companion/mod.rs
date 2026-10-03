@@ -579,6 +579,16 @@ impl Companion {
     }
 
     /// Whether a sentence now would count as addressed without the wake word.
+    /// When a level-up was last announced (never: minus infinity).
+    pub fn last_level_up(&self) -> f64 {
+        self.announced_level_up
+    }
+
+    /// The level, as last believed.
+    pub fn level(&self) -> Option<u32> {
+        self.last_level
+    }
+
     pub fn listening(&self, now: f64) -> bool {
         now <= self.listening_until
     }

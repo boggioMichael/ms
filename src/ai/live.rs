@@ -80,7 +80,9 @@ were wrong. Never mention it.
 - forget_thing when asked to forget something you learned; look_closer to read small text or details.
 - mark_moment when they ask you to mark or save the moment; set_muted when they ask you to be quiet or to \
 talk again.
-- set_recording when they ask you to start or stop recording (a video of the screen with all the sound).";
+- set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
+- set_coaching when they ask you to stop speaking up on your own (\"only talk when I ask\", \"no more tips\"), or \
+to start again.";
 
 /// The instructions for a call: who it is, its rules and the attitude the
 /// player picked, what it learned about the player (`learned`: what they

@@ -125,6 +125,8 @@ pub const IDLE_ACTIVITY: f32 = 0.002;
 pub const SETTLE_IN: f64 = 10.0;
 /// A reason not acted on within this long is stale, in seconds.
 const STALE_AFTER: f64 = 60.0;
+/// A look nothing came back from in this long is given up on, in seconds.
+const CONSULT_TIMEOUT: f64 = 45.0;
 /// The coach's lines kept for the model (not to repeat itself).
 const KEEP_LINES: usize = 6;
 
@@ -220,6 +222,10 @@ impl Coach {
             .is_some_and(|(_, since)| now - since > STALE_AFTER)
         {
             self.pending = None;
+        }
+        if self.consulting && now - self.last_consult >= CONSULT_TIMEOUT {
+            // Nothing came back: not held up by it for good.
+            self.consulting = false;
         }
         if g.talking || self.consulting {
             return None;
