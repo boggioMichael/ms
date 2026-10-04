@@ -9,8 +9,8 @@
 
 use serde::Serialize;
 
-use crate::vision::WorldState;
 use crate::vision::hud_ocr::{HudField, HudOcrResult, ParsedValue};
+use crate::vision::{Reliability, WorldState};
 
 /// One of HP, MP or EXP.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -71,10 +71,22 @@ impl Observation {
     }
 
     /// Everything the engine saw in `world`, from the window called `title`.
+    ///
+    /// A bar the HUD geometry detector only guessed at — a run of the right
+    /// colour somewhere in the status band, with no number read beside it
+    /// to back it — is left out: on a screen whose HUD it was not tuned
+    /// for, such a guess can swing from 3% to 46% and back within seconds,
+    /// and every swing would be a warning (one night of them ran to 3,400).
+    /// What the player's own learned sight measures is put in afterwards,
+    /// by [`crate::sight::Sight::apply`].
     pub fn from_world(title: &str, world: &WorldState) -> Self {
         let field = |field: HudField| world.hud.ocr.iter().find(|r| r.field == field);
         let bar = |metric: &crate::vision::Detection<crate::vision::detectors::hud::HudMetric>| {
-            metric.value.as_ref().and_then(|m| m.percent)
+            metric
+                .value
+                .as_ref()
+                .filter(|_| metric.reliability == Reliability::Corroborated)
+                .and_then(|m| m.percent)
         };
         Self {
             game: GameView::Seen(title.to_string()),
@@ -185,6 +197,38 @@ mod tests {
         assert!(!g.read);
         assert_eq!(g.percent, 80.0);
         assert_eq!(g.current, None);
+    }
+
+    #[test]
+    fn a_bar_the_detector_only_guessed_at_is_not_an_observation() {
+        use crate::vision::detectors::hud::HudMetric;
+        use crate::vision::{Confidence, Detection, Detectors, PerceptionPipeline};
+        let blank = image::RgbaImage::new(64, 64);
+        let mut world = PerceptionPipeline::new().detect_some(&blank, 1, Detectors::NONE);
+        let metric = |percent: f32, value: Option<u64>| HudMetric {
+            label: "x".into(),
+            percent: Some(percent),
+            value,
+            max: None,
+            raw_text: None,
+        };
+        // A run of red somewhere in the band, nothing read beside it.
+        world.hud.hp = Detection::found(
+            metric(9.0, None),
+            Confidence::new(0.55),
+            "hud",
+            Reliability::Heuristic,
+        );
+        // A blue bar with "3574 / 3574" read over it.
+        world.hud.mp = Detection::found(
+            metric(100.0, Some(3574)),
+            Confidence::new(0.9),
+            "hud",
+            Reliability::Corroborated,
+        );
+        let obs = Observation::from_world("MapleStory", &world);
+        assert_eq!(obs.hp, None, "{:?}", obs.hp);
+        assert_eq!(obs.mp.map(|g| g.percent), Some(100.0));
     }
 
     #[test]

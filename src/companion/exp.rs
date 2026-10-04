@@ -25,8 +25,13 @@ const MAX_PAIRS_SAMPLES: usize = 150;
 const WRAP_CONFIRMATIONS: usize = 3;
 /// …and how long, in seconds: a bar misread as full every other frame
 /// (something of its colour along the empty track) falls and recovers ten
-/// times a second; a level-up stays down.
-const WRAP_SECS: f64 = 2.0;
+/// times a second, and a dialog over the bar reads as empty for as long
+/// as it is open; a level-up stays down.
+const WRAP_SECS: f64 = 4.0;
+/// A level-up is a fall from a bar that was nearly full: a fall from 30%
+/// is the bar going out of sight (a dialog over it, a cutscene), not a
+/// level — one night of those ran to seventy "level-ups".
+const WRAP_FROM: f64 = 80.0;
 /// Recent readings whose median is "where EXP is now".
 const RECENT: usize = 5;
 
@@ -97,7 +102,11 @@ impl ExpTracker {
         if let Some(baseline) = self.current()
             && baseline - percent > 50.0
         {
-            // A fall from high to low: a level-up if it lasts, else a misread.
+            // A fall from high to low: a level-up if it lasts and the bar
+            // was nearly full, else a misread (or the bar out of sight).
+            if baseline < WRAP_FROM {
+                return false;
+            }
             self.pending.push((t, percent));
             let lasted = t - self.pending[0].0 >= WRAP_SECS;
             if self.pending.len() >= WRAP_CONFIRMATIONS && lasted {
@@ -324,7 +333,7 @@ mod tests {
         assert!(!tracker.add(11.5, 99.0));
         assert_eq!(tracker.levels_gained(), 0);
         // A real one at frame rate: down and staying down, counted once
-        // the fall has lasted two seconds.
+        // the fall has lasted four seconds.
         let mut tracker = ExpTracker::new();
         for i in 0..50 {
             tracker.add(i as f64 * 0.1, 99.5);
@@ -336,8 +345,30 @@ mod tests {
                 counted_at = Some(t);
             }
         }
-        assert!((counted_at.unwrap() - 7.0).abs() < 0.11, "{counted_at:?}");
+        assert!((counted_at.unwrap() - 9.0).abs() < 0.11, "{counted_at:?}");
         assert_eq!(tracker.levels_gained(), 1);
+    }
+
+    #[test]
+    fn a_bar_going_out_of_sight_from_halfway_is_not_a_level_up() {
+        // EXP at 31%, then a dialog over the bar for twenty seconds (the
+        // bar reads as empty), then the dialog closes; and again.
+        let mut tracker = ExpTracker::new();
+        for i in 0..50 {
+            tracker.add(i as f64 * 0.1, 31.0);
+        }
+        for round in 0..3 {
+            let base = 5.0 + round as f64 * 30.0;
+            for i in 0..200 {
+                assert!(!tracker.add(base + i as f64 * 0.1, 0.0));
+            }
+            for i in 0..100 {
+                assert!(!tracker.add(base + 20.0 + i as f64 * 0.1, 31.2));
+            }
+        }
+        assert_eq!(tracker.levels_gained(), 0);
+        // The readings while it was out of sight did not drag the rate.
+        assert!(tracker.per_hour().is_none_or(|r| r.abs() < 5.0));
     }
 
     #[test]
