@@ -219,6 +219,12 @@ pub struct Live {
     /// first moment is how things are, not something happening.
     first_look: Option<Instant>,
     last_fired: Option<Instant>,
+    /// How long after firing the alert waits before it may fire again:
+    /// [`ALERT_COOLDOWN`] to begin with, doubling each time it fires again
+    /// soon after (a level-up effect taught from a few frames of sparkle
+    /// "appears" every half minute all night), back to the start once it
+    /// has been quiet a long while.
+    cooldown: Option<Duration>,
     previous_text: Option<String>,
 }
 
@@ -313,6 +319,9 @@ pub struct Fired {
     pub id: String,
     pub name: String,
     pub say: String,
+    /// How long this alert now waits before firing again, when that has
+    /// grown past the usual (it keeps firing): a note for the log.
+    pub waits: Option<Duration>,
 }
 
 /// A near miss to show the vision model: is this the same thing?
@@ -342,8 +351,11 @@ const MAX_PICTURES: usize = 8;
 const PICTURE_EVERY: Duration = Duration::from_millis(500);
 const GAUGE_EVERY: Duration = Duration::from_millis(250);
 const TEXT_EVERY: Duration = Duration::from_secs(3);
-/// An alert does not repeat sooner than this.
+/// An alert does not repeat sooner than this…
 const ALERT_COOLDOWN: Duration = Duration::from_secs(15);
+/// …and one that fires again within a few times its wait doubles the wait,
+/// up to here; quiet for this long, it starts over.
+const ALERT_COOLDOWN_MAX: Duration = Duration::from_secs(600);
 /// An alert arms again only once its condition has been over this long:
 /// a thing that is always on screen (the character, the minimap) and
 /// slips the tracker for a frame or two is not appearing.
@@ -999,6 +1011,7 @@ impl Things {
                     id: thing.id.clone(),
                     name: thing.name.clone(),
                     say,
+                    waits: thing.live.cooldown.filter(|c| *c > ALERT_COOLDOWN),
                 });
             }
             thing.live.reading = Some(reading);
@@ -1068,11 +1081,21 @@ impl Things {
             return None;
         }
         live.streak += 1;
+        let cooldown = live.cooldown.unwrap_or(ALERT_COOLDOWN);
         let cooled = live
             .last_fired
-            .is_none_or(|t| now.duration_since(t) >= ALERT_COOLDOWN);
+            .is_none_or(|t| now.duration_since(t) >= cooldown);
         if live.streak >= 2 && !live.disarmed && cooled {
             live.disarmed = true;
+            // Firing again soon after the last time: the wait doubles.
+            // Quiet for a long while before this: it starts over.
+            live.cooldown = Some(match live.last_fired {
+                Some(t) if now.duration_since(t) >= ALERT_COOLDOWN_MAX => ALERT_COOLDOWN,
+                Some(t) if now.duration_since(t) < cooldown * 4 => {
+                    (cooldown * 2).min(ALERT_COOLDOWN_MAX)
+                }
+                _ => cooldown,
+            });
             live.last_fired = Some(now);
             if alert.when == When::Changes
                 && let Reading::Text { text } = reading
@@ -1248,6 +1271,47 @@ mod tests {
             Some("Orange Mushroom")
         );
         assert!(Things::load(&dir).list.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_thing_that_keeps_appearing_is_called_out_less_and_less() {
+        let dir = temp_dir("keeps-appearing");
+        let mut things = Things::load(&dir);
+        let place = NBox::from_pixels(92, 292, 52, 50, 800, 450);
+        let alert = Alert {
+            when: When::Appears,
+            threshold: None,
+            say: "Level up!".into(),
+        };
+        things
+            .learn(
+                &field(&[(100, 300)]),
+                teach("level-up effect", Kind::Object, place, Some(alert)),
+            )
+            .unwrap();
+        // Gone three seconds, there three seconds, for six minutes (a
+        // sparkle taught as a level-up), ten frames a second.
+        let t0 = Instant::now();
+        let (gone, there) = (field(&[]), field(&[(150, 100)]));
+        let mut fired_at: Vec<f64> = Vec::new();
+        for i in 0..3600u64 {
+            let at = t0 + Duration::from_millis(100 * i);
+            let frame = if (i / 30) % 2 == 0 { &gone } else { &there };
+            for f in things.run(frame, at) {
+                fired_at.push(i as f64 * 0.1);
+                if let Some(w) = f.waits {
+                    assert!(w > ALERT_COOLDOWN && w <= ALERT_COOLDOWN_MAX, "{w:?}");
+                }
+            }
+        }
+        // Once every six seconds would be sixty; the wait doubles each
+        // time it fires again soon after (up to ten minutes), so the gaps
+        // grow: about 12, 30, 60, 120 seconds.
+        assert!((4..=8).contains(&fired_at.len()), "{fired_at:?}");
+        let gaps: Vec<f64> = fired_at.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(gaps.windows(2).all(|g| g[1] >= g[0]), "{gaps:?}");
+        assert!(gaps.last().is_some_and(|g| *g >= 100.0), "{gaps:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
