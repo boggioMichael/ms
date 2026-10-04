@@ -39,15 +39,16 @@ use ms::companion::commands::{self, Heard};
 use ms::companion::{Action, Command, Companion, GameView, Kind, Observation, Settings};
 use ms::observe::frame_result::{FrameTimings, VisionFrameResult};
 use ms::observe::preview::Preview;
+use ms::perceive::{Look, Perceived, perceive};
 use ms::phone::{self, Hub, Inbound, VoiceOn, qr, tls, tunnel};
 use ms::platform::overlay::{self, Overlay};
 use ms::platform::sound::Player;
 use ms::platform::{self, voice::Voice};
 use ms::sight::Sight;
 use ms::sight::things::Fired;
-use ms::util::timing::FPSCounter;
-use ms::vision::snapshot::PerceptionPipeline;
+use ms::vision::snapshot::{Detectors, PerceptionPipeline};
 use serde_json::json;
+use syrup::timing::FPSCounter;
 
 const USAGE: &str = "\
 MapleSyrup — the MapleStory companion.
@@ -101,6 +102,16 @@ OPTIONS
   --overlay-on-stream   let OBS and screenshots see the panel (by default it
                         keeps out of captures)
   --plain               no colours or redrawing in the console
+  --no-update           never look for a new version (it updates itself
+                        otherwise: fetched in the background, installed at
+                        the next start, rolled back if it does not come up)
+  --workshop            let it rewrite itself on this PC when asked (\"change
+                        yourself: ...\"): a coding agent installed here (Claude
+                        Code or Codex) changes the source in --repo, it is
+                        built and tested, and the new program installs at the
+                        next start. Also a switch on the phone.
+  --repo PATH           the checkout of MapleSyrup's source the workshop works
+                        in (default %USERPROFILE%\\GitHub\\ms, or MAPLESYRUP_REPO)
   --self-test           check this PC: the engine, the phone link, the voice
   --record-test         check recording on this PC: a few seconds of the screen
                         with a flash and a tone, which must line up
@@ -140,6 +151,12 @@ struct Options {
     overlay: bool,
     overlay_on_stream: bool,
     plain: bool,
+    /// Looks for a new version of itself and installs it.
+    update: bool,
+    /// Rewrites itself on this PC when asked (None: as set on the phone).
+    workshop: Option<bool>,
+    /// The checkout the workshop works in (None: the usual place).
+    repo: Option<PathBuf>,
     self_test: bool,
     record_test: bool,
     /// How it talks (None: what the player picked on the phone).
@@ -177,6 +194,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
         overlay: true,
         overlay_on_stream: false,
         plain: false,
+        update: std::env::var_os("MAPLESYRUP_NO_UPDATE").is_none(),
+        workshop: None,
+        repo: None,
         self_test: false,
         record_test: false,
         attitude: None,
@@ -230,6 +250,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--no-overlay" => o.overlay = false,
             "--overlay-on-stream" => o.overlay_on_stream = true,
             "--plain" => o.plain = true,
+            "--no-update" => o.update = false,
+            "--workshop" => o.workshop = Some(true),
+            "--repo" => o.repo = Some(PathBuf::from(value("--repo")?)),
             "--self-test" => o.self_test = true,
             "--record-test" => o.record_test = true,
             "--attitude" => {
@@ -249,6 +272,15 @@ fn parse(args: &[String]) -> Result<Options, String> {
 }
 
 fn main() {
+    // `MS_OCR` chose the text reader before OCR moved into Syrup; it still
+    // does, through Syrup's own variable.
+    if let Some(engine) = std::env::var_os("MS_OCR")
+        && std::env::var_os("SYRUP_OCR").is_none()
+    {
+        // SAFETY: nothing else is running yet; the variable is read later,
+        // on other threads, through the usual lock.
+        unsafe { std::env::set_var("SYRUP_OCR", engine) };
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match parse(&args) {
         Ok(o) => o,
@@ -266,7 +298,21 @@ fn main() {
     if options.record_test {
         std::process::exit(selftest::record_test());
     }
-    if let Err(e) = run(options) {
+    // A new version fetched last time goes in now (the previous one kept
+    // beside it), or the kept one comes back when the new one did not come
+    // up: either way the program in place is started, and this one leaves.
+    if options.update
+        && let Ok(exe) = std::env::current_exe()
+        && let ms::update::Start::Relaunch(exe) =
+            ms::update::at_start(&tls::settings_dir(), &exe, env!("CARGO_PKG_VERSION"))
+    {
+        println!("MapleSyrup: starting the version just put in place…");
+        match ms::update::relaunch(&exe, &args) {
+            Ok(()) => return,
+            Err(e) => eprintln!("{e}\nCarrying on with this one."),
+        }
+    }
+    if let Err(e) = run(options, args) {
         eprintln!("\nMapleSyrup stopped: {e}");
         pause_if_double_clicked();
         std::process::exit(1);
@@ -353,6 +399,10 @@ struct Tick {
     frame: Option<VisionFrameResult>,
     /// Alerts of things the player taught, that fired on this frame.
     fired: Vec<Fired>,
+    /// A line worth showing once: where the frames come from.
+    note: Option<String>,
+    /// What the frame's fingerprint says: how much changed, a new scene.
+    scene: Option<ms::coach::scene::Verdict>,
 }
 
 /// The newest tick; an unread one is replaced (the main loop is never
@@ -374,7 +424,7 @@ enum Source {
     Game(GameCapture),
     Still {
         label: String,
-        image: RgbaImage,
+        image: Arc<RgbaImage>,
     },
     Frames {
         label: String,
@@ -418,7 +468,7 @@ impl Source {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| "image".into()),
-                image,
+                image: Arc::new(image),
             });
         }
         Ok(Source::Game(match &options.window {
@@ -427,12 +477,20 @@ impl Source {
         }))
     }
 
+    /// Where the game's frames come from (see [`GameCapture::path`]).
+    fn path(&self) -> Option<String> {
+        match self {
+            Source::Game(capture) => capture.path(),
+            _ => None,
+        }
+    }
+
     fn next(&mut self) -> Captured {
         match self {
             Source::Game(capture) => capture.capture(),
             Source::Still { label, image } => Captured::Frame {
                 title: label.clone(),
-                image: image.clone(),
+                image: Arc::clone(image),
             },
             Source::Frames {
                 label,
@@ -448,7 +506,7 @@ impl Source {
                             (*cursor - 1) % paths.len() + 1,
                             paths.len()
                         ),
-                        image: img.to_rgba8(),
+                        image: Arc::new(img.to_rgba8()),
                     },
                     Err(e) => Captured::Unavailable(format!("{}: {e}", path.display())),
                 }
@@ -465,13 +523,98 @@ struct Shared {
     in_front: Arc<AtomicBool>,
 }
 
-/// Capture and the vision engine, on a thread of their own.
+/// What the capture thread hands the vision thread: one attempt to
+/// capture, how long it took, and a line to show if the frames' source
+/// changed.
+struct Grabbed {
+    captured: Captured,
+    took: Duration,
+    note: Option<String>,
+}
+
+/// The newest capture, waiting for the vision thread: a mailbox of one.
+/// A frame the vision thread has not taken by the time the next arrives is
+/// dropped — the companion wants the latest picture, not a backlog.
+#[derive(Default)]
+struct Mailbox {
+    slot: Mutex<Option<Grabbed>>,
+    arrived: std::sync::Condvar,
+}
+
+impl Mailbox {
+    fn put(&self, grabbed: Grabbed) {
+        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(grabbed);
+        self.arrived.notify_one();
+    }
+
+    /// The newest capture, waiting up to `timeout` for one.
+    fn take(&self, timeout: Duration) -> Option<Grabbed> {
+        let guard = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut guard, _) = self
+            .arrived
+            .wait_timeout_while(guard, timeout, |slot| slot.is_none())
+            .unwrap_or_else(|e| e.into_inner());
+        guard.take()
+    }
+}
+
+/// Capture, on a thread of its own: a frame every `1/fps` seconds (half a
+/// second between tries while the game cannot be captured) into the
+/// mailbox, so the vision thread never waits on the compositor or on GDI,
+/// and a slow frame of vision costs the next capture nothing.
+fn grab(mut source: Source, mailbox: Arc<Mailbox>, running: Arc<AtomicBool>, fps: f64) {
+    let period = Duration::from_secs_f64(1.0 / fps);
+    let mut capture_path: Option<String> = None;
+    while running.load(Ordering::Relaxed) {
+        let began = Instant::now();
+        let captured = source.next();
+        let took = began.elapsed();
+        let seen = matches!(captured, Captured::Frame { .. });
+        // Said once, and again if the path changes (the GPU path giving
+        // up, say): where the frames are coming from.
+        let note = match &captured {
+            Captured::Frame { image, .. } => {
+                let path = source.path();
+                (path != capture_path).then(|| {
+                    capture_path = path;
+                    capture_path.as_ref().map(|path| {
+                        format!(
+                            "capture: {}x{} frames from {path}",
+                            image.width(),
+                            image.height()
+                        )
+                    })
+                })
+            }
+            _ => None,
+        };
+        mailbox.put(Grabbed {
+            captured,
+            took,
+            note: note.flatten(),
+        });
+        let rest = if seen {
+            period.checked_sub(began.elapsed())
+        } else {
+            Some(Duration::from_millis(500))
+        };
+        if let Some(rest) = rest {
+            std::thread::sleep(rest);
+        }
+    }
+}
+
+/// The vision engine, on a thread of its own: every frame the capture
+/// thread puts in the mailbox goes through `perceive` and out as a tick.
+///
+/// `wanted` says which detectors run on every frame: the HUD alone when
+/// nothing shows the rest, everything when the preview window does.
 fn watch(
-    mut source: Source,
+    mailbox: Arc<Mailbox>,
     slot: Arc<TickSlot>,
     running: Arc<AtomicBool>,
     start: Instant,
-    fps: f64,
+    wanted: Detectors,
     shared: Shared,
 ) {
     let Shared {
@@ -483,39 +626,59 @@ fn watch(
     let mut counter = FPSCounter::new(30);
     let mut frame_id: u64 = 0;
     let mut previous = Instant::now();
-    let period = Duration::from_secs_f64(1.0 / fps);
+    let mut scenes = ms::coach::scene::Scenes::default();
     while running.load(Ordering::Relaxed) {
-        let began = Instant::now();
-        match source.next() {
+        let Some(Grabbed {
+            captured,
+            took: capture,
+            note,
+        }) = mailbox.take(Duration::from_millis(250))
+        else {
+            continue;
+        };
+        match captured {
             Captured::Frame { title, image } => {
-                let capture = began.elapsed();
                 frame_id += 1;
                 let vision_start = Instant::now();
-                let world = pipeline.detect_frame(&image, frame_id);
-                let image = Arc::new(image);
-                let mut obs = Observation::from_world(&title, &world);
                 // What MapleSyrup learned about this screen replaces the
                 // old HUD reader's guesses. Only while the game is the window
                 // in front: the capture is of the screen where the game is,
                 // so another window over it would be measured (and sent to
                 // OpenAI) instead.
-                let mut fired = Vec::new();
                 let in_view = in_front.load(Ordering::Relaxed);
                 if in_view {
                     latest.put(Arc::clone(&image));
                 } else {
                     latest.clear();
                 }
-                if let Some(sight) = &sight {
-                    let mut sight = sight.lock().unwrap_or_else(|e| e.into_inner());
-                    let seen = if in_view {
-                        sight.observe(&image, Instant::now())
-                    } else {
-                        Default::default()
-                    };
-                    sight.apply(&mut obs, &seen);
-                    fired = seen.fired;
-                }
+                let Perceived { world, obs, seen } = {
+                    let _frame_span = tracing::trace_span!("frame").entered();
+                    let mut sight = sight
+                        .as_ref()
+                        .map(|s| s.lock().unwrap_or_else(|e| e.into_inner()));
+                    perceive(
+                        &mut pipeline,
+                        sight.as_deref_mut(),
+                        wanted,
+                        &Look {
+                            title: &title,
+                            frame: &image,
+                            frame_id,
+                            now: Instant::now(),
+                            in_view,
+                        },
+                    )
+                };
+                let fired = seen.fired;
+                // One scene from the next, for the coach (a few thousand
+                // pixels, whatever the frame's size).
+                let scene = in_view.then(|| {
+                    let _span = tracing::trace_span!("scene").entered();
+                    scenes.observe(
+                        start.elapsed().as_secs_f64(),
+                        ms::coach::scene::Fingerprint::of(&image),
+                    )
+                });
                 let vision = vision_start.elapsed();
                 let now = Instant::now();
                 let interval = now.duration_since(previous);
@@ -539,10 +702,9 @@ fn watch(
                     obs,
                     frame: Some(frame),
                     fired,
+                    note,
+                    scene,
                 });
-                if let Some(rest) = period.checked_sub(began.elapsed()) {
-                    std::thread::sleep(rest);
-                }
             }
             Captured::NotFound => {
                 latest.clear();
@@ -551,8 +713,9 @@ fn watch(
                     obs: Observation::unseen(GameView::NotFound),
                     frame: None,
                     fired: Vec::new(),
+                    note: None,
+                    scene: None,
                 });
-                std::thread::sleep(Duration::from_millis(500));
             }
             Captured::Unavailable(why) => {
                 latest.clear();
@@ -561,8 +724,9 @@ fn watch(
                     obs: Observation::unseen(GameView::Unavailable(why)),
                     frame: None,
                     fired: Vec::new(),
+                    note: None,
+                    scene: None,
                 });
-                std::thread::sleep(Duration::from_millis(500));
             }
         }
     }
@@ -809,6 +973,11 @@ impl Turns {
         }
     }
 
+    /// A reply is being made (or words wait for the rest of a sentence).
+    fn busy(&self) -> bool {
+        self.held.is_some() || self.reply.as_ref().is_some_and(|r| !r.done)
+    }
+
     fn asked(&mut self, id: u64, heard: &str) {
         self.reply = Some(Asked {
             id,
@@ -876,6 +1045,32 @@ fn heard_of(line: &str, played: Duration) -> String {
     heard
 }
 
+/// Coaching on or off, for good (the player asked, by voice or through the
+/// model), said back in a word.
+fn set_coaching(
+    coach: &mut ms::coach::Coach,
+    learning: &ai::Learning,
+    out: &mut Outputs,
+    on: bool,
+) {
+    coach.set_on(on);
+    {
+        let mut memory = learning.memory();
+        memory.coach = Some(on);
+        memory.save();
+    }
+    out.session
+        .line("coach", if on { "coaching on" } else { "coaching off" });
+    out.show(
+        Kind::Info,
+        if on {
+            "Coaching on: I'll speak up on my own when I see something."
+        } else {
+            "Coaching off: I'll only talk when you ask (and for low HP or MP)."
+        },
+    );
+}
+
 /// What is on screen, as a few lines for a model: what the vision engine
 /// reads, and what MapleSyrup learned about this screen.
 fn snapshot_text(companion: &Companion, sight: Option<&Arc<Mutex<Sight>>>) -> String {
@@ -917,6 +1112,50 @@ fn conversation_job(
         speak: true,
         eyes,
         language,
+    }
+}
+
+/// The end of the session so far, for the workshop's coder: what was
+/// heard, said and noticed lately.
+fn recent_log(out: &Outputs) -> String {
+    out.log
+        .iter()
+        .rev()
+        .take(30)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|l| format!("[{}] {}", kind_label(l.kind), l.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One of MapleSyrup's own lines, said in its voice (and shown): through
+/// the AI worker when there is one (the voice the player picked), else as
+/// the PC says things.
+fn say_line(out: &mut Outputs, line: String) {
+    match &out.mouth.ai {
+        Some(worker) => {
+            worker.send(Job::Say {
+                heard: None,
+                text: line,
+            });
+        }
+        None => out.push(Kind::Reply, line),
+    }
+}
+
+/// Hand the workshop a task and tell the player what happens now.
+fn workshop_ask(workshop: &ms::workshop::Workshop, task: ms::workshop::Task, out: &mut Outputs) {
+    match workshop.ask(task) {
+        Ok(line) => {
+            out.session.line("workshop", &line);
+            say_line(out, line);
+        }
+        Err(why) => {
+            out.session.line("workshop", &why);
+            say_line(out, format!("I can't change myself right now: {why}"));
+        }
     }
 }
 
@@ -1238,7 +1477,7 @@ fn openai_key(options: &Options, settings: &Path) -> Option<String> {
     Some(key)
 }
 
-fn run(options: Options) -> Result<(), String> {
+fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     let console = platform::init("MapleSyrup (close this window or press Ctrl+C to stop)");
     let ansi = console.ansi && !options.plain;
     let start = Instant::now();
@@ -1253,6 +1492,55 @@ fn run(options: Options) -> Result<(), String> {
     if let Some(attitude) = options.attitude {
         learning.memory().attitude = attitude;
     }
+    // New versions: looked for in the background and staged for the next
+    // start, unless asked not to (here, or on the phone, for good).
+    let (update_tx, update_rx) = mpsc::channel::<ms::update::Event>();
+    let updater = Arc::new(ms::update::Updater::new(
+        &settings_dir,
+        env!("CARGO_PKG_VERSION"),
+        options.update && learning.memory().updates.unwrap_or(true),
+    ));
+    if options.update {
+        Arc::clone(&updater).spawn(update_tx);
+    }
+    // The workshop: MapleSyrup rewriting itself on this PC when asked (a
+    // coding agent installed here, the local checkout, a build, the
+    // updater's staging). While it is on, the channel's releases are not
+    // taken: they would wipe the local work.
+    let workshop_on = options
+        .workshop
+        .or(learning.memory().workshop)
+        .unwrap_or(false);
+    let workshop = Arc::new(ms::workshop::Workshop::new(
+        &settings_dir,
+        options
+            .repo
+            .clone()
+            .unwrap_or_else(ms::workshop::default_repo),
+        ms::workshop::Running {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            commit: env!("MS_COMMIT").to_string(),
+        },
+        workshop_on,
+    ));
+    if let Some(coder) = learning
+        .memory()
+        .workshop_coder
+        .as_deref()
+        .and_then(ms::workshop::Coder::parse)
+    {
+        let _ = workshop.prefer(coder);
+    }
+    let (workshop_tx, workshop_rx) = mpsc::channel::<ms::workshop::Event>();
+    Arc::clone(&workshop).spawn(workshop_tx);
+    if workshop_on {
+        updater.set_auto(false);
+    }
+    // The new version this is, until it has run long enough to be kept.
+    let mut update_committed = !options.update;
+    // "Update now" from the phone: the staged version put in place, to be
+    // started once this one has wound down.
+    let mut relaunch_as: Option<String> = None;
     // ElevenLabs voices, with a key: the account's voices are listed on the
     // phone (fetched on the side), and the one picked speaks.
     let elevenlabs_key = ai::load_elevenlabs_key(&settings_dir);
@@ -1315,7 +1603,11 @@ fn run(options: Options) -> Result<(), String> {
     let mut ai_note = String::from("no OpenAI key: simple answers, Windows voice");
     let latest = Arc::new(Latest::default());
     let (news_tx, news_rx) = mpsc::channel::<News>();
-    let mut sight: Option<Arc<Mutex<Sight>>> = None;
+    // What it learned about this screen: the HUD, found from the pixels
+    // and read in the game's own font, with or without a model to ask.
+    let learned = Arc::new(Mutex::new(Sight::load(&settings_dir.join("learned"))));
+    let sight: Option<Arc<Mutex<Sight>>> = Some(Arc::clone(&learned));
+    let mut teacher_started = false;
     let mut live_service: Option<Arc<LiveService>> = None;
     let mut lookups: Option<(ai::lookup::Lookups, mpsc::Receiver<ai::lookup::Found>)> = None;
     let worker = match openai_key(&options, &settings_dir) {
@@ -1357,7 +1649,6 @@ fn run(options: Options) -> Result<(), String> {
                             learned_tx.clone(),
                         );
                     }
-                    let learned = Arc::new(Mutex::new(Sight::load(&settings_dir.join("learned"))));
                     let eye_models: Vec<String> = match &options.model {
                         Some(m) => vec![m.clone()],
                         None => ai::openai::VISION_MODELS
@@ -1372,11 +1663,12 @@ fn run(options: Options) -> Result<(), String> {
                         eye_models,
                     ));
                     teaching::spawn(
-                        Arc::clone(&eyes),
+                        Some(Arc::clone(&eyes)),
                         Arc::clone(&learned),
                         Arc::clone(&latest),
                         news_tx.clone(),
                     );
+                    teacher_started = true;
                     if options.live {
                         let chat = Arc::new(OpenAi::new(
                             &key,
@@ -1392,6 +1684,7 @@ fn run(options: Options) -> Result<(), String> {
                                 settings: settings_dir.clone(),
                                 web: options.web,
                                 learning: Some(learning.clone()),
+                                workshop: Some(Arc::clone(&workshop)),
                             },
                             learning: learning.clone(),
                         }));
@@ -1402,8 +1695,8 @@ fn run(options: Options) -> Result<(), String> {
                         settings: settings_dir.clone(),
                         web: options.web,
                         learning: Some(learning.clone()),
+                        workshop: Some(Arc::clone(&workshop)),
                     };
-                    sight = Some(learned);
                     lookups = Some(ai::lookup::Lookups::new(
                         Arc::new(OpenAi::new(
                             &key,
@@ -1459,6 +1752,16 @@ fn run(options: Options) -> Result<(), String> {
         }
         None => None,
     };
+    // Without a model, the teacher still labels the HUD's font from the OCR
+    // engine.
+    if !teacher_started {
+        teaching::spawn(
+            None,
+            Arc::clone(&learned),
+            Arc::clone(&latest),
+            news_tx.clone(),
+        );
+    }
 
     let sapi = if options.voice && worker.is_none() {
         Voice::start(options.rate).ok()
@@ -1566,9 +1869,24 @@ fn run(options: Options) -> Result<(), String> {
             latest: Arc::clone(&latest),
             in_front: Arc::clone(&in_front),
         };
+        // Only the HUD reaches the companion; the other detectors are for
+        // the preview window, and run only when it was asked for.
+        let wanted = if options.preview {
+            Detectors::ALL
+        } else {
+            Detectors::HUD
+        };
+        let mailbox = Arc::new(Mailbox::default());
+        {
+            let (mailbox, running) = (Arc::clone(&mailbox), Arc::clone(&running));
+            std::thread::Builder::new()
+                .name("capture".into())
+                .spawn(move || grab(source, mailbox, running, fps))
+                .map_err(|e| e.to_string())?;
+        }
         std::thread::Builder::new()
             .name("vision".into())
-            .spawn(move || watch(source, slot, running, start, fps, shared))
+            .spawn(move || watch(mailbox, slot, running, start, wanted, shared))
             .map_err(|e| e.to_string())?
     };
 
@@ -1647,6 +1965,18 @@ fn run(options: Options) -> Result<(), String> {
     let mut model_logged = false;
     let mut player_language: Option<String> = None;
     let mut turns = Turns::default();
+    // The coach: MapleSyrup speaking up on its own (off when the player
+    // asked for that, for good).
+    let mut coach = ms::coach::Coach::new(learning.memory().coach.unwrap_or(true));
+    // When the player was last heard (talking, or talked), and the last
+    // level-up the companion announced: the coach keeps out of the way.
+    let mut player_heard = Instant::now() - Duration::from_secs(60);
+    // Since when the player has been talking on a call (None: they aren't;
+    // a start the phone never ends is forgotten after a while).
+    let mut player_talking_since: Option<Instant> = None;
+    let mut level_up_seen = f64::NEG_INFINITY;
+    // The coach's look under way, to call it off when the player talks.
+    let mut coach_job: Option<u64> = None;
 
     let mut preview: Option<Preview> = None;
     let mut preview_failed = false;
@@ -1667,7 +1997,39 @@ fn run(options: Options) -> Result<(), String> {
         if preview.as_ref().is_some_and(|p| !p.is_open()) {
             break;
         }
+        if relaunch_as.is_some() {
+            break;
+        }
         let now = start.elapsed().as_secs_f64();
+        // What the updater did; and this version, once it has run long
+        // enough, is kept for good (the previous one let go).
+        while let Ok(event) = update_rx.try_recv() {
+            match event {
+                ms::update::Event::Said(line) => {
+                    out.session.line("update", &line);
+                    out.push(Kind::Info, line);
+                }
+                ms::update::Event::Noted(line) => out.session.line("update", &line),
+            }
+        }
+        while let Ok(event) = workshop_rx.try_recv() {
+            match event {
+                ms::workshop::Event::Said(line) => {
+                    out.session.line("workshop", &line);
+                    say_line(&mut out, line);
+                }
+                ms::workshop::Event::Noted(line) => out.session.line("workshop", &line),
+                ms::workshop::Event::Staged => updater.refresh(),
+            }
+        }
+        if !update_committed && start.elapsed() >= ms::update::HEALTHY_AFTER {
+            update_committed = true;
+            if let Some(version) = ms::update::commit(&settings_dir) {
+                let line = format!("MapleSyrup {version} is in for good");
+                out.session.line("update", &line);
+                out.push(Kind::Info, line);
+            }
+        }
 
         if let Some(tick) = slot.take() {
             if let Some(frame) = &tick.frame {
@@ -1691,8 +2053,66 @@ fn run(options: Options) -> Result<(), String> {
                     p.show(frame);
                 }
             }
-            let actions = companion.observe(tick.at, tick.obs);
+            let actions = companion.observe(tick.at, tick.obs.clone());
+            if actions
+                .iter()
+                .any(|a| matches!(a, Action::Say(s) if s.speak && s.kind != Kind::Heard))
+            {
+                coach.someone_spoke(now);
+            }
             out.apply(actions, &mut companion, latest_image.clone());
+            if companion.last_level_up() > level_up_seen {
+                level_up_seen = companion.last_level_up();
+                coach.leveled(now, companion.level());
+            }
+            // The coach: is it time for a look at the game, and why?
+            if let Some(worker) = &out.mouth.ai {
+                let in_view = in_front.load(Ordering::Relaxed);
+                let talking = out.mouth.speaking()
+                    || worker.busy()
+                    || turns.busy()
+                    || player_heard.elapsed() < Duration::from_secs(3)
+                    || player_talking_since.is_some_and(|t| t.elapsed() < Duration::from_secs(30));
+                let glance = ms::coach::Glance {
+                    now,
+                    obs: &tick.obs,
+                    scene: tick.scene.as_ref(),
+                    in_view,
+                    talking,
+                    muted: companion.muted(),
+                };
+                if let Some(reason) = coach.observe(&glance) {
+                    let snapshot = snapshot_text(&companion, sight.as_ref());
+                    let status = sight.as_ref().and_then(|s| {
+                        s.lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .layout
+                            .as_ref()
+                            .and_then(|l| l.status)
+                    });
+                    let eyes = latest_image
+                        .clone()
+                        .filter(|_| in_view)
+                        .map(|frame| Eyes { frame, status });
+                    out.session.line(
+                        "coach",
+                        &format!(
+                            "looking: {} (activity {:.3})",
+                            reason.label(),
+                            tick.scene.as_ref().map(|s| s.activity).unwrap_or(0.0)
+                        ),
+                    );
+                    coach_job = Some(worker.send(Job::Coach {
+                        reason: reason.describe(),
+                        label: reason.label(),
+                        snapshot,
+                        eyes,
+                        said: coach.lines(),
+                        language: player_language.clone(),
+                        speak: !out.live,
+                    }));
+                }
+            }
             // Died without a warning: HP warnings come sooner now, for good.
             if companion.settings.hp_low != warn_at.0 {
                 warn_at.0 = companion.settings.hp_low;
@@ -1707,6 +2127,10 @@ fn run(options: Options) -> Result<(), String> {
             // The things the player taught: their alerts.
             for fired in tick.fired {
                 out.tell(Kind::Alert, &fired.say, true, &mut companion);
+            }
+            if let Some(note) = tick.note {
+                out.session.line("capture", &note);
+                out.push(Kind::Info, note);
             }
         } else if let Some(p) = preview.as_mut() {
             p.pump();
@@ -1729,6 +2153,12 @@ fn run(options: Options) -> Result<(), String> {
             for inbound in hub.take_inbox() {
                 match inbound {
                     Inbound::Heard(heard) => {
+                        player_heard = Instant::now();
+                        coach.someone_spoke(now);
+                        // A look under way gives way to the player.
+                        if let (Some(id), Some(worker)) = (coach_job.take(), &out.mouth.ai) {
+                            worker.cancel(id);
+                        }
                         // MapleSyrup's own voice, heard back by the phone, is
                         // taken out; what is left is the player's. Heard while
                         // it was talking, there must be enough of the player's
@@ -1766,6 +2196,30 @@ fn run(options: Options) -> Result<(), String> {
                             } else {
                                 recording.stop(&mut out, panel_window.as_mut());
                             }
+                            continue;
+                        }
+                        // "Change yourself: …" / "undo the last change": the
+                        // workshop's, when it is on.
+                        if workshop.is_on() {
+                            let task = if ms::workshop::undo_request(&text) {
+                                Some(ms::workshop::Task::Undo)
+                            } else {
+                                ms::workshop::request(&text).map(|instruction| {
+                                    ms::workshop::Task::Change {
+                                        instruction,
+                                        context: recent_log(&out),
+                                    }
+                                })
+                            };
+                            if let Some(task) = task {
+                                out.show(Kind::Heard, &text);
+                                workshop_ask(&workshop, task, &mut out);
+                                continue;
+                            }
+                        }
+                        if let Some(on) = commands::coaching_request(&text) {
+                            out.show(Kind::Heard, &text);
+                            set_coaching(&mut coach, &learning, &mut out, on);
                             continue;
                         }
                         if out.mouth.ai.is_some() {
@@ -1819,6 +2273,7 @@ fn run(options: Options) -> Result<(), String> {
                         }
                     }
                     Inbound::Hearing(text) => {
+                        player_heard = Instant::now();
                         // Words as they are said: talked over, or still
                         // talking. (Without a natural voice there is nothing
                         // to stop.)
@@ -1837,10 +2292,16 @@ fn run(options: Options) -> Result<(), String> {
                             out.session.line("turn", "talked over (heard by the phone)");
                         }
                     }
+                    Inbound::Said { who, text } if who == "timing" => {
+                        // Where the time went on the call, from the phone.
+                        out.session.line("timing", &text);
+                    }
                     Inbound::Said { who, text } => {
                         // On a live call: shown here and kept in the log (the
                         // phone shows it itself).
+                        coach.someone_spoke(now);
                         let kind = if who == "player" {
+                            player_heard = Instant::now();
                             Kind::Heard
                         } else {
                             companion.remember_spoken(now, &text);
@@ -1869,6 +2330,18 @@ fn run(options: Options) -> Result<(), String> {
                         }
                     }
                     Inbound::Talking(on) => out.phone_talking(on),
+                    Inbound::PlayerTalking(on) => {
+                        // On a call the player's words reach the PC only once
+                        // written down; the coach keeps out of the way from
+                        // their first sound.
+                        if on {
+                            player_talking_since = Some(Instant::now());
+                        } else {
+                            player_talking_since = None;
+                            player_heard = Instant::now();
+                        }
+                        coach.someone_spoke(now);
+                    }
                     // (The learner reads it from the log.)
                     Inbound::Turn(what) => out.session.line("turn", &what),
                     Inbound::Speaker(id) => {
@@ -1938,6 +2411,12 @@ fn run(options: Options) -> Result<(), String> {
                             );
                             out.show(Kind::Info, &line);
                         }
+                        ai::Effect::Command(word)
+                            if word == ai::tools::COACH_ON || word == ai::tools::COACH_OFF =>
+                        {
+                            let on = word == ai::tools::COACH_ON;
+                            set_coaching(&mut coach, &learning, &mut out, on);
+                        }
                         ai::Effect::Command(word) if word == ai::tools::RECORD_ON => {
                             recording.start(&mut out)
                         }
@@ -1948,6 +2427,17 @@ fn run(options: Options) -> Result<(), String> {
                             if let Some(command) = Command::from_word(&word) {
                                 let actions = companion.command(now, command);
                                 out.apply(actions, &mut companion, latest_image.clone());
+                            }
+                        }
+                        ai::Effect::Rewrite(instruction) => {
+                            out.session
+                                .line("workshop", &format!("asked on the call: {instruction}"));
+                            let task = ms::workshop::Task::Change {
+                                instruction,
+                                context: recent_log(&out),
+                            };
+                            if let Err(why) = workshop.ask(task) {
+                                out.push(Kind::Info, format!("couldn't start the change: {why}"));
                             }
                         }
                     },
@@ -2030,6 +2520,100 @@ fn run(options: Options) -> Result<(), String> {
                             );
                         }
                     }
+                    Inbound::Workshop(ask) => match ask {
+                        phone::WorkshopAsk::On(on) => {
+                            workshop.set_on(on);
+                            let mut memory = learning.memory();
+                            memory.workshop = Some(on);
+                            let updates = memory.updates.unwrap_or(true);
+                            memory.save();
+                            drop(memory);
+                            // The channel's releases would wipe the local
+                            // work: off while the workshop is on.
+                            updater.set_auto(!on && options.update && updates);
+                            let line = if on {
+                                match workshop.coders().first() {
+                                    Some(coder) => format!(
+                                        "Workshop on: say \"change yourself: …\" and {} rewrites me here, on this PC; the site's updates are off meanwhile.",
+                                        coder.label()
+                                    ),
+                                    None => "Workshop on, but no coding agent is installed on this PC (Claude Code or Codex CLI): nothing can be changed until one is.".to_string(),
+                                }
+                            } else {
+                                "Workshop off: the site's updates are back on.".to_string()
+                            };
+                            out.session.line("workshop", &line);
+                            out.push(Kind::Info, line);
+                        }
+                        phone::WorkshopAsk::Change(instruction) => {
+                            out.show(
+                                Kind::Heard,
+                                &format!("[phone] change yourself: {instruction}"),
+                            );
+                            workshop_ask(
+                                &workshop,
+                                ms::workshop::Task::Change {
+                                    instruction,
+                                    context: recent_log(&out),
+                                },
+                                &mut out,
+                            );
+                        }
+                        phone::WorkshopAsk::Undo => {
+                            out.show(Kind::Heard, "[phone] undo the last change");
+                            workshop_ask(&workshop, ms::workshop::Task::Undo, &mut out);
+                        }
+                        phone::WorkshopAsk::Coder(name) => {
+                            match ms::workshop::Coder::parse(&name) {
+                                Some(coder) => match workshop.prefer(coder) {
+                                    Ok(()) => {
+                                        let mut memory = learning.memory();
+                                        memory.workshop_coder = Some(name);
+                                        memory.save();
+                                        out.session
+                                            .line("workshop", &format!("coder: {}", coder.label()));
+                                    }
+                                    Err(e) => out.push(Kind::Info, e),
+                                },
+                                None => out.push(Kind::Info, format!("no such coder: {name}")),
+                            }
+                        }
+                    },
+                    Inbound::Update(ask) => match ask {
+                        phone::UpdateAsk::Check => updater.check_now(),
+                        phone::UpdateAsk::Auto(on) => {
+                            updater.set_auto(on);
+                            let mut memory = learning.memory();
+                            memory.updates = Some(on);
+                            memory.save();
+                            out.session.line(
+                                "update",
+                                if on {
+                                    "updates itself again"
+                                } else {
+                                    "no more updates on its own"
+                                },
+                            );
+                        }
+                        phone::UpdateAsk::Install => match std::env::current_exe()
+                            .map_err(|e| e.to_string())
+                            .and_then(|exe| updater.install_now(&exe))
+                        {
+                            Ok(version) => {
+                                out.push(
+                                    Kind::Info,
+                                    format!("MapleSyrup {version} is in place: restarting"),
+                                );
+                                relaunch_as = Some(version);
+                            }
+                            Err(e) => out.push(Kind::Info, format!("couldn't update now: {e}")),
+                        },
+                    },
+                    Inbound::Coach(on) => {
+                        if on != coach.on {
+                            set_coaching(&mut coach, &learning, &mut out, on);
+                        }
+                    }
                     Inbound::Listen(always) => {
                         companion.set_always_listen(always);
                         out.tell(
@@ -2075,6 +2659,7 @@ fn run(options: Options) -> Result<(), String> {
                 Done::Reply { id, text, took, .. } => {
                     turns.finished(id);
                     companion.remember_spoken(now, &text);
+                    coach.someone_spoke(now);
                     out.show(Kind::Reply, &text);
                     out.session
                         .line("timing", &format!("reply in {:.1} s", took.as_secs_f64()));
@@ -2090,6 +2675,39 @@ fn run(options: Options) -> Result<(), String> {
                     }
                 }
                 Done::Noted { line } => out.show(Kind::Info, &line),
+                Done::Coached {
+                    id,
+                    label,
+                    text,
+                    error,
+                    took,
+                } => {
+                    if coach_job == Some(id) {
+                        coach_job = None;
+                    }
+                    coach.answered(now, text.as_deref());
+                    let took = took.as_secs_f64();
+                    match (text, error) {
+                        (Some(line), _) => {
+                            companion.remember_spoken(now, &line);
+                            out.session
+                                .line("coach", &format!("{label}: said in {took:.1} s"));
+                            if out.live {
+                                // The call says it, in its own words.
+                                out.tell(Kind::Alert, &line, true, &mut companion);
+                            }
+                            // (Else the worker showed and said it already.)
+                        }
+                        (None, Some(error)) => {
+                            out.session
+                                .line("coach", &format!("{label}: couldn't look ({error})"));
+                        }
+                        (None, None) => {
+                            out.session
+                                .line("coach", &format!("{label}: nothing to say ({took:.1} s)"));
+                        }
+                    }
+                }
                 Done::Shown { kind, text } => {
                     // Its own line, translated: what the phone may hear back.
                     companion.remember_spoken(now, &text);
@@ -2115,6 +2733,27 @@ fn run(options: Options) -> Result<(), String> {
                         below,
                     );
                     out.show(Kind::Info, &line);
+                }
+                Done::Command { word }
+                    if word == ai::tools::COACH_ON || word == ai::tools::COACH_OFF =>
+                {
+                    let on = word == ai::tools::COACH_ON;
+                    set_coaching(&mut coach, &learning, &mut out, on);
+                }
+                Done::Rewrite { instruction } => {
+                    out.session.line(
+                        "workshop",
+                        &format!("asked through the model: {instruction}"),
+                    );
+                    let task = ms::workshop::Task::Change {
+                        instruction,
+                        context: recent_log(&out),
+                    };
+                    // The model already told the player; only a refusal is
+                    // worth a line.
+                    if let Err(why) = workshop.ask(task) {
+                        out.push(Kind::Info, format!("couldn't start the change: {why}"));
+                    }
                 }
                 Done::Command { word } if word == ai::tools::RECORD_ON => recording.start(&mut out),
                 Done::Command { word } if word == ai::tools::RECORD_OFF => {
@@ -2355,6 +2994,12 @@ fn run(options: Options) -> Result<(), String> {
                     "fps": fps,
                     "wake": "syrup",
                     "always_listen": companion.settings.always_listen,
+                    // Whether it speaks up on its own (the coach).
+                    "coach": coach.on,
+                    // This version, and whether a newer one is on its way.
+                    "update": updater.status().to_json(),
+                    // Whether it rewrites itself here, and how that is going.
+                    "workshop": workshop.state().to_json(),
                     "speaking": out.mouth.speaking(),
                     // The PC's own voice (the phone keeps listening through it).
                     "speaking_pc": out.mouth.pc_speaking(),
@@ -2480,6 +3125,14 @@ fn run(options: Options) -> Result<(), String> {
         if progress.marks == 1 { "" } else { "s" },
         session_dir.display()
     );
+    if let Some(version) = relaunch_as {
+        println!("Starting MapleSyrup {version}…");
+        if let Ok(exe) = std::env::current_exe()
+            && let Err(e) = ms::update::relaunch(&exe, &args)
+        {
+            eprintln!("{e}");
+        }
+    }
     Ok(())
 }
 

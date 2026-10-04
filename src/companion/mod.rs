@@ -159,8 +159,12 @@ pub struct Companion {
     zero_hp_frames: u32,
     dead: bool,
     /// HP lately (when, percent), to tell a death a sooner warning could
-    /// have helped with from a sudden one.
+    /// have helped with from a sudden one, and a beating as it happens.
     hp_lately: std::collections::VecDeque<(f64, f32)>,
+    /// Frames in a row in which HP has fallen fast, and when that was last
+    /// said.
+    falling_frames: u32,
+    fall_told: f64,
     listening_until: f64,
     muted: bool,
     exp: ExpTracker,
@@ -186,6 +190,14 @@ const LOW_HOLD_SECS: f64 = 0.6;
 
 /// HP warnings move sooner after deaths no warning came before, up to here.
 const SOONEST_WARNING: f32 = 50.0;
+
+/// HP down this many points within [`FALL_SECS`] is a beating, said at
+/// once (after a second frame says so: a dialog half over the bar does not
+/// last) — before it is low, while backing off still helps.
+const FALL_POINTS: f32 = 25.0;
+const FALL_SECS: f64 = 3.0;
+/// A beating is not said again sooner than this, in seconds.
+const FALL_COOLDOWN: f64 = 12.0;
 
 /// How long after a line was said the phone may still hand it back as heard,
 /// in seconds: the line, its playing, and the phone's recognition finishing.
@@ -312,6 +324,8 @@ impl Companion {
             zero_hp_frames: 0,
             dead: false,
             hp_lately: std::collections::VecDeque::new(),
+            falling_frames: 0,
+            fall_told: f64::NEG_INFINITY,
             listening_until: f64::NEG_INFINITY,
             muted: false,
             exp: ExpTracker::new(),
@@ -565,6 +579,16 @@ impl Companion {
     }
 
     /// Whether a sentence now would count as addressed without the wake word.
+    /// When a level-up was last announced (never: minus infinity).
+    pub fn last_level_up(&self) -> f64 {
+        self.announced_level_up
+    }
+
+    /// The level, as last believed.
+    pub fn level(&self) -> Option<u32> {
+        self.last_level
+    }
+
     pub fn listening(&self, now: f64) -> bool {
         now <= self.listening_until
     }
@@ -660,6 +684,49 @@ impl Companion {
             self.dead = false;
             self.hp_warning = Warning::Armed;
         }
+        // A beating: HP falling fast, said as it happens — the one thing
+        // worth interrupting for, and never worth a model's wait.
+        let highest_lately = self
+            .hp_lately
+            .iter()
+            .filter(|(t, _)| now - t <= FALL_SECS)
+            .map(|(_, p)| *p)
+            .fold(0.0, f32::max);
+        if highest_lately - hp.percent >= FALL_POINTS && hp.percent < 70.0 {
+            self.falling_frames += 1;
+        } else {
+            self.falling_frames = 0;
+        }
+        if self.falling_frames >= 2 && now - self.fall_told >= FALL_COOLDOWN && !self.dead {
+            self.fall_told = now;
+            let line = self
+                .settings
+                .attitude
+                .pick(
+                    [
+                        &[
+                            "Whoa, you're taking a beating. Back off and pot!",
+                            "Careful, your HP's dropping fast. Back off!",
+                        ],
+                        &[
+                            "Back off, you're getting shredded.",
+                            "Get out of there. Pot.",
+                        ],
+                        &[
+                            "Back off, idiot, you're getting shredded.",
+                            "Move! You're melting, genius.",
+                        ],
+                    ],
+                    self.warnings,
+                )
+                .to_string();
+            self.warnings += 1;
+            // It said to pot: the low warning would only say so again.
+            if hp.percent < self.settings.hp_low {
+                self.hp_warning = Warning::Warned(now);
+            }
+            out.push(Action::Say(Say::alert(line)));
+        }
         if hp.percent < self.settings.hp_low {
             if self.hp_low_frames == 0 {
                 self.hp_low_since = now;
@@ -675,6 +742,8 @@ impl Companion {
             Warning::Armed => true,
             Warning::Warned(at) => now - at >= self.settings.warning_cooldown * 3.0,
         };
+        // (Not right after the beating was called: that said to pot.)
+        let due = due && now - self.fall_told >= 5.0;
         if self.hp_low_frames >= 3 && now - self.hp_low_since >= LOW_HOLD_SECS && due {
             self.hp_warning = Warning::Warned(now);
             let amount = low_words(hp);
@@ -1074,26 +1143,76 @@ mod tests {
     #[test]
     fn low_hp_is_said_once_until_it_recovers() {
         let mut c = Companion::new(Settings::default());
+        // Worn down slowly (a beating is called sooner, and otherwise).
         c.observe(0.0, frame(90.0, 90.0, 10.0));
+        c.observe(5.0, frame(70.0, 90.0, 10.0));
+        c.observe(10.0, frame(50.0, 90.0, 10.0));
+        c.observe(15.0, frame(35.0, 90.0, 10.0));
         // A moment low is not enough (a dialog over the bar, a misread).
-        assert!(said(&c.observe(1.0, frame(20.0, 90.0, 10.0))).is_empty());
-        assert!(said(&c.observe(1.1, frame(20.0, 90.0, 10.0))).is_empty());
-        assert!(said(&c.observe(1.3, frame(20.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(21.0, frame(20.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(21.1, frame(20.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(21.3, frame(20.0, 90.0, 10.0))).is_empty());
         assert_eq!(
-            said(&c.observe(1.7, frame(20.0, 90.0, 10.0))),
+            said(&c.observe(21.7, frame(20.0, 90.0, 10.0))),
             ["Careful, your HP's down to about 20 percent. Drink a potion!"]
         );
         for i in 0..20 {
-            assert!(said(&c.observe(1.8 + i as f64, frame(18.0, 90.0, 10.0))).is_empty());
+            assert!(said(&c.observe(21.8 + i as f64, frame(18.0, 90.0, 10.0))).is_empty());
         }
-        // Recovered, then low again: warned again, put another way.
-        c.observe(30.0, frame(80.0, 90.0, 10.0));
-        c.observe(31.0, frame(20.0, 90.0, 10.0));
-        c.observe(31.3, frame(20.0, 90.0, 10.0));
+        // Recovered, then worn down again: warned again, put another way.
+        c.observe(50.0, frame(80.0, 90.0, 10.0));
+        c.observe(54.0, frame(60.0, 90.0, 10.0));
+        c.observe(58.0, frame(40.0, 90.0, 10.0));
+        c.observe(62.0, frame(20.0, 90.0, 10.0));
+        c.observe(62.3, frame(20.0, 90.0, 10.0));
         assert_eq!(
-            said(&c.observe(31.7, frame(20.0, 90.0, 10.0))),
+            said(&c.observe(62.7, frame(20.0, 90.0, 10.0))),
             ["HP's at about 20 percent, potion time!"]
         );
+    }
+
+    #[test]
+    fn a_beating_is_called_as_it_happens_and_the_low_warning_waits_its_turn() {
+        let mut c = Companion::new(Settings::default());
+        c.observe(0.0, frame(95.0, 90.0, 10.0));
+        for i in 1..10 {
+            assert!(said(&c.observe(i as f64 * 0.1, frame(95.0, 90.0, 10.0))).is_empty());
+        }
+        // Down 30 points in a second: called on the second frame that says
+        // so, well before HP is low.
+        assert!(said(&c.observe(1.5, frame(65.0, 90.0, 10.0))).is_empty());
+        assert_eq!(
+            said(&c.observe(1.6, frame(64.0, 90.0, 10.0))),
+            ["Whoa, you're taking a beating. Back off and pot!"]
+        );
+        // Still falling: not said again for a while…
+        assert!(said(&c.observe(2.0, frame(40.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(2.2, frame(35.0, 90.0, 10.0))).is_empty());
+        // …and the low warning, which would only say to pot again, waits a
+        // few seconds, then comes.
+        assert!(said(&c.observe(3.0, frame(25.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(3.3, frame(25.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(3.7, frame(25.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(6.5, frame(25.0, 90.0, 10.0))).is_empty());
+        assert_eq!(
+            said(&c.observe(6.7, frame(25.0, 90.0, 10.0))),
+            ["HP's at about 25 percent, potion time!"]
+        );
+        // A frame's misreading (a dialog over the bar) is not a beating.
+        let mut quiet = Companion::new(Settings::default());
+        quiet.observe(0.0, frame(95.0, 90.0, 10.0));
+        assert!(said(&quiet.observe(0.5, frame(95.0, 90.0, 10.0))).is_empty());
+        assert!(said(&quiet.observe(0.6, frame(50.0, 90.0, 10.0))).is_empty());
+        assert!(said(&quiet.observe(0.7, frame(95.0, 90.0, 10.0))).is_empty());
+        assert!(said(&quiet.observe(1.0, frame(95.0, 90.0, 10.0))).is_empty());
+        // Slow attrition is the low warning's business, not a beating.
+        let mut slow = Companion::new(Settings::default());
+        slow.observe(0.0, frame(95.0, 90.0, 10.0));
+        for i in 1..60 {
+            let hp = 95.0 - i as f32;
+            let lines = said(&slow.observe(i as f64 * 0.5, frame(hp, 90.0, 10.0)));
+            assert!(lines.is_empty() || hp < 30.0, "{i}: {lines:?}");
+        }
     }
 
     #[test]
@@ -1216,7 +1335,12 @@ mod tests {
             lines
         };
         step(&mut c, 80.0, 3);
-        assert!(step(&mut c, 40.0, 3).is_empty());
+        // (A fall that fast is called as a beating; the low warning, at
+        // 30%, never came.)
+        assert_eq!(
+            step(&mut c, 40.0, 3),
+            ["Whoa, you're taking a beating. Back off and pot!"]
+        );
         assert!(step(&mut c, 32.0, 3).is_empty());
         assert_eq!(
             step(&mut c, 0.0, 5),

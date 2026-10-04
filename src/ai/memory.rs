@@ -218,6 +218,18 @@ pub struct Memory {
     /// The voice it speaks in (an ElevenLabs voice's id; `None` or
     /// "openai": OpenAI's).
     pub voice: Option<String>,
+    /// Whether it speaks up on its own while they play (the coach); None
+    /// is the usual, on.
+    pub coach: Option<bool>,
+    /// Whether it updates itself when a new version is out; None is the
+    /// usual, on.
+    pub updates: Option<bool>,
+    /// Whether the workshop is on (MapleSyrup rewrites itself on this PC
+    /// when asked); None is the usual, off.
+    pub workshop: Option<bool>,
+    /// The coding agent the workshop uses ("claude" or "codex"); None is
+    /// the first one found.
+    pub workshop_coder: Option<String>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }

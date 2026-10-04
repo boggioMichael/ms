@@ -126,6 +126,8 @@ pub enum Inbound {
     Voice(VoiceOn),
     /// Answer everything said (true), or only after "syrup" (false).
     Listen(bool),
+    /// Speak up on its own while they play (true), or only when asked.
+    Coach(bool),
     /// Forget a thing it was taught (by its id).
     Forget(String),
     /// The player's language (a locale such as `he-IL`).
@@ -138,6 +140,9 @@ pub enum Inbound {
     Live(bool),
     /// MapleSyrup's voice on the phone started (true) or stopped (false).
     Talking(bool),
+    /// The player started (true) or stopped (false) talking on a live call
+    /// (the call hears them directly; the PC learns of it from this).
+    PlayerTalking(bool),
     /// A tool run for the call changed something: a line to show, or a
     /// command (mark, mute, unmute).
     Effect(crate::ai::Effect),
@@ -150,6 +155,30 @@ pub enum Inbound {
     Attitude(crate::companion::Attitude),
     /// The voice to speak in: an ElevenLabs voice's id, or "openai".
     Speaker(String),
+    /// About updates: look now, install what is staged, or whether to
+    /// update on its own.
+    Update(UpdateAsk),
+    /// About the workshop (MapleSyrup rewriting itself on this PC).
+    Workshop(WorkshopAsk),
+}
+
+/// What the phone asks of the workshop.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkshopAsk {
+    On(bool),
+    /// Make this change.
+    Change(String),
+    Undo,
+    /// Use this coding agent ("claude" or "codex").
+    Coder(String),
+}
+
+/// What the phone asks of the updater.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UpdateAsk {
+    Check,
+    Install,
+    Auto(bool),
 }
 
 /// What the phone's live call asks the PC for.
@@ -597,6 +626,60 @@ impl Hub {
                 }
                 None => Response::json(400, &json!({"error": "always must be true or false"})),
             },
+            ("POST", "/api/coach") => match body().get("on").and_then(Value::as_bool) {
+                Some(on) => {
+                    self.lock().inbox.push(Inbound::Coach(on));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                None => Response::json(400, &json!({"error": "on must be true or false"})),
+            },
+            ("POST", "/api/workshop") => {
+                let body = body();
+                let text = body
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                let ask = match body.get("action").and_then(Value::as_str) {
+                    Some("on") => Some(WorkshopAsk::On(true)),
+                    Some("off") => Some(WorkshopAsk::On(false)),
+                    Some("change") if !text.is_empty() && text.len() <= 4000 => {
+                        Some(WorkshopAsk::Change(text.to_string()))
+                    }
+                    Some("undo") => Some(WorkshopAsk::Undo),
+                    Some("coder") if !text.is_empty() => Some(WorkshopAsk::Coder(text.to_string())),
+                    _ => None,
+                };
+                match ask {
+                    Some(ask) => {
+                        self.lock().inbox.push(Inbound::Workshop(ask));
+                        Response::json(200, &json!({"ok": true}))
+                    }
+                    None => Response::json(
+                        400,
+                        &json!({"error": "action is on, off, change (with text), undo or coder (with text)"}),
+                    ),
+                }
+            }
+            ("POST", "/api/update") => {
+                let body = body();
+                let ask = match body.get("action").and_then(Value::as_str) {
+                    Some("check") => Some(UpdateAsk::Check),
+                    Some("install") => Some(UpdateAsk::Install),
+                    Some("auto") => body.get("on").and_then(Value::as_bool).map(UpdateAsk::Auto),
+                    _ => None,
+                };
+                match ask {
+                    Some(ask) => {
+                        self.lock().inbox.push(Inbound::Update(ask));
+                        Response::json(200, &json!({"ok": true}))
+                    }
+                    None => Response::json(
+                        400,
+                        &json!({"error": "action is check, install or auto (with on)"}),
+                    ),
+                }
+            }
             ("POST", "/api/audio") => {
                 let rate: u32 = request
                     .param("rate")
@@ -719,7 +802,8 @@ impl Hub {
                 let who = text_field("who").unwrap_or_default();
                 match text_field("text") {
                     Some(text)
-                        if !text.trim().is_empty() && (who == "player" || who == "maplesyrup") =>
+                        if !text.trim().is_empty()
+                            && (who == "player" || who == "maplesyrup" || who == "timing") =>
                     {
                         self.lock().inbox.push(Inbound::Said {
                             who,
@@ -738,6 +822,14 @@ impl Hub {
                 None => Response::json(400, &json!({"error": "live must be true or false"})),
             },
             ("POST", "/api/talking") => match body().get("on").and_then(Value::as_bool) {
+                Some(on) if body().get("who").and_then(Value::as_str) == Some("player") => {
+                    let mut state = self.lock();
+                    state
+                        .inbox
+                        .retain(|i| !matches!(i, Inbound::PlayerTalking(_)));
+                    state.inbox.push(Inbound::PlayerTalking(on));
+                    Response::json(200, &json!({"ok": true}))
+                }
                 Some(on) => {
                     let mut state = self.lock();
                     state.inbox.retain(|i| !matches!(i, Inbound::Talking(_)));
@@ -1102,6 +1194,15 @@ mod tests {
             ),
             ("/api/mode?k=k1", r#"{"live": true}"#),
             ("/api/talking?k=k1", r#"{"on": true}"#),
+            ("/api/talking?k=k1", r#"{"on": true, "who": "player"}"#),
+            ("/api/coach?k=k1", r#"{"on": false}"#),
+            ("/api/update?k=k1", r#"{"action": "install"}"#),
+            ("/api/update?k=k1", r#"{"action": "auto", "on": false}"#),
+            (
+                "/api/workshop?k=k1",
+                r#"{"action": "change", "text": "shorter HP warning"}"#,
+            ),
+            ("/api/workshop?k=k1", r#"{"action": "undo"}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
             ("/api/attitude?k=k1", r#"{"attitude": "savage"}"#),
             ("/api/speaker?k=k1", r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#),
@@ -1140,6 +1241,12 @@ mod tests {
                 },
                 Inbound::Live(true),
                 Inbound::Talking(true),
+                Inbound::PlayerTalking(true),
+                Inbound::Coach(false),
+                Inbound::Update(UpdateAsk::Install),
+                Inbound::Update(UpdateAsk::Auto(false)),
+                Inbound::Workshop(WorkshopAsk::Change("shorter HP warning".into())),
+                Inbound::Workshop(WorkshopAsk::Undo),
                 Inbound::Turn("jumped in".into()),
                 Inbound::Attitude(crate::companion::Attitude::Savage),
                 Inbound::Speaker("pNInz6obpgDQGcFmaJgB".into()),
@@ -1155,6 +1262,20 @@ mod tests {
                 "POST",
                 "/api/attitude?k=k1",
                 r#"{"attitude": "loud"}"#
+            ))
+            .status,
+            400
+        );
+        assert_eq!(
+            hub.handle(&request("POST", "/api/update?k=k1", r#"{"action": "fly"}"#))
+                .status,
+            400
+        );
+        assert_eq!(
+            hub.handle(&request(
+                "POST",
+                "/api/workshop?k=k1",
+                r#"{"action": "change", "text": " "}"#
             ))
             .status,
             400

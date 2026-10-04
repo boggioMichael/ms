@@ -1,6 +1,6 @@
 [package]
 name = "ms"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 license = "MIT"
 # `cargo run --release` starts the companion; the other binaries are tools.
@@ -14,11 +14,13 @@ chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 minifb = "0.28.0"
+# The vision engine's worker threads (`util::pool`).
+rayon = "1"
 
 # The generic engine MapleSyrup is the MapleStory edition of. Pinned to the
 # newest syrup (PR #2, "compiled operations"): its window capture keeps the
 # window between frames and says why a capture failed.
-syrup = { git = "https://github.com/boggioMichael/syrup", rev = "8995d89fa972ac58d1f387031398d65ed7d1d2ac" }
+syrup = { git = "https://github.com/boggioMichael/syrup", rev = "54dad1e2875d6698e922d5c26e5a8c32b9a1c028", features = ["serde"] }
 
 # The phone link: HTTPS on the local network (a phone browser only opens the
 # microphone for a secure page), with a self-signed certificate made on the

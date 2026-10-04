@@ -10,22 +10,55 @@ See [vision-architecture.md](vision-architecture.md) for the existing detector-o
 
 ## Module Layout
 
-### Core Architecture (`src/vision/`)
+Every pixel operation is [Syrup](https://github.com/boggioMichael/syrup)'s
+(a Cargo git dependency, pinned): capture, geometry, colour, bars, glyph
+reading, template matching, tracking, motion, OCR, quality. This crate
+keeps what the pixels mean in MapleStory, and the orchestration.
 
-- **`types.rs`**: `Detection<T>`, `Confidence`, `Source`, `Reliability`, `Timestamp` — the confidence/transparency contract every detector honors
-- **`temporal.rs`**: Temporal reasoning: `Ema`, `ConfidenceAccumulator`, `ObjectTracker`, `History<T>`
-- **`geometry.rs`**: Shared rectangle/segmentation/color-matching helpers used by all detectors
-- **`hud_geometry.rs`**: Raw HP/MP/EXP/name/job/level bar detection via geometry + OCR (battle-tested implementation kept separate for maintainability)
-- **`detectors/`**: Individual detector modules:
-  - `hud.rs`: Confidence-wrapped HUD metrics
-  - `motion.rs`: Frame-diff moving entity tracker
-  - `dialog.rs`: Dialog/popup panel detection
-  - `panels.rs`: Minimap, chat log, icon row detection
-  - `environment.rs`: Platform/foothold edge detection
-  - `combat.rs`: Meta-detector for combat intensity
-- **`snapshot.rs`**: `PerceptionPipeline` orchestrator producing `WorldState` per frame
-- **`diff.rs`**: Frame differencing for motion detection
-- **`ocr.rs`**: Tesseract-backed OCR wrapper
+### The per-frame path
+
+- **`perceive.rs`**: one frame through the companion's eyes — the
+  detectors still needed, then the sight — the same function for the
+  `maplesyrup` binary and for `vision_bench`.
+- **`sight/`**: what MapleSyrup learned about the player's own screen.
+  `mod.rs` finds the HUD from the pixels (`find_hud`) and measures its bars
+  on every frame (`syrup::bars::BarModel`); `numbers.rs` reads HP, MP and
+  EXP in the game's own font (`syrup::glyphs`, learned from labelled
+  examples, cross-checked against the bars); `things.rs` follows what the
+  player taught it (`syrup::template` sets, `syrup::tracking`, a stripe of
+  the frame swept per frame for newcomers); `teacher.rs` is the vision
+  model, asked only when the pixels fail, with backoff.
+- **`vision/`**: `snapshot.rs`'s `PerceptionPipeline` runs only the
+  detectors asked for (`Detectors`) and says which were not run; the HUD
+  geometry detector (`hud_geometry.rs`, `detectors/hud.rs`) runs until the
+  sight sees the HUD; `detectors/{motion,dialog,panels,environment,
+  combat}.rs` feed the preview window; `types.rs`, `geometry.rs`, `ocr.rs`
+  and `quality.rs` re-export Syrup's.
+- **`capture.rs`**: which window is the game, and a capture session on it
+  (`syrup::capture::Window`; on Windows, Windows.Graphics.Capture with GDI
+  as the fallback; `GameCapture::path` says which).
+- **`util/`**: `stages.rs`, per-stage timing of the path from its tracing
+  spans; `pool.rs`, the vision engine's worker threads.
+
+### The companion
+
+- **`companion/`**: what MapleSyrup says and when from the numbers alone —
+  warnings, a beating, a death, level-ups, EXP/hour, voice commands, the
+  `Observation` of a frame.
+- **`coach/`**: when MapleSyrup speaks up on its own beyond that. `Coach`
+  is fed every frame and returns a `Reason` when a model should look (a
+  new scene, a level-up, EXP stalled, a look now and then); the main loop
+  turns it into `ai::Job::Coach`, and the model answers one line or
+  `[silent]`. Pacing lives here and is tested by playing sessions through
+  it (`MIN_GAP`, `CONSULT_GAP`, `LOOK_EVERY` growing to `LOOK_AT_MOST`).
+  `coach::scene` is the frame fingerprint (32×18 cells of brightness, a
+  few thousand samples whatever the frame's size) and what a run of them
+  says: a cut, a new scene once it settled, how much is going on.
+- **`ai/`**: the model clients, the teaching loop, the tools, the coach's
+  look (`coach()`).
+- **`phone/`**: the phone link.
+- **`app/`**, **`platform/`**, **`observe/`**, **`overlay/`**: the
+  screen, the console and voice, the dashboard and preview, the overlay.
 
 ### Knowledge Base (`src/knowledge/`)
 
@@ -34,20 +67,14 @@ Structured, non-verbatim MapleStory gameplay knowledge:
 - `mechanics.rs`: Rune, portal, farming heuristics
 - `monsters.rs`: Behavior profiles for common creatures
 
-### Utilities (`src/util/`)
-
-- **`timing.rs`**: `ScopedTimer`, `FrameTimer`, `FPSCounter`, `MovingAverage`
-- **`pixel.rs`**: RGB/HSV/brightness accessors, HSV color space conversion
-- **`image_ops.rs`**: Rectangle drawing, crop/annotation saving
-
 ### Entry Points
 
-- **`capture.rs`**: Windows game window capture via DirectX/WGC
 - **`config.rs`**: `AppConfig` global settings
 - **`logging.rs`**: Tracing initialization
-- **`frame.rs`**: Frame metadata wrapper
 - **`hud.rs`**: Convenience re-export of HUD detection API (backward compatibility)
-- **`main.rs`**: Application entrypoint
+- **`bin/maplesyrup/`**: the companion; **`bin/vision_bench.rs`**: the
+  per-frame path timed (`bench/README.md`); **`bin/vision_debug.rs`**: the
+  live vision debugger.
 
 ## Quick Start
 
@@ -161,6 +188,130 @@ Run a specific detector's tests:
 ```sh
 cargo test vision::detectors::hud::tests::
 ```
+
+## Releasing
+
+A release is a version in `Cargo.toml` and a tag `v<version>` on the commit
+that carries it; the two must agree, since the program reports
+`CARGO_PKG_VERSION` to the updater and the pipeline refuses a tag that says
+otherwise.
+
+1. Set the version in `Cargo.toml`, write the "New in" paragraph in
+   `installer/release-notes.md`, commit, push.
+2. Tag it (`git tag v0.9.0 && git push origin v0.9.0`). The
+   `MapleSyrup standalone` workflow builds the Windows package, lays the
+   files out under their version's names (`MapleSyrup-Setup-0.9.0.exe`,
+   `MapleSyrup-0.9.0-portable.zip`, `MapleSyrup-0.9.0.exe`, `SHA256SUMS`),
+   writes `manifest.json` (the version, the date, the commit, the notes,
+   each file's size and SHA-256 and where it will be served from) and signs
+   it with the release key (`manifest.json.sig`, Ed25519), and makes a
+   **draft** GitHub release with all of that. Nothing is public yet.
+3. Try the draft's files. Then, in Actions, run `MapleSyrup standalone` by
+   hand **on the tag** with *publish* ticked (and a line of notes, shown on
+   the phone): the GitHub release is made public and the files, the manifest
+   and its signature are committed to the company site's repository under
+   its downloads folder (versioned names, plus `MapleSyrup-Setup.exe` and
+   `MapleSyrup-portable.zip` with fixed names for the site's links). From
+   then on every MapleSyrup that looks at the channel fetches the new
+   version.
+
+The workflow needs, in the repository's settings:
+
+| what | where | holds |
+|---|---|---|
+| `RELEASE_SIGNING_KEY` | secret | the Ed25519 private key, PEM (`openssl genpkey -algorithm ed25519`); its public half is `update::PUBLIC_KEY` in `src/update.rs` — change both together, and know that a program built with the old key will never take a manifest signed with the new one |
+| `SITE_TOKEN` | secret | a token that may push to the site's repository (a fine-grained personal access token with *Contents: read and write* on that repository alone) |
+| `SITE_REPO` | variable | the site's repository, `owner/name` |
+| `SITE_URL` | variable | where the site is served (default `https://datta-syrup.ai`) |
+| `SITE_DOWNLOADS` | variable | the folder in the site's repository served as `/downloads/` (default `downloads`) |
+
+Without `SITE_TOKEN` and `SITE_REPO` the manifest points at the GitHub
+release's own files instead, and *publish* only makes the release public.
+
+### How the updater works (`src/update.rs`)
+
+The way Android updates its APEX modules, scaled to one program:
+
+- **The channel.** `https://datta-syrup.ai/downloads/manifest.json` and
+  `manifest.json.sig` beside it. The program looks 45 s after it starts and
+  every hour after that (later after a failure), and whenever the phone
+  asks. `MAPLESYRUP_UPDATE_URL` points it elsewhere (a `file://` URL will do
+  for a test of the whole way; `tests/update_channel.rs`).
+- **Verified, or nothing.** The signature must be the built-in key's over
+  exactly the manifest's bytes; the fetched program must have the manifest's
+  size and SHA-256 and start like a Windows program. Anything else is
+  dropped and said in the log.
+- **Staged.** The program is fetched into `%APPDATA%\MapleSyrup\updates\`
+  and `staged.json` written. The phone shows "0.9.1 is ready: it installs
+  the next time MapleSyrup starts", with *Update now*.
+- **Activated at the next start, atomically.** Before anything else,
+  `update::at_start` copies the staged program beside the running one, then
+  renames the running one to `MapleSyrup.old.exe` and the new one into its
+  place (a running program can be renamed on Windows; a rename on one volume
+  is atomic, so there is no moment without a program), writes
+  `pending.json`, starts the new program in a console of its own and leaves.
+- **Committed, or rolled back.** The new version counts its starts in
+  `pending.json`; after `HEALTHY_AFTER` (90 s) of running it commits: the
+  kept program is deleted. A version that is started `BOOTS_BEFORE_ROLLBACK`
+  (2) times without committing is put back at the start after them: the
+  kept program returns to its place, the version goes into `blocked.json`
+  and is never offered again (the one after it will be), and the kept
+  program is started.
+- **The player's say.** Settings on the phone: *Updates itself when a new
+  version is out* (kept in `memory.json` as `updates`), *Update now* (the
+  staged program put in place at once and MapleSyrup restarted);
+  `--no-update` or `MAPLESYRUP_NO_UPDATE=1` for a session without any of it.
+  Everything the updater does is in `updates/log.txt` and the session log
+  (`[update]` lines).
+
+## The workshop (`src/workshop.rs`)
+
+MapleSyrup rewriting itself, on one PC, for the player who runs it there.
+Off unless the player turns it on (Details on the phone, kept in
+`memory.json` as `workshop`; or `--workshop` for a session).
+
+- **Asked** by voice ("change yourself: …", "rewrite yourself so that …",
+  "תשנה את עצמך: …"; `workshop::request`), by the conversation model (the
+  `change_your_code` tool, offered only while the workshop is on), or by
+  typing it on the phone (`/api/workshop`). "Undo the last change" reverts
+  the workshop's last commit and builds again.
+- **The checkout**: `%USERPROFILE%\GitHub\ms`, `MAPLESYRUP_REPO` or
+  `--repo`. It must be clean. The work is on `local/<pc>`; the first time,
+  that branch is made from the commit the running program was built from
+  (`MS_COMMIT`, baked in by `build.rs`; fetched if the checkout lacks it),
+  so the change is to the program the player is running, not to whatever
+  master has become.
+- **The coder**: Claude Code (`claude -p … --permission-mode acceptEdits
+  --allowedTools "Read,Edit,…,Bash(cargo *)"`) or Codex CLI (`codex exec
+  --full-auto`), whichever is on the PATH (`.cmd` shims included), the
+  first found unless the player picked one. It gets the instruction, the
+  end of the session's log, and the rules: small and local, keep the build
+  and the tests green, nothing in `.github/` or `installer/`, not the
+  updater's key or channel, no git. It leaves a sentence in
+  `WORKSHOP_NOTE.txt`, which becomes the commit's body and what the player
+  hears.
+- **The checks**: something changed; nothing out of bounds (`.github/`,
+  `installer/`, the `PUBLIC_KEY`/`CHANNEL` constants); `cargo build
+  --release --bin maplesyrup` and `cargo test --release --lib`, at
+  below-normal priority with half the cores, so the game keeps its frames.
+  A failure throws the coder's changes away (`git checkout -- . && git
+  clean -fd`; the tree was clean before) and says why; the logs stay under
+  `%APPDATA%\MapleSyrup\workshop\<time>\`.
+- **Kept and staged**: `git commit` as "MapleSyrup workshop"; the program
+  copied to `updates\MapleSyrup-local-<commit>.exe` and staged for the
+  updater with `local: true` and the version `<running>+local.<commit>`
+  (activated at the next start whatever its number; blocked like any
+  other if it does not come up twice; "Update now" works). While the
+  workshop is on, the channel's releases are not taken.
+- **Never**: a push, a change to master, a release. The workshop has no
+  remote to speak of; the branch is the PC's. If the player wants a change
+  upstream, they push the branch themselves and open a pull request.
+
+Tests: `tests/workshop_pipeline.rs` runs the whole way on a checkout of its
+own with a stand-in coder and a stand-in cargo (scripts): the branch from
+the running commit, the change built, tested, committed and staged; a
+change out of bounds and one failing the tests thrown away; a dirty
+checkout left alone; undo.
 
 ## Performance Notes
 

@@ -8,8 +8,8 @@
 //! needing a dedicated skill-animation classifier (which this project does
 //! not have).
 
-use crate::util::timing::MovingAverage;
-use crate::vision::types::{Confidence, Detection, Reliability, Source};
+use crate::vision::types::{Confidence, Detection, Reliability};
+use syrup::timing::MovingAverage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CombatIntensity {
@@ -78,7 +78,7 @@ impl CombatIntensityDetector {
                 motion_score: smoothed,
             },
             confidence,
-            Source::Combat,
+            "combat",
             Reliability::Heuristic,
         )
     }
