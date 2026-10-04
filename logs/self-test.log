@@ -1,0 +1,12 @@
+MapleSyrup self-test (v0.9.0)
+  ok    console: escape codes off (output is not a console), DPI aware true
+  ok    vision: HP 100%, MP 95%, EXP 38.5% found on the screenshot in 45 ms
+  ok    companion: "syrup status" → HP about 100 percent, MP about 95 percent, EXP about 38 percent.
+  ok    text reading: the OCR engine built into Windows (Tesseract is not installed)
+  note  OpenAI: no key: simple answers and the Windows voice
+  ok    phone link: HTTPS on port 48443 with a certificate made here; "syrup help" from the phone → "Just talk to me. Ask how you're doing, about your HP, MP, EXP or level, or how long until you level. Say mark to save a moment, or mute to quiet me."
+  ok    network: the phone would open https://10.1.0.10:8443
+  ok    QR code: 17 lines tall
+  ok    voice: the Windows voice started (a line was spoken)
+  ok    capture: 2 windows listed, no MapleStory among them
+All checks passed.
