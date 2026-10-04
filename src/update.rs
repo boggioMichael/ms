@@ -239,6 +239,11 @@ pub struct Staged {
     pub when: String,
     #[serde(default)]
     pub notes: String,
+    /// Built on this PC by the workshop (not fetched from the channel): it
+    /// goes in whatever its version says, since a local build carries the
+    /// running version's number with its own commit added.
+    #[serde(default)]
+    pub local: bool,
 }
 
 /// A new version activated and not yet committed: the start counts.
@@ -465,10 +470,9 @@ pub fn at_start(settings: &Path, exe: &Path, running: &str) -> Start {
         }
     }
     if let Some(staged) = store.staged() {
-        match Version::parse(&staged.version) {
-            Some(version)
-                if version > running_version && !store.blocked().contains(&staged.version) =>
-            {
+        let newer = Version::parse(&staged.version).is_some_and(|v| v > running_version);
+        match () {
+            () if (newer || staged.local) && !store.blocked().contains(&staged.version) => {
                 match activate(&store, exe, running, &staged) {
                     Ok(()) => return Start::Relaunch(exe.to_path_buf()),
                     Err(e) => {
@@ -742,6 +746,16 @@ impl Updater {
         }
     }
 
+    /// A program was staged by other means (the workshop's build): the
+    /// status says so.
+    pub fn refresh(&self) {
+        if let Some(staged) = self.store.staged() {
+            let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
+            status.phase = Phase::Staged(staged.version.clone());
+            status.notes = staged.notes;
+        }
+    }
+
     /// Look at the channel now (from the phone, or when turned on).
     pub fn check_now(&self) {
         let (flag, condvar) = &self.wake;
@@ -903,6 +917,7 @@ impl Updater {
             from: self.running_text.clone(),
             when: now_text(),
             notes: manifest.notes.clone(),
+            local: false,
         })
     }
 
@@ -1129,6 +1144,7 @@ mod tests {
             from: "0.8.0".into(),
             when: "now".into(),
             notes: String::new(),
+            local: false,
         };
         store.set_staged(&staged).unwrap();
         staged
@@ -1275,6 +1291,35 @@ mod tests {
         assert_eq!(json["state"], "up-to-date");
         updater.set_auto(false);
         assert_eq!(updater.status().to_json()["state"], "off");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_program_built_on_this_pc_goes_in_whatever_its_version_says() {
+        let dir = temp("local");
+        let settings = dir.join("settings");
+        let store = Store::new(&settings);
+        fs::create_dir_all(store.dir()).unwrap();
+        let exe = dir.join("MapleSyrup.exe");
+        fs::write(&exe, b"MZ..mine").unwrap();
+        // The same version number as the running one, with the commit
+        // added — not newer, but local.
+        let mut staged = stage(&store, "0.9.0+local.abc1234", b"MZ..rebuilt");
+        staged.local = true;
+        store.set_staged(&staged).unwrap();
+        assert_eq!(
+            at_start(&settings, &exe, "0.9.0"),
+            Start::Relaunch(exe.clone())
+        );
+        assert_eq!(fs::read(&exe).unwrap(), b"MZ..rebuilt");
+        assert_eq!(store.pending().unwrap().to, "0.9.0+local.abc1234");
+        // A local build that did not come up is blocked like any other.
+        store.block("0.9.0+local.abc1234");
+        store.clear_pending();
+        let mut again = stage(&store, "0.9.0+local.abc1234", b"MZ..rebuilt");
+        again.local = true;
+        store.set_staged(&again).unwrap();
+        assert_eq!(at_start(&settings, &exe, "0.9.0"), Start::CarryOn);
         let _ = fs::remove_dir_all(&dir);
     }
 

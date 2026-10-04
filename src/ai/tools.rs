@@ -34,6 +34,9 @@ pub struct Toolbox {
     pub web: bool,
     /// Where the player's corrections are kept.
     pub learning: Option<Learning>,
+    /// The workshop, when MapleSyrup may rewrite itself on this PC (the
+    /// tool is offered only while it is on).
+    pub workshop: Option<Arc<crate::workshop::Workshop>>,
 }
 
 /// What running a tool changed, for the rest of MapleSyrup.
@@ -55,6 +58,8 @@ pub enum Effect {
         said: String,
         asked: bool,
     },
+    /// Change MapleSyrup's own program on this PC, as the player asked.
+    Rewrite(String),
 }
 
 /// Ask the vision model one of the teacher's questions.
@@ -188,6 +193,16 @@ character (always on screen), and never with an alert about something else (leve
                 }),
             ),
         ];
+        if self.workshop.as_ref().is_some_and(|w| w.is_on()) {
+            tools.push(function(
+                "change_your_code",
+                "Change your own program on this PC, when the player asks you to change, fix or improve \
+yourself (how you talk, what you warn about, a bug they hit...). A coding agent on this PC rewrites the code, \
+it is built and tested, and the new version installs the next time MapleSyrup starts. It takes a few minutes; \
+you say so. Pass what they asked for, in full, in their words. Only for changes to MapleSyrup itself.",
+                json!({"instruction": {"type": "string", "description": "What to change, as the player put it."}}),
+            ));
+        }
         if self.web {
             // Never waited for: it answers first, the look-up runs behind.
             tools.push(function(
@@ -376,6 +391,25 @@ wrong."
                 )
             }
             "mark_moment" => ("Marked.".into(), Some(Effect::Command("mark".into()))),
+            "change_your_code" => {
+                let instruction = text("instruction");
+                let Some(workshop) = self.workshop.as_ref().filter(|w| w.is_on()) else {
+                    return (
+                        "The workshop is off: MapleSyrup can't change itself right now.".into(),
+                        None,
+                    );
+                };
+                if instruction.chars().filter(|c| c.is_alphanumeric()).count() < 6 {
+                    return ("Say what to change.".into(), None);
+                }
+                let _ = workshop;
+                (
+                    "Queued: the change is being made in the background — the code rewritten, built and tested — \
+and installs the next time MapleSyrup starts. Tell the player it takes a few minutes and you'll say when it's ready."
+                        .into(),
+                    Some(Effect::Rewrite(instruction)),
+                )
+            }
             "set_recording" => {
                 let on = args["on"].as_bool().unwrap_or(true);
                 (
@@ -445,6 +479,7 @@ mod tests {
 
     fn toolbox(dir: &std::path::Path) -> Toolbox {
         Toolbox {
+            workshop: None,
             sight: Arc::new(Mutex::new(Sight::load(&dir.join("learned")))),
             eyes: Arc::new(OpenAi::new(
                 "sk-test-key-0123456789abcdef",

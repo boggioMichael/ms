@@ -185,6 +185,20 @@ Updates
   is tried instead. Turn it off in Settings on the phone, or start MapleSyrup
   with --no-update.
 
+Workshop (off unless you turn it on)
+  MapleSyrup can rewrite itself, on this PC only. Turn the workshop on in
+  Details on the phone, then say "change yourself: make the HP warning
+  shorter" (or type it there). A coding agent installed on this PC — Claude
+  Code or Codex CLI, whichever you have — changes the source in the
+  checkout at %USERPROFILE%\GitHub\ms (or where --repo says), the program is
+  built and its tests run (a few minutes; the game keeps priority), and the
+  new version installs the next time MapleSyrup starts, with the old one
+  kept to go back to. "Undo the last change" takes it back. The work stays
+  on a branch of this PC's own: nothing is pushed, nothing is published, and
+  the site's updates are paused while the workshop is on. It needs git, the
+  Rust toolchain and a coding agent on this PC; the first build fetches the
+  dependencies and takes longer.
+
 Privacy
   Your OpenAI key stays on this PC (a live call uses a key that works for a few
   minutes only, made for it). With a key, what you say to MapleSyrup (on a

@@ -158,6 +158,19 @@ pub enum Inbound {
     /// About updates: look now, install what is staged, or whether to
     /// update on its own.
     Update(UpdateAsk),
+    /// About the workshop (MapleSyrup rewriting itself on this PC).
+    Workshop(WorkshopAsk),
+}
+
+/// What the phone asks of the workshop.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WorkshopAsk {
+    On(bool),
+    /// Make this change.
+    Change(String),
+    Undo,
+    /// Use this coding agent ("claude" or "codex").
+    Coder(String),
 }
 
 /// What the phone asks of the updater.
@@ -620,6 +633,34 @@ impl Hub {
                 }
                 None => Response::json(400, &json!({"error": "on must be true or false"})),
             },
+            ("POST", "/api/workshop") => {
+                let body = body();
+                let text = body
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or("");
+                let ask = match body.get("action").and_then(Value::as_str) {
+                    Some("on") => Some(WorkshopAsk::On(true)),
+                    Some("off") => Some(WorkshopAsk::On(false)),
+                    Some("change") if !text.is_empty() && text.len() <= 4000 => {
+                        Some(WorkshopAsk::Change(text.to_string()))
+                    }
+                    Some("undo") => Some(WorkshopAsk::Undo),
+                    Some("coder") if !text.is_empty() => Some(WorkshopAsk::Coder(text.to_string())),
+                    _ => None,
+                };
+                match ask {
+                    Some(ask) => {
+                        self.lock().inbox.push(Inbound::Workshop(ask));
+                        Response::json(200, &json!({"ok": true}))
+                    }
+                    None => Response::json(
+                        400,
+                        &json!({"error": "action is on, off, change (with text), undo or coder (with text)"}),
+                    ),
+                }
+            }
             ("POST", "/api/update") => {
                 let body = body();
                 let ask = match body.get("action").and_then(Value::as_str) {
@@ -1157,6 +1198,11 @@ mod tests {
             ("/api/coach?k=k1", r#"{"on": false}"#),
             ("/api/update?k=k1", r#"{"action": "install"}"#),
             ("/api/update?k=k1", r#"{"action": "auto", "on": false}"#),
+            (
+                "/api/workshop?k=k1",
+                r#"{"action": "change", "text": "shorter HP warning"}"#,
+            ),
+            ("/api/workshop?k=k1", r#"{"action": "undo"}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
             ("/api/attitude?k=k1", r#"{"attitude": "savage"}"#),
             ("/api/speaker?k=k1", r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#),
@@ -1199,6 +1245,8 @@ mod tests {
                 Inbound::Coach(false),
                 Inbound::Update(UpdateAsk::Install),
                 Inbound::Update(UpdateAsk::Auto(false)),
+                Inbound::Workshop(WorkshopAsk::Change("shorter HP warning".into())),
+                Inbound::Workshop(WorkshopAsk::Undo),
                 Inbound::Turn("jumped in".into()),
                 Inbound::Attitude(crate::companion::Attitude::Savage),
                 Inbound::Speaker("pNInz6obpgDQGcFmaJgB".into()),
@@ -1221,6 +1269,15 @@ mod tests {
         assert_eq!(
             hub.handle(&request("POST", "/api/update?k=k1", r#"{"action": "fly"}"#))
                 .status,
+            400
+        );
+        assert_eq!(
+            hub.handle(&request(
+                "POST",
+                "/api/workshop?k=k1",
+                r#"{"action": "change", "text": " "}"#
+            ))
+            .status,
             400
         );
     }

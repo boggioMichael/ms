@@ -270,6 +270,9 @@ pub enum Done {
     },
     /// The model asked for a command (mark, mute, unmute) the main loop runs.
     Command { word: String },
+    /// The player asked MapleSyrup to change its own program: the
+    /// workshop's job.
+    Rewrite { instruction: String },
     /// The player asked to be warned at another HP or MP (`below`: the
     /// percent, 0 for never, None for the usual).
     Warn { what: String, below: Option<f32> },
@@ -1252,6 +1255,9 @@ fn converse<'a>(
                     }
                     Some(Effect::Command(word)) => {
                         let _ = tx.send(Done::Command { word });
+                    }
+                    Some(Effect::Rewrite(instruction)) => {
+                        let _ = tx.send(Done::Rewrite { instruction });
                     }
                     Some(Effect::Warn { what, below }) => {
                         let _ = tx.send(Done::Warn { what, below });

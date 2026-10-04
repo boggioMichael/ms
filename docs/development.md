@@ -264,6 +264,55 @@ The way Android updates its APEX modules, scaled to one program:
   Everything the updater does is in `updates/log.txt` and the session log
   (`[update]` lines).
 
+## The workshop (`src/workshop.rs`)
+
+MapleSyrup rewriting itself, on one PC, for the player who runs it there.
+Off unless the player turns it on (Details on the phone, kept in
+`memory.json` as `workshop`; or `--workshop` for a session).
+
+- **Asked** by voice ("change yourself: …", "rewrite yourself so that …",
+  "תשנה את עצמך: …"; `workshop::request`), by the conversation model (the
+  `change_your_code` tool, offered only while the workshop is on), or by
+  typing it on the phone (`/api/workshop`). "Undo the last change" reverts
+  the workshop's last commit and builds again.
+- **The checkout**: `%USERPROFILE%\GitHub\ms`, `MAPLESYRUP_REPO` or
+  `--repo`. It must be clean. The work is on `local/<pc>`; the first time,
+  that branch is made from the commit the running program was built from
+  (`MS_COMMIT`, baked in by `build.rs`; fetched if the checkout lacks it),
+  so the change is to the program the player is running, not to whatever
+  master has become.
+- **The coder**: Claude Code (`claude -p … --permission-mode acceptEdits
+  --allowedTools "Read,Edit,…,Bash(cargo *)"`) or Codex CLI (`codex exec
+  --full-auto`), whichever is on the PATH (`.cmd` shims included), the
+  first found unless the player picked one. It gets the instruction, the
+  end of the session's log, and the rules: small and local, keep the build
+  and the tests green, nothing in `.github/` or `installer/`, not the
+  updater's key or channel, no git. It leaves a sentence in
+  `WORKSHOP_NOTE.txt`, which becomes the commit's body and what the player
+  hears.
+- **The checks**: something changed; nothing out of bounds (`.github/`,
+  `installer/`, the `PUBLIC_KEY`/`CHANNEL` constants); `cargo build
+  --release --bin maplesyrup` and `cargo test --release --lib`, at
+  below-normal priority with half the cores, so the game keeps its frames.
+  A failure throws the coder's changes away (`git checkout -- . && git
+  clean -fd`; the tree was clean before) and says why; the logs stay under
+  `%APPDATA%\MapleSyrup\workshop\<time>\`.
+- **Kept and staged**: `git commit` as "MapleSyrup workshop"; the program
+  copied to `updates\MapleSyrup-local-<commit>.exe` and staged for the
+  updater with `local: true` and the version `<running>+local.<commit>`
+  (activated at the next start whatever its number; blocked like any
+  other if it does not come up twice; "Update now" works). While the
+  workshop is on, the channel's releases are not taken.
+- **Never**: a push, a change to master, a release. The workshop has no
+  remote to speak of; the branch is the PC's. If the player wants a change
+  upstream, they push the branch themselves and open a pull request.
+
+Tests: `tests/workshop_pipeline.rs` runs the whole way on a checkout of its
+own with a stand-in coder and a stand-in cargo (scripts): the branch from
+the running commit, the change built, tested, committed and staged; a
+change out of bounds and one failing the tests thrown away; a dirty
+checkout left alone; undo.
+
 ## Performance Notes
 
 - **Motion detector**: ~5-10ms per frame (frame diff + tracking)

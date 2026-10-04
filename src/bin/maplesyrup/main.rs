@@ -105,6 +105,13 @@ OPTIONS
   --no-update           never look for a new version (it updates itself
                         otherwise: fetched in the background, installed at
                         the next start, rolled back if it does not come up)
+  --workshop            let it rewrite itself on this PC when asked (\"change
+                        yourself: ...\"): a coding agent installed here (Claude
+                        Code or Codex) changes the source in --repo, it is
+                        built and tested, and the new program installs at the
+                        next start. Also a switch on the phone.
+  --repo PATH           the checkout of MapleSyrup's source the workshop works
+                        in (default %USERPROFILE%\\GitHub\\ms, or MAPLESYRUP_REPO)
   --self-test           check this PC: the engine, the phone link, the voice
   --record-test         check recording on this PC: a few seconds of the screen
                         with a flash and a tone, which must line up
@@ -146,6 +153,10 @@ struct Options {
     plain: bool,
     /// Looks for a new version of itself and installs it.
     update: bool,
+    /// Rewrites itself on this PC when asked (None: as set on the phone).
+    workshop: Option<bool>,
+    /// The checkout the workshop works in (None: the usual place).
+    repo: Option<PathBuf>,
     self_test: bool,
     record_test: bool,
     /// How it talks (None: what the player picked on the phone).
@@ -184,6 +195,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         overlay_on_stream: false,
         plain: false,
         update: std::env::var_os("MAPLESYRUP_NO_UPDATE").is_none(),
+        workshop: None,
+        repo: None,
         self_test: false,
         record_test: false,
         attitude: None,
@@ -238,6 +251,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--overlay-on-stream" => o.overlay_on_stream = true,
             "--plain" => o.plain = true,
             "--no-update" => o.update = false,
+            "--workshop" => o.workshop = Some(true),
+            "--repo" => o.repo = Some(PathBuf::from(value("--repo")?)),
             "--self-test" => o.self_test = true,
             "--record-test" => o.record_test = true,
             "--attitude" => {
@@ -1100,6 +1115,50 @@ fn conversation_job(
     }
 }
 
+/// The end of the session so far, for the workshop's coder: what was
+/// heard, said and noticed lately.
+fn recent_log(out: &Outputs) -> String {
+    out.log
+        .iter()
+        .rev()
+        .take(30)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .map(|l| format!("[{}] {}", kind_label(l.kind), l.text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One of MapleSyrup's own lines, said in its voice (and shown): through
+/// the AI worker when there is one (the voice the player picked), else as
+/// the PC says things.
+fn say_line(out: &mut Outputs, line: String) {
+    match &out.mouth.ai {
+        Some(worker) => {
+            worker.send(Job::Say {
+                heard: None,
+                text: line,
+            });
+        }
+        None => out.push(Kind::Reply, line),
+    }
+}
+
+/// Hand the workshop a task and tell the player what happens now.
+fn workshop_ask(workshop: &ms::workshop::Workshop, task: ms::workshop::Task, out: &mut Outputs) {
+    match workshop.ask(task) {
+        Ok(line) => {
+            out.session.line("workshop", &line);
+            say_line(out, line);
+        }
+        Err(why) => {
+            out.session.line("workshop", &why);
+            say_line(out, format!("I can't change myself right now: {why}"));
+        }
+    }
+}
+
 /// How a line is labelled in the session log.
 fn kind_label(kind: Kind) -> &'static str {
     match kind {
@@ -1444,6 +1503,39 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     if options.update {
         Arc::clone(&updater).spawn(update_tx);
     }
+    // The workshop: MapleSyrup rewriting itself on this PC when asked (a
+    // coding agent installed here, the local checkout, a build, the
+    // updater's staging). While it is on, the channel's releases are not
+    // taken: they would wipe the local work.
+    let workshop_on = options
+        .workshop
+        .or(learning.memory().workshop)
+        .unwrap_or(false);
+    let workshop = Arc::new(ms::workshop::Workshop::new(
+        &settings_dir,
+        options
+            .repo
+            .clone()
+            .unwrap_or_else(ms::workshop::default_repo),
+        ms::workshop::Running {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            commit: env!("MS_COMMIT").to_string(),
+        },
+        workshop_on,
+    ));
+    if let Some(coder) = learning
+        .memory()
+        .workshop_coder
+        .as_deref()
+        .and_then(ms::workshop::Coder::parse)
+    {
+        let _ = workshop.prefer(coder);
+    }
+    let (workshop_tx, workshop_rx) = mpsc::channel::<ms::workshop::Event>();
+    Arc::clone(&workshop).spawn(workshop_tx);
+    if workshop_on {
+        updater.set_auto(false);
+    }
     // The new version this is, until it has run long enough to be kept.
     let mut update_committed = !options.update;
     // "Update now" from the phone: the staged version put in place, to be
@@ -1592,6 +1684,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 settings: settings_dir.clone(),
                                 web: options.web,
                                 learning: Some(learning.clone()),
+                                workshop: Some(Arc::clone(&workshop)),
                             },
                             learning: learning.clone(),
                         }));
@@ -1602,6 +1695,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         settings: settings_dir.clone(),
                         web: options.web,
                         learning: Some(learning.clone()),
+                        workshop: Some(Arc::clone(&workshop)),
                     };
                     lookups = Some(ai::lookup::Lookups::new(
                         Arc::new(OpenAi::new(
@@ -1918,6 +2012,16 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 ms::update::Event::Noted(line) => out.session.line("update", &line),
             }
         }
+        while let Ok(event) = workshop_rx.try_recv() {
+            match event {
+                ms::workshop::Event::Said(line) => {
+                    out.session.line("workshop", &line);
+                    say_line(&mut out, line);
+                }
+                ms::workshop::Event::Noted(line) => out.session.line("workshop", &line),
+                ms::workshop::Event::Staged => updater.refresh(),
+            }
+        }
         if !update_committed && start.elapsed() >= ms::update::HEALTHY_AFTER {
             update_committed = true;
             if let Some(version) = ms::update::commit(&settings_dir) {
@@ -2093,6 +2197,25 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 recording.stop(&mut out, panel_window.as_mut());
                             }
                             continue;
+                        }
+                        // "Change yourself: …" / "undo the last change": the
+                        // workshop's, when it is on.
+                        if workshop.is_on() {
+                            let task = if ms::workshop::undo_request(&text) {
+                                Some(ms::workshop::Task::Undo)
+                            } else {
+                                ms::workshop::request(&text).map(|instruction| {
+                                    ms::workshop::Task::Change {
+                                        instruction,
+                                        context: recent_log(&out),
+                                    }
+                                })
+                            };
+                            if let Some(task) = task {
+                                out.show(Kind::Heard, &text);
+                                workshop_ask(&workshop, task, &mut out);
+                                continue;
+                            }
                         }
                         if let Some(on) = commands::coaching_request(&text) {
                             out.show(Kind::Heard, &text);
@@ -2306,6 +2429,17 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 out.apply(actions, &mut companion, latest_image.clone());
                             }
                         }
+                        ai::Effect::Rewrite(instruction) => {
+                            out.session
+                                .line("workshop", &format!("asked on the call: {instruction}"));
+                            let task = ms::workshop::Task::Change {
+                                instruction,
+                                context: recent_log(&out),
+                            };
+                            if let Err(why) = workshop.ask(task) {
+                                out.push(Kind::Info, format!("couldn't start the change: {why}"));
+                            }
+                        }
                     },
                     Inbound::Command(word) => {
                         if let Some(command) = Command::from_word(&word) {
@@ -2386,6 +2520,65 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             );
                         }
                     }
+                    Inbound::Workshop(ask) => match ask {
+                        phone::WorkshopAsk::On(on) => {
+                            workshop.set_on(on);
+                            let mut memory = learning.memory();
+                            memory.workshop = Some(on);
+                            let updates = memory.updates.unwrap_or(true);
+                            memory.save();
+                            drop(memory);
+                            // The channel's releases would wipe the local
+                            // work: off while the workshop is on.
+                            updater.set_auto(!on && options.update && updates);
+                            let line = if on {
+                                match workshop.coders().first() {
+                                    Some(coder) => format!(
+                                        "Workshop on: say \"change yourself: …\" and {} rewrites me here, on this PC; the site's updates are off meanwhile.",
+                                        coder.label()
+                                    ),
+                                    None => "Workshop on, but no coding agent is installed on this PC (Claude Code or Codex CLI): nothing can be changed until one is.".to_string(),
+                                }
+                            } else {
+                                "Workshop off: the site's updates are back on.".to_string()
+                            };
+                            out.session.line("workshop", &line);
+                            out.push(Kind::Info, line);
+                        }
+                        phone::WorkshopAsk::Change(instruction) => {
+                            out.show(
+                                Kind::Heard,
+                                &format!("[phone] change yourself: {instruction}"),
+                            );
+                            workshop_ask(
+                                &workshop,
+                                ms::workshop::Task::Change {
+                                    instruction,
+                                    context: recent_log(&out),
+                                },
+                                &mut out,
+                            );
+                        }
+                        phone::WorkshopAsk::Undo => {
+                            out.show(Kind::Heard, "[phone] undo the last change");
+                            workshop_ask(&workshop, ms::workshop::Task::Undo, &mut out);
+                        }
+                        phone::WorkshopAsk::Coder(name) => {
+                            match ms::workshop::Coder::parse(&name) {
+                                Some(coder) => match workshop.prefer(coder) {
+                                    Ok(()) => {
+                                        let mut memory = learning.memory();
+                                        memory.workshop_coder = Some(name);
+                                        memory.save();
+                                        out.session
+                                            .line("workshop", &format!("coder: {}", coder.label()));
+                                    }
+                                    Err(e) => out.push(Kind::Info, e),
+                                },
+                                None => out.push(Kind::Info, format!("no such coder: {name}")),
+                            }
+                        }
+                    },
                     Inbound::Update(ask) => match ask {
                         phone::UpdateAsk::Check => updater.check_now(),
                         phone::UpdateAsk::Auto(on) => {
@@ -2546,6 +2739,21 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 {
                     let on = word == ai::tools::COACH_ON;
                     set_coaching(&mut coach, &learning, &mut out, on);
+                }
+                Done::Rewrite { instruction } => {
+                    out.session.line(
+                        "workshop",
+                        &format!("asked through the model: {instruction}"),
+                    );
+                    let task = ms::workshop::Task::Change {
+                        instruction,
+                        context: recent_log(&out),
+                    };
+                    // The model already told the player; only a refusal is
+                    // worth a line.
+                    if let Err(why) = workshop.ask(task) {
+                        out.push(Kind::Info, format!("couldn't start the change: {why}"));
+                    }
                 }
                 Done::Command { word } if word == ai::tools::RECORD_ON => recording.start(&mut out),
                 Done::Command { word } if word == ai::tools::RECORD_OFF => {
@@ -2790,6 +2998,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     "coach": coach.on,
                     // This version, and whether a newer one is on its way.
                     "update": updater.status().to_json(),
+                    // Whether it rewrites itself here, and how that is going.
+                    "workshop": workshop.state().to_json(),
                     "speaking": out.mouth.speaking(),
                     // The PC's own voice (the phone keeps listening through it).
                     "speaking_pc": out.mouth.pc_speaking(),

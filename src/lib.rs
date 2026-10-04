@@ -37,3 +37,4 @@ pub mod sight;
 pub mod update;
 pub mod util;
 pub mod vision;
+pub mod workshop;

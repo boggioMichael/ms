@@ -21,6 +21,7 @@ STATUS = {
     "progress": {"seconds": 1200.0, "exp_per_hour": 1.2, "seconds_to_level": 7200.0, "levels_gained": 0, "marks": 0},
     "muted": False, "dead": False, "fps": 10.0, "wake": "syrup", "always_listen": True, "coach": True,
     "update": {"version": "0.9.0", "state": "staged", "detail": "0.9.1", "latest": "0.9.1", "auto": True, "checked_secs_ago": 5, "notes": ""},
+    "workshop": {"on": True, "coder": "Claude Code", "coders": ["Claude Code", "Codex"], "repo": "C:\\Users\\me\\GitHub\\ms", "working": "building", "working_secs": 95, "queued": 0, "last": None},
     "speaking": False, "speaking_pc": False, "thinking": False, "ai": "grok-4.3",
     "learned": {"things": [], "hud": True, "level": 152, "level_from": "screen"},
     "live": True, "recording": {"state": "off"}, "attitude": "savage",
@@ -104,6 +105,13 @@ with sync_playwright() as p:
     page.wait_for_timeout(200)
     assert page.is_visible("#paneDetails") and page.is_visible("#game") and page.is_visible("#recBtn")
     assert "6,370 / 6,370" in page.inner_text("#hpVal"), page.inner_text("#hpVal")
+    # The workshop card: on, both coders to pick from, what it is doing.
+    assert page.is_checked("#workshopBox") and page.is_visible("#workshopBody")
+    assert page.input_value("#workshopCoder") == "Claude Code"
+    assert page.is_visible("#workshopCoderRow")
+    assert "Working: building" in page.inner_text("#workshopState"), page.inner_text("#workshopState")
+    assert page.is_disabled("#workshopBuild"), "no second job while one runs"
+    page.locator("#workshopCard").screenshot(path=os.path.join(SHOTS, "phone-workshop-card.png"))
     page.screenshot(path=os.path.join(SHOTS, "phone-details.png"), full_page=True)
     # Hebrew: right to left, the new words translated.
     page.click("#tabSettings")

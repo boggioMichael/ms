@@ -152,6 +152,9 @@
   #updateBtn { width: 100%; border: 1px solid var(--syrup); background: var(--syrup); color: #1a1209; border-radius: 14px;
     padding: 12px; font-size: 16px; font-weight: 700; }
   #updateBtn:disabled { opacity: .6; }
+  #workshopBuild { width: 100%; border: 1px solid var(--syrup); background: var(--syrup); color: #1a1209; border-radius: 14px;
+    padding: 12px; font-size: 16px; font-weight: 700; }
+  #workshopBuild:disabled { opacity: .6; }
   #voiceSearch { width: 100%; background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
     padding: 10px 12px; font-size: 15px; margin-bottom: 8px; -webkit-appearance: none; appearance: none; }
   .voices { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 44vh; overflow-y: auto; }
@@ -287,6 +290,20 @@
 
     <button id="recBtn"><i class="recdot"></i><span id="recText" data-t="vid_start">Record the session</span></button>
     <div id="recNote" data-t="vid_hint"></div>
+    <section class="card" id="workshopCard">
+      <h2 data-t="ws_title">Workshop</h2>
+      <label class="opt" style="margin-top:0"><span data-t="ws_on">Rewrites itself on this PC when asked</span> <input type="checkbox" id="workshopBox"></label>
+      <div class="sub" style="margin:4px 0 8px" data-t="ws_hint">Say "change yourself: …" or type it here. A coding agent on this PC (Claude Code or Codex) changes the code, it is built and tested, and the new version installs the next time MapleSyrup starts. On this PC only: nothing is published.</div>
+      <div id="workshopBody" style="display:none">
+        <label class="opt" id="workshopCoderRow" style="margin-top:0"><span data-t="ws_coder">Coder</span> <select id="workshopCoder"></select></label>
+        <textarea id="workshopText" rows="3" data-tp="ws_ph" placeholder="What to change…" style="width:100%; box-sizing:border-box; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:10px 12px; font-size:15px; font-family:inherit; margin:6px 0 8px"></textarea>
+        <button id="workshopBuild" data-t="ws_build">Make the change</button>
+        <button id="workshopUndo" class="done" style="display:block; margin:4px 0 0; padding:8px 0" data-t="ws_undo">Undo the last change</button>
+        <div class="sub" id="workshopState" style="margin:8px 0 0"></div>
+        <div class="sub" id="workshopRepo" style="margin:4px 0 0; opacity:.7; font-size:12px"></div>
+      </div>
+    </section>
+
 
     <section class="card" id="learnedCard">
       <h2 data-t="h_learned">What I've learned</h2>
@@ -321,7 +338,7 @@
   // The page's words in each language; anything missing falls back to English.
   const WORDS = {
     en: {
-      h_details: "Details", done: "Done", voice_search: "Search voices…", coach: "Speaks up on its own while you play", coach_hint: "Tips and callouts without being asked: a new map, a level-up, EXP standing still. Off: it only answers (and still warns about low HP or MP).", version: "Version", update_now: "Update now", auto_update: "Updates itself when a new version is out", upd_ok: "up to date", upd_dl: "downloading {v}…", upd_ready: "{v} is ready: it installs the next time MapleSyrup starts", upd_off: "off", upd_blocked: "{v} is out, but it did not come up last time; waiting for the next one", upd_failed: "could not check: {why}",
+      h_details: "Details", done: "Done", voice_search: "Search voices…", coach: "Speaks up on its own while you play", coach_hint: "Tips and callouts without being asked: a new map, a level-up, EXP standing still. Off: it only answers (and still warns about low HP or MP).", ws_title: "Workshop", ws_on: "Rewrites itself on this PC when asked", ws_hint: "Say \"change yourself: …\" or type it here. A coding agent on this PC (Claude Code or Codex) changes the code, it is built and tested, and the new version installs the next time MapleSyrup starts. On this PC only: nothing is published.", ws_coder: "Coder", ws_ph: "What to change…", ws_build: "Make the change", ws_undo: "Undo the last change", ws_working: "Working: {s} ({t})", ws_idle: "Idle", ws_queued: "{n} waiting", ws_none: "No coding agent found on this PC: install Claude Code or Codex CLI and start MapleSyrup again.", version: "Version", update_now: "Update now", auto_update: "Updates itself when a new version is out", upd_ok: "up to date", upd_dl: "downloading {v}…", upd_ready: "{v} is ready: it installs the next time MapleSyrup starts", upd_off: "off", upd_blocked: "{v} is out, but it did not come up last time; waiting for the next one", upd_failed: "could not check: {why}",
       connecting: "connecting…", pc_connected: "PC connected", pc_unreachable: "PC not reachable", reconnecting: "reconnecting…", old_link: "old link",
       need_link: "This page needs the link from MapleSyrup's window on the PC: scan its QR code.",
       link_old: "This link is out of date. Scan the QR code in MapleSyrup's window on the PC again.",
@@ -358,7 +375,7 @@
       mic_failed: "The microphone could not start:", mic_refused: "permission was refused. Allow the microphone for this page in the browser's settings, then try again.",
     },
     he: {
-      h_details: "פרטים", done: "סיום", voice_search: "חפש קול…", coach: "מדבר מעצמו בזמן שאתה משחק", coach_hint: "טיפים והערות בלי שתשאל: מפה חדשה, עליית רמה, EXP שלא זז. כבוי: עונה רק כששואלים (ועדיין מזהיר על HP או MP נמוכים).", version: "גרסה", update_now: "עדכן עכשיו", auto_update: "מתעדכן לבד כשיוצאת גרסה חדשה", upd_ok: "מעודכן", upd_dl: "מוריד את {v}…", upd_ready: "{v} מוכנה: תותקן בהפעלה הבאה של MapleSyrup", upd_off: "כבוי", upd_blocked: "{v} יצאה, אבל לא עלתה בפעם הקודמת; מחכה לבאה", upd_failed: "הבדיקה נכשלה: {why}",
+      h_details: "פרטים", done: "סיום", voice_search: "חפש קול…", coach: "מדבר מעצמו בזמן שאתה משחק", coach_hint: "טיפים והערות בלי שתשאל: מפה חדשה, עליית רמה, EXP שלא זז. כבוי: עונה רק כששואלים (ועדיין מזהיר על HP או MP נמוכים).", ws_title: "סדנה", ws_on: "משכתב את עצמו על המחשב הזה כשמבקשים", ws_hint: "תגיד \"תשנה את עצמך: …\" או תכתוב כאן. סוכן קוד שמותקן על המחשב (Claude Code או Codex) משנה את הקוד, הוא נבנה ונבדק, והגרסה החדשה מותקנת בהפעלה הבאה של MapleSyrup. רק על המחשב הזה: שום דבר לא מתפרסם.", ws_coder: "סוכן", ws_ph: "מה לשנות…", ws_build: "בצע את השינוי", ws_undo: "בטל את השינוי האחרון", ws_working: "עובד: {s} ({t})", ws_idle: "פנוי", ws_queued: "{n} ממתינים", ws_none: "לא נמצא סוכן קוד על המחשב: התקן Claude Code או Codex CLI והפעל את MapleSyrup מחדש.", version: "גרסה", update_now: "עדכן עכשיו", auto_update: "מתעדכן לבד כשיוצאת גרסה חדשה", upd_ok: "מעודכן", upd_dl: "מוריד את {v}…", upd_ready: "{v} מוכנה: תותקן בהפעלה הבאה של MapleSyrup", upd_off: "כבוי", upd_blocked: "{v} יצאה, אבל לא עלתה בפעם הקודמת; מחכה לבאה", upd_failed: "הבדיקה נכשלה: {why}",
       connecting: "מתחבר…", pc_connected: "המחשב מחובר", pc_unreachable: "אין חיבור למחשב", reconnecting: "מתחבר מחדש…", old_link: "קישור ישן",
       need_link: "הדף הזה צריך את הקישור מהחלון של MapleSyrup במחשב: סרוק את קוד ה-QR.",
       link_old: "הקישור הזה כבר לא בתוקף. סרוק שוב את קוד ה-QR בחלון של MapleSyrup במחשב.",
@@ -1016,6 +1033,7 @@
     if (typeof status.always_listen === "boolean" && document.activeElement !== $("always")) $("always").checked = status.always_listen;
     if (typeof status.coach === "boolean" && Date.now() > coachHeldUntil) $("coachBox").checked = status.coach;
     renderUpdate(status.update);
+    renderWorkshop(status.workshop);
     // The dog talks while the PC (or this phone) speaks; dots while it thinks.
     dogMood();
     if (seen) dogGame(status);
@@ -1441,6 +1459,53 @@
     $("updateBtn").style.display = u.state === "staged" ? "" : "none";
     if (typeof u.auto === "boolean" && Date.now() > updateHeldUntil) $("updateBox").checked = u.auto;
   }
+  // The workshop: MapleSyrup rewriting itself on this PC.
+  let workshopHeldUntil = 0;
+  let workshopCoders = "";
+  function renderWorkshop(w) {
+    if (!w) return;
+    if (Date.now() > workshopHeldUntil) $("workshopBox").checked = !!w.on;
+    $("workshopBody").style.display = w.on ? "" : "none";
+    const coders = (w.coders || []).join("|");
+    if (coders !== workshopCoders) {
+      workshopCoders = coders;
+      const sel = $("workshopCoder");
+      sel.innerHTML = "";
+      for (const c of w.coders || []) {
+        const o = document.createElement("option");
+        o.value = c; o.textContent = c;
+        sel.appendChild(o);
+      }
+      $("workshopCoderRow").style.display = (w.coders || []).length > 1 ? "" : "none";
+    }
+    if (w.coder && document.activeElement !== $("workshopCoder")) $("workshopCoder").value = w.coder;
+    let state;
+    if (!(w.coders || []).length) state = t("ws_none");
+    else if (w.working) state = t("ws_working").replace("{s}", w.working).replace("{t}", duration(w.working_secs || 0));
+    else if (w.last) state = (w.last.ok ? "✓ " : "✗ ") + w.last.summary + " (" + w.last.when + ")";
+    else state = t("ws_idle");
+    if (w.queued) state += " · " + t("ws_queued").replace("{n}", w.queued);
+    $("workshopState").textContent = state;
+    $("workshopRepo").textContent = w.repo || "";
+    $("workshopBuild").disabled = !!w.working || !(w.coders || []).length;
+  }
+  $("workshopBox").addEventListener("change", () => {
+    workshopHeldUntil = Date.now() + 3000;
+    $("workshopBody").style.display = $("workshopBox").checked ? "" : "none";
+    postJson("/api/workshop", { action: $("workshopBox").checked ? "on" : "off" }).catch(() => {});
+  });
+  $("workshopCoder").addEventListener("change", () => {
+    postJson("/api/workshop", { action: "coder", text: $("workshopCoder").value }).catch(() => {});
+  });
+  $("workshopBuild").addEventListener("click", () => {
+    const text = $("workshopText").value.trim();
+    if (!text) return;
+    $("workshopBuild").disabled = true;
+    postJson("/api/workshop", { action: "change", text }).then(() => { $("workshopText").value = ""; }).catch(() => {});
+  });
+  $("workshopUndo").addEventListener("click", () => {
+    postJson("/api/workshop", { action: "undo" }).catch(() => {});
+  });
   $("updateBox").addEventListener("change", () => {
     updateHeldUntil = Date.now() + 3000;
     postJson("/api/update", { action: "auto", on: $("updateBox").checked }).catch(() => {});

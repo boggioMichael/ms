@@ -224,6 +224,12 @@ pub struct Memory {
     /// Whether it updates itself when a new version is out; None is the
     /// usual, on.
     pub updates: Option<bool>,
+    /// Whether the workshop is on (MapleSyrup rewrites itself on this PC
+    /// when asked); None is the usual, off.
+    pub workshop: Option<bool>,
+    /// The coding agent the workshop uses ("claude" or "codex"); None is
+    /// the first one found.
+    pub workshop_coder: Option<String>,
     #[serde(skip)]
     path: Option<PathBuf>,
 }
