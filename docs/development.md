@@ -44,7 +44,18 @@ keeps what the pixels mean in MapleStory, and the orchestration.
 
 - **`companion/`**: what MapleSyrup says and when from the numbers alone —
   warnings, a beating, a death, level-ups, EXP/hour, voice commands, the
-  `Observation` of a frame.
+  `Observation` of a frame. It acts only on what is read or learned: the
+  HUD detector's colour-run guesses stay out of the `Observation`
+  (`Reliability::Corroborated` or nothing), a bar whose readings swing
+  back and forth is held until it settles (`Steadiness`), a death read
+  from a bar's fill must last two seconds, and a level-up is the level
+  read at the bottom left going up by one for the same character — the
+  EXP bar's wrap only has the sight read the number again. Alerts that
+  nothing answers (no word, no potion, no EXP gained) stop after six and
+  wait ten minutes (`pace`); the main loop tells it when the player speaks
+  (`player_spoke`) and holds the taught things' alerts with its own
+  (`alerts_held`). A tone complaint ("don't talk to me this way") drops the
+  attitude to friendly (`commands::tone_complaint`).
 - **`coach/`**: when MapleSyrup speaks up on its own beyond that. `Coach`
   is fed every frame and returns a `Reason` when a model should look (a
   new scene, a level-up, EXP stalled, a look now and then); the main loop

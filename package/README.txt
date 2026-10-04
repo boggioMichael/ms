@@ -74,7 +74,11 @@ How it talks
   While it speaks, MapleStory's sound is turned down for a moment.
   The OpenAI account needs credit (platform.openai.com/settings/organization/billing);
   without it MapleSyrup says so and goes on with simple answers and the
-  Windows voice. It also speaks up by itself when HP or MP runs low or you level up.
+  Windows voice. It also speaks up by itself when HP or MP runs low or you level up
+  (a level-up is the level at the bottom left going up by one — nothing else
+  counts). Warnings nobody answers stop after six until you say something, and
+  a bar it can only guess at is not warned from. "Don't talk to me this way"
+  makes it friendly.
   On the phone you can choose where replies are spoken (PC, phone, both, off)
   and switch to "only after 'syrup'" for streaming.
 
