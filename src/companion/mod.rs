@@ -834,10 +834,18 @@ impl Companion {
     }
 
     fn track_window(&mut self, now: f64, obs: &Observation, out: &mut Vec<Action>) {
-        if obs.game.is_seen() {
+        if let GameView::Seen(title) = &obs.game {
             if !self.ever_seen {
                 self.ever_seen = true;
-                out.push(Action::Say(Say::info("I can see MapleStory.", true)));
+                // The window's title, when it is not plainly the game's: a
+                // player once heard "I can see MapleStory" with the game
+                // closed, and the log did not say what had been taken for it.
+                let line = if title.trim().eq_ignore_ascii_case("maplestory") {
+                    "I can see MapleStory.".to_string()
+                } else {
+                    format!("I can see MapleStory (the window \"{}\").", title.trim())
+                };
+                out.push(Action::Say(Say::info(line, true)));
             } else if self.announced_lost {
                 out.push(Action::Say(Say::info("I can see the game again.", true)));
             }

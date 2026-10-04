@@ -788,6 +788,7 @@ impl Updater {
             .spawn(move || {
                 let mut wait = FIRST_CHECK_AFTER;
                 let mut retry = RETRY_AFTER;
+                let mut last_failure: Option<String> = None;
                 loop {
                     let woken = {
                         let (flag, condvar) = &self.wake;
@@ -804,12 +805,22 @@ impl Updater {
                     }
                     match self.check_once() {
                         Ok(()) => {
+                            if last_failure.take().is_some() {
+                                self.note("update check: the channel answers again".into());
+                            }
                             wait = CHECK_EVERY;
                             retry = RETRY_AFTER;
                         }
                         Err(why) => {
                             self.set_phase(Phase::Failed(why.clone()));
-                            self.note(format!("update check failed: {why}"));
+                            // The same failure every hour is noted once, until
+                            // it changes.
+                            if last_failure.as_deref() != Some(why.as_str()) {
+                                self.note(format!(
+                                    "update check failed: {why} (not noted again while it stays so)"
+                                ));
+                                last_failure = Some(why);
+                            }
                             wait = retry;
                             retry = (retry * 2).min(CHECK_EVERY);
                         }
@@ -821,7 +832,24 @@ impl Updater {
     /// One look at the channel, fetching and staging what it announces.
     pub fn check_once(&self) -> Result<(), String> {
         let bytes = self.fetch(&self.channel, MAX_MANIFEST)?;
-        let signature = self.fetch(&format!("{}.sig", self.channel), 4096)?;
+        // A site that answers every path with its home page (as a single-
+        // page site does) is a channel with nothing published yet, not a
+        // broken one: said so, before the signature is asked for.
+        if looks_like_a_web_page(&bytes) {
+            return Err(
+                "the channel answered with a web page, not a manifest: nothing is published there yet"
+                    .into(),
+            );
+        }
+        let signature = self
+            .fetch(&format!("{}.sig", self.channel), 4096)
+            .map_err(|why| {
+                if why.contains("(63)") {
+                    "the channel's signature file is too big to be one (a web page?)".to_string()
+                } else {
+                    why
+                }
+            })?;
         let manifest = verify(&bytes, &signature, &self.public_key)?;
         {
             let mut status = self.status.lock().unwrap_or_else(|e| e.into_inner());
@@ -990,6 +1018,18 @@ impl Updater {
         self.say(format!("{version} put in place: restarting"));
         Ok(version)
     }
+}
+
+/// Whether `bytes` are an HTML page rather than the JSON of a manifest.
+fn looks_like_a_web_page(bytes: &[u8]) -> bool {
+    let head: String = String::from_utf8_lossy(&bytes[..bytes.len().min(512)])
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .chars()
+        .take(64)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    head.starts_with("<!doctype") || head.starts_with("<html") || head.starts_with("<?xml")
 }
 
 fn curl_failure(stderr: &[u8], url: &str) -> String {
@@ -1350,6 +1390,31 @@ mod tests {
             b"MZ..old"
         );
         assert_eq!(updater.store().pending().unwrap().to, "0.9.0");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_channel_that_answers_with_its_home_page_has_nothing_published() {
+        // The site's single-page fallback: every path gets the page.
+        let dir = temp("spa");
+        let page = dir.join("manifest.json");
+        fs::write(
+            &page,
+            "<!DOCTYPE html>\n<html lang=\"en\"><head><title>Syrup</title></head><body></body></html>",
+        )
+        .unwrap();
+        let updater = Updater::with(
+            &dir.join("settings"),
+            "0.9.0",
+            true,
+            &format!("file://{}", page.display()),
+            &[0u8; 32],
+        );
+        let why = updater.check_once().unwrap_err();
+        assert!(why.contains("a web page, not a manifest"), "{why}");
+        assert!(looks_like_a_web_page(b"  <!doctype HTML><html>"));
+        assert!(looks_like_a_web_page("\u{feff}<html>".as_bytes()));
+        assert!(!looks_like_a_web_page(b"{\"name\": \"MapleSyrup\"}"));
         let _ = fs::remove_dir_all(&dir);
     }
 }
