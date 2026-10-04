@@ -169,6 +169,9 @@ pub struct Companion {
     muted: bool,
     exp: ExpTracker,
     last_level: Option<u32>,
+    /// The character's name when the level was last taken: a level that
+    /// comes with another name is another character's.
+    last_name: Option<String>,
     /// A level reading waiting to hold: the level, and since when.
     level_candidate: Option<(u32, f64)>,
     announced_level_up: f64,
@@ -458,6 +461,7 @@ impl Companion {
             muted: false,
             exp: ExpTracker::new(),
             last_level: None,
+            last_name: None,
             level_candidate: None,
             announced_level_up: f64::NEG_INFINITY,
             marks: 0,
@@ -1085,59 +1089,75 @@ impl Companion {
         }
     }
 
+    /// The level, from the number read at the bottom left of the screen
+    /// ("Lv. 165"), and the EXP bar for the pace. A level-up is that number
+    /// going up by one, for the same character, once the new reading has
+    /// held for a moment — then, and only then, is it said. The EXP bar
+    /// wrapping says nothing on its own (it has the sight read the number
+    /// again, and the number says); a number that jumps, falls, or comes
+    /// with another name is another character or a misread: taken, not
+    /// celebrated.
     fn watch_progress(&mut self, now: f64, obs: &Observation, out: &mut Vec<Action>) {
-        // A level reading is taken once it has held for a moment: a misread
-        // lasts until the next read of the plate, a real level for good.
-        let mut level_rose = false;
         if let Some(level) = obs.level {
             match self.level_candidate {
                 Some((candidate, since)) if candidate == level => {
                     if now - since >= LEVEL_HOLD_SECS && self.last_level != Some(level) {
-                        level_rose = self.last_level.is_some_and(|before| level == before + 1);
+                        let before = self.last_level;
+                        let same_character = match (&self.last_name, &obs.name) {
+                            (Some(then), Some(now)) => then == now,
+                            _ => true,
+                        };
                         self.last_level = Some(level);
+                        if obs.name.is_some() {
+                            self.last_name = obs.name.clone();
+                        }
+                        let rose_by_one = before.is_some_and(|b| level == b + 1);
+                        if rose_by_one && same_character {
+                            // (The EXP bar may have counted this one already.)
+                            self.exp.level_rose(now);
+                            if now - self.announced_level_up >= 30.0 {
+                                self.announced_level_up = now;
+                                let text = self
+                                    .settings
+                                    .attitude
+                                    .pick(
+                                        [
+                                            &["Level up! You're level {}."],
+                                            &["Level {}! Nice."],
+                                            &[
+                                                "Level {}. Took you long enough.",
+                                                "Level {}. Finally.",
+                                            ],
+                                        ],
+                                        self.warnings,
+                                    )
+                                    .replace("{}", &level.to_string());
+                                out.push(Action::Say(Say::alert(text)));
+                            }
+                        } else if let Some(before) = before {
+                            let why = if !same_character {
+                                "another character"
+                            } else if level > before {
+                                "not one level up: not celebrated"
+                            } else {
+                                "a lower level: another character, or misread"
+                            };
+                            out.push(Action::Say(Say::info(
+                                format!("Level {level} now, from {before} ({why})."),
+                                false,
+                            )));
+                        }
                     }
                 }
                 _ => self.level_candidate = Some((level, now)),
             }
+        } else if self.last_name.is_none() && obs.name.is_some() {
+            self.last_name = obs.name.clone();
         }
-        let mut leveled = level_rose && self.exp.level_rose(now);
+        // The EXP bar: for the pace and the time to the next level. Its
+        // wrapping counts a level for the total, and says nothing.
         if let Some(exp) = obs.exp {
-            leveled |= self.exp.add(now, exp.percent as f64);
-        }
-        // Both signals can arrive for one level-up, seconds apart.
-        let announce = (level_rose || leveled) && now - self.announced_level_up >= 30.0;
-        if announce {
-            self.announced_level_up = now;
-            let text = match self.last_level {
-                Some(level) if level_rose => self
-                    .settings
-                    .attitude
-                    .pick(
-                        [
-                            &["Level up! You're level {}."],
-                            &["Level {}! Nice."],
-                            &["Level {}. Took you long enough.", "Level {}. Finally."],
-                        ],
-                        self.warnings,
-                    )
-                    .replace("{}", &level.to_string()),
-                _ => self
-                    .settings
-                    .attitude
-                    .pick(
-                        [
-                            &["Level up! Nice."],
-                            &["Level up!"],
-                            &["Level up. Finally."],
-                        ],
-                        self.warnings,
-                    )
-                    .to_string(),
-            };
-            out.push(Action::Say(Say::alert(text)));
-        } else if level_rose && let Some(level) = self.last_level {
-            // Already celebrated from the EXP bar; now the number is known.
-            out.push(Action::Say(Say::info(format!("Now level {level}."), false)));
+            self.exp.add(now, exp.percent as f64);
         }
     }
 
@@ -1801,12 +1821,12 @@ mod tests {
             next.level = Some(58);
             lines.extend(said(&c.observe(4.0 + i as f64 * 0.1, next)));
         }
-        // The level number held for three seconds before the EXP fall had
-        // lasted long enough to count: celebrated once, with the number.
+        // The number at the bottom left went from 57 to 58 and held for
+        // three seconds: celebrated once, with the number.
         assert_eq!(lines, ["Level up! You're level 58."]);
         // The level itself was taken once it held.
         assert_eq!(said(&c.command(20.0, Command::Level)), ["You're level 58."]);
-        // Without a level reading, the EXP bar's wrap alone says it.
+        // The EXP bar's wrap alone says nothing: only the number does.
         let mut c = Companion::new(Settings::default());
         for i in 0..40 {
             let mut full = frame(90.0, 90.0, 99.0);
@@ -1814,12 +1834,63 @@ mod tests {
             c.observe(i as f64 * 0.1, full);
         }
         let mut lines = Vec::new();
-        for i in 0..60 {
+        for i in 0..100 {
             let mut next = frame(90.0, 90.0, 0.5);
             next.level = None;
             lines.extend(said(&c.observe(4.0 + i as f64 * 0.1, next)));
         }
-        assert_eq!(lines, ["Level up! Nice."]);
+        assert!(lines.is_empty(), "{lines:?}");
+        // (It still counts for the session's total.)
+        assert_eq!(c.progress().levels_gained, 1);
+    }
+
+    #[test]
+    fn only_the_number_going_up_by_one_for_the_same_character_is_a_level_up() {
+        let named = |level: u32, name: &str| {
+            let mut f = frame(90.0, 90.0, 40.0);
+            f.level = Some(level);
+            f.name = Some(name.to_string());
+            f
+        };
+        let hold = |c: &mut Companion, from: f64, obs: Observation| -> Vec<String> {
+            let mut lines = Vec::new();
+            for i in 0..40 {
+                lines.extend(said(&c.observe(from + i as f64 * 0.1, obs.clone())));
+            }
+            lines.retain(|l| l != "I can see MapleStory.");
+            lines
+        };
+        // Up by one, the same name: said.
+        let mut c = Companion::new(Settings::default());
+        assert!(hold(&mut c, 0.0, named(165, "WanWanBoggio")).is_empty());
+        assert_eq!(
+            hold(&mut c, 10.0, named(166, "WanWanBoggio")),
+            ["Level up! You're level 166."]
+        );
+        // A jump of five: taken, not celebrated (and noted, not spoken).
+        let lines = hold(&mut c, 60.0, named(171, "WanWanBoggio"));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("Level 171 now, from 166"), "{lines:?}");
+        assert_eq!(
+            said(&c.command(70.0, Command::Level)),
+            ["You're level 171."]
+        );
+        // Another character's level, one higher: not a level-up.
+        let lines = hold(&mut c, 120.0, named(172, "Mule"));
+        assert!(lines[0].contains("another character"), "{lines:?}");
+        // Back to the first character: another character again, quietly…
+        let lines = hold(&mut c, 180.0, named(171, "WanWanBoggio"));
+        assert!(lines[0].contains("another character"), "{lines:?}");
+        // …and the same character read lower is a misread (or a rebirth).
+        let lines = hold(&mut c, 240.0, named(160, "WanWanBoggio"));
+        assert!(lines[0].contains("lower level"), "{lines:?}");
+        // A name on neither side: the number alone decides.
+        let mut c = Companion::new(Settings::default());
+        let mut unnamed = frame(90.0, 90.0, 40.0);
+        unnamed.level = Some(57);
+        assert!(hold(&mut c, 0.0, unnamed.clone()).is_empty());
+        unnamed.level = Some(58);
+        assert_eq!(hold(&mut c, 10.0, unnamed), ["Level up! You're level 58."]);
     }
 
     #[test]
