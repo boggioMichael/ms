@@ -81,8 +81,9 @@ impl Layout {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Facts {
     pub level: Option<u32>,
-    /// "read" (the vision model), "player" (told), "level-up" (the EXP bar
-    /// wrapped; to be read again).
+    /// "read" (the vision model), "player" (told). (Older files may say
+    /// "level-up": the EXP bar wrapped and the level was guessed; a guess
+    /// is no longer made.)
     pub level_from: Option<String>,
     pub name: Option<String>,
     pub job: Option<String>,
@@ -210,6 +211,95 @@ fn now_text() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
 }
 
+/// Whether `red` and `blue` lie as the HP and MP bars do: the one right
+/// over the other with the same left edge (give or take a bar's height),
+/// or side by side in one row, HP first, no more than a bar's width apart.
+/// Lava, a monster's own health bar, a red border: not beside the MP bar.
+fn neighbours(red: &BarModel, blue: &BarModel, fw: u32, fh: u32) -> bool {
+    let (rx, ry, rw, rh) = red.band.pixels(fw, fh);
+    let (bx, by, bw, bh) = blue.band.pixels(fw, fh);
+    let tall = rh.max(bh).max(2);
+    let stacked =
+        rx.abs_diff(bx) <= tall && ry + rh <= by + tall && by.saturating_sub(ry + rh) <= tall * 3;
+    let in_a_row =
+        ry.abs_diff(by) <= tall && rx + rw <= bx + tall && bx.saturating_sub(rx + rw) <= rw.max(bw);
+    stacked || in_a_row
+}
+
+/// The bar of `colour` beside `sibling`, where the HP and MP bars lie
+/// together: right above it (or below, `first` false), with the same left
+/// edge; or, failing that, before it in the same row (or after). Lined up
+/// give or take a bar's height, and about as tall (heights are rough: text
+/// over a bar leaves a band of its lower rows, a shadow under one adds
+/// rows). A bar found over or under its sibling takes the sibling's track,
+/// where that is known; the numbers fix it from there.
+fn bar_beside(
+    frame: &RgbaImage,
+    sibling: &BarModel,
+    first: bool,
+    colour: ((f32, f32), f32, f32, f32),
+) -> Option<BarModel> {
+    use syrup::bars::find_bar;
+    use syrup::geometry::Rect;
+    let (fw, fh) = frame.dimensions();
+    let (hue, sat, val, expected) = colour;
+    let (bx, by, bw, bh) = sibling.band.pixels(fw, fh);
+    let tall = bh.max(2);
+    let margin = (bw / 8).max(4);
+    let reach = bh.saturating_mul(3).max(6);
+    // A region clipped to the frame.
+    let within = |x: u32, y: u32, w: u32, h: u32| Rect {
+        x: x.min(fw),
+        y: y.min(fh),
+        w: w.min(fw.saturating_sub(x)),
+        h: h.min(fh.saturating_sub(y)),
+    };
+    // Over or under the sibling, as wide as it with a little to spare.
+    let stacked_y = if first {
+        by.saturating_sub(reach)
+    } else {
+        by + bh
+    };
+    let stacked = within(bx.saturating_sub(margin), stacked_y, bw + 2 * margin, reach);
+    // Before or after it in the same row: up to a bar and a half away.
+    let span = bw + bw / 2 + margin;
+    let row_x = if first {
+        bx.saturating_sub(span)
+    } else {
+        bx + bw
+    };
+    let row = within(row_x, by.saturating_sub(tall), span, bh + 2 * tall);
+    for (region, over_under) in [(stacked, true), (row, false)] {
+        if region.w == 0 || region.h == 0 {
+            continue;
+        }
+        let Some(fill) = find_bar(frame, region, hue, sat, val) else {
+            continue;
+        };
+        let approx = NBox::from_pixels(fill.x, fill.y, fill.w, fill.h, fw, fh);
+        let Some(mut model) = BarModel::learn(frame, &approx, Some(expected)) else {
+            continue;
+        };
+        let (mx, my, mw, mh) = model.band.pixels(fw, fh);
+        let as_tall = mh * 3 >= bh && mh <= bh * 3;
+        let lined_up = if over_under {
+            mx.abs_diff(bx) <= tall
+        } else {
+            // In the row, and clear of the sibling.
+            my.abs_diff(by) <= tall && (mx + mw <= bx + tall || mx >= bx + bw)
+        };
+        if !as_tall || !lined_up {
+            continue;
+        }
+        if over_under {
+            model.band.x0 = sibling.band.x0;
+            model.band.x1 = sibling.band.x1.max(model.band.x1);
+        }
+        return Some(model);
+    }
+    None
+}
+
 impl Sight {
     /// What was learned before, from `dir` (the settings folder's
     /// `learned`).
@@ -303,6 +393,16 @@ impl Sight {
         }
         if let Some(want) = self.want {
             return Some(want);
+        }
+        // A HUD known but for the HP or MP bar, which the pixels have not
+        // found beside the other for a while: the model is asked to box
+        // it (with the usual backoff, should it fail too).
+        if self.lacks_a_bar()
+            && self
+                .find_failing_since
+                .is_some_and(|t| now.duration_since(t) >= FIND_FOR)
+        {
+            return Some(Want::Calibrate);
         }
         let labels_held_back = self
             .labels_asked
@@ -400,11 +500,21 @@ impl Sight {
             };
             models[i] = Some(model);
         }
-        let found = models.iter().filter(|m| m.is_some()).count();
+        let [mut hp, mp, exp] = models;
+        // The HP and MP bars lie together: MP right under HP with the
+        // same left edge, or the two side by side. Two "bars" that do not
+        // — the lava, a monster's own health bar — are not both bars: the
+        // blue one is trusted (less of the scenery is blue) and the red
+        // one looked for right above it.
+        if let Some(blue) = &mp
+            && !hp.as_ref().is_some_and(|red| neighbours(red, blue, fw, fh))
+        {
+            hp = bar_beside(frame, blue, true, BAR_COLOURS[0]);
+        }
+        let found = [&hp, &mp, &exp].iter().filter(|m| m.is_some()).count();
         if found == 0 {
             return Err("no HP, MP or EXP bar in the status band".into());
         }
-        let [hp, mp, exp] = models;
         let mut status: Option<NBox> = None;
         for b in [&hp, &mp, &exp].into_iter().flatten() {
             status = Some(match status {
@@ -432,6 +542,100 @@ impl Sight {
         Ok(format!("found {found} bar(s) from the pixels"))
     }
 
+    /// Whether the layout has no HP or no MP bar (the pixels took the
+    /// lava for one, or found neither; the model boxed the wrong place).
+    pub fn lacks_a_bar(&self) -> bool {
+        self.layout
+            .as_ref()
+            .is_some_and(|l| l.hp.is_none() || l.mp.is_none())
+    }
+
+    /// Find the HP or MP bar a layout lacks, beside the one it has: the
+    /// two are stacked, MP right under HP, with the same left edge and
+    /// the same track — where the scenery seldom passes for a bar, as it
+    /// does in the whole status band (on a lava map, the lava is the
+    /// biggest red thing there). With both missing, the blue bar is
+    /// looked for first (less of the scenery is blue) and the red one
+    /// above it. Returns what was found, for the log.
+    pub fn find_missing_bars(&mut self, frame: &RgbaImage) -> Result<String, String> {
+        use syrup::bars::find_bar;
+        use syrup::geometry::Rect;
+        let (fw, fh) = frame.dimensions();
+        let Some(layout) = self.layout.as_ref() else {
+            return Err("no layout".into());
+        };
+        if !layout.fits(fw, fh) {
+            return Err("the layout is for another shape of screen".into());
+        }
+        let (mut hp, mut mp) = (layout.hp.clone(), layout.mp.clone());
+        if hp.is_none() && mp.is_none() {
+            // Neither: the blue bar in the status band, then the red one
+            // right above it.
+            let band = Rect {
+                x: 0,
+                y: fh.saturating_mul(9) / 10,
+                w: fw.saturating_mul(3) / 4,
+                h: fh - fh.saturating_mul(9) / 10,
+            };
+            let (hue, sat, val, expected) = BAR_COLOURS[1];
+            if let Some(fill) = find_bar(frame, band, hue, sat, val) {
+                let approx = NBox::from_pixels(fill.x, fill.y, fill.w, fill.h, fw, fh);
+                mp = BarModel::learn(frame, &approx, Some(expected));
+            }
+            if let Some(blue) = &mp {
+                hp = bar_beside(frame, blue, true, BAR_COLOURS[0]);
+                // The blue bar alone could be the scenery; with the red one
+                // lined up above it, it is the MP bar.
+                if hp.is_none() {
+                    mp = None;
+                }
+            }
+        } else if hp.is_none() {
+            hp = layout
+                .mp
+                .as_ref()
+                .and_then(|blue| bar_beside(frame, blue, true, BAR_COLOURS[0]));
+        } else if mp.is_none() {
+            mp = layout
+                .hp
+                .as_ref()
+                .and_then(|red| bar_beside(frame, red, false, BAR_COLOURS[1]));
+        }
+        let found_hp = hp.is_some() && layout.hp.is_none();
+        let found_mp = mp.is_some() && layout.mp.is_none();
+        if !found_hp && !found_mp {
+            return Err("the missing bar is not beside the other".into());
+        }
+        let mut notes = Vec::new();
+        if found_hp {
+            notes.push("HP bar");
+        }
+        if found_mp {
+            notes.push("MP bar");
+        }
+        let layout = self.layout.as_mut().expect("checked above");
+        layout.hp = hp;
+        layout.mp = mp;
+        // The status strip takes the new bar in.
+        let mut status = layout.status;
+        for b in [&layout.hp, &layout.mp].into_iter().flatten() {
+            let grown = b.band.grown(0.04, 1.2);
+            status = Some(match status {
+                Some(s) => s.union(&grown),
+                None => grown,
+            });
+        }
+        layout.status = status;
+        layout.found = now_text();
+        self.lost_since = None;
+        self.find_failing_since = None;
+        self.save();
+        Ok(format!(
+            "found the {} beside the other from the pixels",
+            notes.join(" and ")
+        ))
+    }
+
     /// One frame: the bars where they were learned, the numbers beside
     /// them, the EXP bar's wrap, and the things the player taught.
     /// Does the sight see the HUD on a screen this shape: a layout that
@@ -449,19 +653,26 @@ impl Sight {
     pub fn observe(&mut self, frame: &RgbaImage, now: Instant) -> Seen {
         let mut seen = Seen::default();
         // No HUD known for a screen this shape: the pixels look for it,
-        // once a second, and the clock runs on how long they fail.
+        // once a second, and the clock runs on how long they fail. A HUD
+        // known but for the HP or MP bar: the missing bar is looked for
+        // beside the other, once a second, the same way.
         let fits = self
             .layout
             .as_ref()
             .is_some_and(|l| l.fits(frame.width(), frame.height()));
-        if !fits
-            && self
-                .find_tried
-                .is_none_or(|t| now.duration_since(t) >= FIND_EVERY)
-        {
+        let due = self
+            .find_tried
+            .is_none_or(|t| now.duration_since(t) >= FIND_EVERY);
+        if !fits && due {
             self.find_tried = Some(now);
             let _find = tracing::trace_span!("sight.find").entered();
             if self.find_hud(frame).is_err() {
+                self.find_failing_since.get_or_insert(now);
+            }
+        } else if fits && due && self.lacks_a_bar() {
+            self.find_tried = Some(now);
+            let _find = tracing::trace_span!("sight.find").entered();
+            if self.find_missing_bars(frame).is_err() {
                 self.find_failing_since.get_or_insert(now);
             }
         }
@@ -618,10 +829,14 @@ impl Sight {
             self.unlabelled_since = None;
         }
         drop(numbers_span);
-        // A level-up: the EXP bar goes from nearly full to nearly empty, and
-        // stays there. The full must have lasted — a run of readings, not
-        // one frame's misreading (something of the bar's colour over it) —
-        // and the number, when it was read lately, has the last word.
+        // The EXP bar wrapping — from nearly full to nearly empty, and
+        // staying there — is most likely a level-up: the level is to be
+        // read again (`Want::Verify`), and the number at the bottom left,
+        // read, is what says the level went up; the bar alone says
+        // nothing, and the level fact is not touched on its account. The
+        // full must have lasted — a run of readings, not one frame's
+        // misreading (something of the bar's colour over it) — and the
+        // number, when it was read lately, has the last word.
         if let Some(Value::Percent(p)) = &seen.exp_number {
             self.exp_read_at = Some((now, *p));
         } else if let Some(Value::Amount { current, max }) = &seen.exp_number
@@ -655,11 +870,6 @@ impl Sight {
                 if recent_low && before_high && !number_disagrees {
                     seen.leveled = true;
                     self.exp_trail.clear();
-                    if let Some(level) = self.facts.level {
-                        self.facts.level = Some(level + 1);
-                        self.facts.level_from = Some("level-up".into());
-                        self.save();
-                    }
                     self.want = Some(Want::Verify);
                 }
             }
@@ -746,9 +956,20 @@ impl Sight {
             b.as_ref()
                 .and_then(|b| BarModel::learn(frame, b, Some(hue)))
         };
-        let mut hp = learn(&c.hp, 0.0);
-        let mut mp = learn(&c.mp, 215.0);
-        let mut exp = learn(&c.exp, 55.0);
+        // A bar the model's box did not give (boxed over the scenery, or
+        // not boxed) keeps the one already learned for this shape of
+        // screen, if there is one: a bad box must not lose a good bar.
+        let (fw, fh) = frame.dimensions();
+        let kept = self
+            .layout
+            .as_ref()
+            .filter(|l| l.fits(fw, fh))
+            .map(|l| (l.hp.clone(), l.mp.clone(), l.exp.clone()))
+            .unwrap_or_default();
+        let missing_before = [&kept.0, &kept.1].iter().filter(|b| b.is_none()).count();
+        let mut hp = learn(&c.hp, 0.0).or(kept.0);
+        let mut mp = learn(&c.mp, 215.0).or(kept.1);
+        let mut exp = learn(&c.exp, 55.0).or(kept.2);
         // The game's numbers fix where each track ends.
         if let (Some(b), Some(p)) = (hp.as_mut(), c.values.hp_percent()) {
             b.reading(frame, p);
@@ -816,7 +1037,30 @@ impl Sight {
         self.find_failing_since = None;
         self.last_look = Some(Instant::now());
         // Finding the HUD is help enough; the lines' examples come later.
-        self.answered(true);
+        // Asked for a bar the layout lacked and given none, the next ask
+        // waits longer each time: a model that boxes the lava for the HP
+        // bar every time must not cost a call every ten seconds.
+        let missing_after = self
+            .layout
+            .as_ref()
+            .map(|l| [&l.hp, &l.mp].iter().filter(|b| b.is_none()).count())
+            .unwrap_or(0);
+        if missing_before > 0 && missing_after >= missing_before {
+            self.looked();
+            parts.push(format!(
+                "the {} still not found; the next look waits {} s",
+                if missing_after == 2 {
+                    "HP and MP bars"
+                } else if self.layout.as_ref().is_some_and(|l| l.hp.is_none()) {
+                    "HP bar"
+                } else {
+                    "MP bar"
+                },
+                self.ask_backoff.as_secs()
+            ));
+        } else {
+            self.answered(true);
+        }
         self.save();
         Ok(parts.join("; "))
     }
@@ -1333,6 +1577,148 @@ mod tests {
         let again = Sight::load(&dir);
         let layout = again.layout.as_ref().expect("the other bars stay");
         assert!(layout.hp.is_none() && layout.mp.is_some() && layout.exp.is_some());
+        // The bar it lacks is found beside the other on the next frame
+        // (the layout fits this screen, so the pixels would otherwise
+        // never have looked again), lined up with it; and is reported
+        // once the number beside it fits its track.
+        let mut again = again;
+        let t0 = Instant::now();
+        again.observe(&frame, t0);
+        let layout = again.layout.as_ref().unwrap();
+        let (hp, mp) = (
+            layout
+                .hp
+                .as_ref()
+                .expect("the HP bar, found beside the MP bar"),
+            layout.mp.as_ref().unwrap(),
+        );
+        assert!(
+            syrup::bars::hue_distance(hp.hue, 350.0) < 25.0,
+            "{}",
+            hp.hue
+        );
+        // (This HUD lays the bars in a row: HP before MP.)
+        assert!(neighbours(hp, mp, 1280, 720), "{hp:?} beside {mp:?}");
+        assert!((hp.band.x0 - 100.0 / 1280.0).abs() < 0.004, "{hp:?}");
+        assert!(!again.lacks_a_bar());
+        again.verified(&frame, &values);
+        let seen = again.observe(&frame, t0 + Duration::from_secs(2));
+        assert!((seen.hp.unwrap() - 60.0).abs() < 3.0, "{seen:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_layout_lacking_both_bars_gets_them_as_a_pair_and_asks_the_model_only_in_time() {
+        let dir = temp_dir("pair");
+        let mut sight = Sight::load(&dir);
+        let (frame, _) = numbers::tests::hud((240, 400), (1351, 1351), 50.0);
+        let t0 = Instant::now();
+        sight.observe(&frame, t0);
+        // A layout saved with the EXP bar alone (as a player's was, after
+        // the model boxed the lava for the HP bar and the box was dropped).
+        {
+            let layout = sight.layout.as_mut().unwrap();
+            layout.hp = None;
+            layout.mp = None;
+        }
+        assert!(sight.lacks_a_bar());
+        // A blank strip (a cutscene): nothing to find yet, and the model is
+        // not asked before the pixels have had their time.
+        let blank = RgbaImage::from_pixel(1280, 720, image::Rgba([20, 20, 30, 255]));
+        sight.observe(&blank, t0 + Duration::from_secs(1));
+        assert!(sight.lacks_a_bar());
+        assert_eq!(sight.wants(1280, 720), None);
+        // Still nothing after a while (as if the pixels had been failing
+        // for twelve seconds; `wants` reads the clock): the model is asked
+        // to box them…
+        for i in 2..14 {
+            sight.observe(&blank, t0 + Duration::from_secs(i));
+        }
+        assert!(sight.find_failing_since.is_some());
+        sight.find_failing_since = Some(Instant::now() - Duration::from_secs(12));
+        assert_eq!(sight.wants(1280, 720), Some(Want::Calibrate));
+        // …and its boxes over the scenery do not lose the EXP bar, nor
+        // bring the missing ones; the next ask waits (and says so).
+        sight.asking();
+        let bad = Calibration {
+            hp: Some(NBox::new(0.1, 0.1, 0.3, 0.12)),
+            mp: Some(NBox::new(0.1, 0.2, 0.3, 0.22)),
+            exp: None,
+            level: None,
+            minimap: None,
+            values: HudValues::default(),
+        };
+        let note = sight.calibrated(&frame, &bad).unwrap();
+        assert!(
+            note.contains("still not found; the next look waits"),
+            "{note}"
+        );
+        let layout = sight.layout.as_ref().unwrap();
+        assert!(layout.exp.is_some() && layout.hp.is_none() && layout.mp.is_none());
+        assert_eq!(sight.wants(1280, 720), None, "held back by the backoff");
+        // The HUD back in view: both bars, as a pair, from the pixels.
+        sight.observe(&frame, t0 + Duration::from_secs(20));
+        let layout = sight.layout.as_ref().unwrap();
+        let (hp, mp) = (layout.hp.as_ref().unwrap(), layout.mp.as_ref().unwrap());
+        assert!(neighbours(hp, mp, 1280, 720), "{hp:?} beside {mp:?}");
+        assert!((hp.band.x0 - 100.0 / 1280.0).abs() < 0.004, "{hp:?}");
+        assert!((mp.band.x0 - 420.0 / 1280.0).abs() < 0.004, "{mp:?}");
+        assert!(!sight.lacks_a_bar());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bottom of a player's 4K screen (3,840 × 216 of 3,840 × 2,160),
+    /// as captured: the HP and MP bars in the middle under the text, the
+    /// EXP bar along the bottom — and monsters in the status band, whose
+    /// red passed for the HP bar when each colour was looked for alone.
+    fn real_4k_frame() -> RgbaImage {
+        let strip = image::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/resources/hud-4k-strip.png"
+        ))
+        .expect("the 4K strip fixture")
+        .to_rgba8();
+        let mut frame = RgbaImage::from_pixel(3840, 2160, image::Rgba([20, 20, 30, 255]));
+        image::imageops::replace(&mut frame, &strip, 0, (2160 - strip.height()) as i64);
+        frame
+    }
+
+    #[test]
+    fn on_a_real_4k_screen_the_hp_and_mp_bars_are_found_as_a_pair() {
+        let dir = temp_dir("4k");
+        let mut sight = Sight::load(&dir);
+        let frame = real_4k_frame();
+        let note = sight.find_hud(&frame).unwrap();
+        assert!(note.starts_with("found 3 bar(s)"), "{note}");
+        // The player's bars: 1,732 px in, HP over MP, the EXP bar below.
+        let layout = sight.layout.clone().unwrap();
+        let (hp, mp, exp) = (layout.hp.unwrap(), layout.mp.unwrap(), layout.exp.unwrap());
+        let (hx, hy, _, hh) = hp.band.pixels(3840, 2160);
+        let (mx, my, _, _) = mp.band.pixels(3840, 2160);
+        assert!(
+            hx.abs_diff(1732) <= 4 && mx.abs_diff(1732) <= 4,
+            "{hp:?} {mp:?}"
+        );
+        assert!((2050..=2072).contains(&hy) && hy + hh <= 2092, "{hp:?}");
+        assert!(my.abs_diff(2092) <= 4, "{mp:?}");
+        assert!(
+            syrup::bars::hue_distance(hp.hue, 340.0) < 10.0,
+            "{}",
+            hp.hue
+        );
+        assert!(exp.band.y0 > 0.98, "{exp:?}");
+        // Lacking both (as the player's layout did), they are found again
+        // as a pair, in the same place.
+        {
+            let layout = sight.layout.as_mut().unwrap();
+            layout.hp = None;
+            layout.mp = None;
+        }
+        let note = sight.find_missing_bars(&frame).unwrap();
+        assert!(note.contains("HP bar and MP bar"), "{note}");
+        let layout = sight.layout.as_ref().unwrap();
+        let (hx2, hy2, _, _) = layout.hp.as_ref().unwrap().band.pixels(3840, 2160);
+        assert!(hx2.abs_diff(1732) <= 4 && hy2.abs_diff(hy) <= 4);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1360,7 +1746,8 @@ mod tests {
             );
             assert_eq!(seen.leveled, i == last, "{i}: {seen:?}");
         }
-        assert_eq!(sight.facts.level, Some(62));
+        // (The level fact waits for the number to be read again.)
+        assert_eq!(sight.facts.level, Some(61));
         // A moment of "full" in a bar that then empties is not one.
         let mut quiet = Sight::load(&temp_dir("level-quiet"));
         quiet.calibrated(&frame, &c).unwrap();
