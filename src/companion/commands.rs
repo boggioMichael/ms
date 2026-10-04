@@ -446,7 +446,7 @@ pub fn tone_complaint(sentence: &str) -> bool {
         Some(end) => text[end..].trim().to_string(),
         None => text,
     };
-    if text.split(' ').filter(|w| !w.is_empty()).count() > 9 {
+    if text.split(' ').filter(|w| !w.is_empty()).count() > 14 {
         return false;
     }
     const COMPLAINTS: &[&str] = &[

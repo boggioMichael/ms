@@ -294,6 +294,16 @@ fn bar_beside(
         if over_under {
             model.band.x0 = sibling.band.x0;
             model.band.x1 = sibling.band.x1.max(model.band.x1);
+            // As tall as its sibling, from the bottom up: the text over a
+            // bar leaves only its lower rows as a run of its colour, and
+            // the numbers are read from the band's rows — a band of the
+            // lower rows alone would cut the digits in half.
+            if mh < bh {
+                let bottom = my + mh;
+                let top = bottom.saturating_sub(bh);
+                model.band.y0 = top as f32 / fh as f32;
+                model.band.y1 = bottom as f32 / fh as f32;
+            }
         }
         return Some(model);
     }

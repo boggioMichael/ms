@@ -250,17 +250,25 @@ impl Steadiness {
         {
             self.lately.pop_front();
         }
-        // Found unsteady lately: one more turn is enough to say it still
-        // is, and it is held for twice as long each time, so a bar that
-        // is misread all night is not warned from every half minute.
+        // While held, one more turn keeps it held (the hold ends a settle
+        // after the last turn); found unsteady again as soon as the hold
+        // ends, it is held twice as long, so a bar misread all night is
+        // not warned from every half minute; steady for a while, a new
+        // bout starts over.
         let turns = reversals(self.lately.iter().map(|(_, p)| *p), SWING);
-        let on_probation = now < self.unsteady_until + SWINGS_WINDOW;
-        if turns >= SWINGS_UNSTEADY || (on_probation && turns >= 1) {
-            self.settle = if on_probation {
-                (self.settle * 2.0).min(SETTLE_MAX_SECS)
-            } else {
-                SETTLE_SECS
-            };
+        let held = now < self.unsteady_until;
+        let just_ended = !held && now < self.unsteady_until + SWINGS_WINDOW;
+        let unsteady = if held || just_ended {
+            turns >= 1
+        } else {
+            turns >= SWINGS_UNSTEADY
+        };
+        if unsteady {
+            if just_ended {
+                self.settle = (self.settle * 2.0).min(SETTLE_MAX_SECS);
+            } else if !held {
+                self.settle = SETTLE_SECS;
+            }
             self.unsteady_until = now + self.settle;
             self.lately.clear();
         }

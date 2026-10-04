@@ -73,12 +73,13 @@ impl Observation {
     /// Everything the engine saw in `world`, from the window called `title`.
     ///
     /// A bar the HUD geometry detector only guessed at — a run of the right
-    /// colour somewhere in the status band, with no number read beside it
-    /// to back it — is left out: on a screen whose HUD it was not tuned
-    /// for, such a guess can swing from 3% to 46% and back within seconds,
-    /// and every swing would be a warning (one night of them ran to 3,400).
-    /// What the player's own learned sight measures is put in afterwards,
-    /// by [`crate::sight::Sight::apply`].
+    /// colour somewhere in the status band — is left out, however it is
+    /// labelled: only a percent worked out from the numbers read beside it
+    /// (`current / max`) is taken. On a screen whose HUD the detector was
+    /// not tuned for, a guess can swing from 3% to 46% and back within
+    /// seconds, and every swing would be a warning (one night of them ran
+    /// to 3,400). What the player's own learned sight measures is put in
+    /// afterwards, by [`crate::sight::Sight::apply`].
     pub fn from_world(title: &str, world: &WorldState) -> Self {
         let field = |field: HudField| world.hud.ocr.iter().find(|r| r.field == field);
         let bar = |metric: &crate::vision::Detection<crate::vision::detectors::hud::HudMetric>| {
@@ -86,7 +87,12 @@ impl Observation {
                 .value
                 .as_ref()
                 .filter(|_| metric.reliability == Reliability::Corroborated)
-                .and_then(|m| m.percent)
+                .and_then(|m| match (m.value, m.max) {
+                    (Some(current), Some(max)) if max > 0 => {
+                        Some((current as f32 / max as f32 * 100.0).clamp(0.0, 100.0))
+                    }
+                    _ => None,
+                })
         };
         Self {
             game: GameView::Seen(title.to_string()),
@@ -221,7 +227,18 @@ mod tests {
         );
         // A blue bar with "3574 / 3574" read over it.
         world.hud.mp = Detection::found(
-            metric(100.0, Some(3574)),
+            HudMetric {
+                max: Some(3574),
+                ..metric(100.0, Some(3574))
+            },
+            Confidence::new(0.9),
+            "hud",
+            Reliability::Corroborated,
+        );
+        // A yellow bar "corroborated" by a stray digit in the text beside
+        // it, its percent still the fill's guess: not taken either.
+        world.hud.exp = Detection::found(
+            metric(40.0, Some(8)),
             Confidence::new(0.9),
             "hud",
             Reliability::Corroborated,
@@ -229,6 +246,7 @@ mod tests {
         let obs = Observation::from_world("MapleStory", &world);
         assert_eq!(obs.hp, None, "{:?}", obs.hp);
         assert_eq!(obs.mp.map(|g| g.percent), Some(100.0));
+        assert_eq!(obs.exp, None, "{:?}", obs.exp);
     }
 
     #[test]
