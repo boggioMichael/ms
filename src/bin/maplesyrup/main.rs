@@ -1071,6 +1071,31 @@ fn set_coaching(
     );
 }
 
+/// The player asked not to be spoken to that way: the attitude goes to
+/// friendly, for good (until they pick another on the phone), and they
+/// are told so in one line. The learner notes the correction too, but the
+/// warnings are MapleSyrup's own lines, which only the setting changes.
+fn drop_the_attitude(companion: &mut Companion, learning: &ai::Learning, out: &mut Outputs) {
+    use ms::companion::Attitude;
+    let was = companion.settings.attitude;
+    if was != Attitude::Friendly {
+        companion.settings.attitude = Attitude::Friendly;
+        let mut memory = learning.memory();
+        memory.attitude = Attitude::Friendly;
+        memory.save();
+        out.session.line(
+            "info",
+            &format!("attitude: friendly (was {}; the player asked)", was.word()),
+        );
+    }
+    let line = if was == Attitude::Friendly {
+        "Okay. I'll keep it respectful."
+    } else {
+        "Okay, I'll keep it respectful from now on. You can pick another tone on the phone."
+    };
+    out.tell(Kind::Reply, line, true, companion);
+}
+
 /// What is on screen, as a few lines for a model: what the vision engine
 /// reads, and what MapleSyrup learned about this screen.
 fn snapshot_text(companion: &Companion, sight: Option<&Arc<Mutex<Sight>>>) -> String {
@@ -2124,9 +2149,24 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     &format!("HP warnings below {:.0}% from now on", warn_at.0),
                 );
             }
-            // The things the player taught: their alerts.
+            // The things the player taught: their alerts (held with the
+            // companion's own while nothing the player does answers them).
             for fired in tick.fired {
-                out.tell(Kind::Alert, &fired.say, true, &mut companion);
+                if companion.alerts_held(now) {
+                    out.session.line("alert", &format!("(held) {}", fired.say));
+                } else {
+                    out.tell(Kind::Alert, &fired.say, true, &mut companion);
+                }
+                if let Some(waits) = fired.waits {
+                    out.session.line(
+                        "alert",
+                        &format!(
+                            "\"{}\" keeps firing: it next waits {} s (forget the thing if it is mis-taught)",
+                            fired.name,
+                            waits.as_secs()
+                        ),
+                    );
+                }
             }
             if let Some(note) = tick.note {
                 out.session.line("capture", &note);
@@ -2189,6 +2229,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 rest
                             }
                         };
+                        companion.player_spoke(now);
                         if let Some(on) = commands::recording_request(&text) {
                             out.show(Kind::Heard, &text);
                             if on {
@@ -2220,6 +2261,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         if let Some(on) = commands::coaching_request(&text) {
                             out.show(Kind::Heard, &text);
                             set_coaching(&mut coach, &learning, &mut out, on);
+                            continue;
+                        }
+                        if commands::tone_complaint(&text) {
+                            out.show(Kind::Heard, &text);
+                            drop_the_attitude(&mut companion, &learning, &mut out);
                             continue;
                         }
                         if out.mouth.ai.is_some() {
@@ -2302,13 +2348,47 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         coach.someone_spoke(now);
                         let kind = if who == "player" {
                             player_heard = Instant::now();
+                            companion.player_spoke(now);
                             Kind::Heard
                         } else {
                             companion.remember_spoken(now, &text);
                             Kind::Reply
                         };
                         out.session.line(kind_label(kind), &text);
-                        out.push(kind, text);
+                        out.push(kind, text.clone());
+                        // What the player asks of MapleSyrup itself — to
+                        // record, to coach or not, to change its code, to
+                        // drop the attitude, to mute — is done here, on a
+                        // call as off one: the call's model talks, it does
+                        // not run MapleSyrup.
+                        if who == "player" {
+                            if let Some(on) = commands::recording_request(&text) {
+                                if on {
+                                    recording.start(&mut out);
+                                } else {
+                                    recording.stop(&mut out, panel_window.as_mut());
+                                }
+                            } else if let Some(on) = commands::coaching_request(&text) {
+                                set_coaching(&mut coach, &learning, &mut out, on);
+                            } else if commands::tone_complaint(&text) {
+                                drop_the_attitude(&mut companion, &learning, &mut out);
+                            } else if workshop.is_on() && ms::workshop::undo_request(&text) {
+                                workshop_ask(&workshop, ms::workshop::Task::Undo, &mut out);
+                            } else if workshop.is_on()
+                                && let Some(instruction) = ms::workshop::request(&text)
+                            {
+                                let task = ms::workshop::Task::Change {
+                                    instruction,
+                                    context: recent_log(&out),
+                                };
+                                workshop_ask(&workshop, task, &mut out);
+                            } else if let Some(command) = commands::local_command(&text)
+                                && matches!(command, Command::Mute | Command::Unmute)
+                            {
+                                let actions = companion.command(now, command);
+                                out.apply(actions, &mut companion, latest_image.clone());
+                            }
+                        }
                     }
                     Inbound::Live(on) => {
                         if on != out.live {
