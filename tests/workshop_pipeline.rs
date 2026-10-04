@@ -103,6 +103,14 @@ fn cargo(dir: &Path) -> PathBuf {
     )
 }
 
+/// src/main.rs of the checkout, with the line endings git on Windows may
+/// have given it put back.
+fn main_rs(repo: &Path) -> String {
+    fs::read_to_string(repo.join("src/main.rs"))
+        .unwrap()
+        .replace("\r\n", "\n")
+}
+
 struct Bench {
     dir: PathBuf,
     repo: PathBuf,
@@ -256,10 +264,7 @@ fn a_change_is_coded_built_tested_committed_and_staged_on_this_pcs_branch() {
         "{}",
         undone.summary
     );
-    assert_eq!(
-        fs::read_to_string(b.repo.join("src/main.rs")).unwrap(),
-        "fn main() {}\n"
-    );
+    assert_eq!(main_rs(&b.repo), "fn main() {}\n");
     let staged = Store::new(&b.settings).staged().expect("staged again");
     assert_ne!(
         staged.version,
@@ -320,10 +325,7 @@ fn a_change_out_of_bounds_or_failing_the_tests_is_thrown_away() {
         "{}",
         outcome.summary
     );
-    assert_eq!(
-        fs::read_to_string(b.repo.join("src/main.rs")).unwrap(),
-        "fn main() {}\n"
-    );
+    assert_eq!(main_rs(&b.repo), "fn main() {}\n");
     assert!(
         !b.repo.join("BREAK.flag").exists(),
         "the coder's files are gone"
@@ -343,10 +345,7 @@ fn a_change_out_of_bounds_or_failing_the_tests_is_thrown_away() {
         "{}",
         outcome.summary
     );
-    assert_eq!(
-        fs::read_to_string(b.repo.join("src/main.rs")).unwrap(),
-        "fn main() { /* mine */ }\n"
-    );
+    assert_eq!(main_rs(&b.repo), "fn main() { /* mine */ }\n");
     let _ = fs::remove_dir_all(&b.dir);
 }
 
