@@ -123,8 +123,15 @@ pub fn asks_again(heard: &str) -> bool {
     .any(|w| lower.contains(w))
 }
 
+/// A sentence of at least this many words has its numbers folded when
+/// compared: "You're at Gate of the Future, level 165, EXP 74%" said for
+/// every question is the same sentence at 85%. A short answer keeps its
+/// number ("About 25 percent to go" is not "About 21 percent to go").
+const FOLD_NUMBERS_FROM: usize = 6;
+
 /// A sentence, for comparing: lower case, no stage directions in brackets,
-/// letters and digits only, one space between words.
+/// letters and digits only, one space between words; in a long sentence,
+/// every number the same.
 fn normalised(sentence: &str) -> String {
     let mut out = String::new();
     let mut depth = 0;
@@ -146,6 +153,20 @@ fn normalised(sentence: &str) -> String {
             }
             _ => {}
         }
+    }
+    let words: Vec<&str> = out.split_whitespace().collect();
+    if words.len() >= FOLD_NUMBERS_FROM {
+        return words
+            .iter()
+            .map(|w| {
+                if w.chars().all(|c| c.is_ascii_digit()) {
+                    "#"
+                } else {
+                    w
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
     }
     out.trim().to_string()
 }
@@ -446,12 +467,49 @@ pub fn snapshot(obs: Option<&Observation>, progress: &Progress) -> String {
     lines.join("\n")
 }
 
-/// Whether the model chose to stay quiet.
+/// Whether the model chose to stay quiet: it was told to reply with
+/// exactly `[silent]`, and writes it as "[ silent ]", "(silent)",
+/// "*stays silent*", "[silence]" or "[no reply]" as often as not. A reply
+/// that is nothing but one such direction is silence; one with words of
+/// its own around it is not (`for_speech` keeps the direction out of the
+/// voice).
 pub fn is_silent(reply: &str) -> bool {
-    let t = reply
-        .trim()
-        .trim_matches(|c: char| !c.is_alphanumeric() && c != '[' && c != ']');
-    t.eq_ignore_ascii_case("[silent]") || t.eq_ignore_ascii_case("silent") || t.is_empty()
+    let t = reply.trim();
+    if t.is_empty() {
+        return true;
+    }
+    // Only letters, lower-cased: "[ Silent ]." and "silent" come out the same.
+    let letters: String = t
+        .chars()
+        .filter(|c| c.is_alphabetic())
+        .flat_map(char::to_lowercase)
+        .collect();
+    if matches!(
+        letters.as_str(),
+        "silent" | "silence" | "quiet" | "noreply" | "nothing"
+    ) {
+        return true;
+    }
+    // One bracketed direction and nothing else: "[stays silent]",
+    // "(says nothing)", "*remains quiet*".
+    let wrapped = [('[', ']'), ('(', ')'), ('*', '*'), ('<', '>')]
+        .iter()
+        .any(|(open, close)| {
+            t.starts_with(*open)
+                && t.trim_end_matches(['.', '…']).ends_with(*close)
+                && t[1..].find(*close).is_some_and(|i| {
+                    t[1 + i + close.len_utf8()..]
+                        .trim()
+                        .trim_matches(['.', '…'])
+                        .is_empty()
+                })
+        });
+    wrapped
+        && [
+            "silent", "silence", "quiet", "nothing", "no reply", "noreply",
+        ]
+        .iter()
+        .any(|w| letters.contains(&w.replace(' ', "")))
 }
 
 /// A sentence is spoken on its own once it has at least this many
@@ -788,6 +846,19 @@ Pot now, you're at 20.",
     }
 
     #[test]
+    fn the_same_long_sentence_with_other_numbers_is_the_same_sentence() {
+        let mut recent = Recent::default();
+        // One night's answer to everything, with EXP ticking up each time.
+        assert!(recent.fresh("אתה ב-Gate of the Future, רמה 165, EXP 74%."));
+        assert!(!recent.fresh("אתה ב-Gate of the Future, רמה 165, EXP 85%."));
+        assert!(!recent.fresh("Genius, אתה ב-Gate of the Future, רמה 165, EXP 89%."));
+        // A short answer keeps its number: another number is another answer.
+        assert!(recent.fresh("About 25 percent to go."));
+        assert!(recent.fresh("About 21 percent to go."));
+        assert!(!recent.fresh("About 21 percent to go."));
+    }
+
+    #[test]
     fn asking_to_hear_it_again_is_the_one_time_to_repeat() {
         assert!(asks_again("say that again"));
         assert!(asks_again("what did you say?"));
@@ -911,7 +982,20 @@ Pot now, you're at 20.",
     fn silence_and_speech_cleanup() {
         assert!(is_silent("[silent]"));
         assert!(is_silent(" [SILENT]. "));
+        // The marker as models write it: with spaces, other brackets, as a
+        // stage direction. (One night "[ silent ]" went to the voice, which
+        // read it out.)
+        assert!(is_silent("[ silent ]"));
+        assert!(is_silent("(silent)"));
+        assert!(is_silent("*stays silent*"));
+        assert!(is_silent("[silence]"));
+        assert!(is_silent("[no reply]"));
+        assert!(is_silent("(says nothing)."));
+        assert!(is_silent("silent."));
         assert!(!is_silent("Silently sneaking up on that boss, huh?"));
+        assert!(!is_silent("[silent] Talking to chat."));
+        assert!(!is_silent("Quiet down there, you're at 80%."));
+        assert!(!is_silent("(Nothing on the minimap) The exit is right."));
         assert_eq!(
             for_speech("**Nice!** You're at *80%* 🎉"),
             "Nice! You're at 80%"
