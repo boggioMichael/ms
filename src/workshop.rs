@@ -524,8 +524,16 @@ impl Workshop {
         }
         let what = last.trim_start_matches("workshop: ").trim().to_string();
         self.stage_of("reverting the last change");
-        self.git(&["revert", "--no-edit", "HEAD"])
-            .map_err(|e| format!("could not revert it: {e}"))?;
+        self.git(&[
+            "-c",
+            "user.name=MapleSyrup workshop",
+            "-c",
+            "user.email=workshop@maplesyrup.local",
+            "revert",
+            "--no-edit",
+            "HEAD",
+        ])
+        .map_err(|e| format!("could not revert it: {e}"))?;
         let note = format!("the change \"{what}\" was taken back.");
         let built = self.build_and_test(logs).and_then(|()| {
             let commit = self.git(&["rev-parse", "--short", "HEAD"])?;

@@ -49,16 +49,23 @@ fn script(dir: &Path, name: &str, windows: &str, unix: &str) -> PathBuf {
     }
 }
 
-/// A stand-in coder: appends `line` to src/main.rs (or writes `extra` as a
-/// new file) and leaves a note.
+/// A stand-in coder: appends `line` to src/main.rs, writes `extra` as a
+/// new file when given, and leaves a note. `extra` named `BREAK.flag`
+/// makes the stand-in cargo's tests fail.
 fn coder(dir: &Path, name: &str, line: &str, extra: Option<&str>) -> PathBuf {
     let extra_win = extra
         .map(|p| {
-            format!(
-                "mkdir \"{}\" 2>nul\necho x> \"{}\"\n",
-                Path::new(p).parent().unwrap().display(),
-                p
-            )
+            let parent = Path::new(p).parent().filter(|d| !d.as_os_str().is_empty());
+            let mkdir = parent
+                .map(|d| {
+                    format!(
+                        "if not exist \"{}\" mkdir \"{}\"\n",
+                        d.display(),
+                        d.display()
+                    )
+                })
+                .unwrap_or_default();
+            format!("{mkdir}echo x> \"{}\"\n", p.replace('/', "\\"))
         })
         .unwrap_or_default();
     let extra_sh = extra
@@ -68,7 +75,7 @@ fn coder(dir: &Path, name: &str, line: &str, extra: Option<&str>) -> PathBuf {
         dir,
         name,
         &format!(
-            "@echo off\necho {line}>> src\\main.rs\n{extra_win}echo The HP warning is now shorter.> WORKSHOP_NOTE.txt\n"
+            "@echo off\necho {line}>> src\\main.rs\n{extra_win}echo The HP warning is now shorter.> WORKSHOP_NOTE.txt\nexit /b 0\n"
         ),
         &format!(
             "echo '{line}' >> src/main.rs\n{extra_sh}echo 'The HP warning is now shorter.' > WORKSHOP_NOTE.txt\n"
@@ -77,7 +84,7 @@ fn coder(dir: &Path, name: &str, line: &str, extra: Option<&str>) -> PathBuf {
 }
 
 /// A stand-in cargo: `build` writes the "program" (MZ + src/main.rs);
-/// `test` fails when src/main.rs says BREAK.
+/// `test` fails when the checkout holds BREAK.flag.
 fn cargo(dir: &Path) -> PathBuf {
     let exe = if cfg!(windows) {
         "maplesyrup.exe"
@@ -88,10 +95,10 @@ fn cargo(dir: &Path) -> PathBuf {
         dir,
         "cargo",
         &format!(
-            "@echo off\nif \"%1\"==\"build\" (\n  if not exist target\\release mkdir target\\release\n  (echo MZ& type src\\main.rs) > target\\release\\{exe}\n  echo built\n  exit /b 0\n)\nif \"%1\"==\"test\" (\n  findstr /c:\"BREAK\" src\\main.rs >nul && (echo test failed & exit /b 1)\n  echo test result: ok\n  exit /b 0\n)\nexit /b 2\n"
+            "@echo off\nif \"%1\"==\"build\" goto build\nif \"%1\"==\"test\" goto test\nexit /b 2\n:build\nif not exist target\\release mkdir target\\release\n(echo MZ& type src\\main.rs) > target\\release\\{exe}\necho built\nexit /b 0\n:test\nif exist BREAK.flag (\n  echo test failed\n  exit /b 1\n)\necho test result: ok\nexit /b 0\n"
         ),
         &format!(
-            "case \"$1\" in\n  build) mkdir -p target/release; {{ printf MZ; cat src/main.rs; }} > target/release/{exe}; echo built;;\n  test) if grep -q BREAK src/main.rs; then echo 'test failed' >&2; exit 1; fi; echo 'test result: ok';;\n  *) exit 2;;\nesac\n"
+            "case \"$1\" in\n  build) mkdir -p target/release; {{ printf MZ; cat src/main.rs; }} > target/release/{exe}; echo built;;\n  test) if [ -f BREAK.flag ]; then echo 'test failed' >&2; exit 1; fi; echo 'test result: ok';;\n  *) exit 2;;\nesac\n"
         ),
     )
 }
@@ -301,7 +308,7 @@ fn a_change_out_of_bounds_or_failing_the_tests_is_thrown_away() {
     assert_eq!(git(&b.repo, &["log", "-1", "--format=%s"]), "base");
     assert!(Store::new(&b.settings).staged().is_none());
     // Breaking the tests.
-    let breaking = coder(&b.dir, "coder-break", "// BREAK", None);
+    let breaking = coder(&b.dir, "coder-break", "// breaks", Some("BREAK.flag"));
     let shop = workshop(&b, breaking);
     let outcome = shop.run(Task::Change {
         instruction: "break things".into(),
@@ -316,6 +323,10 @@ fn a_change_out_of_bounds_or_failing_the_tests_is_thrown_away() {
     assert_eq!(
         fs::read_to_string(b.repo.join("src/main.rs")).unwrap(),
         "fn main() {}\n"
+    );
+    assert!(
+        !b.repo.join("BREAK.flag").exists(),
+        "the coder's files are gone"
     );
     assert_eq!(git(&b.repo, &["log", "-1", "--format=%s"]), "base");
     // A checkout with changes of its own is left alone.
