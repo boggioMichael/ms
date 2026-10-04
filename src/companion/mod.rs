@@ -559,7 +559,14 @@ impl Companion {
             }
             let run = &words[start..end];
             let length = run.len();
+            // The player quoting MapleSyrup's words in the middle of their
+            // own sentence ("I am not in the Gate of the Future, check
+            // again") is not its voice coming back: a run with words of
+            // the player's on both sides of it is theirs.
+            let own = |range: &[(String, usize)]| range.iter().filter(|(w, _)| !said(w)).count();
+            let quoted = own(&words[..start]) >= 2 && own(&words[end..]) >= 2;
             let is_echo = length >= 2
+                && !quoted
                 && recent.iter().any(|(age, line)| {
                     let in_order = run
                         .windows(2)
@@ -2034,6 +2041,25 @@ mod tests {
         );
         // With AI off, the simple answers get the player's part only.
         assert!(!said(&c.heard(9.5, "How are you doing what's my hp")).is_empty());
+    }
+
+    #[test]
+    fn the_player_quoting_it_to_correct_it_keeps_their_whole_sentence() {
+        let mut c = Companion::new(Settings::default());
+        c.remember_spoken(
+            10.0,
+            "You're at the Gate of the Future, level 165, EXP 74%.",
+        );
+        // One night this came back as "I am not in be super accurate…".
+        let heard =
+            "I am not in the gate of the future be super accurate and check everything you say";
+        assert_eq!(c.strip_echo(14.0, heard).as_deref(), Some(heard));
+        // Its own tail with the answer after it is still cut to the answer.
+        assert_eq!(
+            c.strip_echo(14.0, "gate of the future level 165 where should I go")
+                .as_deref(),
+            Some("where should I go")
+        );
     }
 
     #[test]
