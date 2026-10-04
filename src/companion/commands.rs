@@ -436,6 +436,82 @@ pub fn coaching_request(sentence: &str) -> Option<bool> {
     }
 }
 
+/// The player objects to how they are being spoken to ("don't talk to me
+/// this way", "stop insulting me", "אל תדבר אליי ככה"), in a short
+/// sentence: the attitude is to drop. A model would learn it too, but the
+/// warnings are MapleSyrup's own lines, which only the setting changes.
+pub fn tone_complaint(sentence: &str) -> bool {
+    let text = normalize(sentence);
+    let text = match after_wake_word(&text) {
+        Some(end) => text[end..].trim().to_string(),
+        None => text,
+    };
+    if text.split(' ').filter(|w| !w.is_empty()).count() > 9 {
+        return false;
+    }
+    const COMPLAINTS: &[&str] = &[
+        "dont talk to me this way",
+        "dont talk to me like that",
+        "dont talk to me like this",
+        "dont speak to me like that",
+        "dont speak to me this way",
+        "stop insulting me",
+        "stop insulting",
+        "dont insult me",
+        "no insults",
+        "stop calling me names",
+        "dont call me names",
+        "dont call me idiot",
+        "dont call me an idiot",
+        "dont call me genius",
+        "stop calling me idiot",
+        "stop calling me genius",
+        "be respectful",
+        "be more respectful",
+        "be nice to me",
+        "be nicer",
+        "be polite",
+        "talk nicely",
+        "talk to me nicely",
+        "speak nicely",
+        "stop being rude",
+        "dont be rude",
+        "stop being mean",
+        "dont be mean",
+        "stop cursing",
+        "stop swearing",
+        "no cursing",
+        "no swearing",
+        "אל תדבר אליי ככה",
+        "אל תדבר אלי ככה",
+        "אל תדבר איתי ככה",
+        "אל תדבר אליי בצורה הזאת",
+        "אל תעליב אותי",
+        "תפסיק להעליב אותי",
+        "תפסיק להעליב",
+        "בלי עלבונות",
+        "תהיה מנומס",
+        "תהיה נחמד",
+        "תהיה נחמד אליי",
+        "תדבר יפה",
+        "דבר יפה",
+        "תדבר אליי יפה",
+        "תפסיק לקלל",
+        "בלי קללות",
+        "אל תקלל",
+        "no me hables así",
+        "no me hables asi",
+        "no me hables de esa manera",
+        "no me insultes",
+        "deja de insultarme",
+        "sé amable",
+        "se amable",
+        "sé respetuoso",
+        "se respetuoso",
+    ];
+    COMPLAINTS.iter().any(|p| has_phrase(&text, p))
+}
+
 /// Read one heard sentence. `listening` is true when the wake word was said
 /// on its own a moment ago, so this sentence counts as addressed.
 pub fn interpret(sentence: &str, listening: bool) -> Heard {
@@ -607,5 +683,21 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn an_objection_to_the_tone_is_heard_in_a_short_sentence() {
+        assert!(tone_complaint("Don't talk to me this way"));
+        assert!(tone_complaint("Syrup, stop insulting me."));
+        assert!(tone_complaint("could you be respectful please"));
+        assert!(tone_complaint("stop calling me genius"));
+        assert!(tone_complaint("אל תדבר אליי ככה"));
+        assert!(tone_complaint("תפסיק להעליב אותי בבקשה"));
+        assert!(tone_complaint("No me hables así"));
+        assert!(!tone_complaint("what's my hp"));
+        assert!(!tone_complaint(
+            "my brother said don't talk to me this way when he was angry at school yesterday"
+        ));
+        assert!(!tone_complaint("that boss is an idiot"));
     }
 }
