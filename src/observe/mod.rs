@@ -20,7 +20,6 @@
 //! throughput.
 
 pub mod dashboard;
-pub mod font;
 pub mod frame_result;
 pub mod overlay;
 pub mod preview;

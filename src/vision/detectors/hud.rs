@@ -15,8 +15,8 @@ use crate::vision::hud_geometry::{
     self, HudMetric as RawHudMetric, HudSnapshot as RawHudSnapshot, UiMarkers,
 };
 use crate::vision::hud_ocr::HudOcrResult;
-use crate::vision::hud_text::HudTextReader;
-use crate::vision::types::{Confidence, Detection, Reliability, Source};
+use crate::vision::hud_text::{HudTextReader, HudTextReading};
+use crate::vision::types::{Confidence, Detection, Reliability};
 
 /// A HUD metric (HP/MP/EXP) with confidence-scored percent and absolute value.
 #[derive(Debug, Clone)]
@@ -56,13 +56,32 @@ pub struct HudReading {
     pub level: Detection<String>,
 }
 
+impl HudReading {
+    /// A HUD that was not looked at this frame.
+    pub fn not_run() -> HudReading {
+        fn skipped<T>() -> Detection<T> {
+            Detection::missing("hud", "not run: nothing is showing it")
+        }
+        HudReading {
+            markers: UiMarkers::default(),
+            ocr: Vec::new(),
+            hp: skipped(),
+            mp: skipped(),
+            exp: skipped(),
+            player_name: skipped(),
+            character_class: skipped(),
+            level: skipped(),
+        }
+    }
+}
+
 /// Score how trustworthy a metric reading is: geometry-only detections are
 /// `Heuristic`, and detections where OCR also produced a raw value that
 /// contains digits are treated as `Corroborated` (two independent signals
 /// agree: the colored bar exists, and the label/number text was read).
 fn metric_detection(metric: Option<RawHudMetric>) -> Detection<HudMetric> {
     match metric {
-        None => Detection::missing(Source::Hud, "no matching color bar found in the HUD band"),
+        None => Detection::missing("hud", "no matching color bar found in the HUD band"),
         Some(raw) => {
             let has_ocr_value = raw.value.is_some()
                 || raw
@@ -76,26 +95,23 @@ fn metric_detection(metric: Option<RawHudMetric>) -> Detection<HudMetric> {
             } else {
                 (Confidence::new(0.2), Reliability::Heuristic)
             };
-            Detection::found(HudMetric::from(raw), confidence, Source::Hud, reliability)
+            Detection::found(HudMetric::from(raw), confidence, "hud", reliability)
         }
     }
 }
 
 fn text_detection(value: Option<String>, plate_found: bool) -> Detection<String> {
     match value {
-        Some(text) => Detection::found(
-            text,
-            Confidence::new(0.8),
-            Source::Hud,
-            Reliability::Corroborated,
-        ),
+        Some(text) => {
+            Detection::found(text, Confidence::new(0.8), "hud", Reliability::Corroborated)
+        }
         None if plate_found => {
             let mut detection =
-                Detection::missing(Source::Hud, "plate located but OCR text could not be read");
+                Detection::missing("hud", "plate located but OCR text could not be read");
             detection.reliability = Reliability::Heuristic;
             detection
         }
-        None => Detection::missing(Source::Hud, "no stat-row plate detected for this field"),
+        None => Detection::missing("hud", "no stat-row plate detected for this field"),
     }
 }
 
@@ -125,6 +141,12 @@ impl HudDetector {
     }
 
     pub fn detect(&mut self, image: &RgbaImage, frame_id: u64) -> HudReading {
+        self.detect_with(image, frame_id, true)
+    }
+
+    /// The HUD's geometry, and its text through OCR when `text` (on the
+    /// reader's cadence); without, the bars alone.
+    pub fn detect_with(&mut self, image: &RgbaImage, frame_id: u64, text: bool) -> HudReading {
         let RawHudSnapshot {
             markers,
             hp,
@@ -133,11 +155,18 @@ impl HudDetector {
             player_name,
             character_class,
             level,
-        } = hud_geometry::detect_hud_snapshot(image);
+        } = tracing::trace_span!("vision.hud.geometry")
+            .in_scope(|| hud_geometry::detect_hud_snapshot(image));
 
         // Geometry gives the fill ratio every frame; OCR contributes the
-        // printed numbers and plate text when its cadence comes round.
-        let reading = self.text.read(image, &markers, frame_id);
+        // printed numbers and plate text when its cadence comes round, and
+        // only where it is wanted.
+        let reading = if text {
+            tracing::trace_span!("vision.hud.text")
+                .in_scope(|| self.text.read(image, &markers, frame_id))
+        } else {
+            HudTextReading::default()
+        };
         let text = reading.text;
 
         let hp = fuse(hp, "HP", text.hp, None);

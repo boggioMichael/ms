@@ -212,6 +212,20 @@ pub enum Job {
     /// spoken, and kept in the conversation (with `heard`, what it answers,
     /// when it answers something).
     Say { heard: Option<String>, text: String },
+    /// Nobody said anything: the coach is watching the game and asks
+    /// whether there is one line worth saying now (`reason`: why it asks,
+    /// `label`: the same in a few words for the log), given what is on
+    /// screen and what it said on its own lately (`said`). The line is
+    /// said here when `speak` (not on a live call: the call says it).
+    Coach {
+        reason: String,
+        label: String,
+        snapshot: String,
+        eyes: Option<Eyes>,
+        said: Vec<String>,
+        language: Option<String>,
+        speak: bool,
+    },
 }
 
 /// What the worker did. Each carries the number of the job it came from
@@ -256,6 +270,9 @@ pub enum Done {
     },
     /// The model asked for a command (mark, mute, unmute) the main loop runs.
     Command { word: String },
+    /// The player asked MapleSyrup to change its own program: the
+    /// workshop's job.
+    Rewrite { instruction: String },
     /// The player asked to be warned at another HP or MP (`below`: the
     /// percent, 0 for never, None for the usual).
     Warn { what: String, below: Option<f32> },
@@ -266,6 +283,15 @@ pub enum Done {
         said: String,
         asked: bool,
         language: Option<String>,
+    },
+    /// The coach looked: the line it has to say (None: nothing worth
+    /// saying, or `error`), and how long the look took.
+    Coached {
+        id: u64,
+        label: String,
+        text: Option<String>,
+        error: Option<String>,
+        took: Duration,
     },
 }
 
@@ -313,6 +339,9 @@ impl Worker {
 
 /// After this many failures in a row, the fast brain is given up on.
 const FAST_GIVE_UP: u32 = 3;
+/// How long the fast brain rests after a reply that was mostly things it
+/// had said before.
+const FAST_REST: Duration = Duration::from_secs(10 * 60);
 
 /// Start the worker thread (no tools).
 pub fn spawn(openai: OpenAi, brain: Brain) -> Worker {
@@ -373,8 +402,10 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
             // MapleSyrup's own lines come back often ("Level up!"): each is
             // translated once.
             let mut translations = std::collections::HashMap::new();
-            // The fast brain failing again and again is given up on.
+            // The fast brain failing again and again is given up on; one
+            // going round in circles rests a while.
             let mut fast_failures = 0u32;
+            let mut fast_paused_until: Option<Instant> = None;
             // ElevenLabs failing is said once.
             let eleven_failed = AtomicBool::new(false);
             while let Ok(first) = rx.recv() {
@@ -391,6 +422,16 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                 for (i, (id, job)) in queue.into_iter().enumerate() {
                     let stop = Stop::new(Arc::clone(&marks), id);
                     if stop.stopped() {
+                        // (The coach waits to hear back from every look.)
+                        if let Job::Coach { label, .. } = job {
+                            let _ = tx.send(Done::Coached {
+                                id,
+                                label,
+                                text: None,
+                                error: None,
+                                took: Duration::ZERO,
+                            });
+                        }
                         continue;
                     }
                     // The voice the player picked, when it's ElevenLabs's.
@@ -439,6 +480,10 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                 brain.heard(&heard);
                             }
                             brain.said(&text);
+                            // Said now: the model saying it again would be twice.
+                            for sentence in brain::sentences_of(&text) {
+                                brain.recent.fresh(&sentence);
+                            }
                             let _ = tx.send(Done::Shown {
                                 kind: crate::companion::Kind::Reply,
                                 text: text.clone(),
@@ -453,6 +498,38 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     error,
                                 });
                             }
+                        }
+                        Job::Coach {
+                            reason,
+                            label,
+                            snapshot,
+                            eyes,
+                            said,
+                            language,
+                            speak,
+                        } => {
+                            let fast_rested = fast_paused_until.is_none_or(|t| Instant::now() >= t);
+                            let chat = fast
+                                .as_ref()
+                                .filter(|_| fast_failures < FAST_GIVE_UP && fast_rested)
+                                .unwrap_or(&openai);
+                            coach(
+                                chat,
+                                mouth,
+                                &mut brain,
+                                Watch {
+                                    id,
+                                    stop: &stop,
+                                    reason: &reason,
+                                    label,
+                                    snapshot: &snapshot,
+                                    eyes: eyes.as_ref(),
+                                    said: &said,
+                                    language: language.as_deref(),
+                                    speak,
+                                },
+                                &tx,
+                            );
                         }
                         Job::Converse { .. } if Some(i) != newest => {}
                         Job::Converse {
@@ -470,9 +547,15 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     "\n(The player's language setting is {name}: answer in the language they speak to you; when it isn't clear, in {name}.)"
                                 ));
                             }
-                            let (used, fell_back) = converse(
+                            let fast_rested = fast_paused_until.is_none_or(|t| Instant::now() >= t);
+                            let Replied {
+                                used,
+                                fast_failed: fell_back,
+                                looped,
+                            } = converse(
                                 mouth,
-                                fast.as_ref().filter(|_| fast_failures < FAST_GIVE_UP),
+                                fast.as_ref()
+                                    .filter(|_| fast_failures < FAST_GIVE_UP && fast_rested),
                                 toolbox.as_ref(),
                                 &mut brain,
                                 Talk {
@@ -489,6 +572,18 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             );
                             if let Ok(mut slot) = model_slot.lock() {
                                 *slot = used.model();
+                            }
+                            // A fast brain going round in circles (the same
+                            // lines for every question) rests a while;
+                            // OpenAI answers meanwhile.
+                            if looped && !std::ptr::eq(used, &openai) {
+                                fast_paused_until = Some(Instant::now() + FAST_REST);
+                                let _ = tx.send(Done::Noted {
+                                    line: format!(
+                                        "Grok is repeating itself: OpenAI answers for the next {} minutes",
+                                        FAST_REST.as_secs() / 60
+                                    ),
+                                });
                             }
                             match fell_back {
                                 Some(why) => {
@@ -669,7 +764,7 @@ see, like a friend looking at the same screen. Without a picture you can't see t
 
 /// How the model is told about its tools.
 const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
-- Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with a tight box around it in the picture's 0-1000 coordinates. Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language).
+- Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with a tight box around it in the picture's 0-1000 coordinates. Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language). The alert is about that thing appearing, disappearing or crossing a value — never attach an unrelated announcement to it (a level-up is watched by MapleSyrup itself; their own character is always on screen and is never a thing to learn).
 - When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
 - When the player corrects you on anything else (a game fact, a name, how something works, or how you talk or behave), call note_correction with the right version, then go on with it.
 - When the player tells you something about themselves or their game worth keeping (their class, a key binding, a goal), or asks you to remember something, call remember_fact.
@@ -677,12 +772,21 @@ const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
 - forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
 - mark_moment when the player asks you to mark or save the moment (for their video); set_muted when they ask you to be quiet, or to talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
+- set_coaching when they ask you to stop speaking up on your own (\"only talk when I ask\", \"no more tips\"), or to start again.
 Never announce a tool before using it; after one, a few words at most.";
 
 /// How the model is told about looking things up.
 const LOOKUP_GUIDE: &str = "\n- look_it_up never makes the player wait: when you're not sure of a MapleStory fact (or they \
 ask you to look something up), say your best answer first, then call look_it_up with the question and what you \
 said. It checks in the background; you'll speak again only if you were wrong. Never mention it.";
+
+/// How the model is told it is watching on its own.
+const COACH_GUIDE: &str = "\n\nRight now nobody said anything to you. You're watching them play, and you may speak up \
+on your own, like a friend on voice chat who sees something: danger coming, a wasted buff or potion, loot left on \
+the ground, a map that's giving nothing, a wrong move, what to do next. One short line, direct, an instruction \
+when you can give one (\"Go left, the portal's there.\" \"Rebuff.\" \"This map's dead, move.\"). Most of the \
+time there is nothing worth interrupting them for: then reply with exactly [silent]. Never describe the screen, \
+never comment for the sake of it, never ask them anything, never repeat what you said lately, and never greet.";
 
 /// How the model is told what it learned is there.
 const LEARNED_GUIDE: &str =
@@ -769,6 +873,155 @@ fn input_of(
         .collect()
 }
 
+/// The coach's look: why, and what goes with it.
+struct Watch<'a> {
+    id: u64,
+    stop: &'a Stop,
+    reason: &'a str,
+    label: String,
+    snapshot: &'a str,
+    eyes: Option<&'a Eyes>,
+    said: &'a [String],
+    language: Option<&'a str>,
+    speak: bool,
+}
+
+/// The coach looks at the game and says one line if there is one worth
+/// saying (`Done::Coached`): nobody asked anything. The line is said here
+/// when `speak`, and joins the conversation either way, so a "why?" after
+/// it makes sense.
+fn coach(chat: &OpenAi, mouth: Mouth, brain: &mut Brain, watch: Watch, tx: &Sender<Done>) {
+    let Watch {
+        id,
+        stop,
+        reason,
+        label,
+        snapshot,
+        eyes,
+        said,
+        language,
+        speak,
+    } = watch;
+    let started = Instant::now();
+    let mut instructions = brain.persona();
+    instructions.push_str(COACH_GUIDE);
+    let learned = brain.learned();
+    if !learned.is_empty() {
+        instructions.push_str(LEARNED_GUIDE);
+        instructions.push('\n');
+        instructions.push_str(&learned);
+    }
+    let mut text = format!(
+        "[Not the player: your game watcher. Nobody said anything.]\nThe game right now, read by your vision \
+engine:\n{snapshot}\n\n{reason}"
+    );
+    if !said.is_empty() {
+        text.push_str("\n\nWhat you said on your own lately (don't repeat it, don't nag):");
+        for line in said {
+            text.push_str(&format!("\n- {line}"));
+        }
+    }
+    if let Some(l) = language.filter(|l| !language::is_english(l)) {
+        let name = language::name(l);
+        text.push_str(&format!(
+            "\n\n(The player's language setting is {name}: speak the language of the conversation; when there is none yet, {name}.)"
+        ));
+    }
+    let mut content = vec![json!({"type": "input_text", "text": text})];
+    if let Some(eyes) = eyes {
+        content.extend(eyes.pictures());
+    }
+    // The conversation so far, so it knows what was talked about (the
+    // player said they're bossing; it was told to shut up about potions).
+    let mut input: Vec<Value> = brain
+        .turns()
+        .iter()
+        .map(|t| json!({"role": t.role, "content": t.text}))
+        .collect();
+    input.push(json!({"role": "user", "content": content}));
+    let ask = Ask {
+        instructions,
+        input,
+        max_output_tokens: 60,
+        timeout: Duration::from_secs(if std::ptr::eq(chat, mouth.openai) {
+            20
+        } else {
+            12
+        }),
+        stop: Some(stop.clone()),
+        ..Default::default()
+    };
+    let answer = chat.ask(&ask, None).or_else(|e| {
+        // The fast brain couldn't: OpenAI looks instead.
+        if std::ptr::eq(chat, mouth.openai) || matches!(e, AiError::Cancelled) {
+            Err(e)
+        } else {
+            mouth.openai.ask(&ask, None)
+        }
+    });
+    let mut done = Done::Coached {
+        id,
+        label: label.clone(),
+        text: None,
+        error: None,
+        took: started.elapsed(),
+    };
+    match answer {
+        Err(AiError::Cancelled) => {}
+        Err(error) => {
+            done = Done::Coached {
+                id,
+                label,
+                text: None,
+                error: Some(error.detail()),
+                took: started.elapsed(),
+            };
+        }
+        Ok(answer) if brain::is_silent(&answer.text) => {}
+        Ok(answer) => {
+            // Nothing it said lately is said again: a coach that keeps
+            // calling the same thing out is cut to what is new.
+            let filtered = brain.recent.filter(&brain::for_speech(&answer.text));
+            if filtered.dropped > 0 {
+                let _ = tx.send(Done::Noted {
+                    line: format!(
+                        "{label}: {} of {} sentences said before, left out",
+                        filtered.dropped, filtered.total
+                    ),
+                });
+            }
+            let line = filtered.text;
+            if !line.is_empty() && !stop.stopped() {
+                brain.heard(&format!("[Your game watcher, not the player: {label}.]"));
+                brain.said(&line);
+                if speak {
+                    let _ = tx.send(Done::Shown {
+                        kind: crate::companion::Kind::Alert,
+                        text: line.clone(),
+                    });
+                    let style = brain::voice_style(brain.attitude());
+                    if let Err(error) = speak_line(mouth, id, stop, &line, style, started, true, tx)
+                    {
+                        let _ = tx.send(Done::Failed {
+                            id,
+                            heard: None,
+                            error,
+                        });
+                    }
+                }
+                done = Done::Coached {
+                    id,
+                    label,
+                    text: Some(line),
+                    error: None,
+                    took: started.elapsed(),
+                };
+            }
+        }
+    }
+    let _ = tx.send(done);
+}
+
 /// What the player said, and what goes with it.
 struct Talk<'a> {
     id: u64,
@@ -792,6 +1045,15 @@ struct Talk<'a> {
 /// Returns the brain that answered, and why the fast one didn't, if it
 /// failed.
 #[allow(clippy::too_many_arguments)]
+/// How a reply went: which brain answered, why the fast one didn't (when
+/// it didn't), and whether the reply was mostly things said before (the
+/// brain going round in circles).
+struct Replied<'a> {
+    used: &'a OpenAi,
+    fast_failed: Option<String>,
+    looped: bool,
+}
+
 fn converse<'a>(
     mouth: Mouth<'a>,
     fast: Option<&'a OpenAi>,
@@ -800,7 +1062,7 @@ fn converse<'a>(
     talk: Talk,
     tx: &Sender<Done>,
     busy: &AtomicBool,
-) -> (&'a OpenAi, Option<String>) {
+) -> Replied<'a> {
     let Talk {
         id,
         stop,
@@ -846,6 +1108,12 @@ fn converse<'a>(
     // The brain for this reply.
     let mut chat = fast.unwrap_or(openai);
     let mut fast_failed = None;
+    // Nothing said lately is said again (unless they asked to hear it
+    // again): the sentences kept, and how many went.
+    let again = brain::asks_again(&heard);
+    let mut kept: Vec<String> = Vec::new();
+    let (mut total, mut dropped) = (0usize, 0usize);
+    let mut looped = false;
     std::thread::scope(|scope| {
         let (lines, to_say) = channel::<String>();
         let voice = speak.then(|| {
@@ -911,7 +1179,13 @@ fn converse<'a>(
                         said.push_str(t);
                         if speak {
                             for sentence in sentences.push(t) {
-                                let _ = lines.send(brain::for_speech(&sentence));
+                                total += 1;
+                                if again || brain.recent.fresh(&sentence) {
+                                    kept.push(sentence.clone());
+                                    let _ = lines.send(brain::for_speech(&sentence));
+                                } else {
+                                    dropped += 1;
+                                }
                             }
                         }
                     }
@@ -944,7 +1218,13 @@ fn converse<'a>(
                 said.push(' ');
                 if speak {
                     for sentence in sentences.push(" ") {
-                        let _ = lines.send(brain::for_speech(&sentence));
+                        total += 1;
+                        if again || brain.recent.fresh(&sentence) {
+                            kept.push(sentence.clone());
+                            let _ = lines.send(brain::for_speech(&sentence));
+                        } else {
+                            dropped += 1;
+                        }
                     }
                 }
             }
@@ -975,6 +1255,9 @@ fn converse<'a>(
                     }
                     Some(Effect::Command(word)) => {
                         let _ = tx.send(Done::Command { word });
+                    }
+                    Some(Effect::Rewrite(instruction)) => {
+                        let _ = tx.send(Done::Rewrite { instruction });
                     }
                     Some(Effect::Warn { what, below }) => {
                         let _ = tx.send(Done::Warn { what, below });
@@ -1050,24 +1333,59 @@ words (\"probably\" if you're not sure)."
                 let _ = tx.send(Done::Silent { id, heard });
             }
             None => {
-                if speak && let Some(rest) = sentences.finish() {
-                    let _ = lines.send(brain::for_speech(&rest));
+                let text = if speak {
+                    if let Some(rest) = sentences.finish() {
+                        total += 1;
+                        if again || brain.recent.fresh(&rest) {
+                            kept.push(rest.clone());
+                            let _ = lines.send(brain::for_speech(&rest));
+                        } else {
+                            dropped += 1;
+                        }
+                    }
+                    brain::for_speech(&brain::without_announcement(&kept.join(" ")))
+                } else {
+                    let whole = brain::for_speech(&brain::without_announcement(&said));
+                    if again {
+                        whole
+                    } else {
+                        let filtered = brain.recent.filter(&whole);
+                        total = filtered.total;
+                        dropped = filtered.dropped;
+                        filtered.text
+                    }
+                };
+                looped = total >= 2 && dropped * 2 >= total;
+                if dropped > 0 {
+                    let _ = tx.send(Done::Noted {
+                        line: format!("{dropped} of {total} sentences said before, left out"),
+                    });
                 }
-                let text = brain::for_speech(&said);
                 brain.heard(&heard);
-                brain.said(&text);
-                let _ = tx.send(Done::Reply {
-                    id,
-                    heard,
-                    text,
-                    took: started.elapsed(),
-                });
+                if text.is_empty() {
+                    // Nothing new in it: better quiet than the same again.
+                    // The conversation keeps none of it, so the model has
+                    // no loop of its own to follow.
+                    let _ = tx.send(Done::Silent { id, heard });
+                } else {
+                    brain.said(&text);
+                    let _ = tx.send(Done::Reply {
+                        id,
+                        heard,
+                        text,
+                        took: started.elapsed(),
+                    });
+                }
             }
         }
         // The words are out; the voice may still be on its last lines.
         busy.store(false, Ordering::Relaxed);
     });
-    (chat, fast_failed)
+    Replied {
+        used: chat,
+        fast_failed,
+        looped,
+    }
 }
 
 /// The usual hello, when the model has nothing of its own to say.

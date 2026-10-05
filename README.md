@@ -16,8 +16,11 @@ Download **`MapleSyrup-Setup-<version>.exe`** from [Releases](https://github.com
 - **Its own voice, and a dog that's alive.** Pick its voice on the phone from your ElevenLabs account (OpenAI's voice steps in when ElevenLabs can't). The dog — the chow chow from the logo — lives in a box on the phone page: it hops, runs, jumps, naps and plays with its ball as it likes, looks at you while you talk, and its mouth moves with the voice.
 - **Learns as you play.** It keeps a notebook about you (your characters, goals, how you like it to talk, what you did last time), answers fast from what it knows, and keeps your corrections for good. It adapts how long it waits before answering, and its warnings. The phone shows what it knows, with Forget; it all stays on your PC.
 - **Sees your game and learns it.** It finds your HUD by itself (any resolution or layout), measures HP, MP and EXP on every frame, and learns what you teach it by talking: "that's an Orange Mushroom, tell me when one shows up".
-- **Watches your back.** Low HP and MP warnings, level-ups, EXP per hour and time to level, with MapleStory's sound turned down while it talks.
+- **Watches your back.** Low HP and MP warnings, a beating called as it happens ("Back off, you're getting shredded"), level-ups, EXP per hour and time to level, with MapleStory's sound turned down while it talks.
+- **Coaches on its own.** You play, it talks: it watches the game go by and speaks up when there is something worth saying — you just arrived somewhere new, you went up a level, your EXP hasn't moved for minutes, something on screen deserves a callout — one short instruction, never a question. It looks now and then (less often when there is nothing to say) and keeps quiet while anyone talks. Say "stop coaching" or "only talk when I ask" and it only answers; "coach me" turns it back on.
 - **Your phone is its microphone and a second screen**, in 14 languages.
+- **Updates itself.** A new version is fetched in the background, verified against the release key built in, and installed the next time it starts — the previous version kept beside it to go back to if the new one does not come up (the way Android updates its APEX modules). *Update now* on the phone, or `--no-update`.
+- **Rewrites itself, on your PC alone (the workshop).** "Change yourself: stop calling out the quest marker" — a coding agent installed on the PC (Claude Code or Codex) changes the source in the local checkout, the program is built and tested, and the new version installs at the next start through the same updater; "undo the last change" takes it back. Local only: a branch of the PC's own, nothing pushed, nothing published. Off unless turned on (Details on the phone, or `--workshop`).
 - **Records the session for you.** Tap *Record the session* on the phone (or say "start recording"): a video of the whole screen with every sound — the game, its voice and yours — each sound placed where it was heard, saved in the session folder.
 
 Everything it does, recording and streaming, and privacy: [package/README.txt](package/README.txt).
@@ -29,51 +32,53 @@ Everything it does, recording and streaming, and privacy: [package/README.txt](p
 
 ## What the MVP includes
 
-- Windows game-window discovery and pixel capture with a static-image fallback.
-- A modular perception pipeline for HUD geometry, motion and stable entity tracking, dialogs, panels, environment edges, and combat inference.
-- Explicit confidence, reliability, and failure-reason semantics instead of silent empty results.
-- Temporal state for smoothing, stable IDs, prediction, and brief occlusion handling.
-- Structured `WorldState` and serializable `GameState` output.
+- Windows game-window discovery and capture through the compositor (Windows.Graphics.Capture, the frame kept on the GPU; GDI as the fallback), with a static-image fallback.
+- Every pixel operation on [Syrup](https://github.com/boggioMichael/syrup), the generic vision engine: *Syrup sees, MapleSyrup understands.* MapleSyrup keeps only what the pixels mean in MapleStory and the orchestration.
+- Deterministic first: the HUD is found from the pixels alone, its bars measured and its numbers read in the game's own font on every frame, taught things followed by template matching and tracking; a vision model is asked only when the pixels fail, and never on the per-frame path. No OCR on the per-frame path either.
+- Explicit confidence, reliability, and failure-reason semantics instead of silent empty results; a number is `read` only when it was read this frame, else the bar's fill is an estimate and is called one.
+- Structured `WorldState` and serializable `GameState` output; the preview's detectors (motion, dialogs, panels, platform edges) run only while something shows them.
 - A transparent overlay architecture with managers and reusable widgets.
-- A real-image HP-bar integration test and Criterion performance benchmarks.
+- A golden parity test of the fixture's readings, a real-image HP-bar integration test, and `vision_bench`, the per-frame path timed stage by stage (`bench/README.md`, with the numbers of every phase).
 - Evidence, architecture, and development documentation under `docs/`.
 
 ## Architecture
 
 ```text
 MapleStory window / image fixture
-              |
+              |  syrup::capture (the compositor's frame, on the GPU)
               v
-       Frame capture layer
-              |
-              v
-       PerceptionPipeline
-  +-----------+------------+
-  | HUD | motion | dialogs |
-  | panels | environment   |
-  | combat | temporal state|
-  +-----------+------------+
-              |
-              v
-          WorldState
-              |
-              v
-       GameState + JSON
-              |
-              v
-       Overlay / AI consumer
+       capture thread ─ a mailbox of one frame ─▶ vision thread
+                                                      |
+                                              ms::perceive::perceive
+                                 +--------------------+--------------------+
+                                 | the detectors still needed              |
+                                 |   (PerceptionPipeline, on syrup)        |
+                                 | the sight: HUD found from the pixels,   |
+                                 |   bars measured, numbers read in the    |
+                                 |   game's font, taught things followed   |
+                                 +--------------------+--------------------+
+                                                      |
+                                                      v
+                                   Observation ─▶ the companion (what to say)
+                                               ─▶ the coach (when a model may look)
+                                   WorldState  ─▶ the preview, GameState + JSON
 ```
 
 The main modules are:
 
-- `src/capture.rs` and `src/frame.rs`: capture boundaries and RGBA frame representation.
-- `src/vision/`: detectors, geometry, OCR and OCR provenance, capture-quality assessment, temporal reasoning, shared types, and snapshots.
+- `src/capture.rs`: which window is the game, and a capture session on it (`syrup::capture`).
+- `src/perceive.rs`: one frame through the companion's eyes — the same function for the companion and for `vision_bench`.
+- `src/sight/`: what MapleSyrup learned about the player's own screen — where the HUD is (`find_hud`, from the pixels), the bars (`syrup::bars`), the numbers in the game's font (`syrup::glyphs`), the things the player taught it (`syrup::template`, `syrup::tracking`), and the teacher, a vision model asked only when those fail.
+- `src/vision/`: the detectors the preview shows (motion, dialogs, panels, platform edges) and the HUD geometry detector that runs until the sight sees the HUD; thin re-exports of Syrup's geometry, OCR and quality modules.
+- `src/companion/`: what MapleSyrup says and when, from the numbers alone (warnings, a beating, a death, a level-up).
+- `src/coach/`: when MapleSyrup speaks up on its own beyond that — which moments a model gets to look at (a new scene, a level-up, a stall, a look now and then), paced so it is company and not nagging — and the scene fingerprint that tells one map from the next.
 - `src/observe/`: the live terminal dashboard, the graphical preview, and the per-frame result both render from.
+- `src/util/`: per-stage timing from the tracing spans, and the vision engine's worker pool (one fewer than the cores, at most eight, below-normal priority).
 - `src/game_state.rs`: stable application-facing and serialized state.
 - `src/overlay/`: transparent window, manager, coordinates, configuration, and widgets.
 - `src/knowledge/`: game-domain classification and lookup helpers.
 
-For deeper design context, see `docs/vision-architecture.md`, `docs/perception-architecture-redesign.md`, and `docs/development.md`.
+Syrup is a Cargo git dependency pinned to a commit (a tag at a release). For deeper design context, see `docs/vision-architecture.md`, `docs/perception-architecture-redesign.md`, and `docs/development.md`.
 
 ## Requirements
 

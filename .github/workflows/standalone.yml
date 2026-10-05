@@ -10,14 +10,33 @@ name: MapleSyrup standalone
 #   build-cache/vendor      the crates this tree depends on, for offline builds
 #                           (only for a commit whose message says [vendor])
 #
-# A version tag (v0.8.0) also makes a draft GitHub release with the installer
-# and the portable zip, to publish by hand.
+# A version tag (v0.9.0) also makes a draft GitHub release with the installer,
+# the portable zip, the program alone and a signed manifest (`release` job).
+# Running the workflow by hand on that tag with "publish" ticked publishes the
+# release and sends the files to the company site, from where every
+# MapleSyrup updates itself (src/update.rs). That needs:
+#   secrets.RELEASE_SIGNING_KEY   the Ed25519 private key (PEM) whose public
+#                                 half is built into the program
+#   vars.SITE_REPO                the site's repository (owner/name)
+#   secrets.SITE_TOKEN            a token that may push to it
+#   vars.SITE_URL                 where the site is served (https://datta-syrup.ai)
+#   vars.SITE_DOWNLOADS           the folder in the repository served as
+#                                 /downloads/ (default: downloads)
 # A commit message with [vendor-only] runs the vendor job alone.
 on:
   push:
     branches: ["master", "claude/**"]
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish: the GitHub release made public and the files sent to the site (run this on the version's tag)"
+        type: boolean
+        default: false
+      notes:
+        description: "A line about what is new, shown on the phone"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -174,22 +193,156 @@ jobs:
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" add -A
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "windows build of $(cat commit.txt) [skip ci]"
           git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" "out:refs/heads/build-output/$GITHUB_REF_NAME/windows"
-      - name: Draft release
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Keep the package for the release job
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: |
+            ${{ runner.temp }}/MapleSyrup.zip
+            ${{ runner.temp }}/MapleSyrup-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  # The release: the files laid out under their version's names, a signed
+  # manifest for the updater, a GitHub release (a draft on a tag; public
+  # when published), and, when published, the files on the company site.
+  release:
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PUBLISH: ${{ inputs.publish && 'yes' || 'no' }}
+      NOTES: ${{ inputs.notes }}
+      SITE_URL: ${{ vars.SITE_URL || 'https://datta-syrup.ai' }}
+      SITE_DOWNLOADS: ${{ vars.SITE_DOWNLOADS || 'downloads' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-package
+          path: package
+      - name: Lay the files out
+        id: files
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          case "$GITHUB_REF" in
+            refs/tags/v*)
+              tagged="${GITHUB_REF_NAME#v}"
+              if [ "$tagged" != "$version" ]; then
+                echo "the tag says $tagged but Cargo.toml says $version: the program would report the wrong version to the updater" >&2
+                exit 1
+              fi;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          mkdir -p release
+          cp package/MapleSyrup-Setup-*.exe "release/MapleSyrup-Setup-$version.exe"
+          cp package/MapleSyrup.zip "release/MapleSyrup-$version-portable.zip"
+          unzip -q -j package/MapleSyrup.zip MapleSyrup/MapleSyrup.exe -d release
+          mv release/MapleSyrup.exe "release/MapleSyrup-$version.exe"
+          (cd release && sha256sum *.exe *.zip > SHA256SUMS && cat SHA256SUMS)
+      - name: The manifest, signed
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          HAS_SITE: ${{ secrets.SITE_TOKEN != '' && vars.SITE_REPO != '' }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.files.outputs.version }}"
+          # The files are fetched from the site when it is set up to take
+          # them, else from the GitHub release.
+          if [ "$HAS_SITE" = true ]; then
+            base="$SITE_URL/$SITE_DOWNLOADS"
+          else
+            base="https://github.com/$GITHUB_REPOSITORY/releases/download/v$version"
+          fi
+          python3 - "$version" "$base" <<'PY'
+          import hashlib, json, os, sys, datetime
+          version, base = sys.argv[1], sys.argv[2]
+          def entry(name, kind):
+              path = os.path.join("release", name)
+              with open(path, "rb") as f:
+                  digest = hashlib.sha256(f.read()).hexdigest()
+              return {"name": name, "kind": kind, "size": os.path.getsize(path), "sha256": digest, "url": f"{base}/{name}"}
+          manifest = {
+              "name": "MapleSyrup",
+              "version": version,
+              "published": datetime.date.today().isoformat(),
+              "commit": os.environ["GITHUB_SHA"],
+              "notes": os.environ.get("NOTES", ""),
+              "files": [
+                  entry(f"MapleSyrup-{version}.exe", "exe"),
+                  entry(f"MapleSyrup-Setup-{version}.exe", "installer"),
+                  entry(f"MapleSyrup-{version}-portable.zip", "portable"),
+              ],
+          }
+          with open("release/manifest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          print(json.dumps(manifest, indent=2))
+          PY
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::warning::RELEASE_SIGNING_KEY is not set: the manifest is not signed, and no MapleSyrup will take this release as an update"
+            exit 0
+          fi
+          key="$RUNNER_TEMP/release-key.pem"
+          (umask 077 && printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key")
+          openssl pkeyutl -sign -inkey "$key" -rawin -in release/manifest.json -out release/manifest.json.sig
+          rm -f "$key"
+          # The public half, for the record: it must be the one in src/update.rs.
+          echo "signed with the key whose public half is:"
+          openssl pkey -in <(printf '%s\n' "$RELEASE_SIGNING_KEY") -pubout -outform DER | tail -c 32 | od -An -tx1 | tr -d ' \n'; echo
+          ls -l release
+      - name: The GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          setup=$(ls "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe)
-          portable="$RUNNER_TEMP/MapleSyrup-$GITHUB_REF_NAME-portable.zip"
-          cp "$RUNNER_TEMP/MapleSyrup.zip" "$portable"
-          # A release made on GitHub's page (which made the tag) gets the
-          # files built here; otherwise a draft is made with them.
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$setup" "$portable" --clobber
+          set -euo pipefail
+          version="${{ steps.files.outputs.version }}"
+          tag="v$version"
+          files=$(ls release/*)
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" $files --clobber
           else
-            gh release create "$GITHUB_REF_NAME" --draft --title "MapleSyrup $GITHUB_REF_NAME" \
-              --notes-file installer/release-notes.md "$setup" "$portable"
+            gh release create "$tag" --draft --target "$GITHUB_SHA" --title "MapleSyrup $tag" \
+              --notes-file installer/release-notes.md $files
           fi
+          if [ "$PUBLISH" = yes ]; then
+            gh release edit "$tag" --draft=false
+            echo "published: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
+          else
+            echo "a draft: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag (run the workflow on the tag with publish ticked)"
+          fi
+      - name: The company site
+        if: env.PUBLISH == 'yes'
+        env:
+          SITE_TOKEN: ${{ secrets.SITE_TOKEN }}
+          SITE_REPO: ${{ vars.SITE_REPO }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SITE_TOKEN" ] || [ -z "$SITE_REPO" ]; then
+            echo "::warning::SITE_REPO (a repository variable) and SITE_TOKEN (a secret) are not both set: nothing sent to the site"
+            exit 0
+          fi
+          if [ ! -f release/manifest.json.sig ]; then
+            echo "the manifest is not signed: not sending an update nobody will take" >&2
+            exit 1
+          fi
+          version="${{ steps.files.outputs.version }}"
+          git clone -q --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/${SITE_REPO}" site
+          dest="site/$SITE_DOWNLOADS"
+          mkdir -p "$dest"
+          cp release/* "$dest/"
+          # Fixed names too, so the site's links need no change per version.
+          cp "release/MapleSyrup-Setup-$version.exe" "$dest/MapleSyrup-Setup.exe"
+          cp "release/MapleSyrup-$version-portable.zip" "$dest/MapleSyrup-portable.zip"
+          cd site
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" add -A "$SITE_DOWNLOADS"
+          if git diff --cached --quiet; then echo "the site already has $version"; exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "MapleSyrup $version"
+          git push -q origin HEAD
+          echo "sent to $SITE_REPO/$SITE_DOWNLOADS: $(ls "$SITE_DOWNLOADS" | tr '\n' ' ')"
+          echo "the updater reads $SITE_URL/$SITE_DOWNLOADS/manifest.json"
 
   linux:
     if: ${{ !contains(github.event.head_commit.message, '[vendor-only]') }}

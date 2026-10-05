@@ -11,7 +11,7 @@ pub use crate::vision::hud_geometry::{
 };
 
 // Re-export OCR utilities.
-pub use crate::vision::ocr::{OcrConfig, OcrResult, is_ocr_available, ocr_region};
+pub use crate::vision::ocr::{OcrResult, is_ocr_available, ocr_region};
 
 // Re-export confidence-aware detector API.
 pub use crate::vision::detectors::hud::{HudDetector, HudReading};

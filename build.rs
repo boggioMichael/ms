@@ -9,6 +9,24 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=assets/maplesyrup.ico");
+    // The commit this program is built from (`env!("MS_COMMIT")`): what
+    // the workshop starts its local branch from, and what the log shows.
+    println!("cargo:rerun-if-env-changed=GITHUB_SHA");
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    let commit = std::env::var("GITHUB_SHA")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        })
+        .filter(|s| s.len() >= 7)
+        .unwrap_or_else(|| "unknown".into());
+    println!("cargo:rustc-env=MS_COMMIT={commit}");
     let target = std::env::var("TARGET").unwrap_or_default();
     if !target.contains("windows-msvc") {
         return;

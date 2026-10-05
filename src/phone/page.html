@@ -125,12 +125,55 @@
   #recText { font-variant-numeric: tabular-nums; }
   @keyframes recblink { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
   #recNote { color: var(--dim); font-size: 13px; text-align: center; margin-bottom: 12px; min-height: 18px; overflow-wrap: anywhere; }
+  /* The main screen stays small: the dog, the microphone, one line about the
+     game, two buttons, the conversation. Everything else lives in the sheet. */
+  header .tools { display: flex; align-items: center; gap: 8px; }
+  .icon { border: 1px solid var(--line); background: var(--card); color: var(--text); width: 36px; height: 36px;
+    border-radius: 50%; font-size: 19px; line-height: 1; display: grid; place-items: center; padding: 0; }
+  .icon:active, .strip:active { transform: scale(.97); }
+  .strip { width: 100%; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--card);
+    color: var(--text); border-radius: 14px; padding: 11px 14px; font-size: 14px; margin-bottom: 12px; text-align: start; }
+  .strip .dot { flex: none; }
+  .strip #stripText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .strip .chev { color: var(--faint); font-size: 20px; line-height: 1; flex: none; }
+  [dir=rtl] .strip .chev { transform: scaleX(-1); }
+  .buttons.two { grid-template-columns: 1fr 1fr; }
+  .buttons.three { grid-template-columns: repeat(3, 1fr); }
+  .sheet { position: fixed; inset: 0; background: var(--bg); z-index: 20; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    padding: 0 14px max(24px, env(safe-area-inset-bottom)); }
+  .sheet[hidden] { display: none; }
+  .sheet > * { max-width: 560px; margin-left: auto; margin-right: auto; }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; position: sticky; top: 0; z-index: 1;
+    background: var(--bg); padding: max(10px, env(safe-area-inset-top)) 2px 12px; }
+  .tabs { display: flex; gap: 6px; }
+  .tabs button { border: 1px solid var(--line); background: var(--card2); color: var(--dim); border-radius: 999px; padding: 8px 14px; font-size: 14px; }
+  .tabs button.sel { background: var(--syrup); color: #1a1209; border-color: var(--syrup); font-weight: 700; }
+  .done { border: 0; background: none; color: var(--syrup); font-weight: 700; font-size: 16px; padding: 8px 4px; }
+  #updateBtn { width: 100%; border: 1px solid var(--syrup); background: var(--syrup); color: #1a1209; border-radius: 14px;
+    padding: 12px; font-size: 16px; font-weight: 700; }
+  #updateBtn:disabled { opacity: .6; }
+  #workshopBuild { width: 100%; border: 1px solid var(--syrup); background: var(--syrup); color: #1a1209; border-radius: 14px;
+    padding: 12px; font-size: 16px; font-weight: 700; }
+  #workshopBuild:disabled { opacity: .6; }
+  #voiceSearch { width: 100%; background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 12px; font-size: 15px; margin-bottom: 8px; -webkit-appearance: none; appearance: none; }
+  .voices { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 44vh; overflow-y: auto; }
+  .voices li { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: var(--card2);
+    border: 1px solid var(--line); border-radius: 12px; padding: 9px 12px; font-size: 15px; cursor: pointer; }
+  .voices li.sel { border-color: var(--syrup); }
+  .voices li .about { color: var(--dim); font-size: 13px; display: block; }
+  .voices li .check { color: var(--syrup); font-weight: 700; visibility: hidden; flex: none; }
+  .voices li.sel .check { visibility: visible; }
+  .voices li.hidden { display: none; }
 </style>
 </head>
 <body>
 <header>
   <div class="brand">Maple<span>Syrup</span></div>
-  <div class="pill"><i class="dot" id="pcDot"></i><span id="pcText" data-t="connecting">connecting…</span></div>
+  <div class="tools">
+    <div class="pill"><i class="dot" id="pcDot"></i><span id="pcText" data-t="connecting">connecting…</span></div>
+    <button class="icon" id="gear" aria-label="Settings">⚙︎</button>
+  </div>
 </header>
 
 <div id="banner"></div>
@@ -151,85 +194,135 @@
   <div id="note"></div>
 </section>
 
-<section class="card" id="game">
-  <div class="row">
-    <div>
-      <div style="font-weight:700" id="who">Waiting for the game…</div>
-      <div class="sub" id="gameState">MapleSyrup is looking for the MapleStory window</div>
-    </div>
-    <div class="pill"><i class="dot" id="gameDot"></i><span id="fps">—</span></div>
-  </div>
-  <div class="gauge hp"><div class="row"><span class="name">HP</span><span class="val" id="hpVal">—</span></div><div class="bar"><i id="hpBar"></i></div></div>
-  <div class="gauge mp"><div class="row"><span class="name">MP</span><span class="val" id="mpVal">—</span></div><div class="bar"><i id="mpBar"></i></div></div>
-  <div class="gauge exp"><div class="row"><span class="name">EXP</span><span class="val" id="expVal">—</span></div><div class="bar"><i id="expBar"></i></div></div>
-  <div class="stats">
-    <span><span data-t="exp_hour">EXP/hour</span> <b id="rate">—</b></span>
-    <span><span data-t="next_level">Next level</span> <b id="eta">—</b></span>
-    <span><span data-t="session">Session</span> <b id="session">—</b></span>
-    <span><span data-t="marks">Marks</span> <b id="marks">0</b></span>
-  </div>
-</section>
+<button class="strip" id="strip">
+  <i class="dot" id="stripDot"></i>
+  <span id="stripText">Waiting for the game…</span>
+  <span class="chev">›</span>
+</button>
 
-<div class="buttons">
-  <button data-cmd="status" data-t="b_status">Status</button>
-  <button data-cmd="rate" data-t="b_rate">Rate</button>
+<div class="buttons two">
   <button data-cmd="mark" class="mark" data-t="b_mark">★ Mark</button>
   <button data-cmd="mute" id="muteBtn">Mute</button>
-  <button data-cmd="help" data-t="b_help">Help</button>
 </div>
 
-<button id="recBtn"><i class="recdot"></i><span id="recText" data-t="vid_start">Record the session</span></button>
-<div id="recNote" data-t="vid_hint"></div>
-
-<section class="card">
+<section class="card" id="convCard" hidden>
   <h2 data-t="h_conversation">Conversation</h2>
   <ul id="log"></ul>
 </section>
 
-<section class="card" id="memoryCard" style="display:none">
-  <h2 data-t="h_memory">What I know about you</h2>
-  <ul id="memFacts" class="memlist"></ul>
-  <div id="memStyleBox"><div class="sub" data-t="mem_style">How you like me to talk</div><ul id="memStyle" class="memlist"></ul></div>
-  <div id="memLatelyBox"><div class="sub" data-t="mem_lately">Lately</div><div id="memLately"></div></div>
-  <div id="memLessonsBox"><div class="sub" data-t="mem_lessons">What you corrected me on</div><ul id="memLessons" class="memlist"></ul></div>
-  <div id="memEmpty" class="sub" data-t="mem_empty"></div>
-  <div id="memTuning" class="sub"></div>
-</section>
-
-<section class="card" id="learnedCard">
-  <h2 data-t="h_learned">What I've learned</h2>
-  <div id="hudState">I'm still finding your HUD.</div>
-  <ul id="learned"></ul>
-  <div id="learnedEmpty" data-t="teach_hint">Teach me by talking.</div>
-</section>
-
-<section class="card">
-  <h2 data-t="h_settings">Settings</h2>
-  <label class="opt"><span data-t="language">Language</span>
-    <select id="lang"></select>
-  </label>
-  <div class="sub" style="margin:12px 0 8px" data-t="replies_on">Replies spoken on</div>
-  <div class="seg" id="voiceSeg">
-    <button data-on="pc" data-t="v_pc">PC</button><button data-on="phone" data-t="v_phone">Phone</button><button data-on="both" data-t="v_both">Both</button><button data-on="off" data-t="v_off">Off</button>
+<!-- The sheet: the settings, and the details for whoever wants them. -->
+<div class="sheet" id="sheet" hidden>
+  <div class="sheet-head">
+    <div class="tabs">
+      <button id="tabSettings" class="sel" data-t="h_settings">Settings</button><button id="tabDetails" data-t="h_details">Details</button>
+    </div>
+    <button class="done" id="sheetDone" data-t="done">Done</button>
   </div>
-  <div class="sub" style="margin:12px 0 8px" data-t="attitude">How it talks to you</div>
-  <div class="seg three" id="attitudeSeg">
-    <button data-a="friendly" data-t="a_friendly">Friendly</button><button data-a="blunt" data-t="a_blunt">Blunt</button><button data-a="savage" data-t="a_savage">Savage</button>
-  </div>
-  <div class="sub" style="margin:6px 0 0" data-t="attitude_hint">Savage swears and roasts you, personally.</div>
-  <label class="opt" id="voicePickRow" style="display:none"><span data-t="voice_pick">Voice</span>
-    <select id="voicePick"></select>
-  </label>
-  <label class="opt" id="liveCallRow" style="display:none"><span data-t="live_call">Live call on the phone (fastest, but OpenAI's own voice and brain)</span> <input type="checkbox" id="liveCall"></label>
-  <div class="sub" id="liveHint" style="margin:8px 0 4px; display:none" data-t="live_hint">On the phone it's a live call: talk any time, in any language, and interrupt him. On the PC: his voice on the PC speakers.</div>
-  <label class="opt"><span data-t="answer_all">Answer everything I say</span> <input type="checkbox" id="always" checked></label>
-  <label class="opt"><span data-t="send_audio">Send the microphone's audio to the PC</span> <input type="checkbox" id="sendAudio" checked></label>
-</section>
 
-<footer>
-  <span data-t="footer1"></span><br>
-  <span data-t="footer2"></span>
-</footer>
+  <div id="paneSettings">
+    <section class="card">
+      <h2 data-t="voice_pick">Voice</h2>
+      <input type="search" id="voiceSearch" data-tp="voice_search" placeholder="Search voices…" autocomplete="off" style="display:none">
+      <ul id="voiceList" class="voices"></ul>
+      <label class="opt" id="liveCallRow" style="display:none"><span data-t="live_call">Live call on the phone (fastest, but OpenAI's own voice and brain)</span> <input type="checkbox" id="liveCall"></label>
+      <div class="sub" id="liveHint" style="margin:8px 0 4px; display:none" data-t="live_hint">On the phone it's a live call: talk any time, in any language, and interrupt him. On the PC: his voice on the PC speakers.</div>
+      <div class="sub" style="margin:12px 0 8px" data-t="replies_on">Replies spoken on</div>
+      <div class="seg" id="voiceSeg">
+        <button data-on="pc" data-t="v_pc">PC</button><button data-on="phone" data-t="v_phone">Phone</button><button data-on="both" data-t="v_both">Both</button><button data-on="off" data-t="v_off">Off</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 data-t="attitude">How it talks to you</h2>
+      <div class="seg three" id="attitudeSeg">
+        <button data-a="friendly" data-t="a_friendly">Friendly</button><button data-a="blunt" data-t="a_blunt">Blunt</button><button data-a="savage" data-t="a_savage">Savage</button>
+      </div>
+      <div class="sub" style="margin:6px 0 0" data-t="attitude_hint">Savage swears and roasts you, personally.</div>
+      <label class="opt"><span data-t="coach">Speaks up on its own while you play</span> <input type="checkbox" id="coachBox" checked></label>
+      <div class="sub" style="margin:4px 0 0" data-t="coach_hint"></div>
+      <label class="opt"><span data-t="answer_all">Answer everything I say</span> <input type="checkbox" id="always" checked></label>
+    </section>
+
+    <section class="card">
+      <label class="opt" style="margin-top:0"><span data-t="language">Language</span>
+        <select id="lang"></select>
+      </label>
+      <label class="opt"><span data-t="send_audio">Send the microphone's audio to the PC</span> <input type="checkbox" id="sendAudio" checked></label>
+    </section>
+
+    <section class="card" id="updateCard">
+      <div class="sub" style="margin:0" id="updateLine"><span data-t="version">Version</span> <span id="updateVersion">—</span> · <span id="updateState"></span></div>
+      <button id="updateBtn" style="display:none; margin-top:10px" data-t="update_now">Update now</button>
+      <label class="opt"><span data-t="auto_update">Updates itself when a new version is out</span> <input type="checkbox" id="updateBox" checked></label>
+    </section>
+
+    <footer>
+      <span data-t="footer1"></span><br>
+      <span data-t="footer2"></span>
+    </footer>
+  </div>
+
+  <div id="paneDetails" hidden>
+    <section class="card" id="game">
+      <div class="row">
+        <div>
+          <div style="font-weight:700" id="who">Waiting for the game…</div>
+          <div class="sub" id="gameState">MapleSyrup is looking for the MapleStory window</div>
+        </div>
+        <div class="pill"><i class="dot" id="gameDot"></i><span id="fps">—</span></div>
+      </div>
+      <div class="gauge hp"><div class="row"><span class="name">HP</span><span class="val" id="hpVal">—</span></div><div class="bar"><i id="hpBar"></i></div></div>
+      <div class="gauge mp"><div class="row"><span class="name">MP</span><span class="val" id="mpVal">—</span></div><div class="bar"><i id="mpBar"></i></div></div>
+      <div class="gauge exp"><div class="row"><span class="name">EXP</span><span class="val" id="expVal">—</span></div><div class="bar"><i id="expBar"></i></div></div>
+      <div class="stats">
+        <span><span data-t="exp_hour">EXP/hour</span> <b id="rate">—</b></span>
+        <span><span data-t="next_level">Next level</span> <b id="eta">—</b></span>
+        <span><span data-t="session">Session</span> <b id="session">—</b></span>
+        <span><span data-t="marks">Marks</span> <b id="marks">0</b></span>
+      </div>
+    </section>
+
+    <div class="buttons three">
+      <button data-cmd="status" data-t="b_status">Status</button>
+      <button data-cmd="rate" data-t="b_rate">Rate</button>
+      <button data-cmd="help" data-t="b_help">Help</button>
+    </div>
+
+    <button id="recBtn"><i class="recdot"></i><span id="recText" data-t="vid_start">Record the session</span></button>
+    <div id="recNote" data-t="vid_hint"></div>
+    <section class="card" id="workshopCard">
+      <h2 data-t="ws_title">Workshop</h2>
+      <label class="opt" style="margin-top:0"><span data-t="ws_on">Rewrites itself on this PC when asked</span> <input type="checkbox" id="workshopBox"></label>
+      <div class="sub" style="margin:4px 0 8px" data-t="ws_hint">Say "change yourself: …" or type it here. A coding agent on this PC (Claude Code or Codex) changes the code, it is built and tested, and the new version installs the next time MapleSyrup starts. On this PC only: nothing is published.</div>
+      <div id="workshopBody" style="display:none">
+        <label class="opt" id="workshopCoderRow" style="margin-top:0"><span data-t="ws_coder">Coder</span> <select id="workshopCoder"></select></label>
+        <textarea id="workshopText" rows="3" data-tp="ws_ph" placeholder="What to change…" style="width:100%; box-sizing:border-box; background:var(--card2); color:var(--text); border:1px solid var(--line); border-radius:12px; padding:10px 12px; font-size:15px; font-family:inherit; margin:6px 0 8px"></textarea>
+        <button id="workshopBuild" data-t="ws_build">Make the change</button>
+        <button id="workshopUndo" class="done" style="display:block; margin:4px 0 0; padding:8px 0" data-t="ws_undo">Undo the last change</button>
+        <div class="sub" id="workshopState" style="margin:8px 0 0"></div>
+        <div class="sub" id="workshopRepo" style="margin:4px 0 0; opacity:.7; font-size:12px"></div>
+      </div>
+    </section>
+
+
+    <section class="card" id="learnedCard">
+      <h2 data-t="h_learned">What I've learned</h2>
+      <div id="hudState">I'm still finding your HUD.</div>
+      <ul id="learned"></ul>
+      <div id="learnedEmpty" data-t="teach_hint">Teach me by talking.</div>
+    </section>
+
+    <section class="card" id="memoryCard" style="display:none">
+      <h2 data-t="h_memory">What I know about you</h2>
+      <ul id="memFacts" class="memlist"></ul>
+      <div id="memStyleBox"><div class="sub" data-t="mem_style">How you like me to talk</div><ul id="memStyle" class="memlist"></ul></div>
+      <div id="memLatelyBox"><div class="sub" data-t="mem_lately">Lately</div><div id="memLately"></div></div>
+      <div id="memLessonsBox"><div class="sub" data-t="mem_lessons">What you corrected me on</div><ul id="memLessons" class="memlist"></ul></div>
+      <div id="memEmpty" class="sub" data-t="mem_empty"></div>
+      <div id="memTuning" class="sub"></div>
+    </section>
+  </div>
+</div>
 
 <script src="/dog.js"></script>
 <script>
@@ -245,6 +338,7 @@
   // The page's words in each language; anything missing falls back to English.
   const WORDS = {
     en: {
+      h_details: "Details", done: "Done", voice_search: "Search voices…", coach: "Speaks up on its own while you play", coach_hint: "Tips and callouts without being asked: a new map, a level-up, EXP standing still. Off: it only answers (and still warns about low HP or MP).", ws_title: "Workshop", ws_on: "Rewrites itself on this PC when asked", ws_hint: "Say \"change yourself: …\" or type it here. A coding agent on this PC (Claude Code or Codex) changes the code, it is built and tested, and the new version installs the next time MapleSyrup starts. On this PC only: nothing is published.", ws_coder: "Coder", ws_ph: "What to change…", ws_build: "Make the change", ws_undo: "Undo the last change", ws_working: "Working: {s} ({t})", ws_idle: "Idle", ws_queued: "{n} waiting", ws_none: "No coding agent found on this PC: install Claude Code or Codex CLI and start MapleSyrup again.", version: "Version", update_now: "Update now", auto_update: "Updates itself when a new version is out", upd_ok: "up to date", upd_dl: "downloading {v}…", upd_ready: "{v} is ready: it installs the next time MapleSyrup starts", upd_off: "off", upd_blocked: "{v} is out, but it did not come up last time; waiting for the next one", upd_failed: "could not check: {why}",
       connecting: "connecting…", pc_connected: "PC connected", pc_unreachable: "PC not reachable", reconnecting: "reconnecting…", old_link: "old link",
       need_link: "This page needs the link from MapleSyrup's window on the PC: scan its QR code.",
       link_old: "This link is out of date. Scan the QR code in MapleSyrup's window on the PC again.",
@@ -264,7 +358,7 @@
       level_n: "Level {n}.", told_me: "(you told me)",
       teach_hint: "Teach me by talking: “see that? that's an Orange Mushroom”, “that's the boss's HP, tell me when it's under 20%”, “I'm level 61”.",
       forget: "Forget", sure: "Sure?", says: "says",
-      woof: "Woof!", voice_pick: "Voice", voice_openai: "OpenAI (built in)", live_call: "Live call on the phone (fastest, but OpenAI's own voice and brain)",
+      woof: "Woof!", voice_pick: "Voice", voice_openai: "OpenAI (built in)", live_call: "Live call on the phone (fastest, understands any language; speaks in its own voice)",
       attitude: "How it talks to you", a_friendly: "Friendly", a_blunt: "Blunt", a_savage: "Savage", attitude_hint: "Savage swears and roasts you, personally.",
       h_memory: "What I know about you", mem_told: "you told me", mem_style: "How you like me to talk", mem_lately: "Lately", mem_lessons: "What you corrected me on",
       mem_empty: "Nothing yet. I learn as we play: what you're working on, how you like me to talk, and what you correct me on. It all stays on your PC.", mem_sessions: "learned from {n} sessions", mem_looked: "{n} answers I looked up, kept", mem_wait: "I answer {n} s after you stop talking",
@@ -281,6 +375,7 @@
       mic_failed: "The microphone could not start:", mic_refused: "permission was refused. Allow the microphone for this page in the browser's settings, then try again.",
     },
     he: {
+      h_details: "פרטים", done: "סיום", voice_search: "חפש קול…", coach: "מדבר מעצמו בזמן שאתה משחק", coach_hint: "טיפים והערות בלי שתשאל: מפה חדשה, עליית רמה, EXP שלא זז. כבוי: עונה רק כששואלים (ועדיין מזהיר על HP או MP נמוכים).", ws_title: "סדנה", ws_on: "משכתב את עצמו על המחשב הזה כשמבקשים", ws_hint: "תגיד \"תשנה את עצמך: …\" או תכתוב כאן. סוכן קוד שמותקן על המחשב (Claude Code או Codex) משנה את הקוד, הוא נבנה ונבדק, והגרסה החדשה מותקנת בהפעלה הבאה של MapleSyrup. רק על המחשב הזה: שום דבר לא מתפרסם.", ws_coder: "סוכן", ws_ph: "מה לשנות…", ws_build: "בצע את השינוי", ws_undo: "בטל את השינוי האחרון", ws_working: "עובד: {s} ({t})", ws_idle: "פנוי", ws_queued: "{n} ממתינים", ws_none: "לא נמצא סוכן קוד על המחשב: התקן Claude Code או Codex CLI והפעל את MapleSyrup מחדש.", version: "גרסה", update_now: "עדכן עכשיו", auto_update: "מתעדכן לבד כשיוצאת גרסה חדשה", upd_ok: "מעודכן", upd_dl: "מוריד את {v}…", upd_ready: "{v} מוכנה: תותקן בהפעלה הבאה של MapleSyrup", upd_off: "כבוי", upd_blocked: "{v} יצאה, אבל לא עלתה בפעם הקודמת; מחכה לבאה", upd_failed: "הבדיקה נכשלה: {why}",
       connecting: "מתחבר…", pc_connected: "המחשב מחובר", pc_unreachable: "אין חיבור למחשב", reconnecting: "מתחבר מחדש…", old_link: "קישור ישן",
       need_link: "הדף הזה צריך את הקישור מהחלון של MapleSyrup במחשב: סרוק את קוד ה-QR.",
       link_old: "הקישור הזה כבר לא בתוקף. סרוק שוב את קוד ה-QR בחלון של MapleSyrup במחשב.",
@@ -300,7 +395,7 @@
       level_n: "רמה {n}.", told_me: "(אמרת לי)",
       teach_hint: "למד אותי בדיבור: „רואה את זה? זה Orange Mushroom”, „זה ה-HP של הבוס, תגיד לי כשהוא מתחת ל-20%”, „אני ברמה 61”.",
       forget: "שכח", sure: "בטוח?", says: "אומר",
-      woof: "הב!", voice_pick: "קול", voice_openai: "OpenAI (מובנה)", live_call: "שיחה חיה בטלפון (הכי מהיר, אבל בקול ובמוח של OpenAI)",
+      woof: "הב!", voice_pick: "קול", voice_openai: "OpenAI (מובנה)", live_call: "שיחה חיה בטלפון (הכי מהיר, מבין כל שפה; מדבר בקול שלו)",
       attitude: "איך הוא מדבר אליך", a_friendly: "נחמד", a_blunt: "ישיר", a_savage: "פרוע", attitude_hint: "פרוע מקלל ויורד עליך אישית.",
       h_memory: "מה שאני יודע עליך", mem_told: "אמרת לי", mem_style: "איך אתה אוהב שאני מדבר", mem_lately: "לאחרונה", mem_lessons: "במה תיקנת אותי",
       mem_empty: "עדיין כלום. אני לומד תוך כדי משחק: על מה אתה עובד, איך אתה אוהב שאדבר, ובמה אתה מתקן אותי. הכל נשאר במחשב שלך.", mem_sessions: "למדתי מ-{n} סשנים", mem_looked: "{n} תשובות שחיפשתי שמורות", mem_wait: "אני עונה {n} שניות אחרי שאתה מסיים לדבר",
@@ -317,6 +412,7 @@
       mic_failed: "המיקרופון לא הצליח להתחיל:", mic_refused: "ההרשאה נדחתה. אשר את המיקרופון לדף הזה בהגדרות הדפדפן ונסה שוב.",
     },
     es: {
+      h_details: "Detalles", done: "Listo", voice_search: "Buscar voces…", coach: "Habla por su cuenta mientras juegas", coach_hint: "Consejos y avisos sin que preguntes: un mapa nuevo, subir de nivel, EXP parada. Apagado: solo responde (y sigue avisando de HP o MP bajos).", version: "Versión", update_now: "Actualizar ahora", auto_update: "Se actualiza solo cuando sale una versión nueva", upd_ok: "al día", upd_dl: "descargando {v}…", upd_ready: "{v} está lista: se instala la próxima vez que inicie MapleSyrup", upd_off: "apagado", upd_blocked: "{v} salió, pero no arrancó la última vez; esperando la siguiente", upd_failed: "no se pudo comprobar: {why}",
       connecting: "conectando…", pc_connected: "PC conectado", pc_unreachable: "PC no disponible", reconnecting: "reconectando…", old_link: "enlace antiguo",
       need_link: "Esta página necesita el enlace de la ventana de MapleSyrup en el PC: escanea su código QR.",
       link_old: "Este enlace ya no sirve. Vuelve a escanear el código QR de la ventana de MapleSyrup en el PC.",
@@ -353,6 +449,7 @@
       mic_failed: "El micrófono no pudo empezar:", mic_refused: "se denegó el permiso. Permite el micrófono para esta página en los ajustes del navegador y vuelve a intentarlo.",
     },
     pt: {
+      h_details: "Detalhes", done: "Pronto", voice_search: "Buscar vozes…", coach: "Fala por conta própria enquanto você joga", coach_hint: "Dicas e avisos sem você perguntar: mapa novo, level up, EXP parada. Desligado: só responde (e ainda avisa HP ou MP baixos).", version: "Versão", update_now: "Atualizar agora", auto_update: "Atualiza sozinho quando sai uma versão nova", upd_ok: "em dia", upd_dl: "baixando {v}…", upd_ready: "{v} está pronta: instala na próxima vez que o MapleSyrup abrir", upd_off: "desligado", upd_blocked: "{v} saiu, mas não abriu da última vez; esperando a próxima", upd_failed: "não deu para verificar: {why}",
       connecting: "conectando…", pc_connected: "PC conectado", pc_unreachable: "PC fora de alcance", reconnecting: "reconectando…", old_link: "link antigo",
       need_link: "Esta página precisa do link da janela do MapleSyrup no PC: escaneie o QR code.",
       link_old: "Este link expirou. Escaneie de novo o QR code na janela do MapleSyrup no PC.",
@@ -389,6 +486,7 @@
       mic_failed: "O microfone não conseguiu começar:", mic_refused: "a permissão foi negada. Permita o microfone para esta página nas configurações do navegador e tente de novo.",
     },
     fr: {
+      h_details: "Détails", done: "OK", voice_search: "Chercher une voix…", coach: "Parle de lui-même pendant que tu joues", coach_hint: "Conseils et alertes sans que tu demandes : nouvelle map, level up, EXP qui stagne. Désactivé : il répond seulement (et prévient toujours si HP ou MP sont bas).", version: "Version", update_now: "Mettre à jour maintenant", auto_update: "Se met à jour seul quand une nouvelle version sort", upd_ok: "à jour", upd_dl: "téléchargement de {v}…", upd_ready: "{v} est prête : elle s’installe au prochain démarrage de MapleSyrup", upd_off: "désactivé", upd_blocked: "{v} est sortie mais n’a pas démarré la dernière fois ; en attente de la suivante", upd_failed: "vérification impossible : {why}",
       connecting: "connexion…", pc_connected: "PC connecté", pc_unreachable: "PC injoignable", reconnecting: "reconnexion…", old_link: "ancien lien",
       need_link: "Cette page a besoin du lien de la fenêtre de MapleSyrup sur le PC : scanne son QR code.",
       link_old: "Ce lien n'est plus valable. Scanne à nouveau le QR code dans la fenêtre de MapleSyrup sur le PC.",
@@ -425,6 +523,7 @@
       mic_failed: "Le micro n'a pas pu démarrer :", mic_refused: "l'autorisation a été refusée. Autorise le micro pour cette page dans les réglages du navigateur, puis réessaie.",
     },
     de: {
+      h_details: "Details", done: "Fertig", voice_search: "Stimmen suchen…", coach: "Meldet sich von selbst, während du spielst", coach_hint: "Tipps und Hinweise ungefragt: neue Map, Level-up, stehende EXP. Aus: er antwortet nur (und warnt weiter bei wenig HP oder MP).", version: "Version", update_now: "Jetzt aktualisieren", auto_update: "Aktualisiert sich selbst, wenn eine neue Version erscheint", upd_ok: "aktuell", upd_dl: "lädt {v}…", upd_ready: "{v} ist bereit: wird beim nächsten Start von MapleSyrup installiert", upd_off: "aus", upd_blocked: "{v} ist da, kam aber beim letzten Mal nicht hoch; wartet auf die nächste", upd_failed: "Prüfung fehlgeschlagen: {why}",
       connecting: "verbinde…", pc_connected: "PC verbunden", pc_unreachable: "PC nicht erreichbar", reconnecting: "verbinde neu…", old_link: "alter Link",
       need_link: "Diese Seite braucht den Link aus dem MapleSyrup-Fenster am PC: Scanne den QR-Code.",
       link_old: "Dieser Link ist veraltet. Scanne den QR-Code im MapleSyrup-Fenster am PC noch einmal.",
@@ -461,6 +560,7 @@
       mic_failed: "Das Mikrofon konnte nicht starten:", mic_refused: "die Erlaubnis wurde verweigert. Erlaube das Mikrofon für diese Seite in den Browser-Einstellungen und versuch es noch einmal.",
     },
     ko: {
+      h_details: "자세히", done: "완료", voice_search: "목소리 검색…", coach: "플레이 중에 스스로 말하기", coach_hint: "묻지 않아도 팁과 알림: 새 맵, 레벨업, 멈춘 EXP. 끄면 질문에만 대답해요 (HP·MP 경고는 그대로).", version: "버전", update_now: "지금 업데이트", auto_update: "새 버전이 나오면 스스로 업데이트", upd_ok: "최신 상태", upd_dl: "{v} 다운로드 중…", upd_ready: "{v} 준비됨: 다음에 MapleSyrup을 켤 때 설치돼요", upd_off: "꺼짐", upd_blocked: "{v}이(가) 나왔지만 지난번에 실행되지 않았어요; 다음 버전을 기다려요", upd_failed: "확인 실패: {why}",
       connecting: "연결 중…", pc_connected: "PC 연결됨", pc_unreachable: "PC에 연결할 수 없음", reconnecting: "다시 연결 중…", old_link: "만료된 링크",
       need_link: "이 페이지는 PC의 MapleSyrup 창에 있는 링크가 필요해요. QR 코드를 스캔하세요.",
       link_old: "이 링크는 만료됐어요. PC의 MapleSyrup 창에서 QR 코드를 다시 스캔하세요.",
@@ -497,6 +597,7 @@
       mic_failed: "마이크를 시작할 수 없어요:", mic_refused: "권한이 거부됐어요. 브라우저 설정에서 이 페이지의 마이크를 허용한 뒤 다시 해 보세요.",
     },
     ja: {
+      h_details: "詳細", done: "完了", voice_search: "声を検索…", coach: "プレイ中に自分から話す", coach_hint: "聞かなくてもヒントや合図：新しいマップ、レベルアップ、止まったEXP。オフにすると質問に答えるだけ（HP・MPの警告はそのまま）。", version: "バージョン", update_now: "今すぐ更新", auto_update: "新しいバージョンが出たら自動で更新", upd_ok: "最新です", upd_dl: "{v} をダウンロード中…", upd_ready: "{v} の準備ができました：次回 MapleSyrup 起動時にインストールします", upd_off: "オフ", upd_blocked: "{v} が出ましたが前回起動できませんでした。次を待ちます", upd_failed: "確認できませんでした：{why}",
       connecting: "接続中…", pc_connected: "PCに接続済み", pc_unreachable: "PCにつながりません", reconnecting: "再接続中…", old_link: "古いリンク",
       need_link: "このページにはPCのMapleSyrupウィンドウのリンクが必要です。QRコードを読み取ってください。",
       link_old: "このリンクは古くなっています。PCのMapleSyrupウィンドウのQRコードをもう一度読み取ってください。",
@@ -533,6 +634,7 @@
       mic_failed: "マイクを開始できませんでした:", mic_refused: "許可されませんでした。ブラウザの設定でこのページのマイクを許可して、もう一度試してね。",
     },
     "zh-Hans": {
+      h_details: "详情", done: "完成", voice_search: "搜索声音…", coach: "游戏时主动开口", coach_hint: "不用问也会提示：新地图、升级、经验不动。关闭后只回答问题（低 HP/MP 仍会提醒）。", version: "版本", update_now: "立即更新", auto_update: "有新版本时自动更新", upd_ok: "已是最新", upd_dl: "正在下载 {v}…", upd_ready: "{v} 已就绪：下次启动 MapleSyrup 时安装", upd_off: "关闭", upd_blocked: "{v} 已发布，但上次未能启动；等待下一个版本", upd_failed: "无法检查：{why}",
       connecting: "连接中…", pc_connected: "电脑已连接", pc_unreachable: "连不上电脑", reconnecting: "重新连接中…", old_link: "旧链接",
       need_link: "这个页面需要电脑上 MapleSyrup 窗口里的链接：请扫描它的二维码。",
       link_old: "这个链接已过期。请重新扫描电脑上 MapleSyrup 窗口里的二维码。",
@@ -569,6 +671,7 @@
       mic_failed: "麦克风无法启动：", mic_refused: "权限被拒绝。请在浏览器设置中允许此页面使用麦克风，然后再试一次。",
     },
     "zh-Hant": {
+      h_details: "詳情", done: "完成", voice_search: "搜尋聲音…", coach: "遊戲時主動開口", coach_hint: "不用問也會提示：新地圖、升級、經驗不動。關閉後只回答問題（低 HP/MP 仍會提醒）。", version: "版本", update_now: "立即更新", auto_update: "有新版本時自動更新", upd_ok: "已是最新", upd_dl: "正在下載 {v}…", upd_ready: "{v} 已就緒：下次啟動 MapleSyrup 時安裝", upd_off: "關閉", upd_blocked: "{v} 已發布，但上次未能啟動；等待下一個版本", upd_failed: "無法檢查：{why}",
       connecting: "連線中…", pc_connected: "電腦已連線", pc_unreachable: "連不上電腦", reconnecting: "重新連線中…", old_link: "舊連結",
       need_link: "這個頁面需要電腦上 MapleSyrup 視窗裡的連結：請掃描它的 QR 碼。",
       link_old: "這個連結已經過期。請重新掃描電腦上 MapleSyrup 視窗裡的 QR 碼。",
@@ -605,6 +708,7 @@
       mic_failed: "麥克風無法啟動：", mic_refused: "權限被拒絕。請在瀏覽器設定中允許此頁面使用麥克風，然後再試一次。",
     },
     th: {
+      h_details: "รายละเอียด", done: "เสร็จ", voice_search: "ค้นหาเสียง…", coach: "พูดขึ้นมาเองระหว่างที่คุณเล่น", coach_hint: "คำแนะนำและคำเตือนโดยไม่ต้องถาม: แผนที่ใหม่ เลเวลอัป EXP ไม่ขยับ ปิด: ตอบเฉพาะเมื่อถาม (ยังเตือน HP/MP ต่ำ)", version: "เวอร์ชัน", update_now: "อัปเดตตอนนี้", auto_update: "อัปเดตเองเมื่อมีเวอร์ชันใหม่", upd_ok: "เป็นเวอร์ชันล่าสุด", upd_dl: "กำลังดาวน์โหลด {v}…", upd_ready: "{v} พร้อมแล้ว: จะติดตั้งเมื่อเปิด MapleSyrup ครั้งถัดไป", upd_off: "ปิด", upd_blocked: "{v} ออกแล้ว แต่ครั้งก่อนเปิดไม่ขึ้น; รอเวอร์ชันถัดไป", upd_failed: "ตรวจสอบไม่ได้: {why}",
       connecting: "กำลังเชื่อมต่อ…", pc_connected: "เชื่อมต่อคอมแล้ว", pc_unreachable: "ติดต่อคอมไม่ได้", reconnecting: "กำลังเชื่อมต่อใหม่…", old_link: "ลิงก์เก่า",
       need_link: "หน้านี้ต้องใช้ลิงก์จากหน้าต่าง MapleSyrup บนคอม: สแกน QR code ของมัน",
       link_old: "ลิงก์นี้หมดอายุแล้ว สแกน QR code ในหน้าต่าง MapleSyrup บนคอมอีกครั้ง",
@@ -641,6 +745,7 @@
       mic_failed: "เริ่มไมโครโฟนไม่ได้:", mic_refused: "ไม่ได้รับอนุญาต อนุญาตไมโครโฟนให้หน้านี้ในการตั้งค่าเบราว์เซอร์ แล้วลองอีกครั้ง",
     },
     vi: {
+      h_details: "Chi tiết", done: "Xong", voice_search: "Tìm giọng…", coach: "Tự lên tiếng khi bạn chơi", coach_hint: "Mẹo và nhắc nhở không cần hỏi: map mới, lên cấp, EXP đứng yên. Tắt: chỉ trả lời khi hỏi (vẫn cảnh báo HP/MP thấp).", version: "Phiên bản", update_now: "Cập nhật ngay", auto_update: "Tự cập nhật khi có phiên bản mới", upd_ok: "mới nhất", upd_dl: "đang tải {v}…", upd_ready: "{v} đã sẵn sàng: sẽ cài khi mở MapleSyrup lần tới", upd_off: "tắt", upd_blocked: "{v} đã ra, nhưng lần trước không khởi động được; chờ bản tiếp theo", upd_failed: "không kiểm tra được: {why}",
       connecting: "đang kết nối…", pc_connected: "Đã kết nối PC", pc_unreachable: "Không kết nối được PC", reconnecting: "đang kết nối lại…", old_link: "liên kết cũ",
       need_link: "Trang này cần liên kết từ cửa sổ MapleSyrup trên PC: hãy quét mã QR của nó.",
       link_old: "Liên kết này đã cũ. Hãy quét lại mã QR trong cửa sổ MapleSyrup trên PC.",
@@ -677,6 +782,7 @@
       mic_failed: "Không bật được micro:", mic_refused: "quyền bị từ chối. Hãy cho phép micro cho trang này trong cài đặt trình duyệt rồi thử lại.",
     },
     id: {
+      h_details: "Detail", done: "Selesai", voice_search: "Cari suara…", coach: "Bicara sendiri saat kamu bermain", coach_hint: "Tips dan peringatan tanpa ditanya: map baru, naik level, EXP tidak bergerak. Mati: hanya menjawab (tetap memperingatkan HP/MP rendah).", version: "Versi", update_now: "Perbarui sekarang", auto_update: "Memperbarui sendiri saat versi baru keluar", upd_ok: "sudah terbaru", upd_dl: "mengunduh {v}…", upd_ready: "{v} siap: dipasang saat MapleSyrup dibuka lagi", upd_off: "mati", upd_blocked: "{v} sudah keluar, tapi tidak jalan terakhir kali; menunggu yang berikutnya", upd_failed: "tidak bisa memeriksa: {why}",
       connecting: "menghubungkan…", pc_connected: "PC terhubung", pc_unreachable: "PC tidak terjangkau", reconnecting: "menghubungkan ulang…", old_link: "tautan lama",
       need_link: "Halaman ini perlu tautan dari jendela MapleSyrup di PC: pindai kode QR-nya.",
       link_old: "Tautan ini sudah kedaluwarsa. Pindai lagi kode QR di jendela MapleSyrup di PC.",
@@ -713,6 +819,7 @@
       mic_failed: "Mikrofon tidak bisa mulai:", mic_refused: "izin ditolak. Izinkan mikrofon untuk halaman ini di pengaturan browser, lalu coba lagi.",
     },
     ru: {
+      h_details: "Подробности", done: "Готово", voice_search: "Поиск голоса…", coach: "Говорит сам, пока ты играешь", coach_hint: "Подсказки без вопроса: новая карта, новый уровень, стоящий EXP. Выкл.: только отвечает (и по-прежнему предупреждает о низких HP/MP).", version: "Версия", update_now: "Обновить сейчас", auto_update: "Обновляется сам, когда выходит новая версия", upd_ok: "актуальная", upd_dl: "загрузка {v}…", upd_ready: "{v} готова: установится при следующем запуске MapleSyrup", upd_off: "выкл.", upd_blocked: "{v} вышла, но в прошлый раз не запустилась; ждём следующую", upd_failed: "не удалось проверить: {why}",
       connecting: "подключение…", pc_connected: "ПК подключён", pc_unreachable: "ПК недоступен", reconnecting: "переподключение…", old_link: "старая ссылка",
       need_link: "Этой странице нужна ссылка из окна MapleSyrup на ПК: отсканируй его QR-код.",
       link_old: "Эта ссылка устарела. Снова отсканируй QR-код в окне MapleSyrup на ПК.",
@@ -783,6 +890,7 @@
     document.documentElement.lang = locale;
     document.documentElement.dir = RTL.has(choice[2]) ? "rtl" : "ltr";
     for (const el of document.querySelectorAll("[data-t]")) el.textContent = t(el.dataset.t);
+    for (const el of document.querySelectorAll("[data-tp]")) el.placeholder = t(el.dataset.tp);
   }
 
   function api(path, options) {
@@ -893,6 +1001,19 @@
       $(name + "Bar").style.width = pct(g) + "%";
       $(name + "Val").textContent = gaugeText(g);
     }
+    // One line about the game on the main screen (the card is in Details).
+    $("stripDot").className = "dot " + (seen ? "on" : "bad");
+    if (seen) {
+      const parts = [];
+      if (status.level) parts.push("Lv " + status.level);
+      for (const name of ["hp", "mp", "exp"]) {
+        const g = status[name];
+        if (g) parts.push(name.toUpperCase() + " " + (g.percent >= 10 ? g.percent.toFixed(0) : g.percent.toFixed(1)) + "%");
+      }
+      $("stripText").textContent = parts.join(" · ") || "MapleStory";
+    } else {
+      $("stripText").textContent = game.state === "unavailable" ? t("cant_capture") + " " + game.detail : t("waiting_game");
+    }
     const p = status.progress || {};
     $("rate").textContent = p.exp_per_hour != null ? (p.exp_per_hour >= 0 ? "+" : "") + p.exp_per_hour.toFixed(p.exp_per_hour < 10 ? 2 : 1) + "%" : "—";
     $("eta").textContent = p.seconds_to_level != null ? duration(p.seconds_to_level) : "—";
@@ -910,6 +1031,9 @@
       for (const b of $("attitudeSeg").children) b.classList.toggle("sel", b.dataset.a === status.attitude);
     }
     if (typeof status.always_listen === "boolean" && document.activeElement !== $("always")) $("always").checked = status.always_listen;
+    if (typeof status.coach === "boolean" && Date.now() > coachHeldUntil) $("coachBox").checked = status.coach;
+    renderUpdate(status.update);
+    renderWorkshop(status.workshop);
     // The dog talks while the PC (or this phone) speaks; dots while it thinks.
     dogMood();
     if (seen) dogGame(status);
@@ -1106,6 +1230,7 @@
     time.textContent = clock(m.t);
     if (m.kind !== "info") li.append(time);
     log.prepend(li);
+    $("convCard").hidden = false;
     while (log.children.length > 60) log.lastChild.remove();
     if (live && m.kind === "alert") dogAlert();
     if (m.kind === "reply" || m.kind === "alert") {
@@ -1235,43 +1360,165 @@
     // A live call on the phone, or the regular mode with the voice elsewhere.
     if (listening && wantLive() !== (liveCall.on || liveCall.starting)) restartListening();
   });
-  // The voice: OpenAI's, or one of the ElevenLabs voices on the account.
-  let voicesKey = "", voiceHeldUntil = 0;
+  // The sheet: the settings (the gear), the details (the game line).
+  function openSheet(tab) {
+    $("sheet").hidden = false;
+    showTab(tab);
+    $("sheet").scrollTop = 0;
+  }
+  function showTab(tab) {
+    const details = tab === "details";
+    $("tabSettings").classList.toggle("sel", !details);
+    $("tabDetails").classList.toggle("sel", details);
+    $("paneSettings").hidden = details;
+    $("paneDetails").hidden = !details;
+  }
+  $("gear").addEventListener("click", () => openSheet("settings"));
+  $("strip").addEventListener("click", () => openSheet("details"));
+  $("tabSettings").addEventListener("click", () => showTab("settings"));
+  $("tabDetails").addEventListener("click", () => showTab("details"));
+  $("sheetDone").addEventListener("click", () => { $("sheet").hidden = true; });
+
+  // The voice: OpenAI's, or one of the ElevenLabs voices on the account,
+  // in a list with a search when there are many.
+  let voicesKey = "", voiceHeldUntil = 0, voiceChosen = "openai";
   // A live call on the phone, unless it was turned off.
   let liveWanted = recall("live") !== "0";
   function renderVoices(list, chosen) {
     list = list || [];
-    $("voicePickRow").style.display = list.length ? "" : "none";
-    const pick = $("voicePick");
+    $("voiceSearch").style.display = list.length > 5 ? "" : "none";
+    const ul = $("voiceList");
     const key = locale + JSON.stringify(list);
     if (key !== voicesKey) {
       voicesKey = key;
-      pick.textContent = "";
-      const builtIn = document.createElement("option");
-      builtIn.value = "openai";
-      builtIn.textContent = t("voice_openai");
-      pick.append(builtIn);
-      for (const v of list) {
-        const option = document.createElement("option");
-        option.value = v.id;
-        option.textContent = v.about ? v.name + " · " + v.about : v.name;
-        pick.append(option);
+      ul.textContent = "";
+      const all = [{ id: "openai", name: t("voice_openai"), about: "" }].concat(list);
+      for (const v of all) {
+        const li = document.createElement("li");
+        li.dataset.id = v.id;
+        li.dataset.text = (v.name + " " + (v.about || "")).toLowerCase();
+        const label = document.createElement("span");
+        const name = document.createElement("b");
+        name.textContent = v.name;
+        label.append(name);
+        if (v.about) {
+          const about = document.createElement("span");
+          about.className = "about";
+          about.textContent = v.about;
+          label.append(about);
+        }
+        const check = document.createElement("span");
+        check.className = "check";
+        check.textContent = "✓";
+        li.append(label, check);
+        li.addEventListener("click", () => pickVoice(v.id));
+        ul.append(li);
       }
+      filterVoices();
     }
-    if (chosen && Date.now() > voiceHeldUntil && document.activeElement !== pick) pick.value = chosen;
+    if (chosen && Date.now() > voiceHeldUntil && chosen !== voiceChosen) {
+      voiceChosen = chosen;
+      markVoice();
+    }
   }
-  $("voicePick").addEventListener("change", () => {
-    voiceHeldUntil = Date.now() + 2000;
-    const id = $("voicePick").value;
-    postJson("/api/speaker", { id }).catch(() => {});
-    // A voice of its own is heard without the live call (that one speaks
-    // in OpenAI's voice).
-    if (id !== "openai" && liveWanted && $("liveCallRow").style.display !== "none") {
-      liveWanted = false;
-      $("liveCall").checked = false;
-      remember("live", "0");
-      if (listening) restartListening();
+  function markVoice() {
+    for (const li of $("voiceList").children) li.classList.toggle("sel", li.dataset.id === voiceChosen);
+  }
+  // The search narrows the list by name or description; the chosen voice
+  // always stays in view.
+  function filterVoices() {
+    const words = $("voiceSearch").value.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    for (const li of $("voiceList").children) {
+      const hit = !words.length || words.every((w) => li.dataset.text.includes(w)) || li.dataset.id === voiceChosen;
+      li.classList.toggle("hidden", !hit);
     }
+    markVoice();
+  }
+  $("voiceSearch").addEventListener("input", filterVoices);
+  function pickVoice(id) {
+    voiceHeldUntil = Date.now() + 2000;
+    voiceChosen = id;
+    markVoice();
+    postJson("/api/speaker", { id }).catch(() => {});
+    // The voice is for MapleSyrup's own lines and the PC's replies; a live
+    // call keeps speaking in its own voice. (Picking a voice used to turn
+    // the call off, which silently dropped the player into the browser's
+    // speech recognition, in one fixed language.)
+  }
+  // The version, and whether a newer one is on its way (the PC keeps the
+  // choice, for good).
+  let updateHeldUntil = 0;
+  function renderUpdate(u) {
+    if (!u) return;
+    $("updateVersion").textContent = u.version || "—";
+    const v = u.detail || u.latest || "";
+    const text = u.state === "staged" ? t("upd_ready") : u.state === "downloading" ? t("upd_dl")
+      : u.state === "blocked" ? t("upd_blocked") : u.state === "failed" ? t("upd_failed")
+      : u.state === "off" ? t("upd_off") : t("upd_ok");
+    $("updateState").textContent = text.replace("{v}", v).replace("{why}", u.detail || "");
+    $("updateBtn").style.display = u.state === "staged" ? "" : "none";
+    if (typeof u.auto === "boolean" && Date.now() > updateHeldUntil) $("updateBox").checked = u.auto;
+  }
+  // The workshop: MapleSyrup rewriting itself on this PC.
+  let workshopHeldUntil = 0;
+  let workshopCoders = "";
+  function renderWorkshop(w) {
+    if (!w) return;
+    if (Date.now() > workshopHeldUntil) $("workshopBox").checked = !!w.on;
+    $("workshopBody").style.display = w.on ? "" : "none";
+    const coders = (w.coders || []).join("|");
+    if (coders !== workshopCoders) {
+      workshopCoders = coders;
+      const sel = $("workshopCoder");
+      sel.innerHTML = "";
+      for (const c of w.coders || []) {
+        const o = document.createElement("option");
+        o.value = c; o.textContent = c;
+        sel.appendChild(o);
+      }
+      $("workshopCoderRow").style.display = (w.coders || []).length > 1 ? "" : "none";
+    }
+    if (w.coder && document.activeElement !== $("workshopCoder")) $("workshopCoder").value = w.coder;
+    let state;
+    if (!(w.coders || []).length) state = t("ws_none");
+    else if (w.working) state = t("ws_working").replace("{s}", w.working).replace("{t}", duration(w.working_secs || 0));
+    else if (w.last) state = (w.last.ok ? "✓ " : "✗ ") + w.last.summary + " (" + w.last.when + ")";
+    else state = t("ws_idle");
+    if (w.queued) state += " · " + t("ws_queued").replace("{n}", w.queued);
+    $("workshopState").textContent = state;
+    $("workshopRepo").textContent = w.repo || "";
+    $("workshopBuild").disabled = !!w.working || !(w.coders || []).length;
+  }
+  $("workshopBox").addEventListener("change", () => {
+    workshopHeldUntil = Date.now() + 3000;
+    $("workshopBody").style.display = $("workshopBox").checked ? "" : "none";
+    postJson("/api/workshop", { action: $("workshopBox").checked ? "on" : "off" }).catch(() => {});
+  });
+  $("workshopCoder").addEventListener("change", () => {
+    postJson("/api/workshop", { action: "coder", text: $("workshopCoder").value }).catch(() => {});
+  });
+  $("workshopBuild").addEventListener("click", () => {
+    const text = $("workshopText").value.trim();
+    if (!text) return;
+    $("workshopBuild").disabled = true;
+    postJson("/api/workshop", { action: "change", text }).then(() => { $("workshopText").value = ""; }).catch(() => {});
+  });
+  $("workshopUndo").addEventListener("click", () => {
+    postJson("/api/workshop", { action: "undo" }).catch(() => {});
+  });
+  $("updateBox").addEventListener("change", () => {
+    updateHeldUntil = Date.now() + 3000;
+    postJson("/api/update", { action: "auto", on: $("updateBox").checked }).catch(() => {});
+  });
+  $("updateBtn").addEventListener("click", () => {
+    $("updateBtn").disabled = true;
+    postJson("/api/update", { action: "install" }).catch(() => {});
+  });
+  // Whether it speaks up on its own (the PC keeps it, for good).
+  let coachHeldUntil = 0;
+  $("coachBox").addEventListener("change", () => {
+    coachHeldUntil = Date.now() + 3000;
+    postJson("/api/coach", { on: $("coachBox").checked }).catch(() => {});
   });
   const liveBox = $("liveCall");
   liveBox.checked = liveWanted;
@@ -1308,6 +1555,8 @@
     renderLearned(status.learned);
     memoryKey = "";
     renderMemory(status.memory);
+    voicesKey = "";
+    renderVoices(status.voices, status.voice);
     postJson("/api/lang", { lang: locale }).catch(() => {});
     if (listening && !liveCall.on && !liveCall.starting) { stopRecognition(); startRecognition(); }
   });
@@ -1629,7 +1878,8 @@
   // microphone) and stops when talked over. The PC gives it the screen,
   // MapleSyrup's tools, and MapleSyrup's own lines to say.
   const liveCall = { pc: null, dc: null, audio: null, on: false, starting: false, userTalking: false, talking: false,
-    pending: [], eyesAt: 0, pictureAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false };
+    pending: [], eyesAt: 0, pictureAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false, hint: "",
+    stoppedAt: 0, firstSoundTold: true };
   function canLive() { return !!status.live && !!window.RTCPeerConnection && status.always_listen !== false; }
   // The live call can be turned off (liveWanted, with the settings): then
   // Grok answers and the voice picked speaks, on the phone too.
@@ -1659,6 +1909,7 @@
       const r = await postJson("/api/live", { recent: liveCall.recent.slice(-12), lang: locale });
       const call = await r.json().catch(() => ({}));
       if (!r.ok || !call.key) throw new Error(call.error || ("PC " + r.status));
+      liveCall.hint = call.hint || "";
       const track = stream && stream.getAudioTracks()[0];
       if (!track) throw new Error("no microphone");
       const pc = new RTCPeerConnection();
@@ -1711,11 +1962,16 @@
         // PC counts these, and makes calls wait a little longer).
         if (liveCall.talking && Date.now() - liveCall.talkingAt < 1000) postJson("/api/turn", { what: "jumped in" }).catch(() => {});
         liveCall.userTalking = true;
+        // The PC hears of it too (its coach keeps quiet while they talk).
+        postJson("/api/talking", { on: true, who: "player" }).catch(() => {});
         $("heard").textContent = "…";
         liveEyes();
         break;
       case "input_audio_buffer.speech_stopped":
         liveCall.userTalking = false;
+        postJson("/api/talking", { on: false, who: "player" }).catch(() => {});
+        liveCall.stoppedAt = Date.now();
+        liveCall.firstSoundTold = false;
         setTimeout(flushSay, 400);
         break;
       case "conversation.item.input_audio_transcription.completed":
@@ -1726,6 +1982,12 @@
         liveLine("maplesyrup", ev.transcript);
         break;
       case "output_audio_buffer.started":
+        // How long the player waited for the first sound of the answer,
+        // for the session log: where the time goes on a call.
+        if (liveCall.stoppedAt && !liveCall.firstSoundTold) {
+          liveCall.firstSoundTold = true;
+          liveTiming("live: first sound " + ((Date.now() - liveCall.stoppedAt) / 1000).toFixed(1) + " s after the player stopped");
+        }
         liveTalking(true);
         break;
       case "output_audio_buffer.stopped":
@@ -1733,7 +1995,7 @@
         liveTalking(false);
         break;
       case "response.done":
-        liveCalls(ev.response);
+        liveCalls(ev.response, Date.now());
         break;
       case "error":
         if (ev.error && ev.error.message) note(ev.error.message);
@@ -1741,10 +2003,24 @@
     }
   }
 
+  // On silence, the transcriber sometimes hands back its own vocabulary
+  // hint ("MapleStory. Names and words the player uses: …") as what the
+  // player said. Nobody said that.
+  function isHintEcho(text) {
+    const hint = liveCall.hint;
+    if (!hint) return false;
+    const squash = (s) => s.toLowerCase().replace(/[\s.,:;!?"'“”‘’]+/g, " ").trim();
+    const a = squash(text), b = squash(hint);
+    if (!a || !b) return false;
+    const head = b.slice(0, Math.min(24, b.length));
+    return a === b || (a.length >= 12 && b.startsWith(a)) || a.startsWith(head);
+  }
+
   // What was said: shown here, and kept by the PC.
   function liveLine(who, text) {
     text = (text || "").trim();
     if (!text) return;
+    if (who === "player" && isHintEcho(text)) return;
     liveCall.recent.push((who === "player" ? "Player: " : "MapleSyrup: ") + text);
     if (liveCall.recent.length > 30) liveCall.recent.splice(0, liveCall.recent.length - 30);
     addMessage({ kind: who === "player" ? "heard" : "reply", text, t: nowT() }, false);
@@ -1780,7 +2056,7 @@
 
   // The tools the model asked for run on the PC; the answers go back and it
   // carries on.
-  async function liveCalls(response) {
+  async function liveCalls(response, doneAt) {
     const calls = ((response && response.output) || []).filter((o) => o && o.type === "function_call");
     if (!calls.length) return;
     const outputs = await Promise.all(calls.map(async (c) => {
@@ -1795,7 +2071,19 @@
     for (const [id, output] of outputs) {
       liveSend({ type: "conversation.item.create", item: { type: "function_call_output", call_id: id, output } });
     }
-    liveSend({ type: "response.create" });
+    // The player started talking meanwhile: the answer to that will see the
+    // tools' results too, and asking for another response now would only
+    // fight it (and lose: the model drops the thread and never answers).
+    if (!liveCall.userTalking) liveSend({ type: "response.create" });
+    // The call answers again after the tools: the player waits for that too.
+    liveCall.stoppedAt = doneAt || Date.now();
+    liveCall.firstSoundTold = false;
+    liveTiming("live: " + calls.map((c) => c.name).join(", ") + " ran in " + ((Date.now() - (doneAt || Date.now())) / 1000).toFixed(1) + " s; the answer after them is timed from here" + (liveCall.userTalking ? " (the player is talking: it answers with their next words)" : ""));
+  }
+
+  // A line for the PC's session log about where the time went.
+  function liveTiming(text) {
+    postJson("/api/said", { who: "timing", text }).catch(() => {});
   }
 
   // MapleSyrup's own lines, said by the call at the next quiet moment.

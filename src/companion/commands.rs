@@ -377,6 +377,141 @@ pub fn recording_request(sentence: &str) -> Option<bool> {
     }
 }
 
+/// Whether to go on coaching: "stop coaching" / "no more tips" (false),
+/// "coach me" / "give me tips" (true), said in a short sentence (in English
+/// or Hebrew; a model understands the rest).
+pub fn coaching_request(sentence: &str) -> Option<bool> {
+    let text = normalize(sentence);
+    let text = match after_wake_word(&text) {
+        Some(end) => text[end..].trim().to_string(),
+        None => text,
+    };
+    if text.split(' ').filter(|w| !w.is_empty()).count() > 6 {
+        return None;
+    }
+    const STOP: &[&str] = &[
+        "stop coaching",
+        "no coaching",
+        "no more coaching",
+        "no more tips",
+        "no tips",
+        "stop the tips",
+        "stop giving tips",
+        "stop telling me what to do",
+        "dont tell me what to do",
+        "only answer when i ask",
+        "only talk when i ask",
+        "תפסיק לאמן",
+        "בלי אימון",
+        "בלי טיפים",
+        "תפסיק עם הטיפים",
+        "די עם הטיפים",
+        "תפסיק להגיד לי מה לעשות",
+        "אל תגיד לי מה לעשות",
+        "תדבר רק כששואלים",
+        "רק כשאני שואל",
+    ];
+    const START: &[&str] = &[
+        "start coaching",
+        "coach me",
+        "coaching on",
+        "give me tips",
+        "tips on",
+        "tell me what to do",
+        "speak up on your own",
+        "talk on your own",
+        "תאמן אותי",
+        "תתחיל לאמן",
+        "תן לי טיפים",
+        "תן טיפים",
+        "תגיד לי מה לעשות",
+        "תדבר מעצמך",
+    ];
+    if STOP.iter().any(|p| has_phrase(&text, p)) {
+        Some(false)
+    } else if START.iter().any(|p| has_phrase(&text, p)) {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// The player objects to how they are being spoken to ("don't talk to me
+/// this way", "stop insulting me", "אל תדבר אליי ככה"), in a short
+/// sentence: the attitude is to drop. A model would learn it too, but the
+/// warnings are MapleSyrup's own lines, which only the setting changes.
+pub fn tone_complaint(sentence: &str) -> bool {
+    let text = normalize(sentence);
+    let text = match after_wake_word(&text) {
+        Some(end) => text[end..].trim().to_string(),
+        None => text,
+    };
+    if text.split(' ').filter(|w| !w.is_empty()).count() > 14 {
+        return false;
+    }
+    const COMPLAINTS: &[&str] = &[
+        "dont talk to me this way",
+        "dont talk to me like that",
+        "dont talk to me like this",
+        "dont speak to me like that",
+        "dont speak to me this way",
+        "stop insulting me",
+        "stop insulting",
+        "dont insult me",
+        "no insults",
+        "stop calling me names",
+        "dont call me names",
+        "dont call me idiot",
+        "dont call me an idiot",
+        "dont call me genius",
+        "stop calling me idiot",
+        "stop calling me genius",
+        "be respectful",
+        "be more respectful",
+        "be nice to me",
+        "be nicer",
+        "be polite",
+        "talk nicely",
+        "talk to me nicely",
+        "speak nicely",
+        "stop being rude",
+        "dont be rude",
+        "stop being mean",
+        "dont be mean",
+        "stop cursing",
+        "stop swearing",
+        "no cursing",
+        "no swearing",
+        "אל תדבר אליי ככה",
+        "אל תדבר אלי ככה",
+        "אל תדבר איתי ככה",
+        "אל תדבר אליי בצורה הזאת",
+        "אל תעליב אותי",
+        "תפסיק להעליב אותי",
+        "תפסיק להעליב",
+        "בלי עלבונות",
+        "תהיה מנומס",
+        "תהיה נחמד",
+        "תהיה נחמד אליי",
+        "תדבר יפה",
+        "דבר יפה",
+        "תדבר אליי יפה",
+        "תפסיק לקלל",
+        "בלי קללות",
+        "אל תקלל",
+        "no me hables así",
+        "no me hables asi",
+        "no me hables de esa manera",
+        "no me insultes",
+        "deja de insultarme",
+        "sé amable",
+        "se amable",
+        "sé respetuoso",
+        "se respetuoso",
+    ];
+    COMPLAINTS.iter().any(|p| has_phrase(&text, p))
+}
+
 /// Read one heard sentence. `listening` is true when the wake word was said
 /// on its own a moment ago, so this sentence counts as addressed.
 pub fn interpret(sentence: &str, listening: bool) -> Heard {
@@ -529,5 +664,40 @@ mod tests {
             recording_request("yesterday I forgot to start recording my run on the stream"),
             None
         );
+    }
+
+    #[test]
+    fn coaching_is_turned_off_and_on_in_short_sentences() {
+        assert_eq!(coaching_request("stop coaching"), Some(false));
+        assert_eq!(coaching_request("Syrup, no more tips."), Some(false));
+        assert_eq!(coaching_request("stop telling me what to do"), Some(false));
+        assert_eq!(coaching_request("only talk when I ask"), Some(false));
+        assert_eq!(coaching_request("די עם הטיפים"), Some(false));
+        assert_eq!(coaching_request("coach me"), Some(true));
+        assert_eq!(coaching_request("ok give me tips again"), Some(true));
+        assert_eq!(coaching_request("תאמן אותי"), Some(true));
+        assert_eq!(coaching_request("what's my hp"), None);
+        assert_eq!(
+            coaching_request(
+                "my friend's coach told me to stop coaching the kids and give me tips"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn an_objection_to_the_tone_is_heard_in_a_short_sentence() {
+        assert!(tone_complaint("Don't talk to me this way"));
+        assert!(tone_complaint("Syrup, stop insulting me."));
+        assert!(tone_complaint("could you be respectful please"));
+        assert!(tone_complaint("stop calling me genius"));
+        assert!(tone_complaint("אל תדבר אליי ככה"));
+        assert!(tone_complaint("תפסיק להעליב אותי בבקשה"));
+        assert!(tone_complaint("No me hables así"));
+        assert!(!tone_complaint("what's my hp"));
+        assert!(!tone_complaint(
+            "my brother said don't talk to me this way when he was angry at school yesterday"
+        ));
+        assert!(!tone_complaint("that boss is an idiot"));
     }
 }

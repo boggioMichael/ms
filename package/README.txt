@@ -43,8 +43,9 @@ How it talks
   (Settings -> Voice: the voices on your ElevenLabs account, or OpenAI's).
   Put the key in a file named elevenlabs-key.txt next to MapleSyrup.exe; it
   moves itself into %APPDATA%\MapleSyrup. The voice you pick says everything
-  except a live call (that one speaks in OpenAI's own voice), so picking one
-  turns the live call off; turn it back on under "Live call on the phone".
+  except a live call, which speaks in its own voice (the call stays on when
+  you pick a voice; turn it off under "Live call on the phone" if you want
+  the picked voice for replies too).
   Hebrew is spoken by ElevenLabs' Eleven v4; when your account can't use it,
   or ElevenLabs is down or out of credit, OpenAI's voice says the line.
 
@@ -73,7 +74,11 @@ How it talks
   While it speaks, MapleStory's sound is turned down for a moment.
   The OpenAI account needs credit (platform.openai.com/settings/organization/billing);
   without it MapleSyrup says so and goes on with simple answers and the
-  Windows voice. It also speaks up by itself when HP or MP runs low or you level up.
+  Windows voice. It also speaks up by itself when HP or MP runs low or you level up
+  (a level-up is the level at the bottom left going up by one — nothing else
+  counts). Warnings nobody answers stop after six until you say something, and
+  a bar it can only guess at is not warned from. "Don't talk to me this way"
+  makes it friendly.
   On the phone you can choose where replies are spoken (PC, phone, both, off)
   and switch to "only after 'syrup'" for streaming.
 
@@ -173,6 +178,30 @@ organization's Device Guard policy")
   Windows Security -> App & browser control -> Smart App Control settings -> Off.
   (Since the April 2026 update it can be turned on again from the same place;
   MapleSyrup is then blocked again.)
+
+Updates
+  MapleSyrup updates itself. Now and then it looks at datta-syrup.ai for a
+  new version, fetches it in the background and installs it the next time
+  you start MapleSyrup (or right away: Settings on the phone -> Update now).
+  It only takes a version signed by the release key built into it, and keeps
+  the version you had beside it until the new one has run for a while; a
+  version that does not come up twice is rolled back, and the one after it
+  is tried instead. Turn it off in Settings on the phone, or start MapleSyrup
+  with --no-update.
+
+Workshop (off unless you turn it on)
+  MapleSyrup can rewrite itself, on this PC only. Turn the workshop on in
+  Details on the phone, then say "change yourself: make the HP warning
+  shorter" (or type it there). A coding agent installed on this PC — Claude
+  Code or Codex CLI, whichever you have — changes the source in the
+  checkout at %USERPROFILE%\GitHub\ms (or where --repo says), the program is
+  built and its tests run (a few minutes; the game keeps priority), and the
+  new version installs the next time MapleSyrup starts, with the old one
+  kept to go back to. "Undo the last change" takes it back. The work stays
+  on a branch of this PC's own: nothing is pushed, nothing is published, and
+  the site's updates are paused while the workshop is on. It needs git, the
+  Rust toolchain and a coding agent on this PC; the first build fetches the
+  dependencies and takes longer.
 
 Privacy
   Your OpenAI key stays on this PC (a live call uses a key that works for a few

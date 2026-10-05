@@ -15,7 +15,7 @@ use std::time::Duration;
 use image::RgbaImage;
 use serde_json::{Value, json};
 
-use super::images::NBox;
+use super::images::{NBox, Thousandths};
 use super::knowledge::Source;
 use super::memory::Learning;
 use super::openai::{Ask, Call, OpenAi};
@@ -34,6 +34,9 @@ pub struct Toolbox {
     pub web: bool,
     /// Where the player's corrections are kept.
     pub learning: Option<Learning>,
+    /// The workshop, when MapleSyrup may rewrite itself on this PC (the
+    /// tool is offered only while it is on).
+    pub workshop: Option<Arc<crate::workshop::Workshop>>,
 }
 
 /// What running a tool changed, for the rest of MapleSyrup.
@@ -55,6 +58,8 @@ pub enum Effect {
         said: String,
         asked: bool,
     },
+    /// Change MapleSyrup's own program on this PC, as the player asked.
+    Rewrite(String),
 }
 
 /// Ask the vision model one of the teacher's questions.
@@ -76,6 +81,9 @@ pub fn look(eyes: &OpenAi, look: &Look) -> Result<String, String> {
 /// The commands the recording tool hands the main loop.
 pub const RECORD_ON: &str = "record";
 pub const RECORD_OFF: &str = "stop recording";
+/// …and to speak up on its own, or only when asked.
+pub const COACH_ON: &str = "coach";
+pub const COACH_OFF: &str = "stop coaching";
 
 fn function(name: &str, description: &str, properties: Value) -> Value {
     let required: Vec<String> = properties
@@ -109,7 +117,8 @@ impl Toolbox {
                 "learn_thing",
                 "Learn to recognise something on the game screen that the player shows you or names (a monster, \
 NPC, item, portal, icon, the boss's HP bar, a counter...), so you can notice it yourself from now on, and \
-optionally speak up when it appears, disappears, or a bar or number crosses a threshold.",
+optionally speak up when it appears, disappears, or a bar or number crosses a threshold. Not the player's own \
+character (always on screen), and never with an alert about something else (level-ups are watched already).",
                 json!({
                     "name": {"type": "string", "description": "What the player calls it."},
                     "kind": {"type": "string", "enum": ["object", "indicator", "gauge", "number", "text"],
@@ -166,6 +175,11 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
                 json!({"muted": {"type": "boolean"}}),
             ),
             function(
+                "set_coaching",
+                "Whether you speak up on your own while they play (tips, callouts, what to do next), when they ask you to stop doing that (\"only talk when I ask\", \"no more tips\") or to start again.",
+                json!({"on": {"type": "boolean"}}),
+            ),
+            function(
                 "set_recording",
                 "Start (on: true) or stop (on: false) recording the session as a video on the player's PC: the whole screen, the game's sound, your voice and theirs. Only when the player asks.",
                 json!({"on": {"type": "boolean"}}),
@@ -179,6 +193,16 @@ optionally speak up when it appears, disappears, or a bar or number crosses a th
                 }),
             ),
         ];
+        if self.workshop.as_ref().is_some_and(|w| w.is_on()) {
+            tools.push(function(
+                "change_your_code",
+                "Change your own program on this PC, when the player asks you to change, fix or improve \
+yourself (how you talk, what you warn about, a bug they hit...). A coding agent on this PC rewrites the code, \
+it is built and tested, and the new version installs the next time MapleSyrup starts. It takes a few minutes; \
+you say so. Pass what they asked for, in full, in their words. Only for changes to MapleSyrup itself.",
+                json!({"instruction": {"type": "string", "description": "What to change, as the player put it."}}),
+            ));
+        }
         if self.web {
             // Never waited for: it answers first, the look-up runs behind.
             tools.push(function(
@@ -367,6 +391,25 @@ wrong."
                 )
             }
             "mark_moment" => ("Marked.".into(), Some(Effect::Command("mark".into()))),
+            "change_your_code" => {
+                let instruction = text("instruction");
+                let Some(workshop) = self.workshop.as_ref().filter(|w| w.is_on()) else {
+                    return (
+                        "The workshop is off: MapleSyrup can't change itself right now.".into(),
+                        None,
+                    );
+                };
+                if instruction.chars().filter(|c| c.is_alphanumeric()).count() < 6 {
+                    return ("Say what to change.".into(), None);
+                }
+                let _ = workshop;
+                (
+                    "Queued: the change is being made in the background — the code rewritten, built and tested — \
+and installs the next time MapleSyrup starts. Tell the player it takes a few minutes and you'll say when it's ready."
+                        .into(),
+                    Some(Effect::Rewrite(instruction)),
+                )
+            }
             "set_recording" => {
                 let on = args["on"].as_bool().unwrap_or(true);
                 (
@@ -378,6 +421,20 @@ wrong."
                     .into(),
                     Some(Effect::Command(
                         if on { RECORD_ON } else { RECORD_OFF }.into(),
+                    )),
+                )
+            }
+            "set_coaching" => {
+                let on = args["on"].as_bool().unwrap_or(true);
+                (
+                    if on {
+                        "Coaching on: you'll speak up on your own again."
+                    } else {
+                        "Coaching off: from now on you speak only when spoken to (and for low HP or MP)."
+                    }
+                    .into(),
+                    Some(Effect::Command(
+                        if on { COACH_ON } else { COACH_OFF }.into(),
                     )),
                 )
             }
@@ -422,6 +479,7 @@ mod tests {
 
     fn toolbox(dir: &std::path::Path) -> Toolbox {
         Toolbox {
+            workshop: None,
             sight: Arc::new(Mutex::new(Sight::load(&dir.join("learned")))),
             eyes: Arc::new(OpenAi::new(
                 "sk-test-key-0123456789abcdef",

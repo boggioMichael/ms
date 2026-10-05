@@ -1,7 +1,12 @@
 //! The teacher at work, on a thread of its own: it looks at the newest
-//! frame when the learned sight wants it to — to find the HUD on a new
-//! screen, to read it every few minutes, after a level-up or a correction —
-//! and checks the near misses the things the player taught turned up.
+//! frame when the learned sight wants it to — to find the HUD the pixels
+//! could not, to read it again after a level-up, a correction, a lasting
+//! disagreement between the numbers and the bars, or for a line the OCR
+//! engine could not spell out — and checks the near misses the things the
+//! player taught turned up.
+//! Before any of that, and with or without a model, it labels the HUD's
+//! font for the sight from the OCR engine, when a line is sharp enough for
+//! it (`sight::numbers`).
 //!
 //! Failures (no network, no credit) slow it down rather than stop it.
 
@@ -14,8 +19,11 @@ use image::{Rgba, RgbaImage};
 use super::openai::OpenAi;
 use super::tools::look;
 use crate::ai::images::NBox;
+use crate::sight::numbers::{Field, Numbers};
 use crate::sight::teacher;
 use crate::sight::{Layout, Sight, Want};
+use crate::vision::ocr;
+use crate::vision::quality::assess_text_quality;
 
 /// The newest frame of the game, for whoever needs it.
 #[derive(Default)]
@@ -45,9 +53,6 @@ pub enum News {
     /// It could not look or make sense of what it saw.
     Trouble(String),
 }
-
-/// How often the HUD is read again, to check the bars and the level.
-pub const CHECK_EVERY: Duration = Duration::from_secs(120);
 
 fn outline(picture: &mut RgbaImage, b: &NBox, color: [u8; 3]) {
     let (w, h) = picture.dimensions();
@@ -102,8 +107,70 @@ fn report(last: &mut String, message: String, news: &Sender<News>) {
     }
 }
 
-/// Start the teacher.
-pub fn spawn(eyes: Arc<OpenAi>, sight: Arc<Mutex<Sight>>, latest: Arc<Latest>, news: Sender<News>) {
+/// The HUD's font, labelled by the OCR engine: for each field that would
+/// do with an example, its line is read where it is sharp enough, and
+/// believed when the number agrees with the bar.
+fn label_from_ocr(sight: &Mutex<Sight>, frame: &RgbaImage, news: &Sender<News>) {
+    let lock = || sight.lock().unwrap_or_else(|e| e.into_inner());
+    let now = Instant::now();
+    let (fw, fh) = frame.dimensions();
+    // What to read, with the sight unlocked while the engine runs.
+    let todo: Vec<(Field, NBox, Option<f32>, crate::vision::Rect)> = {
+        let sight = lock();
+        let Some(layout) = sight.layout.as_ref().filter(|l| l.fits(fw, fh)) else {
+            return;
+        };
+        [
+            (Field::Hp, layout.hp.as_ref()),
+            (Field::Mp, layout.mp.as_ref()),
+            (Field::Exp, layout.exp.as_ref()),
+        ]
+        .into_iter()
+        .filter_map(|(field, bar)| {
+            let bar = bar?;
+            sight.numbers.wants_sample(field, now).then(|| {
+                (
+                    field,
+                    bar.band,
+                    bar.measure(frame),
+                    sight.numbers.label_region(field, &bar.band, fw, fh),
+                )
+            })
+        })
+        .collect()
+    };
+    if todo.is_empty() || !ocr::is_ocr_available() {
+        return;
+    }
+    for (field, band, bar, region) in todo {
+        lock().numbers.attempted(field, now);
+        if !assess_text_quality(frame, region).is_legible() {
+            continue;
+        }
+        let Some(text) = ocr::ocr_region(frame, region.x, region.y, region.w, region.h) else {
+            continue;
+        };
+        if Numbers::believable(field, &text.text, bar).is_err() {
+            continue;
+        }
+        if let Ok(line) = lock()
+            .numbers
+            .learn(frame, field, &band, &text.text, "ocr", now)
+        {
+            let _ = news.send(News::Line(line));
+        }
+    }
+}
+
+/// Start the teacher: with a model, the HUD is found and checked and near
+/// misses are confirmed; with or without one, the HUD's font is labelled
+/// from the OCR engine.
+pub fn spawn(
+    eyes: Option<Arc<OpenAi>>,
+    sight: Arc<Mutex<Sight>>,
+    latest: Arc<Latest>,
+    news: Sender<News>,
+) {
     let _ = std::thread::Builder::new()
         .name("teacher".into())
         .spawn(move || {
@@ -118,14 +185,21 @@ pub fn spawn(eyes: Arc<OpenAi>, sight: Arc<Mutex<Sight>>, latest: Arc<Latest>, n
                 let Some(frame) = latest.get() else {
                     continue;
                 };
+                label_from_ocr(&sight, &frame, &news);
+                let Some(eyes) = &eyes else {
+                    continue;
+                };
                 if Instant::now() < wait_until {
                     continue;
                 }
-                let want = lock().wants(frame.width(), frame.height(), CHECK_EVERY);
+                let want = lock().wants(frame.width(), frame.height());
                 let status = lock().layout.as_ref().and_then(|l| l.status);
+                if want.is_some() {
+                    lock().asking();
+                }
                 match (want, status) {
                     (Some(Want::Calibrate), _) | (Some(Want::Verify), None) => {
-                        let answer = look(&eyes, &teacher::calibrate(&frame));
+                        let answer = look(eyes, &teacher::calibrate(&frame));
                         let found = answer.and_then(|a| {
                             teacher::parse_calibration(&a).ok_or_else(|| {
                                 format!(
@@ -157,7 +231,7 @@ pub fn spawn(eyes: Arc<OpenAi>, sight: Arc<Mutex<Sight>>, latest: Arc<Latest>, n
                         }
                     }
                     (Some(Want::Verify), Some(status)) => {
-                        let answer = look(&eyes, &teacher::verify(&frame, &status));
+                        let answer = look(eyes, &teacher::verify(&frame, &status));
                         match answer.map(|a| teacher::parse_values(&a)) {
                             Ok(Some(values)) => {
                                 let line = lock().verified(&frame, &values);
@@ -215,7 +289,7 @@ pub fn spawn(eyes: Arc<OpenAi>, sight: Arc<Mutex<Sight>>, latest: Arc<Latest>, n
                         };
                         let question =
                             teacher::same(&candidate.picture, &reference, &name, &describe);
-                        if let Ok(answer) = look(&eyes, &question)
+                        if let Ok(answer) = look(eyes, &question)
                             && teacher::parse_same(&answer) == Some(true)
                             && lock().things.add_picture(&candidate.id, candidate.picture)
                         {

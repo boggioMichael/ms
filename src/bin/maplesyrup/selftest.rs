@@ -58,25 +58,39 @@ pub fn run() -> i32 {
                 let world = pipeline.detect(&img);
                 let obs = Observation::from_world("fixture", &world);
                 let took = started.elapsed();
-                let seen = [obs.hp.is_some(), obs.mp.is_some(), obs.exp.is_some()];
-                if seen.iter().all(|s| *s) {
+                let bars = [&world.hud.hp, &world.hud.mp, &world.hud.exp];
+                let found = bars.map(|b| b.is_present());
+                let percent = |b: &ms::vision::Detection<ms::vision::detectors::hud::HudMetric>| {
+                    b.value
+                        .as_ref()
+                        .and_then(|m| m.percent)
+                        .map(|p| format!("{p:.0}%"))
+                        .unwrap_or_else(|| "?".into())
+                };
+                if found.iter().all(|s| *s) {
+                    // (The companion acts on a bar only once a number read
+                    // beside it, or the learned sight, backs it.)
+                    let backed = [obs.hp.is_some(), obs.mp.is_some(), obs.exp.is_some()]
+                        .iter()
+                        .filter(|b| **b)
+                        .count();
                     r.ok(
                         "vision",
                         format!(
-                            "HP {:.0}%, MP {:.0}%, EXP {:.1}% found on the screenshot in {:.0} ms",
-                            obs.hp.map(|g| g.percent).unwrap_or_default(),
-                            obs.mp.map(|g| g.percent).unwrap_or_default(),
-                            obs.exp.map(|g| g.percent).unwrap_or_default(),
+                            "HP {}, MP {}, EXP {} found on the screenshot in {:.0} ms ({backed} of 3 backed by a number)",
+                            percent(bars[0]),
+                            percent(bars[1]),
+                            percent(bars[2]),
                             took.as_secs_f64() * 1000.0
                         ),
                     );
                 } else {
-                    r.fail("vision", format!("bars found (HP, MP, EXP): {seen:?}"));
+                    r.fail("vision", format!("bars found (HP, MP, EXP): {found:?}"));
                 }
                 let mut companion = Companion::new(Settings::default());
                 companion.observe(0.0, obs);
                 let said = said(companion.heard(1.0, "syrup status"));
-                if said.iter().any(|l| l.contains("HP")) {
+                if said.iter().any(|l| l.contains("HP") || l.contains("Level")) {
                     r.ok(
                         "companion",
                         format!("\"syrup status\" → {}", said.join(" ")),

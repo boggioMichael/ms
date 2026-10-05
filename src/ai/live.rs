@@ -49,8 +49,12 @@ them while they play, like a friend on voice chat.";
 /// What else a call needs to know, after the rules and the attitude.
 const LIVE_MORE: &str = "On the call:
 - Speak fast, like a gamer on comms: no pauses, no drawn-out words. Short turns; let them talk.
-- Speak the language the player speaks. When they switch languages, switch with them at once; when they mix \
-languages in one sentence (Hebrew and English, say), answer the same way. Say game words the way players say them.
+- Speak the language the player speaks, every time. When they switch languages, switch with them at once; when \
+they mix languages in one sentence (Hebrew and English, say), answer the same way. A language you were told to use \
+\"by default\" is for when their words have no language: it never overrides the one they are speaking now. Say \
+game words the way players say them.
+- Never say again what you said in your last two turns unless they ask again, and never open with where they are \
+unless they asked where they are. If what you heard makes no sense, say in a few words that you didn't catch it.
 - If they talk over you, stop and go with what they just said; don't repeat what you had said.
 - When they speak you may also get a message that is not from them: what your vision engine reads off the game \
 right now (level, HP, MP, EXP; values marked \"about\" are estimates) and, now and then, a small picture of the \
@@ -66,7 +70,9 @@ Tools (never announce one before using it; after one, a few words at most):
 - Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\") or asks \
 you to watch for something, call learn_thing with a tight box around it in the picture's 0-1000 coordinates. \
 Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the \
-boss is under 20%\"), set alert, threshold and say (what to say then, in their language).
+boss is under 20%\"), set alert, threshold and say (what to say then, in their language). The alert is about that \
+thing appearing, disappearing or crossing a value — never attach an unrelated announcement to it (a level-up is \
+watched by MapleSyrup itself; their own character is always on screen and is never a thing to learn).
 - When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
 - When they correct you on anything else (a game fact, a name, how something works, how you talk), call \
 note_correction with the right version and go on with it. What they corrected you on before beats what you think \
@@ -80,7 +86,9 @@ were wrong. Never mention it.
 - forget_thing when asked to forget something you learned; look_closer to read small text or details.
 - mark_moment when they ask you to mark or save the moment; set_muted when they ask you to be quiet or to \
 talk again.
-- set_recording when they ask you to start or stop recording (a video of the screen with all the sound).";
+- set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
+- set_coaching when they ask you to stop speaking up on your own (\"only talk when I ask\", \"no more tips\"), or \
+to start again.";
 
 /// The instructions for a call: who it is, its rules and the attitude the
 /// player picked, what it learned about the player (`learned`: what they
@@ -290,9 +298,16 @@ impl Live {
                         .or(answer["client_secret"]["value"].as_str())
                         .ok_or_else(|| AiError::Parse("no key in the answer".into()))?;
                     self.remember(&model);
-                    return Ok(
-                        json!({"key": key, "url": self.calls_url, "model": model, "api": "ga"}),
-                    );
+                    // The hint goes to the phone too: on silence the
+                    // transcriber sometimes returns its own hint as what
+                    // the player said, and the phone drops those.
+                    return Ok(json!({
+                        "key": key,
+                        "url": self.calls_url,
+                        "model": model,
+                        "api": "ga",
+                        "hint": tuning.words.as_deref().unwrap_or(""),
+                    }));
                 }
                 Err(AiError::Http(400, message))
                     if speed && message.to_lowercase().contains("speed") =>

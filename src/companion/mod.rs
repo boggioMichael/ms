@@ -159,12 +159,19 @@ pub struct Companion {
     zero_hp_frames: u32,
     dead: bool,
     /// HP lately (when, percent), to tell a death a sooner warning could
-    /// have helped with from a sudden one.
+    /// have helped with from a sudden one, and a beating as it happens.
     hp_lately: std::collections::VecDeque<(f64, f32)>,
+    /// Frames in a row in which HP has fallen fast, and when that was last
+    /// said.
+    falling_frames: u32,
+    fall_told: f64,
     listening_until: f64,
     muted: bool,
     exp: ExpTracker,
     last_level: Option<u32>,
+    /// The character's name when the level was last taken: a level that
+    /// comes with another name is another character's.
+    last_name: Option<String>,
     /// A level reading waiting to hold: the level, and since when.
     level_candidate: Option<(u32, f64)>,
     announced_level_up: f64,
@@ -175,7 +182,143 @@ pub struct Companion {
     spoken: std::collections::VecDeque<(f64, String)>,
     /// Counts small-talk answers, to vary them.
     turn: u32,
+    /// Whether the HP and MP bars are being read or guessed at.
+    hp_steady: Steadiness,
+    mp_steady: Steadiness,
+    /// Since when HP has read as zero.
+    zero_hp_since: f64,
+    /// Alerts said with no sign of life from the player since, and the
+    /// state when the last was said: when, and HP, EXP and the level then,
+    /// with the highest HP and EXP seen since.
+    unanswered: u32,
+    alert_at: f64,
+    hp_at_alert: Option<f32>,
+    hp_peak: Option<f32>,
+    exp_at_alert: Option<f32>,
+    exp_peak: Option<f32>,
+    level_at_alert: Option<u32>,
+    /// When the player last spoke.
+    spoke_at: f64,
+    /// Until when alerts are held for want of an answer, and when that was
+    /// last said.
+    hold_until: f64,
+    hold_told: f64,
 }
+
+/// A bar's readings lately, to tell a bar that is being read from one
+/// that is being guessed at: readings that swing back and forth — three
+/// turns of [`SWING`] points or more within [`SWINGS_WINDOW`] seconds —
+/// are a guess (HP does not go 3%, 46%, 9%, 11%, 3% in a few seconds while
+/// the character stands), and nothing is said from them until they have
+/// held steady for [`SETTLE_SECS`].
+struct Steadiness {
+    lately: std::collections::VecDeque<(f64, f32)>,
+    unsteady_until: f64,
+    /// How long the current hold is.
+    settle: f64,
+    /// When the player was last told the readings are jumping around.
+    noted: f64,
+}
+
+const SWING: f32 = 20.0;
+const SWINGS_WINDOW: f64 = 6.0;
+const SWINGS_UNSTEADY: u32 = 3;
+/// How long a bar found unsteady is held, the first time; it doubles each
+/// time it is found unsteady again as soon as the hold ends, up to a cap.
+const SETTLE_SECS: f64 = 20.0;
+const SETTLE_MAX_SECS: f64 = 600.0;
+/// How often the player is told that a bar's readings are jumping around.
+const UNSTEADY_NOTE_EVERY: f64 = 600.0;
+
+impl Steadiness {
+    fn new() -> Self {
+        Self {
+            lately: std::collections::VecDeque::new(),
+            unsteady_until: f64::NEG_INFINITY,
+            settle: SETTLE_SECS,
+            noted: f64::NEG_INFINITY,
+        }
+    }
+
+    /// Takes a reading; whether the bar is being guessed at right now.
+    fn unsteady(&mut self, now: f64, percent: f32) -> bool {
+        self.lately.push_back((now, percent));
+        while self
+            .lately
+            .front()
+            .is_some_and(|(t, _)| now - t > SWINGS_WINDOW)
+        {
+            self.lately.pop_front();
+        }
+        // While held, one more turn keeps it held (the hold ends a settle
+        // after the last turn); found unsteady again as soon as the hold
+        // ends, it is held twice as long, so a bar misread all night is
+        // not warned from every half minute; steady for a while, a new
+        // bout starts over.
+        let turns = reversals(self.lately.iter().map(|(_, p)| *p), SWING);
+        let held = now < self.unsteady_until;
+        let just_ended = !held && now < self.unsteady_until + SWINGS_WINDOW;
+        let unsteady = if held || just_ended {
+            turns >= 1
+        } else {
+            turns >= SWINGS_UNSTEADY
+        };
+        if unsteady {
+            if just_ended {
+                self.settle = (self.settle * 2.0).min(SETTLE_MAX_SECS);
+            } else if !held {
+                self.settle = SETTLE_SECS;
+            }
+            self.unsteady_until = now + self.settle;
+            self.lately.clear();
+        }
+        now < self.unsteady_until
+    }
+}
+
+/// How many times a series of readings turns around by `swing` points or
+/// more: up then down is one turn, down, up and down again two.
+fn reversals(readings: impl IntoIterator<Item = f32>, swing: f32) -> u32 {
+    let mut readings = readings.into_iter();
+    let Some(mut pivot) = readings.next() else {
+        return 0;
+    };
+    let mut direction = 0i8;
+    let mut turns = 0;
+    for value in readings {
+        let change = value - pivot;
+        if change.abs() >= swing {
+            let heading = if change > 0.0 { 1 } else { -1 };
+            if direction != 0 && heading != direction {
+                turns += 1;
+            }
+            direction = heading;
+            pivot = value;
+        } else if (direction > 0 && value > pivot) || (direction < 0 && value < pivot) {
+            // The move goes on.
+            pivot = value;
+        }
+    }
+    turns
+}
+
+/// A death read from the bar's fill (not the printed number) must last
+/// this long: a dialog over the bar reads as an empty bar too.
+const ZERO_HOLD_SECS: f64 = 2.0;
+
+/// Alerts said with no sign of life from the player — a word, HP going
+/// back up (a potion), EXP gained, a level — before the rest are held…
+const UNANSWERED_MAX: u32 = 6;
+/// …and for how long, unless the player turns up sooner. When the hold
+/// ends, a couple more come through before the next.
+const HOLD_SECS: f64 = 600.0;
+const AFTER_HOLD: u32 = 2;
+/// How often the player is told their warnings are being held.
+const HOLD_TOLD_EVERY: f64 = 1800.0;
+/// HP back up by this much since the last alert is a potion: a sign of life.
+const POTTED: f32 = 10.0;
+/// EXP up by this much since the last alert is play going on.
+const EXP_GAINED: f32 = 0.2;
 
 /// How long a new level reading must hold before it is believed, in seconds.
 const LEVEL_HOLD_SECS: f64 = 3.0;
@@ -186,6 +329,14 @@ const LOW_HOLD_SECS: f64 = 0.6;
 
 /// HP warnings move sooner after deaths no warning came before, up to here.
 const SOONEST_WARNING: f32 = 50.0;
+
+/// HP down this many points within [`FALL_SECS`] is a beating, said at
+/// once (after a second frame says so: a dialog half over the bar does not
+/// last) — before it is low, while backing off still helps.
+const FALL_POINTS: f32 = 25.0;
+const FALL_SECS: f64 = 3.0;
+/// A beating is not said again sooner than this, in seconds.
+const FALL_COOLDOWN: f64 = 12.0;
 
 /// How long after a line was said the phone may still hand it back as heard,
 /// in seconds: the line, its playing, and the phone's recognition finishing.
@@ -312,17 +463,47 @@ impl Companion {
             zero_hp_frames: 0,
             dead: false,
             hp_lately: std::collections::VecDeque::new(),
+            falling_frames: 0,
+            fall_told: f64::NEG_INFINITY,
             listening_until: f64::NEG_INFINITY,
             muted: false,
             exp: ExpTracker::new(),
             last_level: None,
+            last_name: None,
             level_candidate: None,
             announced_level_up: f64::NEG_INFINITY,
             marks: 0,
             now: 0.0,
             spoken: std::collections::VecDeque::new(),
             turn: 0,
+            hp_steady: Steadiness::new(),
+            mp_steady: Steadiness::new(),
+            zero_hp_since: 0.0,
+            unanswered: 0,
+            alert_at: f64::NEG_INFINITY,
+            hp_at_alert: None,
+            hp_peak: None,
+            exp_at_alert: None,
+            exp_peak: None,
+            level_at_alert: None,
+            spoke_at: f64::NEG_INFINITY,
+            hold_until: f64::NEG_INFINITY,
+            hold_told: f64::NEG_INFINITY,
         }
+    }
+
+    /// The player said something (to MapleSyrup or near it): a sign of
+    /// life, and the end of any hold on the alerts.
+    pub fn player_spoke(&mut self, now: f64) {
+        self.spoke_at = now;
+        self.unanswered = 0;
+        self.hold_until = f64::NEG_INFINITY;
+    }
+
+    /// Whether alerts are being held because nothing the player does
+    /// answers them (they are away, or the readings are wrong).
+    pub fn alerts_held(&self, now: f64) -> bool {
+        now < self.hold_until
     }
 
     /// Note a line that was spoken aloud (by the PC or the phone).
@@ -386,7 +567,14 @@ impl Companion {
             }
             let run = &words[start..end];
             let length = run.len();
+            // The player quoting MapleSyrup's words in the middle of their
+            // own sentence ("I am not in the Gate of the Future, check
+            // again") is not its voice coming back: a run with words of
+            // the player's on both sides of it is theirs.
+            let own = |range: &[(String, usize)]| range.iter().filter(|(w, _)| !said(w)).count();
+            let quoted = own(&words[..start]) >= 2 && own(&words[end..]) >= 2;
             let is_echo = length >= 2
+                && !quoted
                 && recent.iter().any(|(age, line)| {
                     let in_order = run
                         .windows(2)
@@ -565,6 +753,16 @@ impl Companion {
     }
 
     /// Whether a sentence now would count as addressed without the wake word.
+    /// When a level-up was last announced (never: minus infinity).
+    pub fn last_level_up(&self) -> f64 {
+        self.announced_level_up
+    }
+
+    /// The level, as last believed.
+    pub fn level(&self) -> Option<u32> {
+        self.last_level
+    }
+
     pub fn listening(&self, now: f64) -> bool {
         now <= self.listening_until
     }
@@ -587,15 +785,82 @@ impl Companion {
             self.watch_mp(now, &obs, &mut out);
             self.watch_progress(now, &obs, &mut out);
         }
+        self.pace(now, &obs, &mut out);
         self.last = Some(obs);
         out
     }
 
-    fn track_window(&mut self, now: f64, obs: &Observation, out: &mut Vec<Action>) {
+    /// Alerts that nothing answers are held: after [`UNANSWERED_MAX`] of
+    /// them with no sign of life from the player — not a word, no potion,
+    /// no EXP gained, no level — the rest wait [`HOLD_SECS`] (and the
+    /// player is told once why), unless the player turns up sooner. One
+    /// night of a misread bar ran to 3,400 warnings said to an empty room.
+    fn pace(&mut self, now: f64, obs: &Observation, out: &mut Vec<Action>) {
+        let hp = obs.hp.map(|g| g.percent);
+        let exp = obs.exp.map(|g| g.percent);
+        let higher = |peak: Option<f32>, value: Option<f32>| match (peak, value) {
+            (Some(p), Some(v)) => Some(p.max(v)),
+            (p, v) => p.or(v),
+        };
         if obs.game.is_seen() {
+            self.hp_peak = higher(self.hp_peak, hp);
+            self.exp_peak = higher(self.exp_peak, exp);
+        }
+        let is_alert = |a: &Action| matches!(a, Action::Say(s) if s.kind == Kind::Alert);
+        let alerts = out.iter().filter(|a| is_alert(a)).count() as u32;
+        if alerts == 0 {
+            return;
+        }
+        let above = |peak: Option<f32>, then: Option<f32>, by: f32| matches!((peak, then), (Some(peak), Some(then)) if peak >= then + by);
+        let potted = above(self.hp_peak, self.hp_at_alert, POTTED);
+        let gained = above(self.exp_peak, self.exp_at_alert, EXP_GAINED);
+        let leveled = obs.level.is_some() && obs.level != self.level_at_alert;
+        if self.spoke_at > self.alert_at || potted || gained || leveled {
+            self.unanswered = 0;
+            self.hold_until = f64::NEG_INFINITY;
+        }
+        if now < self.hold_until {
+            out.retain(|a| !is_alert(a));
+            return;
+        }
+        if self.hold_until.is_finite() {
+            // The hold ended with nothing answering: a couple come through.
+            self.hold_until = f64::NEG_INFINITY;
+            self.unanswered = UNANSWERED_MAX - AFTER_HOLD;
+        }
+        self.unanswered += alerts;
+        self.alert_at = now;
+        self.hp_at_alert = hp;
+        self.hp_peak = hp;
+        self.exp_at_alert = exp;
+        self.exp_peak = exp;
+        self.level_at_alert = obs.level;
+        if self.unanswered > UNANSWERED_MAX {
+            out.retain(|a| !is_alert(a));
+            self.hold_until = now + HOLD_SECS;
+            if now - self.hold_told >= HOLD_TOLD_EVERY {
+                self.hold_told = now;
+                out.push(Action::Say(Say::info(
+                    "You're not answering, so I'll hold my warnings until you say something.",
+                    true,
+                )));
+            }
+        }
+    }
+
+    fn track_window(&mut self, now: f64, obs: &Observation, out: &mut Vec<Action>) {
+        if let GameView::Seen(title) = &obs.game {
             if !self.ever_seen {
                 self.ever_seen = true;
-                out.push(Action::Say(Say::info("I can see MapleStory.", true)));
+                // The window's title, when it is not plainly the game's: a
+                // player once heard "I can see MapleStory" with the game
+                // closed, and the log did not say what had been taken for it.
+                let line = if title.trim().eq_ignore_ascii_case("maplestory") {
+                    "I can see MapleStory.".to_string()
+                } else {
+                    format!("I can see MapleStory (the window \"{}\").", title.trim())
+                };
+                out.push(Action::Say(Say::info(line, true)));
             } else if self.announced_lost {
                 out.push(Action::Say(Say::info("I can see the game again.", true)));
             }
@@ -620,10 +885,31 @@ impl Companion {
         let Some(hp) = obs.hp else {
             return;
         };
-        // A death: HP at zero for a moment.
+        // Readings swinging back and forth are a bar being guessed at, not
+        // read: nothing is said from them.
+        if self.hp_steady.unsteady(now, hp.percent) {
+            self.falling_frames = 0;
+            self.hp_low_frames = 0;
+            self.zero_hp_frames = 0;
+            if now - self.hp_steady.noted >= UNSTEADY_NOTE_EVERY {
+                self.hp_steady.noted = now;
+                out.push(Action::Say(Say::info(
+                    "My HP readings are jumping around, so I'm holding the HP warnings until they settle.",
+                    false,
+                )));
+            }
+            return;
+        }
+        // A death: HP at zero for a moment (longer when that is the bar's
+        // fill rather than the printed number: a dialog over the bar reads
+        // as empty too).
         if hp.percent <= 0.5 {
+            if self.zero_hp_frames == 0 {
+                self.zero_hp_since = now;
+            }
             self.zero_hp_frames += 1;
-            if self.zero_hp_frames >= 3 && !self.dead {
+            let held = if hp.read { 0.0 } else { ZERO_HOLD_SECS };
+            if self.zero_hp_frames >= 3 && now - self.zero_hp_since >= held && !self.dead {
                 self.dead = true;
                 let mut line = self
                     .settings
@@ -660,6 +946,49 @@ impl Companion {
             self.dead = false;
             self.hp_warning = Warning::Armed;
         }
+        // A beating: HP falling fast, said as it happens — the one thing
+        // worth interrupting for, and never worth a model's wait.
+        let highest_lately = self
+            .hp_lately
+            .iter()
+            .filter(|(t, _)| now - t <= FALL_SECS)
+            .map(|(_, p)| *p)
+            .fold(0.0, f32::max);
+        if highest_lately - hp.percent >= FALL_POINTS && hp.percent < 70.0 {
+            self.falling_frames += 1;
+        } else {
+            self.falling_frames = 0;
+        }
+        if self.falling_frames >= 2 && now - self.fall_told >= FALL_COOLDOWN && !self.dead {
+            self.fall_told = now;
+            let line = self
+                .settings
+                .attitude
+                .pick(
+                    [
+                        &[
+                            "Whoa, you're taking a beating. Back off and pot!",
+                            "Careful, your HP's dropping fast. Back off!",
+                        ],
+                        &[
+                            "Back off, you're getting shredded.",
+                            "Get out of there. Pot.",
+                        ],
+                        &[
+                            "Back off, idiot, you're getting shredded.",
+                            "Move! You're melting, genius.",
+                        ],
+                    ],
+                    self.warnings,
+                )
+                .to_string();
+            self.warnings += 1;
+            // It said to pot: the low warning would only say so again.
+            if hp.percent < self.settings.hp_low {
+                self.hp_warning = Warning::Warned(now);
+            }
+            out.push(Action::Say(Say::alert(line)));
+        }
         if hp.percent < self.settings.hp_low {
             if self.hp_low_frames == 0 {
                 self.hp_low_since = now;
@@ -675,6 +1004,8 @@ impl Companion {
             Warning::Armed => true,
             Warning::Warned(at) => now - at >= self.settings.warning_cooldown * 3.0,
         };
+        // (Not right after the beating was called: that said to pot.)
+        let due = due && now - self.fall_told >= 5.0;
         if self.hp_low_frames >= 3 && now - self.hp_low_since >= LOW_HOLD_SECS && due {
             self.hp_warning = Warning::Warned(now);
             let amount = low_words(hp);
@@ -726,6 +1057,17 @@ impl Companion {
         let Some(mp) = obs.mp else {
             return;
         };
+        if self.mp_steady.unsteady(now, mp.percent) {
+            self.mp_low_frames = 0;
+            if now - self.mp_steady.noted >= UNSTEADY_NOTE_EVERY {
+                self.mp_steady.noted = now;
+                out.push(Action::Say(Say::info(
+                    "My MP readings are jumping around, so I'm holding the MP warnings until they settle.",
+                    false,
+                )));
+            }
+            return;
+        }
         if mp.percent < self.settings.mp_low {
             if self.mp_low_frames == 0 {
                 self.mp_low_since = now;
@@ -770,59 +1112,75 @@ impl Companion {
         }
     }
 
+    /// The level, from the number read at the bottom left of the screen
+    /// ("Lv. 165"), and the EXP bar for the pace. A level-up is that number
+    /// going up by one, for the same character, once the new reading has
+    /// held for a moment — then, and only then, is it said. The EXP bar
+    /// wrapping says nothing on its own (it has the sight read the number
+    /// again, and the number says); a number that jumps, falls, or comes
+    /// with another name is another character or a misread: taken, not
+    /// celebrated.
     fn watch_progress(&mut self, now: f64, obs: &Observation, out: &mut Vec<Action>) {
-        // A level reading is taken once it has held for a moment: a misread
-        // lasts until the next read of the plate, a real level for good.
-        let mut level_rose = false;
         if let Some(level) = obs.level {
             match self.level_candidate {
                 Some((candidate, since)) if candidate == level => {
                     if now - since >= LEVEL_HOLD_SECS && self.last_level != Some(level) {
-                        level_rose = self.last_level.is_some_and(|before| level == before + 1);
+                        let before = self.last_level;
+                        let same_character = match (&self.last_name, &obs.name) {
+                            (Some(then), Some(now)) => then == now,
+                            _ => true,
+                        };
                         self.last_level = Some(level);
+                        if obs.name.is_some() {
+                            self.last_name = obs.name.clone();
+                        }
+                        let rose_by_one = before.is_some_and(|b| level == b + 1);
+                        if rose_by_one && same_character {
+                            // (The EXP bar may have counted this one already.)
+                            self.exp.level_rose(now);
+                            if now - self.announced_level_up >= 30.0 {
+                                self.announced_level_up = now;
+                                let text = self
+                                    .settings
+                                    .attitude
+                                    .pick(
+                                        [
+                                            &["Level up! You're level {}."],
+                                            &["Level {}! Nice."],
+                                            &[
+                                                "Level {}. Took you long enough.",
+                                                "Level {}. Finally.",
+                                            ],
+                                        ],
+                                        self.warnings,
+                                    )
+                                    .replace("{}", &level.to_string());
+                                out.push(Action::Say(Say::alert(text)));
+                            }
+                        } else if let Some(before) = before {
+                            let why = if !same_character {
+                                "another character"
+                            } else if level > before {
+                                "not one level up: not celebrated"
+                            } else {
+                                "a lower level: another character, or misread"
+                            };
+                            out.push(Action::Say(Say::info(
+                                format!("Level {level} now, from {before} ({why})."),
+                                false,
+                            )));
+                        }
                     }
                 }
                 _ => self.level_candidate = Some((level, now)),
             }
+        } else if self.last_name.is_none() && obs.name.is_some() {
+            self.last_name = obs.name.clone();
         }
-        let mut leveled = level_rose && self.exp.level_rose(now);
+        // The EXP bar: for the pace and the time to the next level. Its
+        // wrapping counts a level for the total, and says nothing.
         if let Some(exp) = obs.exp {
-            leveled |= self.exp.add(now, exp.percent as f64);
-        }
-        // Both signals can arrive for one level-up, seconds apart.
-        let announce = (level_rose || leveled) && now - self.announced_level_up >= 30.0;
-        if announce {
-            self.announced_level_up = now;
-            let text = match self.last_level {
-                Some(level) if level_rose => self
-                    .settings
-                    .attitude
-                    .pick(
-                        [
-                            &["Level up! You're level {}."],
-                            &["Level {}! Nice."],
-                            &["Level {}. Took you long enough.", "Level {}. Finally."],
-                        ],
-                        self.warnings,
-                    )
-                    .replace("{}", &level.to_string()),
-                _ => self
-                    .settings
-                    .attitude
-                    .pick(
-                        [
-                            &["Level up! Nice."],
-                            &["Level up!"],
-                            &["Level up. Finally."],
-                        ],
-                        self.warnings,
-                    )
-                    .to_string(),
-            };
-            out.push(Action::Say(Say::alert(text)));
-        } else if level_rose && let Some(level) = self.last_level {
-            // Already celebrated from the EXP bar; now the number is known.
-            out.push(Action::Say(Say::info(format!("Now level {level}."), false)));
+            self.exp.add(now, exp.percent as f64);
         }
     }
 
@@ -1074,26 +1432,76 @@ mod tests {
     #[test]
     fn low_hp_is_said_once_until_it_recovers() {
         let mut c = Companion::new(Settings::default());
+        // Worn down slowly (a beating is called sooner, and otherwise).
         c.observe(0.0, frame(90.0, 90.0, 10.0));
+        c.observe(5.0, frame(70.0, 90.0, 10.0));
+        c.observe(10.0, frame(50.0, 90.0, 10.0));
+        c.observe(15.0, frame(35.0, 90.0, 10.0));
         // A moment low is not enough (a dialog over the bar, a misread).
-        assert!(said(&c.observe(1.0, frame(20.0, 90.0, 10.0))).is_empty());
-        assert!(said(&c.observe(1.1, frame(20.0, 90.0, 10.0))).is_empty());
-        assert!(said(&c.observe(1.3, frame(20.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(21.0, frame(20.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(21.1, frame(20.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(21.3, frame(20.0, 90.0, 10.0))).is_empty());
         assert_eq!(
-            said(&c.observe(1.7, frame(20.0, 90.0, 10.0))),
+            said(&c.observe(21.7, frame(20.0, 90.0, 10.0))),
             ["Careful, your HP's down to about 20 percent. Drink a potion!"]
         );
         for i in 0..20 {
-            assert!(said(&c.observe(1.8 + i as f64, frame(18.0, 90.0, 10.0))).is_empty());
+            assert!(said(&c.observe(21.8 + i as f64, frame(18.0, 90.0, 10.0))).is_empty());
         }
-        // Recovered, then low again: warned again, put another way.
-        c.observe(30.0, frame(80.0, 90.0, 10.0));
-        c.observe(31.0, frame(20.0, 90.0, 10.0));
-        c.observe(31.3, frame(20.0, 90.0, 10.0));
+        // Recovered, then worn down again: warned again, put another way.
+        c.observe(50.0, frame(80.0, 90.0, 10.0));
+        c.observe(54.0, frame(60.0, 90.0, 10.0));
+        c.observe(58.0, frame(40.0, 90.0, 10.0));
+        c.observe(62.0, frame(20.0, 90.0, 10.0));
+        c.observe(62.3, frame(20.0, 90.0, 10.0));
         assert_eq!(
-            said(&c.observe(31.7, frame(20.0, 90.0, 10.0))),
+            said(&c.observe(62.7, frame(20.0, 90.0, 10.0))),
             ["HP's at about 20 percent, potion time!"]
         );
+    }
+
+    #[test]
+    fn a_beating_is_called_as_it_happens_and_the_low_warning_waits_its_turn() {
+        let mut c = Companion::new(Settings::default());
+        c.observe(0.0, frame(95.0, 90.0, 10.0));
+        for i in 1..10 {
+            assert!(said(&c.observe(i as f64 * 0.1, frame(95.0, 90.0, 10.0))).is_empty());
+        }
+        // Down 30 points in a second: called on the second frame that says
+        // so, well before HP is low.
+        assert!(said(&c.observe(1.5, frame(65.0, 90.0, 10.0))).is_empty());
+        assert_eq!(
+            said(&c.observe(1.6, frame(64.0, 90.0, 10.0))),
+            ["Whoa, you're taking a beating. Back off and pot!"]
+        );
+        // Still falling: not said again for a while…
+        assert!(said(&c.observe(2.0, frame(40.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(2.2, frame(35.0, 90.0, 10.0))).is_empty());
+        // …and the low warning, which would only say to pot again, waits a
+        // few seconds, then comes.
+        assert!(said(&c.observe(3.0, frame(25.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(3.3, frame(25.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(3.7, frame(25.0, 90.0, 10.0))).is_empty());
+        assert!(said(&c.observe(6.5, frame(25.0, 90.0, 10.0))).is_empty());
+        assert_eq!(
+            said(&c.observe(6.7, frame(25.0, 90.0, 10.0))),
+            ["HP's at about 25 percent, potion time!"]
+        );
+        // A frame's misreading (a dialog over the bar) is not a beating.
+        let mut quiet = Companion::new(Settings::default());
+        quiet.observe(0.0, frame(95.0, 90.0, 10.0));
+        assert!(said(&quiet.observe(0.5, frame(95.0, 90.0, 10.0))).is_empty());
+        assert!(said(&quiet.observe(0.6, frame(50.0, 90.0, 10.0))).is_empty());
+        assert!(said(&quiet.observe(0.7, frame(95.0, 90.0, 10.0))).is_empty());
+        assert!(said(&quiet.observe(1.0, frame(95.0, 90.0, 10.0))).is_empty());
+        // Slow attrition is the low warning's business, not a beating.
+        let mut slow = Companion::new(Settings::default());
+        slow.observe(0.0, frame(95.0, 90.0, 10.0));
+        for i in 1..60 {
+            let hp = 95.0 - i as f32;
+            let lines = said(&slow.observe(i as f64 * 0.5, frame(hp, 90.0, 10.0)));
+            assert!(lines.is_empty() || hp < 30.0, "{i}: {lines:?}");
+        }
     }
 
     #[test]
@@ -1194,12 +1602,177 @@ mod tests {
         let mut c = Companion::new(Settings::default());
         c.observe(0.0, frame(50.0, 50.0, 10.0));
         let mut lines = Vec::new();
-        for i in 0..10 {
+        // From the bar's fill, a death must last two seconds (a dialog
+        // over the bar reads as empty too).
+        for i in 0..15 {
+            lines.extend(said(
+                &c.observe(1.0 + i as f64 * 0.1, frame(0.0, 50.0, 10.0)),
+            ));
+        }
+        assert!(lines.is_empty(), "{lines:?}");
+        for i in 15..40 {
             lines.extend(said(
                 &c.observe(1.0 + i as f64 * 0.1, frame(0.0, 50.0, 10.0)),
             ));
         }
         assert_eq!(lines, ["Your HP hit zero. Time to revive and head back."]);
+        // From the printed number, at once.
+        let mut c = Companion::new(Settings::default());
+        c.observe(0.0, frame(50.0, 50.0, 10.0));
+        let mut lines = Vec::new();
+        for i in 0..5 {
+            let mut dead = frame(0.0, 50.0, 10.0);
+            dead.hp = Some(Gauge {
+                percent: 0.0,
+                current: Some(0),
+                max: Some(9795),
+                read: true,
+            });
+            lines.extend(said(&c.observe(1.0 + i as f64 * 0.1, dead)));
+        }
+        assert_eq!(lines, ["Your HP hit zero. Time to revive and head back."]);
+    }
+
+    #[test]
+    fn a_bar_whose_readings_jump_around_is_not_warned_from() {
+        // What a misread HP bar gave one night: 3%, 46%, 9%, 11%, 3%, 40%…
+        // ten times a second, with HP in truth full. Not one warning.
+        let mut c = Companion::new(Settings::default());
+        c.observe(0.0, frame(95.0, 90.0, 10.0));
+        let noise = [3.0, 46.0, 9.0, 11.0, 3.0, 40.0, 5.0, 28.0, 46.0, 9.0];
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 1..6000 {
+            let t = i as f64 * 0.1;
+            let hp = noise[i % noise.len()];
+            for line in said(&c.observe(t, frame(hp, 90.0, 10.0))) {
+                lines.push((t, line));
+            }
+        }
+        // The very first swing can pass for a beating (nothing is known
+        // yet); after that, not one warning in ten minutes.
+        let alerts: Vec<&(f64, String)> = lines
+            .iter()
+            .filter(|(_, l)| !l.starts_with("My HP readings"))
+            .collect();
+        assert!(alerts.len() <= 1, "{alerts:?}");
+        assert!(alerts.iter().all(|(t, _)| *t < 1.0), "{alerts:?}");
+        // The player is told why it is quiet, on the phone, not aloud, and
+        // not more than once in ten minutes.
+        let notes = lines.len() - alerts.len();
+        assert!((1..=2).contains(&notes), "{lines:?}");
+        assert_eq!(
+            lines
+                .iter()
+                .find(|(_, l)| l.starts_with("My HP"))
+                .map(|(_, l)| l.as_str()),
+            Some(
+                "My HP readings are jumping around, so I'm holding the HP warnings until they settle."
+            )
+        );
+        // Steady again for a while (the hold has grown long by now: the
+        // bar must stay put for it to end): a real fall is warned about.
+        let mut t = 600.0;
+        while t < 1300.0 {
+            let lines = said(&c.observe(t, frame(95.0, 90.0, 10.0)));
+            assert!(
+                lines.iter().all(|l| l.starts_with("My HP readings")),
+                "{t}: {lines:?}"
+            );
+            t += 0.1;
+        }
+        c.observe(t, frame(60.0, 90.0, 10.0));
+        let beating = said(&c.observe(t + 0.1, frame(58.0, 90.0, 10.0)));
+        assert_eq!(beating.len(), 1, "{beating:?}");
+        assert!(beating[0].contains("Back off"), "{beating:?}");
+        // A fight — hit, potion, hit, potion — is not a misread.
+        let mut c = Companion::new(Settings::default());
+        c.observe(0.0, frame(95.0, 90.0, 10.0));
+        c.observe(1.0, frame(55.0, 90.0, 10.0));
+        c.observe(1.1, frame(55.0, 90.0, 10.0));
+        c.observe(3.0, frame(95.0, 90.0, 10.0));
+        c.observe(5.0, frame(60.0, 90.0, 10.0));
+        assert!(!c.hp_steady.unsteady(5.1, 60.0));
+    }
+
+    #[test]
+    fn reversals_are_counted_by_the_turn() {
+        assert_eq!(reversals([90.0, 60.0, 30.0, 10.0], 20.0), 0);
+        assert_eq!(reversals([90.0, 60.0, 95.0], 20.0), 1);
+        // Up, down (through 9, 11 and 3: one move), up, down.
+        assert_eq!(reversals([3.0, 46.0, 9.0, 11.0, 3.0, 40.0], 20.0), 2);
+        assert_eq!(reversals([3.0, 46.0, 9.0, 11.0, 3.0, 40.0, 5.0], 20.0), 3);
+        // Small wobbles are not turns.
+        assert_eq!(reversals([50.0, 55.0, 48.0, 56.0, 47.0, 58.0], 20.0), 0);
+        assert_eq!(reversals([], 20.0), 0);
+    }
+
+    #[test]
+    fn warnings_nobody_answers_are_held_and_a_word_lets_them_through_again() {
+        // HP at 20% for half an hour and nothing done about it (the player
+        // is away, or the bar is misread): the low warning comes every
+        // minute six times, then one line saying the rest will wait, then
+        // nothing for ten minutes; then two more, and quiet again.
+        let mut c = Companion::new(Settings::default());
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..18_600 {
+            let t = i as f64 * 0.1;
+            for line in said(&c.observe(t, frame(20.0, 90.0, 10.0))) {
+                if line != "I can see MapleStory." {
+                    lines.push((t, line));
+                }
+            }
+        }
+        let texts: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
+        assert_eq!(texts.len(), 11, "{lines:?}");
+        assert!(texts[..6].iter().all(|l| l.contains("HP")), "{texts:?}");
+        assert_eq!(
+            texts[6],
+            "You're not answering, so I'll hold my warnings until you say something."
+        );
+        // Six warnings a minute apart, then the hold ends ten minutes later.
+        assert!((lines[5].0 - lines[0].0 - 300.0).abs() < 2.0, "{lines:?}");
+        assert!(lines[7].0 - lines[6].0 >= 600.0, "{lines:?}");
+        assert!(texts[7].contains("HP") && texts[8].contains("HP"));
+        // (The hold is not announced again so soon.)
+        assert!(texts[9].contains("HP"), "{texts:?}");
+        assert!(c.alerts_held(1860.0));
+        // The player says something: the warnings come again.
+        c.player_spoke(1860.0);
+        assert!(!c.alerts_held(1860.0));
+        let mut after = Vec::new();
+        for i in 0..500 {
+            after.extend(said(
+                &c.observe(1860.0 + i as f64 * 0.1, frame(20.0, 90.0, 10.0)),
+            ));
+        }
+        assert_eq!(after.len(), 1, "{after:?}");
+    }
+
+    #[test]
+    fn a_potion_after_a_warning_is_an_answer() {
+        // Low, warned, potted, low again, warned… twelve times: the player
+        // is plainly there, and every warning is said.
+        let mut c = Companion::new(Settings::default());
+        let mut t = 0.0;
+        let mut count = 0;
+        let alerts = |actions: &[Action]| {
+            actions
+                .iter()
+                .filter(|a| matches!(a, Action::Say(s) if s.kind == Kind::Alert))
+                .count()
+        };
+        for _ in 0..12 {
+            for _ in 0..20 {
+                t += 0.1;
+                count += alerts(&c.observe(t, frame(95.0, 90.0, 10.0)));
+            }
+            for _ in 0..20 {
+                t += 0.1;
+                count += alerts(&c.observe(t, frame(20.0, 90.0, 10.0)));
+            }
+        }
+        assert_eq!(count, 12);
+        assert!(!c.alerts_held(t));
     }
 
     #[test]
@@ -1216,10 +1789,16 @@ mod tests {
             lines
         };
         step(&mut c, 80.0, 3);
-        assert!(step(&mut c, 40.0, 3).is_empty());
-        assert!(step(&mut c, 32.0, 3).is_empty());
+        // (A fall that fast is called as a beating; the low warning, at
+        // 30%, never came.)
         assert_eq!(
-            step(&mut c, 0.0, 5),
+            step(&mut c, 40.0, 3),
+            ["Whoa, you're taking a beating. Back off and pot!"]
+        );
+        assert!(step(&mut c, 32.0, 3).is_empty());
+        // (A death read from the bar takes two seconds to believe.)
+        assert_eq!(
+            step(&mut c, 0.0, 25),
             [
                 "Your HP hit zero. Time to revive and head back. I'll warn you sooner from now on, under 35%."
             ]
@@ -1228,7 +1807,7 @@ mod tests {
         // A sudden death from full HP: no warning would have helped.
         step(&mut c, 100.0, 120);
         assert_eq!(
-            step(&mut c, 0.0, 5),
+            step(&mut c, 0.0, 25),
             ["Your HP hit zero. Time to revive and head back."]
         );
         assert_eq!(c.settings.hp_low, 35.0);
@@ -1236,7 +1815,7 @@ mod tests {
         step(&mut c, 100.0, 120);
         assert_eq!(step(&mut c, 20.0, 8).len(), 1);
         assert_eq!(
-            step(&mut c, 0.0, 5),
+            step(&mut c, 0.0, 25),
             ["Your HP hit zero. Time to revive and head back."]
         );
         assert_eq!(c.settings.hp_low, 35.0);
@@ -1244,12 +1823,12 @@ mod tests {
         c.settings.hp_low = 0.0;
         step(&mut c, 100.0, 120);
         step(&mut c, 20.0, 8);
-        step(&mut c, 0.0, 5);
+        step(&mut c, 0.0, 25);
         assert_eq!(c.settings.hp_low, 0.0);
         c.settings.hp_low = 48.0;
         step(&mut c, 100.0, 300);
         step(&mut c, 60.0, 3);
-        step(&mut c, 0.0, 5);
+        step(&mut c, 0.0, 25);
         assert_eq!(c.settings.hp_low, 50.0);
     }
 
@@ -1265,9 +1844,76 @@ mod tests {
             next.level = Some(58);
             lines.extend(said(&c.observe(4.0 + i as f64 * 0.1, next)));
         }
-        assert_eq!(lines, ["Level up! Nice.", "Now level 58."]);
+        // The number at the bottom left went from 57 to 58 and held for
+        // three seconds: celebrated once, with the number.
+        assert_eq!(lines, ["Level up! You're level 58."]);
         // The level itself was taken once it held.
         assert_eq!(said(&c.command(20.0, Command::Level)), ["You're level 58."]);
+        // The EXP bar's wrap alone says nothing: only the number does.
+        let mut c = Companion::new(Settings::default());
+        for i in 0..40 {
+            let mut full = frame(90.0, 90.0, 99.0);
+            full.level = None;
+            c.observe(i as f64 * 0.1, full);
+        }
+        let mut lines = Vec::new();
+        for i in 0..100 {
+            let mut next = frame(90.0, 90.0, 0.5);
+            next.level = None;
+            lines.extend(said(&c.observe(4.0 + i as f64 * 0.1, next)));
+        }
+        assert!(lines.is_empty(), "{lines:?}");
+        // (It still counts for the session's total.)
+        assert_eq!(c.progress().levels_gained, 1);
+    }
+
+    #[test]
+    fn only_the_number_going_up_by_one_for_the_same_character_is_a_level_up() {
+        let named = |level: u32, name: &str| {
+            let mut f = frame(90.0, 90.0, 40.0);
+            f.level = Some(level);
+            f.name = Some(name.to_string());
+            f
+        };
+        let hold = |c: &mut Companion, from: f64, obs: Observation| -> Vec<String> {
+            let mut lines = Vec::new();
+            for i in 0..40 {
+                lines.extend(said(&c.observe(from + i as f64 * 0.1, obs.clone())));
+            }
+            lines.retain(|l| l != "I can see MapleStory.");
+            lines
+        };
+        // Up by one, the same name: said.
+        let mut c = Companion::new(Settings::default());
+        assert!(hold(&mut c, 0.0, named(165, "WanWanBoggio")).is_empty());
+        assert_eq!(
+            hold(&mut c, 10.0, named(166, "WanWanBoggio")),
+            ["Level up! You're level 166."]
+        );
+        // A jump of five: taken, not celebrated (and noted, not spoken).
+        let lines = hold(&mut c, 60.0, named(171, "WanWanBoggio"));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("Level 171 now, from 166"), "{lines:?}");
+        assert_eq!(
+            said(&c.command(70.0, Command::Level)),
+            ["You're level 171."]
+        );
+        // Another character's level, one higher: not a level-up.
+        let lines = hold(&mut c, 120.0, named(172, "Mule"));
+        assert!(lines[0].contains("another character"), "{lines:?}");
+        // Back to the first character: another character again, quietly…
+        let lines = hold(&mut c, 180.0, named(171, "WanWanBoggio"));
+        assert!(lines[0].contains("another character"), "{lines:?}");
+        // …and the same character read lower is a misread (or a rebirth).
+        let lines = hold(&mut c, 240.0, named(160, "WanWanBoggio"));
+        assert!(lines[0].contains("lower level"), "{lines:?}");
+        // A name on neither side: the number alone decides.
+        let mut c = Companion::new(Settings::default());
+        let mut unnamed = frame(90.0, 90.0, 40.0);
+        unnamed.level = Some(57);
+        assert!(hold(&mut c, 0.0, unnamed.clone()).is_empty());
+        unnamed.level = Some(58);
+        assert_eq!(hold(&mut c, 10.0, unnamed), ["Level up! You're level 58."]);
     }
 
     #[test]
@@ -1403,6 +2049,25 @@ mod tests {
         );
         // With AI off, the simple answers get the player's part only.
         assert!(!said(&c.heard(9.5, "How are you doing what's my hp")).is_empty());
+    }
+
+    #[test]
+    fn the_player_quoting_it_to_correct_it_keeps_their_whole_sentence() {
+        let mut c = Companion::new(Settings::default());
+        c.remember_spoken(
+            10.0,
+            "You're at the Gate of the Future, level 165, EXP 74%.",
+        );
+        // One night this came back as "I am not in be super accurate…".
+        let heard =
+            "I am not in the gate of the future be super accurate and check everything you say";
+        assert_eq!(c.strip_echo(14.0, heard).as_deref(), Some(heard));
+        // Its own tail with the answer after it is still cut to the answer.
+        assert_eq!(
+            c.strip_echo(14.0, "gate of the future level 165 where should I go")
+                .as_deref(),
+            Some("where should I go")
+        );
     }
 
     #[test]
