@@ -176,6 +176,289 @@ pub fn asks(sentence: &str) -> Option<Ask> {
     (plain || (about_me && list.len() <= 6)).then_some(*ask)
 }
 
+/// The answers, one list per attitude (friendly, blunt, savage); the first
+/// of each list is the plainest, and leads. `{n}` is the bar's name, `{v}`
+/// the value.
+pub mod lines {
+    /// HP or MP asked about, and low (under 30%).
+    pub const BAR_LOW_EN: [&[&str]; 3] = [
+        &[
+            "{v} {n}. Drink a potion!",
+            "Your {n}'s at {v}, drink something.",
+            "{n} {v}. Pot up!",
+            "Low: {v} {n}. Potion time.",
+            "{v} {n}. Top it up!",
+            "Not great, {v} {n}. Drink.",
+        ],
+        &[
+            "{n} {v}. Pot now.",
+            "{v} {n}. Drink.",
+            "{n}'s at {v}. Fix it.",
+            "{v}. Pot.",
+            "{n} {v}. You know what to do.",
+            "Low. {v} {n}. Drink.",
+        ],
+        &[
+            "{v} {n}. Drink, genius.",
+            "{v} {n}? Pot, you clown.",
+            "{n} {v}. Asking won't refill it, drinking will.",
+            "{v} {n}. Did you want a medal or a potion?",
+            "{v}. Pot before I have to say it again, idiot.",
+            "{n} {v}. Stop asking and start drinking.",
+        ],
+    ];
+    /// HP or MP asked about, and fine.
+    pub const BAR_OK_EN: [&[&str]; 3] = [
+        &[
+            "Your {n}'s at {v}.",
+            "{n} {v}, you're good.",
+            "{v} {n}. All fine!",
+            "{n}'s sitting at {v}.",
+            "{v} {n}, nothing to worry about.",
+            "You've got {v} {n}.",
+        ],
+        &[
+            "{n} {v}.",
+            "{v} {n}. Fine.",
+            "{n}'s at {v}. Keep going.",
+            "{v}. You're fine.",
+            "{n} {v}, nothing to see.",
+            "{v} {n}. Play.",
+        ],
+        &[
+            "{v} {n}. You're fine, stop asking.",
+            "{n} {v}. Relax.",
+            "{v} {n}. It's right there on your screen, genius.",
+            "{n} {v}. Look at your own bar next time.",
+            "{v}. Fine. Now play.",
+            "{n}'s at {v}. The bar isn't that hard to read.",
+        ],
+    ];
+    pub const BAR_LOW_HE: [&[&str]; 3] = [
+        &[
+            "ה-{n} שלך {v}. תשתה שיקוי!",
+            "ה-{n} ב-{v}, תשתה משהו.",
+            "{n} {v}. תשתה עכשיו!",
+            "נמוך: {v} {n}. זמן לשיקוי.",
+            "{v} {n}. תמלא!",
+            "לא משהו, {v} {n}. תשתה.",
+        ],
+        &[
+            "{v} {n}. תשתה עכשיו.",
+            "{n} {v}. תשתה.",
+            "ה-{n} ב-{v}. תסדר את זה.",
+            "{v}. שיקוי.",
+            "{n} {v}. אתה יודע מה לעשות.",
+            "נמוך. {v} {n}. תשתה.",
+        ],
+        &[
+            "{v} {n}. תשתה כבר, גאון.",
+            "{v} {n}? תשתה, ליצן.",
+            "{n} {v}. לשאול לא ימלא את זה, לשתות כן.",
+            "{v} {n}. רצית מדליה או שיקוי?",
+            "{v}. תשתה לפני שאגיד את זה שוב, אידיוט.",
+            "{n} {v}. תפסיק לשאול ותתחיל לשתות.",
+        ],
+    ];
+    pub const BAR_OK_HE: [&[&str]; 3] = [
+        &[
+            "ה-{n} שלך {v}.",
+            "{n} {v}, אתה בסדר.",
+            "{v} {n}. הכול טוב!",
+            "ה-{n} עומד על {v}.",
+            "{v} {n}, אין מה לדאוג.",
+            "יש לך {v} {n}.",
+        ],
+        &[
+            "{v} {n}.",
+            "{n} {v}. בסדר.",
+            "ה-{n} ב-{v}. תמשיך.",
+            "{v}. אתה בסדר.",
+            "{n} {v}, אין מה לראות.",
+            "{v} {n}. תשחק.",
+        ],
+        &[
+            "{v} {n}. אתה בסדר, תפסיק לשאול.",
+            "{v} {n}. תירגע.",
+            "{n} {v}. זה ממש שם על המסך, גאון.",
+            "{v} {n}. תסתכל על הבר שלך בעצמך בפעם הבאה.",
+            "{v}. בסדר. עכשיו תשחק.",
+            "ה-{n} ב-{v}. הבר לא כזה קשה לקריאה.",
+        ],
+    ];
+    pub const EXP_EN: [&[&str]; 3] = [
+        &[
+            "Your EXP's at {v}.",
+            "EXP {v}. Getting there!",
+            "{v} of the way to the next level.",
+            "You're at {v} EXP.",
+            "EXP's sitting at {v}.",
+            "{v} EXP. Keep it up!",
+        ],
+        &[
+            "EXP {v}.",
+            "{v}. Keep grinding.",
+            "{v} EXP. Move.",
+            "You're at {v}.",
+            "EXP's at {v}. Don't stop.",
+            "{v} of the bar.",
+        ],
+        &[
+            "{v} EXP. Grind faster.",
+            "{v}. At this rate, next year.",
+            "EXP {v}. Was that the whole evening?",
+            "{v} EXP. Stop checking, start killing.",
+            "{v}. The bar moves when you do, genius.",
+            "EXP {v}. Mobs don't kill themselves.",
+        ],
+    ];
+    pub const EXP_HE: [&[&str]; 3] = [
+        &[
+            "ה-EXP שלך {v}.",
+            "EXP {v}. מתקדם!",
+            "{v} מהדרך לרמה הבאה.",
+            "אתה ב-{v} EXP.",
+            "ה-EXP עומד על {v}.",
+            "{v} EXP. תמשיך ככה!",
+        ],
+        &[
+            "{v} EXP.",
+            "{v}. תמשיך לטחון.",
+            "{v} EXP. זוז.",
+            "אתה ב-{v}.",
+            "ה-EXP ב-{v}. אל תעצור.",
+            "{v} מהבר.",
+        ],
+        &[
+            "{v} EXP. תטחן מהר יותר.",
+            "{v}. בקצב הזה, שנה הבאה.",
+            "EXP {v}. זה היה כל הערב?",
+            "{v} EXP. תפסיק לבדוק ותתחיל להרוג.",
+            "{v}. הבר זז כשאתה זז, גאון.",
+            "EXP {v}. המפלצות לא יהרגו את עצמן.",
+        ],
+    ];
+    pub const LEVEL_EN: [&[&str]; 3] = [
+        &[
+            "You're level {v}.",
+            "Level {v}!",
+            "{v}. Nice level.",
+            "You're {v} right now.",
+            "Level {v}, and climbing.",
+            "That's level {v}.",
+        ],
+        &[
+            "Level {v}.",
+            "{v}.",
+            "You're {v}.",
+            "Level {v}. Next.",
+            "{v}. Get higher.",
+            "Still level {v}.",
+        ],
+        &[
+            "Level {v}. Still.",
+            "{v}. Forgot already?",
+            "Level {v}. It's on your screen, genius.",
+            "{v}. Same as five minutes ago.",
+            "Level {v}. Not changing while you ask.",
+            "{v}. Go level instead of asking.",
+        ],
+    ];
+    pub const LEVEL_HE: [&[&str]; 3] = [
+        &[
+            "אתה ברמה {v}.",
+            "רמה {v}!",
+            "{v}. רמה יפה.",
+            "אתה {v} כרגע.",
+            "רמה {v}, ועולה.",
+            "זה רמה {v}.",
+        ],
+        &[
+            "רמה {v}.",
+            "{v}.",
+            "אתה {v}.",
+            "רמה {v}. הלאה.",
+            "{v}. תעלה.",
+            "עדיין רמה {v}.",
+        ],
+        &[
+            "רמה {v}. עדיין.",
+            "{v}. כבר שכחת?",
+            "רמה {v}. זה על המסך שלך, גאון.",
+            "{v}. כמו לפני חמש דקות.",
+            "רמה {v}. לא משתנה בזמן שאתה שואל.",
+            "{v}. לך תעלה רמה במקום לשאול.",
+        ],
+    ];
+    /// (`{v}` already says "about".)
+    pub const NEXT_EN: [&[&str]; 3] = [
+        &[
+            "{v} to the next level.",
+            "{v} more, you've got this!",
+            "{v} and you ding.",
+            "Next level in {v}, keep going!",
+            "{v} left at this pace.",
+            "{v} to go. Almost there!",
+        ],
+        &[
+            "{v} to level.",
+            "{v}. Keep grinding.",
+            "{v} at this pace.",
+            "Next level: {v}.",
+            "{v}. Don't slow down.",
+            "{v} more. Go.",
+        ],
+        &[
+            "{v}, if you stop wasting time.",
+            "{v}. Longer if you keep asking.",
+            "{v} at this pace, which is slow.",
+            "{v}. Could be half that if you tried.",
+            "{v}. Less talking, more killing.",
+            "{v}, assuming you don't die again.",
+        ],
+    ];
+    pub const NEXT_HE: [&[&str]; 3] = [
+        &[
+            "{v} לרמה הבאה.",
+            "עוד {v}, אתה תצליח!",
+            "{v} ואתה עולה.",
+            "הרמה הבאה בעוד {v}, תמשיך!",
+            "נשארו {v} בקצב הזה.",
+            "{v} עד הרמה. כמעט שם!",
+        ],
+        &[
+            "{v} לרמה הבאה.",
+            "{v}. תמשיך לטחון.",
+            "{v} בקצב הזה.",
+            "הרמה הבאה: {v}.",
+            "{v}. אל תאט.",
+            "עוד {v}. קדימה.",
+        ],
+        &[
+            "{v}, אם תפסיק לבזבז זמן.",
+            "{v}. יותר אם תמשיך לשאול.",
+            "{v} בקצב הזה, שהוא איטי.",
+            "{v}. יכול להיות חצי מזה אם תתאמץ.",
+            "{v}. פחות דיבורים, יותר הריגות.",
+            "{v}, בהנחה שלא תמות שוב.",
+        ],
+    ];
+
+    /// Every list, by name, for tests and tools.
+    pub const ALL: &[(&str, [&[&str]; 3])] = &[
+        ("bar low", BAR_LOW_EN),
+        ("bar fine", BAR_OK_EN),
+        ("bar low (Hebrew)", BAR_LOW_HE),
+        ("bar fine (Hebrew)", BAR_OK_HE),
+        ("EXP", EXP_EN),
+        ("EXP (Hebrew)", EXP_HE),
+        ("level", LEVEL_EN),
+        ("level (Hebrew)", LEVEL_HE),
+        ("next level", NEXT_EN),
+        ("next level (Hebrew)", NEXT_HE),
+    ];
+}
+
 fn percent(gauge: Gauge, hebrew: bool) -> String {
     let p = gauge.percent.round().clamp(0.0, 100.0);
     match (gauge.read, hebrew) {
@@ -198,9 +481,11 @@ fn duration(seconds: f64, hebrew: bool) -> String {
     }
 }
 
-/// The answer, in the language of the question and the attitude picked
-/// (`n` varies it). `None` when the number isn't known right now: the
-/// model answers then.
+/// The answer, in the language of the question and the attitude picked.
+/// `n` is the caller's count of instant answers so far: the lines are
+/// dealt from it like a deck (the plainest first, every one before any
+/// again), as far as a count shared by every question allows. `None` when
+/// the number isn't known right now: the model answers then.
 pub fn answer(
     ask: Ask,
     sentence: &str,
@@ -217,26 +502,10 @@ pub fn answer(
         let value = percent(gauge, he);
         let low = gauge.percent < 30.0;
         let line = match (he, low) {
-            (false, true) => pick([
-                &["{v} {n}. Drink a potion!"],
-                &["{n} {v}. Pot now."],
-                &["{v} {n}. Drink, genius.", "{v} {n}? Pot, you clown."],
-            ]),
-            (false, false) => pick([
-                &["Your {n}'s at {v}."],
-                &["{n} {v}."],
-                &["{v} {n}. You're fine, stop asking.", "{n} {v}. Relax."],
-            ]),
-            (true, true) => pick([
-                &["ה-{n} שלך {v}. תשתה שיקוי!"],
-                &["{v} {n}. תשתה עכשיו."],
-                &["{v} {n}. תשתה כבר, גאון.", "{v} {n}? תשתה, ליצן."],
-            ]),
-            (true, false) => pick([
-                &["ה-{n} שלך {v}."],
-                &["{v} {n}."],
-                &["{v} {n}. אתה בסדר, תפסיק לשאול.", "{v} {n}. תירגע."],
-            ]),
+            (false, true) => pick(lines::BAR_LOW_EN),
+            (false, false) => pick(lines::BAR_OK_EN),
+            (true, true) => pick(lines::BAR_LOW_HE),
+            (true, false) => pick(lines::BAR_OK_HE),
         };
         Some(line.replace("{v}", &value).replace("{n}", name))
     };
@@ -245,49 +514,17 @@ pub fn answer(
         Ask::Mp => gauge_line(obs.mp, "MP"),
         Ask::Exp => {
             let value = percent(obs.exp?, he);
-            let line = if he {
-                pick([
-                    &["ה-EXP שלך {v}."],
-                    &["{v} EXP."],
-                    &["{v} EXP. תטחן מהר יותר."],
-                ])
-            } else {
-                pick([
-                    &["Your EXP's at {v}."],
-                    &["EXP {v}."],
-                    &["{v} EXP. Grind faster."],
-                ])
-            };
+            let line = pick(if he { lines::EXP_HE } else { lines::EXP_EN });
             Some(line.replace("{v}", &value))
         }
         Ask::Level => {
             let level = obs.level?;
-            let line = if he {
-                pick([&["אתה ברמה {v}."], &["רמה {v}."], &["רמה {v}. עדיין."]])
-            } else {
-                pick([
-                    &["You're level {v}."],
-                    &["Level {v}."],
-                    &["Level {v}. Still."],
-                ])
-            };
+            let line = pick(if he { lines::LEVEL_HE } else { lines::LEVEL_EN });
             Some(line.replace("{v}", &level.to_string()))
         }
         Ask::NextLevel => {
             let left = duration(progress.seconds_to_level?, he);
-            let line = if he {
-                pick([
-                    &["{v} לרמה הבאה."],
-                    &["{v} לרמה הבאה."],
-                    &["{v}, אם תפסיק לבזבז זמן."],
-                ])
-            } else {
-                pick([
-                    &["{v} to the next level."],
-                    &["{v} to level."],
-                    &["{v}, if you stop wasting time."],
-                ])
-            };
+            let line = pick(if he { lines::NEXT_HE } else { lines::NEXT_EN });
             Some(line.replace("{v}", &left))
         }
     }
@@ -400,5 +637,82 @@ mod tests {
             .is_none()
         );
         assert!(answer(Ask::Hp, "x", None, &progress, Attitude::Blunt, 0).is_none());
+    }
+
+    #[test]
+    fn the_same_question_again_is_answered_another_way() {
+        let obs = seen();
+        let progress = Progress {
+            seconds_to_level: Some(50.0 * 60.0),
+            ..Default::default()
+        };
+        for attitude in Attitude::ALL {
+            for (ask, sentence) in [
+                (Ask::Hp, "what's my hp"),
+                (Ask::Mp, "mana?"),
+                (Ask::Exp, "how much exp do I have"),
+                (Ask::Level, "what level am I"),
+                (Ask::NextLevel, "how long to level"),
+                (Ask::Hp, "כמה HP יש לי"),
+                (Ask::Mp, "כמה מאנה"),
+                (Ask::Exp, "כמה EXP יש לי"),
+                (Ask::Level, "מה הרמה שלי"),
+                (Ask::NextLevel, "כמה זמן עד הרמה הבאה"),
+            ] {
+                // Asked twelve times running: six different answers, then
+                // six again in another order, never one twice in a row.
+                let answers: Vec<String> = (0..12)
+                    .map(|n| answer(ask, sentence, Some(&obs), &progress, attitude, n).unwrap())
+                    .collect();
+                for round in answers.chunks(6) {
+                    let mut seen: Vec<&String> = round.iter().collect();
+                    seen.sort();
+                    seen.dedup();
+                    assert_eq!(
+                        seen.len(),
+                        6,
+                        "{sentence} ({}): {answers:?}",
+                        attitude.word()
+                    );
+                }
+                for pair in answers.windows(2) {
+                    assert_ne!(pair[0], pair[1], "{sentence}: {answers:?}");
+                }
+                // Every answer carries the number.
+                assert!(
+                    answers.iter().all(|a| a.contains(char::is_numeric)),
+                    "{answers:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_answer_has_six_ways_and_savage_keeps_to_the_play() {
+        const BLOCKLIST: &[&str] = &["retard", "spaz", "fag", "tranny", "nigg", "kys"];
+        for (name, list) in lines::ALL {
+            for attitude in Attitude::ALL {
+                let lines = attitude.lines(*list);
+                assert!(lines.len() >= 6, "{name} ({})", attitude.word());
+                let mut sorted = lines.to_vec();
+                sorted.sort_unstable();
+                sorted.dedup();
+                assert_eq!(
+                    sorted.len(),
+                    lines.len(),
+                    "{name} ({}) repeats",
+                    attitude.word()
+                );
+                for line in lines {
+                    assert!(line.contains("{v}"), "{name}: {line:?} says no number");
+                    let lower = line.to_lowercase();
+                    assert!(!lower.contains("syrup"), "{name}: {line:?}");
+                    assert!(
+                        BLOCKLIST.iter().all(|w| !lower.contains(w)),
+                        "{name}: {line:?}"
+                    );
+                }
+            }
+        }
     }
 }

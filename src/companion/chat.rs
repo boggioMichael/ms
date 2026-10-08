@@ -3,8 +3,44 @@
 //! English and Hebrew. Each answer folds in what the companion can see, so
 //! "can you see my game?" is answered with the game.
 
+use super::attitude::nth;
 use super::commands::normalize;
 use super::observation::Observation;
+
+/// The answers that have more than one way of being said, dealt in turn
+/// (the plainest first, every one before any again: [`nth`]).
+const HELLOS: &[&str] = &[
+    "Hi! I'm here.",
+    "Hey!",
+    "Hello there!",
+    "Hey, hey.",
+    "Yo!",
+    "Hi again!",
+];
+const THANKS: &[&str] = &[
+    "Any time!",
+    "You got it!",
+    "My pleasure.",
+    "No worries.",
+    "Woof. Anytime.",
+    "That's what I'm here for.",
+];
+const PRAISE: &[&str] = &[
+    "Woof! Thanks!",
+    "Woof woof!",
+    "You're the best too.",
+    "Aw, stop it. Keep playing.",
+    "I know. Now pot.",
+    "Tail's wagging. Go get them.",
+];
+const UNSURE: &[&str] = &[
+    "I'm not sure about that one. Ask me about your HP, MP, EXP, level, or how long until you level.",
+    "I didn't get that. Try status, or EXP rate.",
+    "Hmm, I can't help with that yet. I know your HP, MP, EXP and level.",
+    "Not sure what you mean. HP, MP, EXP, level, or the time to level: those I know.",
+    "That one's past me. Ask about your bars or your level.",
+    "Didn't catch that. Try \"status\".",
+];
 
 /// What a sentence is, as small talk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +238,7 @@ pub fn answer(talk: Talk, obs: Option<&Observation>, turn: u32) -> String {
     let seen = obs.is_some_and(|o| o.game.is_seen());
     match talk {
         Talk::Greeting => {
-            let hello = ["Hi! I'm here.", "Hey!", "Hello there!"][turn as usize % 3];
+            let hello = nth(HELLOS, turn);
             if seen {
                 format!("{hello} {}", glance(obs))
             } else {
@@ -221,8 +257,8 @@ pub fn answer(talk: Talk, obs: Option<&Observation>, turn: u32) -> String {
         // (Never the wake word in a spoken line: the phone would hear it.)
         Talk::WhoAreYou => "I'm your MapleStory companion, the dog in the pancake hat. I watch your HP, MP and EXP, warn you when you're low, and tell you how fast you're leveling.".to_string(),
         Talk::AreYouThere => format!("I'm here! {} Ask me about your HP, MP, EXP, or how long until you level.", glance(obs)),
-        Talk::Thanks => ["Any time!", "You got it!", "My pleasure."][turn as usize % 3].to_string(),
-        Talk::Praise => ["Woof! Thanks!", "Woof woof!", "You're the best too."][turn as usize % 3].to_string(),
+        Talk::Thanks => nth(THANKS, turn).to_string(),
+        Talk::Praise => nth(PRAISE, turn).to_string(),
         Talk::Bye => "Bye! Good luck with the grind.".to_string(),
     }
 }
@@ -238,14 +274,7 @@ pub fn fallback(sentence: &str, turn: u32) -> Option<String> {
     if words == 0 || words > 8 || to_chat {
         return None;
     }
-    Some(
-        [
-            "I'm not sure about that one. Ask me about your HP, MP, EXP, level, or how long until you level.",
-            "I didn't get that. Try status, or EXP rate.",
-            "Hmm, I can't help with that yet. I know your HP, MP, EXP and level.",
-        ][turn as usize % 3]
-            .to_string(),
-    )
+    Some(nth(UNSURE, turn).to_string())
 }
 
 #[cfg(test)]
@@ -305,6 +334,35 @@ mod tests {
         );
         assert!(answer(Talk::CanYouSee, None, 0).starts_with("I can't see MapleStory"));
         assert!(answer(Talk::Greeting, Some(&obs), 0).starts_with("Hi! I'm here. You're level 57"));
+    }
+
+    #[test]
+    fn small_talk_is_answered_another_way_each_time() {
+        let obs = seen();
+        for (talk, list) in [
+            (Talk::Greeting, HELLOS),
+            (Talk::Thanks, THANKS),
+            (Talk::Praise, PRAISE),
+        ] {
+            let answers: Vec<String> = (0..12).map(|n| answer(talk, Some(&obs), n)).collect();
+            assert!(answers[0].starts_with(list[0]), "{answers:?}");
+            for round in answers.chunks(list.len()) {
+                let mut seen: Vec<&String> = round.iter().collect();
+                seen.sort();
+                seen.dedup();
+                assert_eq!(seen.len(), list.len(), "{talk:?}: {answers:?}");
+            }
+            for pair in answers.windows(2) {
+                assert_ne!(pair[0], pair[1], "{talk:?}: {answers:?}");
+            }
+        }
+        let unsure: Vec<String> = (0..6)
+            .map(|n| fallback("what is that", n).unwrap())
+            .collect();
+        let mut distinct = unsure.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert_eq!(distinct.len(), 6, "{unsure:?}");
     }
 
     #[test]

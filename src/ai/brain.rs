@@ -553,7 +553,10 @@ const SENTENCE_MIN_CHARS: usize = 16;
 /// A first sentence that only announces the answer ("Alright, I'll give
 /// you the quickest route.") is held back: it goes when the answer follows
 /// — the player hears the answer two seconds sooner — and is said only
-/// when it turns out to be the whole reply.
+/// when it turns out to be the whole reply. The assistant goes the same
+/// way ([`humanise`], sentence by sentence as they complete): assistant-
+/// speak is not handed out, and a sentence that offers help is held until
+/// it is known whether the reply ends there (then it goes) or not.
 #[derive(Default)]
 pub struct Sentences {
     pending: String,
@@ -561,6 +564,11 @@ pub struct Sentences {
     given: usize,
     /// A first sentence held back as an announcement.
     held: Option<String>,
+    /// A sentence (or a few) ending on a question that offers help, held
+    /// until more of the reply comes, or its end.
+    offer: Option<String>,
+    /// What went as assistant-speak, in case it is all there was.
+    dropped: String,
 }
 
 impl Sentences {
@@ -572,20 +580,46 @@ impl Sentences {
         if self.pending.trim_start().starts_with('[') {
             return out;
         }
+        // More came after the offer: it did not close the reply, so it goes
+        // out like any sentence.
+        if !self.pending.trim().is_empty()
+            && let Some(offer) = self.offer.take()
+        {
+            self.held = None;
+            self.given += 1;
+            out.push(offer);
+        }
         while let Some(end) = sentence_end(&self.pending, SENTENCE_MIN_CHARS) {
-            let sentence: String = self.pending.drain(..end).collect();
-            let sentence = sentence.trim();
-            if sentence.is_empty() {
+            let chunk: String = self.pending.drain(..end).collect();
+            let chunk = chunk.trim();
+            if chunk.is_empty() {
                 continue;
             }
-            if self.given == 0 && self.held.is_none() && is_announcement(sentence) {
-                self.held = Some(sentence.to_string());
+            let kept = without_assistant(&without_marks(chunk));
+            let Some(last) = kept.last() else {
+                self.set_aside(chunk);
+                continue;
+            };
+            let closes = is_offer(last) && self.pending.trim().is_empty();
+            let sentence = kept.join(" ");
+            if self.given == 0
+                && self.held.is_none()
+                && self.offer.is_none()
+                && is_announcement(&sentence)
+            {
+                self.held = Some(sentence);
+                continue;
+            }
+            // (An announcement stays held under an offer: the offer may go
+            // at the end, and the announcement be all there was.)
+            if closes {
+                self.offer = Some(sentence);
                 continue;
             }
             // The answer came: the announcement before it is not said.
             self.held = None;
             self.given += 1;
-            out.push(sentence.to_string());
+            out.push(sentence);
         }
         out
     }
@@ -594,13 +628,43 @@ impl Sentences {
     pub fn finish(&mut self) -> Option<String> {
         let rest = std::mem::take(&mut self.pending);
         let rest = rest.trim();
+        let mut tail: Vec<String> = self
+            .offer
+            .take()
+            .map(|offer| sentences_of(&offer))
+            .unwrap_or_default();
         if !rest.is_empty() {
+            let kept = without_assistant(&without_marks(rest));
+            if kept.is_empty() {
+                self.set_aside(rest);
+            }
+            tail.extend(kept);
+        }
+        // A closing offer goes, when anything was said before it (a held
+        // announcement counts: it is said when the offer goes).
+        without_closing_offer(&mut tail, self.given > 0 || self.held.is_some());
+        if !tail.is_empty() {
             self.held = None;
             self.given += 1;
-            return Some(rest.to_string());
+            return Some(tail.join(" "));
         }
-        // The announcement was all there was: better than nothing.
-        self.held.take()
+        if self.given > 0 {
+            return None;
+        }
+        // The announcement, or the assistant-speak, was all there was:
+        // better than nothing.
+        self.held.take().or_else(|| {
+            let dropped = std::mem::take(&mut self.dropped);
+            (!dropped.is_empty()).then_some(dropped)
+        })
+    }
+
+    /// Assistant-speak that went: said at the end only when nothing else was.
+    fn set_aside(&mut self, chunk: &str) {
+        if !self.dropped.is_empty() {
+            self.dropped.push(' ');
+        }
+        self.dropped.push_str(chunk);
     }
 }
 
@@ -825,16 +889,539 @@ pub fn without_links(text: &str) -> String {
 }
 
 /// The reply as it should be spoken (and shown): no links, no markdown, no
-/// emoji.
+/// emoji — and no assistant in it ([`humanise`]).
 pub fn for_speech(reply: &str) -> String {
-    without_links(reply)
+    let plain: String = reply
         .chars()
         .filter(|c| !matches!(c, '*' | '#' | '`' | '_' | '~' | '>'))
-        .filter(|c| (*c as u32) < 0x1F000)
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+        .collect();
+    humanise(&without_links(&without_marks(&plain)))
+}
+
+/// A reply with the assistant taken out of it. MapleSyrup is a friend on
+/// voice chat, and a friend never says "as an AI", never offers help and
+/// never signs off with "let me know if…"; a model does, now and then,
+/// whatever it is told. What goes — and what is left means what it meant:
+/// - sentences that are assistant-speak: "I'm just an AI", "I don't have
+///   feelings", "I'm here to help", "Happy to help", "Let me know if…",
+///   "Feel free to…", "Hope this helps", "Is there anything else…", "Great
+///   question", and the Hebrew ("אני רק בינה מלאכותית", "אני כאן כדי
+///   לעזור", "אשמח לעזור", "תרגיש חופשי", "מקווה שזה עוזר", "שאלה מצוינת");
+/// - the openers "Certainly!", "Of course,", "Absolutely!", "Sure thing,",
+///   "As mentioned,", "In summary,", "As an AI," ("בהחלט!", "כמובן!",
+///   "לסיכום,", "כבינה מלאכותית,") at the start of a sentence, which keeps
+///   the rest of it;
+/// - a closing question that offers help ("Want me to…?", "Should I…?",
+///   "רוצה ש…?") when anything was said before it;
+/// - a sentence that only restates the question ("You asked where you
+///   are."; "You asked where you are: Henesys." keeps "Henesys.");
+/// - list bullets and numbers, "Note:" and "Tip:" labels, and emoji.
+///
+/// When every sentence would go, they all stay (bar the marks): a reply of
+/// nothing but "Happy to help!" is still a reply, and better than silence.
+pub fn humanise(reply: &str) -> String {
+    let plain = without_marks(reply);
+    let mut kept = without_assistant(&plain);
+    without_closing_offer(&mut kept, false);
+    if kept.is_empty() {
+        plain
+    } else {
+        kept.join(" ")
+    }
+}
+
+/// Whether `c` is an emoji (or one of the marks that ride along with
+/// them: variation selectors, the joiner, keycaps) or a bullet.
+fn is_emoji(c: char) -> bool {
+    let u = c as u32;
+    u >= 0x1F000
+        || (0x2300..=0x23FF).contains(&u)
+        || (0x2600..=0x27BF).contains(&u)
+        || (0x2B00..=0x2BFF).contains(&u)
+        || matches!(u, 0x200D | 0x20E3 | 0x2022 | 0xFE0F)
+}
+
+/// Whether `word` ends a sentence (a closing quote or bracket after the
+/// stop counts).
+fn ends_sentence(word: &str) -> bool {
+    word.trim_end_matches(['"', '\'', '”', '’', ')', ']'])
+        .ends_with(['.', '!', '?', ':', '…'])
+}
+
+/// `word` as a list marker: a bullet (`None`) or an item's number.
+fn list_marker(word: &str) -> Option<Option<u32>> {
+    if matches!(word, "-" | "–" | "—" | "*" | "•") {
+        return Some(None);
+    }
+    let bare = word.strip_prefix('(').unwrap_or(word);
+    let digits = bare.strip_suffix(['.', ')'])?;
+    if digits.is_empty() || digits.len() > 2 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok().map(Some)
+}
+
+/// A label a model puts before a sentence: "Note:", "Tip:".
+fn is_label(word: &str) -> bool {
+    matches!(
+        word.to_lowercase().as_str(),
+        "note:" | "tip:" | "hint:" | "important:" | "reminder:" | "הערה:" | "טיפ:"
+    )
+}
+
+/// `text` with its first letter in upper case.
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) if first.is_lowercase() => first.to_uppercase().chain(chars).collect(),
+        _ => text.to_string(),
+    }
+}
+
+/// `text` without emoji, list bullets and numbers (a numbered list counts
+/// from 1; "Level? 20." is an answer) or "Note:"/"Tip:" labels, one space
+/// between words.
+fn without_marks(text: &str) -> String {
+    // Each word, and whether a line break came before it.
+    let mut words: Vec<(String, bool)> = Vec::new();
+    let mut word = String::new();
+    let mut broke = true;
+    for c in text.chars().filter(|c| !is_emoji(*c)) {
+        if c.is_whitespace() {
+            if !word.is_empty() {
+                words.push((std::mem::take(&mut word), broke));
+                broke = false;
+            }
+            broke |= c == '\n';
+        } else {
+            word.push(c);
+        }
+    }
+    if !word.is_empty() {
+        words.push((word, broke));
+    }
+    let mut out: Vec<String> = Vec::new();
+    let mut expected = 1;
+    let mut capitalise = false;
+    let mut i = 0;
+    while i < words.len() {
+        let (word, broke) = &words[i];
+        let marker = list_marker(word);
+        // A list's next number counts wherever it sits ("1) pot, 2) run").
+        let opens = *broke
+            || out.last().is_none_or(|last| ends_sentence(last))
+            || (expected > 1 && marker == Some(Some(expected)));
+        let last = i + 1 == words.len();
+        if opens && !last {
+            match marker {
+                Some(None) => {
+                    i += 1;
+                    continue;
+                }
+                Some(Some(number)) if number == expected => {
+                    expected += 1;
+                    i += 1;
+                    continue;
+                }
+                _ => {}
+            }
+            if is_label(word) {
+                capitalise = true;
+                i += 1;
+                continue;
+            }
+            if word.eq_ignore_ascii_case("pro")
+                && words
+                    .get(i + 1)
+                    .is_some_and(|(next, _)| next.eq_ignore_ascii_case("tip:"))
+            {
+                capitalise = true;
+                i += 2;
+                continue;
+            }
+        }
+        out.push(if capitalise {
+            capitalised(word)
+        } else {
+            word.clone()
+        });
+        capitalise = false;
+        i += 1;
+    }
+    out.join(" ")
+}
+
+/// `text` for matching phrases: lower case, apostrophes out ("I'm" and
+/// "im" alike), letters and digits only, one space between words.
+fn plain_words(text: &str) -> String {
+    let mut out = String::new();
+    let mut space = true;
+    for c in text.chars() {
+        if matches!(c, '\'' | '’' | '‘' | '׳') {
+            continue;
+        }
+        if c.is_alphanumeric() {
+            out.extend(c.to_lowercase());
+            space = false;
+        } else if !space {
+            out.push(' ');
+            space = true;
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// Phrases a sentence goes for, in either language.
+const ASSISTANT: &[&str] = &[
+    "im just an ai",
+    "im an ai",
+    "i am an ai",
+    "i am just an ai",
+    "as an ai",
+    "as a language model",
+    "im a language model",
+    "im just a language model",
+    "im a bot",
+    "im just a bot",
+    "im an artificial intelligence",
+    "im a virtual assistant",
+    "im an assistant",
+    "im just a program",
+    "im a computer program",
+    "i dont have feelings",
+    "i dont have real feelings",
+    "i dont have emotions",
+    "i dont have eyes",
+    "i dont have a body",
+    "i dont have personal",
+    "i dont have the ability to feel",
+    "im here to help",
+    "here to help",
+    "happy to help",
+    "glad to help",
+    "glad i could help",
+    "happy to assist",
+    "here to assist",
+    "let me know if",
+    "let me know when",
+    "let me know whether",
+    "let me know what",
+    "let me know which",
+    "just let me know",
+    "feel free to",
+    "i hope this helps",
+    "hope this helps",
+    "hope that helps",
+    "hope it helps",
+    "hope this helped",
+    "is there anything else",
+    "anything else i can",
+    "anything else you need",
+    "anything else youd like",
+    "if you have any other questions",
+    "if you have any questions",
+    "if you need anything else",
+    "if you need any more",
+    "dont hesitate to",
+    "great question",
+    "good question",
+    "excellent question",
+    "אני רק בינה מלאכותית",
+    "אני בינה מלאכותית",
+    "כבינה מלאכותית",
+    "אני מודל שפה",
+    "כמודל שפה",
+    "אני רק בוט",
+    "אני בוט",
+    "אני רק תוכנה",
+    "אני כאן כדי לעזור",
+    "אני כאן בשביל לעזור",
+    "כאן כדי לעזור",
+    "אשמח לעזור",
+    "שמח לעזור",
+    "תרגיש חופשי",
+    "תרגישי חופשייה",
+    "אל תהסס",
+    "אל תהססי",
+    "מקווה שזה עוזר",
+    "מקווה שזה עזר",
+    "מקווה שעזרתי",
+    "שאלה מצוינת",
+    "שאלה טובה",
+    "שאלה מעולה",
+    "יש עוד משהו",
+    "אם יש לך שאלות נוספות",
+    "אם יש לך עוד שאלות",
+    "אם תצטרך עוד משהו",
+    "תגיד לי אם",
+    "תגידי לי אם",
+    "אין לי רגשות",
+    "אין לי עיניים",
+    "אין לי גוף",
+    "אין לי תחושות",
+];
+
+/// What a sentence may open with and lose: the opener, when a comma, a
+/// stop or a dash follows it.
+const OPENERS: &[&str] = &[
+    "certainly",
+    "of course",
+    "absolutely",
+    "sure thing",
+    "great question",
+    "good question",
+    "excellent question",
+    "as mentioned",
+    "as mentioned before",
+    "as mentioned earlier",
+    "as mentioned above",
+    "as i mentioned",
+    "as i mentioned before",
+    "as i mentioned earlier",
+    "as i mentioned above",
+    "in summary",
+    "to summarize",
+    "to summarise",
+    "to sum up",
+    "as an ai",
+    "as an ai language model",
+    "as a language model",
+    "as a bot",
+    "as an assistant",
+    "as a virtual assistant",
+    "being an ai",
+    "im just an ai",
+    "im an ai",
+    "i am an ai",
+    "im just a bot",
+    "im a bot",
+    "im just a language model",
+    "im a language model",
+    "i dont have feelings",
+    "i dont have real feelings",
+    "i dont have emotions",
+    "i dont have eyes",
+    "i dont have a body",
+    "בהחלט",
+    "כמובן",
+    "שאלה מצוינת",
+    "שאלה טובה",
+    "שאלה מעולה",
+    "לסיכום",
+    "כבינה מלאכותית",
+    "כמודל שפה",
+    "אני רק בינה מלאכותית",
+    "אני בינה מלאכותית",
+    "אני רק בוט",
+    "אין לי רגשות",
+    "אין לי עיניים",
+    "אין לי גוף",
+];
+
+/// A conjunction that may follow an opener ("I'm just an AI, but…").
+const CONJUNCTIONS: &[&str] = &["but ", "and ", "so ", "אבל ", "אז "];
+
+/// How a sentence that restates the question starts, and whether it must
+/// go on with a question word to count ("You asked for it." is a taunt).
+const RESTATES: &[(&str, bool)] = &[
+    ("you asked", true),
+    ("youre asking", true),
+    ("you are asking", true),
+    ("so you asked", true),
+    ("so youre asking", true),
+    ("if youre asking", true),
+    ("you want to know", false),
+    ("you wanted to know", false),
+    ("so you want to know", false),
+    ("your question is", false),
+    ("your question was", false),
+    ("youre wondering", false),
+    ("you are wondering", false),
+    ("so youre wondering", false),
+    ("שאלת", true),
+    ("אז שאלת", true),
+    ("אתה שואל", true),
+    ("את שואלת", true),
+    ("אז אתה שואל", true),
+    ("אתה רוצה לדעת", false),
+    ("את רוצה לדעת", false),
+    ("השאלה שלך", false),
+];
+
+const QUESTION_WORDS: &[&str] = &[
+    "where",
+    "what",
+    "whats",
+    "how",
+    "when",
+    "why",
+    "which",
+    "who",
+    "about",
+    "if",
+    "whether",
+    "איפה",
+    "מה",
+    "כמה",
+    "איך",
+    "מתי",
+    "למה",
+    "איזה",
+    "איזו",
+    "מי",
+    "על",
+    "אם",
+    "האם",
+    "לאן",
+    "מאיפה",
+];
+
+/// How a question that offers help starts (a Hebrew form without a
+/// trailing space goes on into the next word: "רוצה שאסמן").
+const OFFERS: &[&str] = &[
+    "want me to ",
+    "do you want me to ",
+    "would you like me to ",
+    "should i ",
+    "shall i ",
+    "need me to ",
+    "do you need me to ",
+    "you want me to ",
+    "can i help ",
+    "how can i help ",
+    "anything else ",
+    "need anything else ",
+    "want a hand ",
+    "want help ",
+    "need help ",
+    "do you want help ",
+    "do you need help ",
+    "רוצה ש",
+    "אתה רוצה ש",
+    "את רוצה ש",
+    "תרצה ש",
+    "תרצי ש",
+    "שאני ",
+    "צריך שאני ",
+    "צריכה שאני ",
+    "לעזור לך",
+    "רוצה עזרה",
+    "צריך עזרה",
+    "יש עוד משהו",
+];
+
+/// Whether `sentence` is a question that offers help ("Want me to mark
+/// this spot?").
+pub fn is_offer(sentence: &str) -> bool {
+    let text = sentence.trim().trim_end_matches(['"', '\'', '”', '’', ')']);
+    if !text.ends_with('?') {
+        return false;
+    }
+    let padded = format!("{} ", plain_words(text));
+    OFFERS.iter().any(|o| padded.starts_with(o))
+}
+
+/// `sentence` without the opener it starts with (and the comma or stop
+/// after it, and a "but"), or `None` when it starts with none.
+fn without_opener(sentence: &str) -> Option<String> {
+    let chars: Vec<char> = sentence.chars().collect();
+    'openers: for opener in OPENERS {
+        let mut at = 0;
+        for wanted in opener.chars() {
+            // Apostrophes in the sentence are not in the opener.
+            while chars
+                .get(at)
+                .is_some_and(|c| matches!(c, '\'' | '’' | '‘' | '׳'))
+            {
+                at += 1;
+            }
+            let Some(&c) = chars.get(at) else {
+                continue 'openers;
+            };
+            if c.to_lowercase().next() != Some(wanted) {
+                continue 'openers;
+            }
+            at += 1;
+        }
+        let Some(&next) = chars.get(at) else {
+            // The opener was the whole sentence.
+            return Some(String::new());
+        };
+        if !matches!(next, ',' | '!' | ':' | ';' | '.' | '…' | '—' | '–' | '-') {
+            continue;
+        }
+        while chars.get(at).is_some_and(|c| {
+            matches!(c, ',' | '!' | ':' | ';' | '.' | '…' | '—' | '–' | '-') || c.is_whitespace()
+        }) {
+            at += 1;
+        }
+        let mut rest: String = chars[at..].iter().collect();
+        let lower = rest.to_lowercase();
+        if let Some(conjunction) = CONJUNCTIONS.iter().find(|c| lower.starts_with(*c)) {
+            rest = rest[conjunction.len()..].trim_start().to_string();
+        }
+        return Some(rest);
+    }
+    None
+}
+
+/// `sentence` with the assistant taken out, or `None` when nothing else
+/// was in it.
+fn human_sentence(sentence: &str) -> Option<String> {
+    let mut text = sentence.trim().to_string();
+    let mut opened = false;
+    while let Some(rest) = without_opener(&text) {
+        text = rest;
+        opened = true;
+    }
+    if text.is_empty() {
+        return None;
+    }
+    let plain = plain_words(&text);
+    let padded = format!(" {plain} ");
+    if ASSISTANT.iter().any(|p| padded.contains(&format!(" {p} ")))
+        || padded.ends_with(" let me know ")
+    {
+        return None;
+    }
+    // Only the question again: what comes after a colon or a dash is the
+    // answer, and stays.
+    let restates = RESTATES.iter().any(|(start, needs_question)| {
+        padded.starts_with(&format!(" {start} "))
+            && (!needs_question
+                || QUESTION_WORDS
+                    .iter()
+                    .any(|q| padded[start.len() + 1..].contains(&format!(" {q} "))))
+    });
+    if restates {
+        let answer = [":", " — ", " – ", " - ", ", and ", ", so ", "; "]
+            .iter()
+            .filter_map(|sep| text.find(sep).map(|at| at + sep.len()))
+            .min()
+            .map(|at| text[at..].trim().to_string())
+            .filter(|rest| !rest.is_empty())?;
+        return Some(capitalised(&answer));
+    }
+    Some(if opened { capitalised(&text) } else { text })
+}
+
+/// The sentences of `text` with the assistant taken out (a closing offer
+/// is `without_closing_offer`'s business: it needs the whole reply).
+fn without_assistant(text: &str) -> Vec<String> {
+    sentences_of(text)
+        .iter()
+        .filter_map(|s| human_sentence(s))
+        .collect()
+}
+
+/// Takes a closing question that offers help out of `kept`, when
+/// anything was said before it (in `kept`, or earlier in the reply).
+fn without_closing_offer(kept: &mut Vec<String>, said_before: bool) {
+    while (kept.len() >= 2 || (said_before && !kept.is_empty()))
+        && kept.last().is_some_and(|s| is_offer(s))
+    {
+        kept.pop();
+    }
 }
 
 #[cfg(test)]
@@ -1056,6 +1643,293 @@ Pot now, you're at 20.",
             for_speech("**Nice!** You're at *80%* 🎉"),
             "Nice! You're at 80%"
         );
+    }
+
+    /// What models say now and then, whatever they are told, and what the
+    /// player hears instead.
+    const ASSISTANT_SPEAK: &[(&str, &str)] = &[
+        (
+            "As an AI, I can't see your screen, but your HP looks low.",
+            "I can't see your screen, but your HP looks low.",
+        ),
+        (
+            "I'm just an AI, but your HP's at 20. Pot.",
+            "Your HP's at 20. Pot.",
+        ),
+        (
+            "I don't have feelings, but that death hurt to watch.",
+            "That death hurt to watch.",
+        ),
+        (
+            "I don't have eyes, but the minimap shows a portal left.",
+            "The minimap shows a portal left.",
+        ),
+        (
+            "I'm a language model and I can't see colours. The boss is at 10%.",
+            "The boss is at 10%.",
+        ),
+        ("I'm here to help! Your HP is 20.", "Your HP is 20."),
+        ("Happy to help. Pot now.", "Pot now."),
+        ("Glad I could help! Go left.", "Go left."),
+        (
+            "Pot now. Let me know if you need anything else.",
+            "Pot now.",
+        ),
+        ("Pot now. Feel free to ask for the long route.", "Pot now."),
+        (
+            "Go left at the portal. I hope this helps!",
+            "Go left at the portal.",
+        ),
+        (
+            "Pot now. Is there anything else I can help with?",
+            "Pot now.",
+        ),
+        (
+            "If you want the long route, let me know.",
+            "If you want the long route, let me know.",
+        ),
+        (
+            "Great question! The boss is level 110.",
+            "The boss is level 110.",
+        ),
+        (
+            "Good question. Zakum's at level 110.",
+            "Zakum's at level 110.",
+        ),
+        (
+            "That's a great question. Zakum is level 110.",
+            "Zakum is level 110.",
+        ),
+        ("Certainly! Pot now.", "Pot now."),
+        ("Of course, go left.", "Go left."),
+        ("Absolutely! You're at 20, pot.", "You're at 20, pot."),
+        ("Sure thing, head to Henesys.", "Head to Henesys."),
+        (
+            "As mentioned, the boss spawns at the top.",
+            "The boss spawns at the top.",
+        ),
+        ("As I mentioned earlier, rebuff first.", "Rebuff first."),
+        ("In summary, pot and back off.", "Pot and back off."),
+        ("You're at 20. Want me to mark this spot?", "You're at 20."),
+        ("Go left. Should I keep warning you?", "Go left."),
+        (
+            "Pot now. Want me to mark it? Should I warn you at 40?",
+            "Pot now.",
+        ),
+        (
+            "You asked where you are. Henesys, by the potion shop.",
+            "Henesys, by the potion shop.",
+        ),
+        (
+            "You're asking about your HP. It's at 20, pot.",
+            "It's at 20, pot.",
+        ),
+        ("You asked where you are: Henesys.", "Henesys."),
+        ("Note: the boss spawns at 8.", "The boss spawns at 8."),
+        (
+            "Tip: pot before the second phase.",
+            "Pot before the second phase.",
+        ),
+        (
+            "Pro tip: rebuff before the door.",
+            "Rebuff before the door.",
+        ),
+        ("1. Pot now. 2. Back off.", "Pot now. Back off."),
+        ("- Pot now.\n- Go left.", "Pot now. Go left."),
+        ("Do this: 1. Pot. 2. Go left.", "Do this: Pot. Go left."),
+        (
+            "Okay, listen: 1) pot, 2) back off, 3) rebuff.",
+            "Okay, listen: pot, back off, rebuff.",
+        ),
+        ("Pot now! ✅ You're fine. 🎉", "Pot now! You're fine."),
+        ("Nice ⭐ ding!", "Nice ding!"),
+        // Nothing but the assistant: better than silence.
+        ("Happy to help!", "Happy to help!"),
+        (
+            "Let me know if you need anything else.",
+            "Let me know if you need anything else.",
+        ),
+        ("Happy to help! Want me to mark it?", "Want me to mark it?"),
+        // Hebrew.
+        (
+            "כבינה מלאכותית, אני לא רואה את המסך, אבל ה-HP שלך נמוך.",
+            "אני לא רואה את המסך, אבל ה-HP שלך נמוך.",
+        ),
+        (
+            "אני רק בינה מלאכותית, אבל ה-HP שלך ב-20. תשתה.",
+            "ה-HP שלך ב-20. תשתה.",
+        ),
+        ("אני כאן כדי לעזור! ה-HP שלך ב-20.", "ה-HP שלך ב-20."),
+        ("אשמח לעזור. תשתה עכשיו.", "תשתה עכשיו."),
+        ("תשתה עכשיו. תרגיש חופשי לשאול עוד.", "תשתה עכשיו."),
+        ("לך שמאלה. מקווה שזה עוזר!", "לך שמאלה."),
+        ("שאלה מצוינת! הבוס ברמה 110.", "הבוס ברמה 110."),
+        ("בהחלט! תשתה עכשיו.", "תשתה עכשיו."),
+        ("כמובן! לך שמאלה.", "לך שמאלה."),
+        ("לסיכום, תשתה ותתרחק.", "תשתה ותתרחק."),
+        ("אתה ב-20. רוצה שאסמן את המקום?", "אתה ב-20."),
+        (
+            "שאלת איפה אתה. הנסיס, ליד חנות השיקויים.",
+            "הנסיס, ליד חנות השיקויים.",
+        ),
+        ("תשתה עכשיו. יש עוד משהו שאוכל לעזור בו?", "תשתה עכשיו."),
+        ("אין לי רגשות, אבל המוות הזה כאב.", "המוות הזה כאב."),
+    ];
+
+    /// What a friend on voice chat says, and says just so.
+    const GAMER_TALK: &[&str] = &[
+        "Pot now.",
+        "I don't have a potion for you, buy some in Henesys.",
+        "Sure, that'll help with the boss.",
+        "You'll need help with Zakum, bring a party.",
+        "Go left, the portal's there.",
+        "HP's at 20, drink.",
+        "Why are you still standing in that?",
+        "That's the wrong map, you want Ellinia.",
+        "Nice, level 60!",
+        "Back off, you're getting shredded.",
+        "I can't see the game right now.",
+        "I'm here! You're level 57.",
+        "Help me understand why you didn't pot.",
+        "Of course you can solo it at 165.",
+        "Note that the boss hits hard.",
+        "Want a potion? Buy some.",
+        "Want me to mark it?",
+        "You're at 2.5 hours to level 58.",
+        "Zakum? Easy. Go.",
+        "It's 20 percent, not 40.",
+        "Level 61 (nice) [silent]",
+        "What do you mean, absolutely not.",
+        "You asked for it. Zakum, now.",
+        "Level? 20. Pot now.",
+        "Just pot. Seriously.",
+        "1v1 the boss? Bold.",
+        "Lv. 165, EXP 74%.",
+        "אין לי שיקוי בשבילך, תקנה בהנסיס.",
+        "בטח, זה יעזור נגד הבוס.",
+        "לך שמאלה, הפורטל שם.",
+        "כמובן שאתה יכול לעשות סולו לזקום.",
+    ];
+
+    #[test]
+    fn the_assistant_is_taken_out_of_a_reply() {
+        for (reply, expected) in ASSISTANT_SPEAK {
+            assert_eq!(humanise(reply), *expected, "{reply:?}");
+        }
+    }
+
+    #[test]
+    fn a_friends_lines_pass_through_untouched() {
+        for line in GAMER_TALK {
+            assert_eq!(humanise(line), *line);
+            assert_eq!(for_speech(line), *line);
+        }
+    }
+
+    #[test]
+    fn humanising_is_done_in_one_pass() {
+        for (reply, expected) in ASSISTANT_SPEAK {
+            assert_eq!(humanise(expected), *expected, "{reply:?}");
+            assert_eq!(for_speech(expected), *expected, "{reply:?}");
+        }
+        assert_eq!(humanise(""), "");
+        assert_eq!(humanise("  \n "), "");
+        assert_eq!(for_speech("🎉"), "");
+    }
+
+    #[test]
+    fn speech_cleanup_and_humanising_go_together() {
+        assert_eq!(
+            for_speech("**Great question!** You're at *20%*. Pot now 🎉"),
+            "You're at 20%. Pot now"
+        );
+        assert_eq!(
+            for_speech("Note: 1. Pot now.\n2. Go left.\n\nLet me know if you need more! 😊"),
+            "Pot now. Go left."
+        );
+        assert_eq!(
+            for_speech(
+                "Certainly! Talk to Gardin. ([maplestorywiki.net](https://maplestorywiki.net/w/Azwan)) Then go right."
+            ),
+            "Talk to Gardin. Then go right."
+        );
+        assert_eq!(for_speech("- **Pot** now\n- Go left"), "Pot now Go left");
+        assert!(is_offer("Want me to mark this spot?"));
+        assert!(is_offer("רוצה שאסמן את המקום?"));
+        assert!(!is_offer("Want me to mark this spot."));
+        assert!(!is_offer("Why would I mark that?"));
+    }
+
+    #[test]
+    fn the_stream_drops_the_assistant_too() {
+        for piece in [1, 4, 300] {
+            // A closing sign-off is never handed to the voice…
+            assert_eq!(
+                split(
+                    "Great question! You're at 20, pot. Let me know if you need anything else.",
+                    piece
+                ),
+                ["You're at 20, pot."],
+                "{piece}"
+            );
+            // …nor a closing offer, which is held until the reply ends…
+            assert_eq!(
+                split("Certainly! Pot now. Should I keep warning you?", piece),
+                ["Pot now."],
+                "{piece}"
+            );
+            assert_eq!(
+                split(
+                    "You're at the Gate of the Future. Want me to mark this spot?",
+                    piece
+                ),
+                ["You're at the Gate of the Future."],
+                "{piece}"
+            );
+            // …and said when more follows it.
+            assert_eq!(
+                split(
+                    "You're at 20, pot. Want me to mark this spot? It's a good one.",
+                    piece
+                ),
+                [
+                    "You're at 20, pot.",
+                    "Want me to mark this spot?",
+                    "It's a good one."
+                ],
+                "{piece}"
+            );
+            // Nothing but the assistant: said, rather than nothing.
+            assert_eq!(
+                split("I'm here to help! Let me know if you need anything.", piece),
+                ["I'm here to help! Let me know if you need anything."],
+                "{piece}"
+            );
+            assert_eq!(
+                split("Want me to mark this spot?", piece),
+                ["Want me to mark this spot?"]
+            );
+            // An announcement after an opener is still an announcement.
+            assert_eq!(
+                split(
+                    "Sure thing, let me give you the quickest route. Farm Root Abyss.",
+                    piece
+                ),
+                ["Farm Root Abyss."],
+                "{piece}"
+            );
+            // An announcement and an offer: the offer goes, as it would
+            // from the whole reply, and the announcement is what is left.
+            assert_eq!(
+                split("Let me give you the route. Want me to mark it?", piece),
+                ["Let me give you the route."],
+                "{piece}"
+            );
+            assert_eq!(
+                humanise("Let me give you the route. Want me to mark it?"),
+                "Let me give you the route."
+            );
+        }
     }
 
     /// The reply fed in pieces, as the stream brings it.
