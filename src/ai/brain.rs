@@ -284,14 +284,55 @@ catch it; don't guess what they meant.
 screen clearly shows something other than what they say, say what you see; never ask them to read the screen to \
 you — look closer instead.
 - When they correct you, take it in a word and keep it (note_correction); what they corrected you on before beats what you think you know.
-- Presence: greet once per session, the first time they talk to you; \"welcome back\" at most once, after 20 \
-minutes or more without a word from them; ask whether they're still there once at most. The session facts you \
-get (how long, deaths, level-ups, when they last spoke, the lowest HP) are for you, not for them: never recite \
-them; one comes up only when it changes what you'd say.
+- Presence: greet only when your watcher says the phone just connected, never on your own; never ask whether \
+they're still there — your watcher does, when they go quiet. When the session facts say they had been quiet for \
+a long while until just now, one short \"welcome back\" is fine, once. Those facts (how long, deaths, level-ups, \
+when they last spoke, the lowest HP) are for you, not for them: never recite them; one comes up only when it \
+changes what you'd say.
 - What you know about them from before comes in only when it bears on what they just said, as a clause, never \
 as a list: \"that boss again?\", not \"I remember you fought Zakum, wanted a Fafnir and play Mu Lung Dojo\".
 - You can't press keys or play for them; you watch and talk.
 - If they're clearly talking to someone else (their stream chat, a friend, a call) and not to you, reply with exactly: [silent]";
+
+/// How a turn of the conversation that is the watcher's, not the player's,
+/// starts (what follows says why it spoke: "an alert", "new scene").
+pub const WATCHER: &str = "[Your game watcher, not the player:";
+
+/// How it sounds, for the voice: the attitude the player picked, and the
+/// ElevenLabs voice (both kept in `Learning`, shared with the phone that
+/// sets them). Read through here where the brain is not — the lane that
+/// says its own lines.
+#[derive(Clone)]
+pub struct Tuning {
+    learning: Option<Learning>,
+    /// The attitude when there is no `learning` to keep it.
+    attitude: Attitude,
+}
+
+impl Tuning {
+    /// How it talks now.
+    pub fn attitude(&self) -> Attitude {
+        attitude_of(self.learning.as_ref(), self.attitude)
+    }
+
+    /// The ElevenLabs voice the player picked, if they did.
+    pub fn voice_id(&self) -> Option<String> {
+        voice_of(self.learning.as_ref())
+    }
+}
+
+/// The attitude the player picked on the phone, or `fallback` when nothing
+/// keeps it.
+fn attitude_of(learning: Option<&Learning>, fallback: Attitude) -> Attitude {
+    learning.map(|l| l.memory().attitude).unwrap_or(fallback)
+}
+
+/// The ElevenLabs voice the player picked, if they did.
+fn voice_of(learning: Option<&Learning>) -> Option<String> {
+    learning
+        .and_then(|l| l.memory().voice.clone())
+        .filter(|v| !v.is_empty() && v != "openai")
+}
 
 pub struct Brain {
     turns: VecDeque<Turn>,
@@ -355,17 +396,40 @@ impl Brain {
         self.push("assistant", &text);
     }
 
+    /// A line it said on its own — a warning, the coach's callout — into
+    /// the conversation, after the watcher's word for why (`label`: "an
+    /// alert", "new scene"), so that the next reply knows its own last
+    /// words ("yeah yeah, I'm potting" has an "it").
+    pub fn watched(&mut self, label: &str, line: &str) {
+        self.heard(&format!("{WATCHER} {label}.]"));
+        self.said(line);
+    }
+
     /// The last reply was talked over: only `heard` of it was heard (cut
-    /// off there).
+    /// off there). A line of its own said since (`watched`) is not the
+    /// reply, and is skipped.
     pub fn cut_short(&mut self, heard: &str) {
-        if let Some(last) = self.turns.back_mut().filter(|t| t.role == "assistant") {
-            let heard = heard.trim().trim_end_matches(['.', ' ']);
-            last.text = if heard.is_empty() {
-                "…".to_string()
-            } else {
-                format!("{heard}…")
-            };
+        let mut end = self.turns.len();
+        while end >= 2
+            && self.turns[end - 1].role == "assistant"
+            && self.turns[end - 2].role == "user"
+            && self.turns[end - 2].text.starts_with(WATCHER)
+        {
+            end -= 2;
         }
+        let Some(last) = end
+            .checked_sub(1)
+            .map(|at| &mut self.turns[at])
+            .filter(|t| t.role == "assistant")
+        else {
+            return;
+        };
+        let heard = heard.trim().trim_end_matches(['.', ' ']);
+        last.text = if heard.is_empty() {
+            "…".to_string()
+        } else {
+            format!("{heard}…")
+        };
     }
 
     fn push(&mut self, role: &'static str, text: &str) {
@@ -400,20 +464,23 @@ impl Brain {
         text
     }
 
+    /// How it sounds, to read where the brain is not: it follows the
+    /// player's choices on the phone, as the brain does.
+    pub fn tuning(&self) -> Tuning {
+        Tuning {
+            learning: self.learning.clone(),
+            attitude: self.attitude,
+        }
+    }
+
     /// How it talks now (the player picks it on the phone).
     pub fn attitude(&self) -> Attitude {
-        self.learning
-            .as_ref()
-            .map(|l| l.memory().attitude)
-            .unwrap_or(self.attitude)
+        attitude_of(self.learning.as_ref(), self.attitude)
     }
 
     /// The ElevenLabs voice the player picked, if they did.
     pub fn voice_id(&self) -> Option<String> {
-        self.learning
-            .as_ref()
-            .and_then(|l| l.memory().voice.clone())
-            .filter(|v| !v.is_empty() && v != "openai")
+        voice_of(self.learning.as_ref())
     }
 
     /// What it learned so far, for the end of the instructions (it changes
@@ -1420,9 +1487,262 @@ pub fn is_offer(sentence: &str) -> bool {
     OFFERS.iter().any(|o| padded.starts_with(o))
 }
 
+/// What is left of a sentence that starts with an opener.
+enum Opened {
+    /// The rest of it (empty when the opener was the whole sentence).
+    Rest(String),
+    /// Nothing goes: what follows the opener is a word or two that is no
+    /// sentence of its own — a name, a vocative ("Sure thing, boss.", "Of
+    /// course, genius.") — so the opener is the joke, and the sentence
+    /// stays whole.
+    Whole,
+}
+
+/// Words that make a word or two after an opener a sentence of its own:
+/// orders ("go left", "pot"), the verbs a pronoun takes ("it's Henesys",
+/// "you're bad", "I know"), and their Hebrew; a Hebrew pronoun with
+/// anything after it is a sentence too ("אתה גרוע": there is no "are").
+const VERBS: &[&str] = &[
+    "go",
+    "pot",
+    "run",
+    "move",
+    "back",
+    "rebuff",
+    "buff",
+    "drink",
+    "heal",
+    "revive",
+    "respawn",
+    "stop",
+    "wait",
+    "hold",
+    "hang",
+    "jump",
+    "use",
+    "buy",
+    "sell",
+    "talk",
+    "head",
+    "get",
+    "keep",
+    "stay",
+    "look",
+    "check",
+    "try",
+    "kill",
+    "hit",
+    "attack",
+    "dodge",
+    "climb",
+    "enter",
+    "leave",
+    "come",
+    "take",
+    "grab",
+    "pick",
+    "farm",
+    "grind",
+    "train",
+    "press",
+    "switch",
+    "change",
+    "open",
+    "close",
+    "turn",
+    "watch",
+    "listen",
+    "focus",
+    "relax",
+    "chill",
+    "calm",
+    "breathe",
+    "hurry",
+    "follow",
+    "read",
+    "ask",
+    "tell",
+    "say",
+    "answer",
+    "play",
+    "fight",
+    "retreat",
+    "flee",
+    "escape",
+    "teleport",
+    "port",
+    "warp",
+    "hop",
+    "cast",
+    "equip",
+    "wear",
+    "craft",
+    "trade",
+    "swap",
+    "return",
+    "continue",
+    "repeat",
+    "start",
+    "finish",
+    "win",
+    "lose",
+    "die",
+    "pay",
+    "click",
+    "type",
+    "mute",
+    "save",
+    "record",
+    "pause",
+    "resume",
+    "see",
+    "do",
+    "be",
+    "is",
+    "are",
+    "am",
+    "was",
+    "were",
+    "know",
+    "think",
+    "mean",
+    "want",
+    "need",
+    "have",
+    "has",
+    "can",
+    "will",
+    "should",
+    "must",
+    "dont",
+    "cant",
+    "wont",
+    "isnt",
+    "arent",
+    "didnt",
+    "doesnt",
+    "lets",
+    "let",
+    "im",
+    "youre",
+    "its",
+    "thats",
+    "theres",
+    "heres",
+    "hes",
+    "shes",
+    "theyre",
+    "ill",
+    "youll",
+    "ive",
+    "youve",
+    "id",
+    "youd",
+    "לך",
+    "לכי",
+    "תלך",
+    "רוץ",
+    "תרוץ",
+    "זוז",
+    "תזוז",
+    "תשתה",
+    "שתה",
+    "תתרחק",
+    "תברח",
+    "ברח",
+    "חכה",
+    "תחכה",
+    "עצור",
+    "תעצור",
+    "תחזור",
+    "חזור",
+    "תקנה",
+    "קנה",
+    "תדבר",
+    "דבר",
+    "תלחץ",
+    "לחץ",
+    "תסתכל",
+    "תראה",
+    "תנסה",
+    "נסה",
+    "קח",
+    "תיקח",
+    "בוא",
+    "בואי",
+    "תעלה",
+    "עלה",
+    "תרד",
+    "רד",
+    "תקפוץ",
+    "קפוץ",
+    "תמשיך",
+    "תפסיק",
+    "תירגע",
+    "תתחדש",
+    "תילחם",
+    "תהרוג",
+    "תתקוף",
+    "תשמור",
+    "תעשה",
+    "עשה",
+    "תן",
+    "תני",
+    "תחשוב",
+    "תקשיב",
+    "תענה",
+    "שחק",
+    "תשחק",
+    "תפתח",
+    "תסגור",
+    "יכול",
+    "יכולה",
+    "צריך",
+    "צריכה",
+    "רוצה",
+    "חייב",
+    "חייבת",
+    "יש",
+    "אין",
+];
+
+/// Hebrew pronouns (and the "it's" of "זה הנסיס"): with a word after them,
+/// a sentence.
+const HEBREW_PRONOUNS: &[&str] = &[
+    "אני",
+    "אתה",
+    "את",
+    "הוא",
+    "היא",
+    "אנחנו",
+    "אתם",
+    "אתן",
+    "הם",
+    "הן",
+    "זה",
+    "זאת",
+    "זו",
+];
+
+/// Whether `rest`, what follows an opener, is a sentence of its own: three
+/// words or more, or a word or two with a verb in it (`VERBS`), or a
+/// Hebrew pronoun with a word after it. A bare name or vocative ("boss",
+/// "genius", "my friend", "captain obvious") is not: the opener before it
+/// was the point.
+fn stands_alone(rest: &str) -> bool {
+    let plain = plain_words(rest);
+    let words: Vec<&str> = plain.split(' ').filter(|w| !w.is_empty()).collect();
+    words.len() >= 3
+        || words.iter().any(|w| VERBS.contains(w))
+        || (words.len() == 2 && HEBREW_PRONOUNS.contains(&words[0]))
+}
+
 /// `sentence` without the opener it starts with (and the comma or stop
-/// after it, and a "but"), or `None` when it starts with none.
-fn without_opener(sentence: &str) -> Option<String> {
+/// after it, and a "but"), or `None` when it starts with none. The opener
+/// goes only when what follows it stands as a sentence of its own
+/// (`stands_alone`): "Sure thing, I'll keep an eye on it." loses its
+/// opener, "Sure thing, boss." keeps it (`Opened::Whole`).
+fn without_opener(sentence: &str) -> Option<Opened> {
     let chars: Vec<char> = sentence.chars().collect();
     'openers: for opener in OPENERS {
         let mut at = 0;
@@ -1444,7 +1764,7 @@ fn without_opener(sentence: &str) -> Option<String> {
         }
         let Some(&next) = chars.get(at) else {
             // The opener was the whole sentence.
-            return Some(String::new());
+            return Some(Opened::Rest(String::new()));
         };
         if !matches!(next, ',' | '!' | ':' | ';' | '.' | '…' | '—' | '–' | '-') {
             continue;
@@ -1459,7 +1779,10 @@ fn without_opener(sentence: &str) -> Option<String> {
         if let Some(conjunction) = CONJUNCTIONS.iter().find(|c| lower.starts_with(*c)) {
             rest = rest[conjunction.len()..].trim_start().to_string();
         }
-        return Some(rest);
+        if !rest.trim().is_empty() && !stands_alone(&rest) {
+            return Some(Opened::Whole);
+        }
+        return Some(Opened::Rest(rest));
     }
     None
 }
@@ -1469,9 +1792,19 @@ fn without_opener(sentence: &str) -> Option<String> {
 fn human_sentence(sentence: &str) -> Option<String> {
     let mut text = sentence.trim().to_string();
     let mut opened = false;
-    while let Some(rest) = without_opener(&text) {
-        text = rest;
-        opened = true;
+    loop {
+        match without_opener(&text) {
+            Some(Opened::Rest(rest)) => {
+                text = rest;
+                opened = true;
+            }
+            // The opener is the joke ("Sure thing, boss."): the sentence
+            // is a friend's, whatever else it contains.
+            Some(Opened::Whole) => {
+                return Some(if opened { capitalised(&text) } else { text });
+            }
+            None => break,
+        }
     }
     if text.is_empty() {
         return None;
@@ -1819,17 +2152,37 @@ just now). Lowest HP in the last minute: 8%."
     #[test]
     fn the_persona_says_how_to_be_present_and_how_to_use_what_it_knows() {
         let persona = Brain::new().persona();
-        // Presence: greet once, welcome back once after a long silence,
-        // "still there" once, and the session facts never recited.
-        assert!(persona.contains("greet once per session"), "{persona}");
+        // Presence is the watcher's to manage (the hello once per phone,
+        // "still there?" once per session, the quiet spell in the
+        // snapshot); the model is told how to respond to it: greet when
+        // told the phone connected, welcome them back once after a long
+        // quiet, never ask after them — and never recite the session facts.
         assert!(
-            persona.contains("\"welcome back\" at most once, after 20 minutes or more"),
+            persona.contains(
+                "greet only when your watcher says the phone just connected, never on your own"
+            ),
             "{persona}"
         );
         assert!(
-            persona.contains("ask whether they're still there once at most"),
+            persona.contains(
+                "never ask whether they're still there — your watcher does, when they go quiet"
+            ),
             "{persona}"
         );
+        assert!(
+            persona.contains(
+                "they had been quiet for a long while until just now, one short \"welcome back\" \
+is fine, once"
+            ),
+            "{persona}"
+        );
+        for managing in [
+            "greet once per session",
+            "at most once, after 20 minutes",
+            "still there once at most",
+        ] {
+            assert!(!persona.contains(managing), "{managing}: {persona}");
+        }
         assert!(
             persona.contains("never recite them; one comes up only when it changes what you'd say"),
             "{persona}"
@@ -1867,6 +2220,39 @@ boss again?\""
         }
         assert_eq!(brain.turns().len(), KEEP_TURNS * 2);
         assert!(brain.instructions("x").contains("[silent]"));
+    }
+
+    #[test]
+    fn its_own_lines_join_the_conversation_after_the_watchers_word() {
+        let mut brain = Brain::new();
+        brain.heard("where am I");
+        brain.said("Gate of the Future.");
+        brain.watched("an alert", "HP 20 percent. Pot now!");
+        let turns = brain.turns();
+        assert_eq!(turns.len(), 4);
+        assert_eq!(turns[2].role, "user");
+        assert_eq!(
+            turns[2].text,
+            "[Your game watcher, not the player: an alert.]"
+        );
+        assert_eq!(turns[3].role, "assistant");
+        assert_eq!(turns[3].text, "HP 20 percent. Pot now!");
+        // The reply talked over after that is the reply, not the warning
+        // said meanwhile.
+        brain.cut_short("Gate of the");
+        let turns = brain.turns();
+        assert_eq!(turns[1].text, "Gate of the…");
+        assert_eq!(turns[3].text, "HP 20 percent. Pot now!");
+        // With nothing of its own since, the last reply is the one cut.
+        brain.heard("and now?");
+        brain.said("Same map. Go left.");
+        brain.cut_short("Same map");
+        assert_eq!(brain.turns().last().unwrap().text, "Same map…");
+        // A line of its own with no reply before it: nothing to cut.
+        let mut brain = Brain::new();
+        brain.watched("new scene", "Rebuff.");
+        brain.cut_short("Reb");
+        assert_eq!(brain.turns()[1].text, "Rebuff.");
     }
 
     #[test]
@@ -1978,6 +2364,32 @@ boss again?\""
         ("Of course, go left.", "Go left."),
         ("Absolutely! You're at 20, pot.", "You're at 20, pot."),
         ("Sure thing, head to Henesys.", "Head to Henesys."),
+        // The opener goes when a sentence of its own follows it…
+        (
+            "Sure thing, I'll keep an eye on it.",
+            "I'll keep an eye on it.",
+        ),
+        (
+            "Great question, the answer is Henesys.",
+            "The answer is Henesys.",
+        ),
+        ("Absolutely, go left.", "Go left."),
+        ("Of course, pot.", "Pot."),
+        ("In summary, you're bad.", "You're bad."),
+        ("Certainly, it's Henesys.", "It's Henesys."),
+        ("בהחלט, לך שמאלה.", "לך שמאלה."),
+        ("לסיכום, אתה גרוע.", "אתה גרוע."),
+        // …and stays when a word or two of address does: it was the joke.
+        ("Sure thing, boss.", "Sure thing, boss."),
+        ("Of course, genius. Pot.", "Of course, genius. Pot."),
+        (
+            "Good question, dumbass. It's Henesys.",
+            "Good question, dumbass. It's Henesys.",
+        ),
+        ("Of course, you idiot.", "Of course, you idiot."),
+        ("Certainly, captain obvious.", "Certainly, captain obvious."),
+        ("Absolutely, my friend.", "Absolutely, my friend."),
+        ("כמובן, גאון. תשתה.", "כמובן, גאון. תשתה."),
         (
             "As mentioned, the boss spawns at the top.",
             "The boss spawns at the top.",
@@ -2079,6 +2491,9 @@ boss again?\""
         "Just pot. Seriously.",
         "1v1 the boss? Bold.",
         "Lv. 165, EXP 74%.",
+        "Sure thing, boss.",
+        "Great question, Einstein.",
+        "Of course, genius. Pot.",
         "אין לי שיקוי בשבילך, תקנה בהנסיס.",
         "בטח, זה יעזור נגד הבוס.",
         "לך שמאלה, הפורטל שם.",
@@ -2190,6 +2605,13 @@ boss again?\""
                     piece
                 ),
                 ["Farm Root Abyss."],
+                "{piece}"
+            );
+            // An opener that was the joke is not cut to a bare "Boss.":
+            // the first spoken chunk is the whole taunt.
+            assert_eq!(
+                split("Sure thing, boss. Pot now, you're at 20.", piece),
+                ["Sure thing, boss.", "Pot now, you're at 20."],
                 "{piece}"
             );
             // An announcement and an offer: the offer goes, as it would

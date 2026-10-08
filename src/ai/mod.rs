@@ -19,6 +19,14 @@
 //! the request in flight is stopped at once, and only what was already
 //! said stays in the conversation.
 //!
+//! The worker is two lanes. The thinking lane owns the conversation and
+//! does what needs it: replies, the coach's looks, the hello. The mouth
+//! lane says MapleSyrup's own lines (`Job::Speak`: a warning, a level-up)
+//! as they come, so a warning never waits behind a look's model call; it
+//! tells the thinking lane what it said, and the conversation keeps it
+//! like a coach's line. The voice is one: a line is made whole before the
+//! next starts, on whichever lane.
+//!
 //! Without a key, or when OpenAI cannot be reached, MapleSyrup falls back
 //! to its own answers and the Windows voice.
 
@@ -197,7 +205,9 @@ pub enum Job {
     /// English. With `show`, the line has not been shown yet: it comes back
     /// as `Shown`, in the player's language, to be shown. An alert's line
     /// (`kind`) is not called off with the rest: a warning must not vanish
-    /// because the player spoke over something else.
+    /// because the player spoke over something else. Said on the mouth
+    /// lane, it never waits for a reply or a look; said aloud, it joins
+    /// the conversation (the next reply knows its own last words).
     Speak {
         text: String,
         language: Option<String>,
@@ -317,8 +327,24 @@ impl Job {
 /// all that can still be asked about.
 const KEPT_REMEMBERED: usize = 64;
 
+/// What the thinking lane is handed: a job, or word from the mouth lane.
+enum Work {
+    Job(u64, Job),
+    /// The mouth lane handed one of MapleSyrup's own lines to the voice
+    /// (`kind`; `text` as said, in the player's language): the
+    /// conversation keeps it, so the next reply knows its own last words.
+    Said {
+        kind: Kind,
+        text: String,
+    },
+}
+
 pub struct Worker {
-    jobs: Sender<(u64, Job)>,
+    /// The thinking lane: replies, the coach's looks, the hello.
+    jobs: Sender<Work>,
+    /// The mouth lane: its own lines (`Job::Speak`), said as they come,
+    /// whatever the thinking lane is on — a warning never waits for a look.
+    lines: Sender<(u64, Job)>,
     pub done: Receiver<Done>,
     busy: Arc<AtomicBool>,
     pub model: Arc<std::sync::Mutex<Option<String>>>,
@@ -342,7 +368,10 @@ impl Worker {
                 kept.remove(0);
             }
         }
-        let _ = self.jobs.send((id, job));
+        let _ = match job {
+            Job::Speak { .. } => self.lines.send((id, job)).is_ok(),
+            job => self.jobs.send(Work::Job(id, job)).is_ok(),
+        };
         id
     }
 
@@ -421,19 +450,99 @@ pub struct Brains {
     pub eleven: Option<eleven::Eleven>,
 }
 
-/// Start the worker thread with these brains.
+/// Start the worker's two lanes with these brains: the thinking lane
+/// (replies, the coach's looks, the hello: everything that needs the
+/// conversation) and the mouth lane (its own lines, `Job::Speak`). The
+/// voice is one: a line is made whole before the next starts
+/// (`Mouth::floor`), on whichever lane — so what can overlap is a warning
+/// being made while the other lane waits on a model, never two lines'
+/// audio.
 pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) -> Worker {
     let Brains {
         openai,
         fast,
         eleven,
     } = brains;
-    let (jobs, rx) = channel::<(u64, Job)>();
+    let openai = Arc::new(openai);
+    let eleven = eleven.map(Arc::new);
+    let (jobs, rx) = channel::<Work>();
+    let (lines, lines_rx) = channel::<(u64, Job)>();
     let (tx, done) = channel::<Done>();
     let busy = Arc::new(AtomicBool::new(false));
     let model = Arc::new(std::sync::Mutex::new(None));
     let mark = Arc::new(AtomicU64::new(0));
     let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
+    // One voice for both lanes; ElevenLabs failing is said once.
+    let floor = Arc::new(std::sync::Mutex::new(()));
+    let eleven_failed = Arc::new(AtomicBool::new(false));
+    {
+        let (openai, eleven, tx, marks, kept_jobs, floor, failed, notes) = (
+            Arc::clone(&openai),
+            eleven.clone(),
+            tx.clone(),
+            Arc::clone(&mark),
+            Arc::clone(&kept),
+            Arc::clone(&floor),
+            Arc::clone(&eleven_failed),
+            jobs.clone(),
+        );
+        let tuning = brain.tuning();
+        let _ = std::thread::Builder::new()
+            .name("mouth".into())
+            .spawn(move || {
+                // Its own lines come back often ("Level up!"): each is
+                // translated once.
+                let mut translations = std::collections::HashMap::new();
+                while let Ok((id, job)) = lines_rx.recv() {
+                    let Job::Speak {
+                        text,
+                        language,
+                        kind,
+                        show,
+                        speak,
+                    } = job
+                    else {
+                        continue;
+                    };
+                    let stop = if is_kept(&kept_jobs, id) {
+                        Stop::never()
+                    } else {
+                        Stop::new(Arc::clone(&marks), id)
+                    };
+                    if stop.stopped() {
+                        continue;
+                    }
+                    let voice_id = tuning.voice_id();
+                    let mouth = Mouth {
+                        openai: &openai,
+                        eleven: eleven.as_deref().zip(voice_id.as_deref()),
+                        failed: &failed,
+                        floor: &floor,
+                    };
+                    say_line(
+                        mouth,
+                        id,
+                        &stop,
+                        Line {
+                            text: &text,
+                            language: language.as_deref(),
+                            kind,
+                            show,
+                            aloud: speak,
+                            attitude: tuning.attitude(),
+                        },
+                        &mut translations,
+                        &tx,
+                        &mut |said| {
+                            let _ = notes.send(Work::Said {
+                                kind,
+                                text: said.to_string(),
+                            });
+                        },
+                    );
+                }
+            });
+    }
     let (busy_flag, model_slot, marks, kept_jobs) = (
         Arc::clone(&busy),
         Arc::clone(&model),
@@ -443,15 +552,14 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
     let _ = std::thread::Builder::new()
         .name("ai".into())
         .spawn(move || {
-            // MapleSyrup's own lines come back often ("Level up!"): each is
-            // translated once.
+            let openai: &OpenAi = &openai;
+            // The line it says when a reply had nothing new in it, in the
+            // player's language: translated once.
             let mut translations = std::collections::HashMap::new();
             // The fast brain failing again and again is given up on; one
             // going round in circles rests a while.
             let mut fast_failures = 0u32;
             let mut fast_paused_until: Option<Instant> = None;
-            // ElevenLabs failing is said once.
-            let eleven_failed = AtomicBool::new(false);
             while let Ok(first) = rx.recv() {
                 busy_flag.store(true, Ordering::Relaxed);
                 let mut queue = vec![first];
@@ -462,8 +570,15 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                 // main loop folds what came before into it.
                 let newest = queue
                     .iter()
-                    .rposition(|(_, job)| matches!(job, Job::Converse { .. }));
-                for (i, (id, job)) in queue.into_iter().enumerate() {
+                    .rposition(|work| matches!(work, Work::Job(_, Job::Converse { .. })));
+                for (i, work) in queue.into_iter().enumerate() {
+                    let (id, job) = match work {
+                        Work::Job(id, job) => (id, job),
+                        Work::Said { kind, text } => {
+                            brain.watched(label_of(kind), &text);
+                            continue;
+                        }
+                    };
                     let stop = if is_kept(&kept_jobs, id) {
                         Stop::never()
                     } else {
@@ -485,11 +600,15 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                     // The voice the player picked, when it's ElevenLabs's.
                     let voice_id = brain.voice_id();
                     let mouth = Mouth {
-                        openai: &openai,
-                        eleven: eleven.as_ref().zip(voice_id.as_deref()),
+                        openai,
+                        eleven: eleven.as_deref().zip(voice_id.as_deref()),
                         failed: &eleven_failed,
+                        floor: &floor,
                     };
                     match job {
+                        // (Its own lines go to the mouth lane: `Worker::send`
+                        // routes them there. One that gets here is said all
+                        // the same.)
                         Job::Speak {
                             text,
                             language,
@@ -510,10 +629,11 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             },
                             &mut translations,
                             &tx,
+                            &mut |said| brain.watched(label_of(kind), said),
                         ),
                         Job::Cut { heard } => brain.cut_short(&heard),
                         Job::Greet { language } => greet(
-                            fast.as_ref().unwrap_or(&openai),
+                            fast.as_ref().unwrap_or(openai),
                             mouth,
                             &mut brain,
                             id,
@@ -531,7 +651,11 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                 brain.heard(heard);
                             }
                             brain.said(&text);
-                            // Said now: the model saying it again would be twice.
+                            // Said now: the model saying it again would be
+                            // twice — settled, once the voice is done, against
+                            // what it did say (a line called off before a
+                            // sound was made was not said).
+                            let taken = brain.recent.taken();
                             for sentence in brain::sentences_of(&text) {
                                 brain.recent.fresh(&sentence);
                             }
@@ -550,7 +674,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                 },
                             });
                             let delivery = Delivery::of(brain.attitude(), Kind::Reply, &text);
-                            if let Err(error) = speak_line(
+                            match speak_line(
                                 mouth,
                                 id,
                                 &stop,
@@ -560,11 +684,15 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                 false,
                                 &tx,
                             ) {
-                                let _ = tx.send(Done::Failed {
-                                    id,
-                                    heard: None,
-                                    error,
-                                });
+                                Ok(made) => brain.recent.settle(taken, if made { &text } else { "" }),
+                                Err(error) => {
+                                    brain.recent.settle(taken, "");
+                                    let _ = tx.send(Done::Failed {
+                                        id,
+                                        heard: None,
+                                        error,
+                                    });
+                                }
                             }
                         }
                         Job::Coach {
@@ -580,7 +708,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             let chat = fast
                                 .as_ref()
                                 .filter(|_| fast_failures < FAST_GIVE_UP && fast_rested)
-                                .unwrap_or(&openai);
+                                .unwrap_or(openai);
                             coach(
                                 chat,
                                 mouth,
@@ -645,7 +773,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             // A fast brain going round in circles (the same
                             // lines for every question) rests a while;
                             // OpenAI answers meanwhile.
-                            if looped && !std::ptr::eq(used, &openai) {
+                            if looped && !std::ptr::eq(used, openai) {
                                 fast_paused_until = Some(Instant::now() + FAST_REST);
                                 let _ = tx.send(Done::Noted {
                                     line: format!(
@@ -667,7 +795,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                         });
                                     }
                                 }
-                                None if !std::ptr::eq(used, &openai) => fast_failures = 0,
+                                None if !std::ptr::eq(used, openai) => fast_failures = 0,
                                 None => {}
                             }
                         }
@@ -678,12 +806,23 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
         });
     Worker {
         jobs,
+        lines,
         done,
         busy,
         model,
         next: AtomicU64::new(1),
         mark,
         kept,
+    }
+}
+
+/// The watcher's word for one of its own lines of this `kind`, for the
+/// conversation (`Brain::watched`).
+fn label_of(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Alert => "an alert",
+        Kind::Info => "a note",
+        Kind::Reply | Kind::Heard => "a line",
     }
 }
 
@@ -695,6 +834,10 @@ struct Mouth<'a> {
     eleven: Option<(&'a eleven::Eleven, &'a str)>,
     /// ElevenLabs failed already (said once).
     failed: &'a AtomicBool,
+    /// Held while a line is made: the two lanes share one voice, and a
+    /// line's pieces reach the main loop whole, never shuffled with
+    /// another's.
+    floor: &'a std::sync::Mutex<()>,
 }
 
 /// One of MapleSyrup's own lines, and how to say it.
@@ -713,7 +856,9 @@ struct Line<'a> {
 }
 
 /// One of MapleSyrup's own lines: translated into the player's language
-/// when it is not English, shown, said.
+/// when it is not English, shown, said. `on_say` gets the line as it goes
+/// to the voice (for the conversation: it said this).
+#[allow(clippy::too_many_arguments)]
 fn say_line(
     mouth: Mouth,
     id: u64,
@@ -721,6 +866,7 @@ fn say_line(
     line: Line,
     translations: &mut std::collections::HashMap<(String, String), String>,
     tx: &Sender<Done>,
+    on_say: &mut dyn FnMut(&str),
 ) {
     let asked = Instant::now();
     let text = match line.language {
@@ -741,6 +887,7 @@ fn say_line(
     if !line.aloud {
         return;
     }
+    on_say(&text);
     let delivery = Delivery::of(line.attitude, line.kind, &text);
     if let Err(error) = speak_line(mouth, id, stop, &text, delivery, asked, false, tx) {
         let _ = tx.send(Done::Failed {
@@ -754,7 +901,9 @@ fn say_line(
 /// Say `text` in the natural voice, delivered as `delivery` says, handing
 /// it over a piece at a time as it is made. Returns whether any of it was
 /// made (it may be called off, and there is nothing to say for an empty
-/// line).
+/// line). One line at a time, across both lanes (`Mouth::floor`): a
+/// warning waits for the line being made, never for a look or a reply
+/// being written.
 #[allow(clippy::too_many_arguments)]
 fn speak_line(
     mouth: Mouth,
@@ -767,6 +916,11 @@ fn speak_line(
     tx: &Sender<Done>,
 ) -> Result<bool, AiError> {
     if !text.chars().any(char::is_alphanumeric) {
+        return Ok(false);
+    }
+    let _floor = mouth.floor.lock().unwrap_or_else(|e| e.into_inner());
+    // (Called off while it waited its turn.)
+    if stop.stopped() {
         return Ok(false);
     }
     let style = brain::voice_style(delivery);
@@ -1059,7 +1213,11 @@ engine:\n{snapshot}\n\n{reason}"
         Ok(answer) if brain::is_silent(&answer.text) => {}
         Ok(answer) => {
             // Nothing it said lately is said again: a coach that keeps
-            // calling the same thing out is cut to what is new.
+            // calling the same thing out is cut to what is new. What is
+            // kept goes into the record now, and is settled against what
+            // the voice did say once it is done: a line called off before
+            // a sound was made was not said. (On a call the call says it.)
+            let taken = brain.recent.taken();
             let filtered = brain.recent.filter(&brain::for_speech(&answer.text));
             if filtered.dropped > 0 {
                 let _ = tx.send(Done::Noted {
@@ -1071,23 +1229,26 @@ engine:\n{snapshot}\n\n{reason}"
             }
             let line = filtered.text;
             if !line.is_empty() && !stop.stopped() {
-                brain.heard(&format!("[Your game watcher, not the player: {label}.]"));
-                brain.said(&line);
+                brain.watched(&label, &line);
                 if speak {
                     let _ = tx.send(Done::Shown {
                         kind: Kind::Alert,
                         text: line.clone(),
                     });
                     let delivery = Delivery::of(brain.attitude(), Kind::Alert, &line);
-                    if let Err(error) =
-                        speak_line(mouth, id, stop, &line, delivery, started, true, tx)
+                    let made = match speak_line(mouth, id, stop, &line, delivery, started, true, tx)
                     {
-                        let _ = tx.send(Done::Failed {
-                            id,
-                            heard: None,
-                            error,
-                        });
-                    }
+                        Ok(made) => made,
+                        Err(error) => {
+                            let _ = tx.send(Done::Failed {
+                                id,
+                                heard: None,
+                                error,
+                            });
+                            false
+                        }
+                    };
+                    brain.recent.settle(taken, if made { &line } else { "" });
                 }
                 done = Done::Coached {
                     id,
@@ -1096,6 +1257,8 @@ engine:\n{snapshot}\n\n{reason}"
                     error: None,
                     took: started.elapsed(),
                 };
+            } else {
+                brain.recent.settle(taken, "");
             }
         }
     }
@@ -1583,6 +1746,7 @@ fn greet(
             },
             &mut translations,
             tx,
+            &mut |said| brain.said(said),
         );
         return;
     }

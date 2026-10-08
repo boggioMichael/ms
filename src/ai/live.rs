@@ -75,10 +75,11 @@ the thing, in your words, short (\"Rebuff.\" is \"rebuff\", not \"HP's at 96, re
 out. Never both. Never restate the whole line, never argue with it, never answer it with what your side shows. \
 A line that comes late (\"N s ago\") is still said, as late news (\"you died a moment ago\"). If the player was \
 talking, their words come first: answer them, then the watcher in a few words.
-- Presence: greet once per session, the first time they talk to you; \"welcome back\" at most once, after 20 \
-minutes or more without a word from them; ask whether they're still there once at most. The session facts you \
-get (how long, deaths, level-ups, when they last spoke, the lowest HP) are for you, not for them: never recite \
-them; one comes up only when it changes what you'd say.
+- Presence: greet only when your watcher says the phone just connected, never on your own; never ask whether \
+they're still there — your watcher does, when they go quiet. When the session facts say they had been quiet for \
+a long while until just now, one short \"welcome back\" is fine, once. Those facts (how long, deaths, level-ups, \
+when they last spoke, the lowest HP) are for you, not for them: never recite them; one comes up only when it \
+changes what you'd say.
 - What you know about them from before comes in only when it bears on what they just said, as a clause, never \
 as a list: \"that boss again?\", not \"I remember you fought Zakum, wanted a Fafnir and play Mu Lung Dojo\".
 - You can't press keys or play for them; you watch and talk.
@@ -435,8 +436,9 @@ mod tests {
     }
 
     /// The rules a call shares with the conversation word for word: how to
-    /// be present (greet once, "welcome back" once, "still there?" once,
-    /// never recite the session facts) and how what it knows about the
+    /// be present (greet when told the phone connected, "welcome back" once
+    /// after a long quiet, never ask after them, never recite the session
+    /// facts) and how what it knows about the
     /// player comes up (a clause when it bears on what they said, never a
     /// list). (They are copied: the conversation's live in its own
     /// module, out of reach of a shared constant.)
@@ -460,9 +462,16 @@ mod tests {
         // And every call gets them, whatever the attitude.
         for attitude in crate::companion::Attitude::ALL {
             let text = instructions("", &[], None, attitude);
-            assert!(text.contains("greet once per session, the first time they talk to you"));
-            assert!(text.contains("\"welcome back\" at most once, after 20 minutes or more"));
-            assert!(text.contains("ask whether they're still there once at most"));
+            assert!(text.contains(
+                "greet only when your watcher says the phone just connected, never on your own"
+            ));
+            assert!(text.contains(
+                "never ask whether they're still there — your watcher does, when they go quiet"
+            ));
+            assert!(text.contains(
+                "they had been quiet for a long while until just now, one short \"welcome back\" \
+is fine, once"
+            ));
             assert!(
                 text.contains(
                     "never recite them; one comes up only when it changes what you'd say"

@@ -224,8 +224,16 @@ The quest marker is four maps to the left. Go!"
                                         .cloned()
                                         .unwrap_or_default();
                                     let watcher = last["content"][0]["text"].as_str().unwrap_or("");
+                                    // A look that takes its time (a slow day).
+                                    if watcher.contains("think it over") {
+                                        std::thread::sleep(Duration::from_secs(3));
+                                    }
                                     let text = if watcher.contains("nothing is happening") {
                                         "[silent]"
+                                    } else if watcher.contains("voice hangs") {
+                                        // (A line whose voice hangs: see the
+                                        // speech endpoint.)
+                                        "Rebuff, you're naked, this takes forever."
                                     } else {
                                         "Rebuff, you're naked."
                                     };
@@ -844,6 +852,304 @@ fn an_alerts_line_is_not_called_off_with_the_rest() {
             other => panic!("{}", describe(Ok(other))),
         }
     }
+}
+
+#[test]
+fn what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A warning of its own, said aloud.
+    let alert = worker.send(Job::Speak {
+        text: "HP 20 percent. Pot now!".into(),
+        language: None,
+        kind: ms::companion::Kind::Alert,
+        show: false,
+        speak: true,
+    });
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio { id, end: true, .. }) if id == alert => break,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    // The player answers it: the reply must know what "it" is.
+    let reply = worker.send(Job::Converse {
+        heard: "yeah yeah I'm potting".into(),
+        snapshot: "HP 80%".into(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id, .. }) if id == reply => break,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|r| r["path"] == "/v1/responses")
+        .cloned()
+        .unwrap();
+    let input = asked["body"]["input"].as_array().unwrap().clone();
+    // The watcher's word for it, the line as said, then the player's
+    // sentence — in that order.
+    assert_eq!(input.len(), 3, "{input:?}");
+    assert_eq!(input[0]["role"], "user");
+    assert_eq!(
+        input[0]["content"],
+        "[Your game watcher, not the player: an alert.]"
+    );
+    assert_eq!(input[1]["role"], "assistant");
+    assert_eq!(input[1]["content"], "HP 20 percent. Pot now!");
+    assert_eq!(input[2]["role"], "user");
+    let parts: Vec<&str> = input[2]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["text"].as_str())
+        .collect();
+    assert_eq!(parts.last(), Some(&"yeah yeah I'm potting"));
+}
+
+#[test]
+fn a_warning_never_waits_for_a_look() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A look under way that takes three seconds (a slow day)…
+    let look = worker.send(Job::Coach {
+        reason: "They just arrived somewhere new (think it over).".into(),
+        label: "new scene".into(),
+        snapshot: "HP 80%".into(),
+        eyes: None,
+        said: Vec::new(),
+        language: None,
+        speak: true,
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    // …and a warning behind it.
+    let sent = Instant::now();
+    let alert = worker.send(Job::Speak {
+        text: "HP 20 percent. Pot now!".into(),
+        language: None,
+        kind: ms::companion::Kind::Alert,
+        show: false,
+        speak: true,
+    });
+    let (mut order, mut alert_after) = (Vec::new(), None);
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio {
+                id, start: true, ..
+            }) => {
+                if id == alert {
+                    alert_after = Some(sent.elapsed());
+                }
+                order.push(("audio", id));
+            }
+            Ok(Done::Coached { id, .. }) => {
+                order.push(("coached", id));
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}: {order:?}"),
+        }
+    }
+    // The warning was said at once, while the look was still out; the
+    // look's own line, and its report, came after it.
+    assert_eq!(
+        order,
+        [("audio", alert), ("audio", look), ("coached", look)],
+        "{order:?}"
+    );
+    let alert_after = alert_after.unwrap();
+    assert!(alert_after < Duration::from_millis(1500), "{alert_after:?}");
+}
+
+#[test]
+fn a_line_of_its_own_called_off_before_a_sound_was_not_said() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A line of its own whose voice hangs, called off before a sound of it
+    // was made: shown, never heard.
+    let line = worker.send(Job::Say {
+        heard: None,
+        text: "Hello there, my friend! This takes forever.".into(),
+    });
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, .. }) => {
+                assert_eq!(text, "Hello there, my friend! This takes forever.");
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    worker.cancel_all();
+    assert!(worker.cancelled(line));
+    // The model's next reply opens with the same sentence: it was never
+    // said, so it is not "said before", and goes out whole.
+    let reply = worker.send(Job::Converse {
+        heard: "yo".into(),
+        snapshot: String::new(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    let (mut text, mut notes) = (None, Vec::new());
+    while text.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id, text: t, .. }) if id == reply => text = Some(t),
+            Ok(Done::Noted { line }) => notes.push(line),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert_eq!(
+        text.as_deref(),
+        Some("Hello there, my friend! (gpt-6.1-sol) you said: yo."),
+        "{notes:?}"
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+}
+
+#[test]
+fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let look = |speak: bool| {
+        worker.send(Job::Coach {
+            reason: "They just arrived somewhere new (voice hangs).".into(),
+            label: "new scene".into(),
+            snapshot: "HP 80%".into(),
+            eyes: None,
+            said: Vec::new(),
+            language: None,
+            speak,
+        })
+    };
+    // A look with a line to say, whose voice hangs: the player speaks
+    // (the look is called off) before a sound of it was made.
+    let first = look(true);
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, .. }) => {
+                assert_eq!(text, "Rebuff, you're naked, this takes forever.");
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    worker.cancel(first);
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Coached { id, .. }) if id == first => break,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    // The next look comes to the same line: never said, so it is said
+    // now (here, handed to the call), not left out as said before.
+    let second = look(false);
+    let (mut said, mut notes) = (None, Vec::new());
+    while said.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Coached { id, text, .. }) if id == second => said = Some(text),
+            Ok(Done::Noted { line }) => notes.push(line),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert_eq!(
+        said.flatten().as_deref(),
+        Some("Rebuff, you're naked, this takes forever."),
+        "{notes:?}"
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+}
+
+#[test]
+fn two_lines_pieces_are_never_shuffled_together() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A line being made slowly (the voice streams it over a third of a
+    // second) on the one lane, a warning on the other: the warning's
+    // pieces come after the line's last one, not among them.
+    let line = worker.send(Job::Say {
+        heard: None,
+        text: "Take it slowly, the portal is on the left.".into(),
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let alert = worker.send(Job::Speak {
+        text: "HP 20 percent. Pot now!".into(),
+        language: None,
+        kind: ms::companion::Kind::Alert,
+        show: false,
+        speak: true,
+    });
+    let mut pieces: Vec<(u64, bool, bool)> = Vec::new();
+    let mut ended = 0;
+    while ended < 2 {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio { id, start, end, .. }) => {
+                pieces.push((id, start, end));
+                if end {
+                    ended += 1;
+                }
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}: {pieces:?}"),
+        }
+    }
+    let ids: Vec<u64> = pieces.iter().map(|(id, _, _)| *id).collect();
+    let line_pieces = ids.iter().filter(|id| **id == line).count();
+    assert!(line_pieces >= 3, "{pieces:?}");
+    assert_eq!(
+        ids,
+        [
+            vec![line; line_pieces],
+            vec![alert; ids.len() - line_pieces]
+        ]
+        .concat(),
+        "{pieces:?}"
+    );
 }
 
 #[test]
