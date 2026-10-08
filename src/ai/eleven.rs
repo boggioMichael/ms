@@ -4,6 +4,11 @@
 //! voice stands in whenever ElevenLabs can't: a line in a language no
 //! model on the account speaks, an error, or no credits left (then it rests
 //! a while instead of being asked again for every line).
+//!
+//! The voice is asked to mean it: a warning comes faster and sharper than
+//! a chat reply, a long explanation a touch slower and steadier, and each
+//! attitude has its own sound — friendly warmer and steadier, blunt punchy,
+//! savage loud and expressive ([`settings`]).
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -12,7 +17,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use super::openai::{AiError, OpenAi, Stop};
+use super::openai::{AiError, Delivery, OpenAi, Stop};
+use crate::companion::Attitude;
 
 pub const BASE: &str = "https://api.elevenlabs.io/v1";
 /// Models tried, quickest first. Eleven v4 Turbo speaks Hebrew and Thai
@@ -87,18 +93,19 @@ impl Eleven {
         lock(&self.rest).is_some_and(|until| Instant::now() < until)
     }
 
-    /// `text` said in voice `voice` (24 kHz mono), handed to `on_samples` a
-    /// piece at a time as it is made. A model the account can't use is
-    /// skipped (from then on), and one that won't take the voice settings
-    /// is asked without them.
+    /// `text` said in voice `voice` (24 kHz mono), delivered as `delivery`
+    /// says, handed to `on_samples` a piece at a time as it is made. A
+    /// model the account can't use is skipped (from then on), and one that
+    /// won't take the voice settings is asked without them.
     pub fn speech_stream(
         &self,
         text: &str,
         voice: &str,
+        delivery: Delivery,
         stop: Option<&Stop>,
         on_samples: &mut dyn FnMut(&[i16]),
     ) -> Result<usize, AiError> {
-        let result = self.try_models(text, voice, stop, on_samples);
+        let result = self.try_models(text, voice, delivery, stop, on_samples);
         match &result {
             Ok(_) | Err(AiError::Cancelled) | Err(AiError::Unsupported(_)) => {
                 self.failures.store(0, Ordering::Relaxed);
@@ -127,6 +134,7 @@ impl Eleven {
         &self,
         text: &str,
         voice: &str,
+        delivery: Delivery,
         stop: Option<&Stop>,
         on_samples: &mut dyn FnMut(&[i16]),
     ) -> Result<usize, AiError> {
@@ -139,7 +147,7 @@ impl Eleven {
             }
             let mut plain = lock(&self.plain).contains(&model);
             loop {
-                let body = request(text, model, plain);
+                let body = request(text, model, plain, delivery);
                 let mut made = false;
                 let result = self
                     .api
@@ -209,20 +217,73 @@ fn about_settings(message: &str) -> bool {
     .any(|w| message.contains(w))
 }
 
-/// What ElevenLabs is asked: the words, the model, and a lively delivery
-/// (v4 takes only stability and similarity; `plain`: the voice as it is).
-fn request(text: &str, model: &str, plain: bool) -> Value {
+/// The voice settings a delivery asks for, on the models that take them
+/// all: how steady the voice is (lower is more expressive), how much of
+/// its own style it puts on, and its pace (within [`SPEED_RANGE`]). How
+/// like the picked voice it stays (`similarity_boost`) is the same for
+/// every delivery.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Settings {
+    pub stability: f64,
+    pub style: f64,
+    pub speed: f64,
+}
+
+/// ElevenLabs's range for the pace.
+pub const SPEED_RANGE: std::ops::RangeInclusive<f64> = 0.7..=1.2;
+/// How like the picked voice it stays, whatever the delivery.
+const SIMILARITY: f64 = 0.8;
+
+/// The settings for a delivery. A chat reply goes at the attitude's pace;
+/// a warning at the top of the range, less steady (more expression) and
+/// with more style; a long explanation a touch slower and steadier.
+/// Friendly is warmer and steadier (higher stability, less style), blunt
+/// punchy (1.1, moderate style), savage loud and expressive (lower
+/// stability, more style).
+pub fn settings(delivery: Delivery) -> Settings {
+    let (stability, style, speed) = match (delivery.attitude, delivery.urgent(), delivery.long) {
+        (Attitude::Friendly, true, _) => (0.45, 0.35, 1.2),
+        (Attitude::Friendly, false, true) => (0.65, 0.2, 1.0),
+        (Attitude::Friendly, false, false) => (0.55, 0.25, 1.05),
+        (Attitude::Blunt, true, _) => (0.3, 0.45, 1.2),
+        (Attitude::Blunt, false, true) => (0.5, 0.3, 1.05),
+        (Attitude::Blunt, false, false) => (0.4, 0.35, 1.1),
+        (Attitude::Savage, true, _) => (0.2, 0.6, 1.2),
+        (Attitude::Savage, false, true) => (0.4, 0.45, 1.1),
+        (Attitude::Savage, false, false) => (0.3, 0.5, 1.15),
+    };
+    Settings {
+        stability,
+        style,
+        speed,
+    }
+}
+
+/// Eleven v4 takes its stability in three steps only — creative (0),
+/// natural (0.5), robust (1) — and no style or pace: the nearest step.
+fn v4_stability(stability: f64) -> f64 {
+    (stability * 2.0).round() / 2.0
+}
+
+/// What ElevenLabs is asked: the words, the model, and the delivery as
+/// voice settings (v4 takes only stability, in its three steps, and
+/// similarity; `plain`: the voice as it is, no settings at all).
+fn request(text: &str, model: &str, plain: bool, delivery: Delivery) -> Value {
     let mut body = json!({"text": text, "model_id": model});
     if !plain {
+        let settings = settings(delivery);
         body["voice_settings"] = if is_v4(model) {
-            json!({"stability": 0.5, "similarity_boost": 0.8})
+            json!({
+                "stability": v4_stability(settings.stability),
+                "similarity_boost": SIMILARITY,
+            })
         } else {
             json!({
-                "stability": 0.4,
-                "similarity_boost": 0.8,
-                "style": 0.35,
+                "stability": settings.stability,
+                "similarity_boost": SIMILARITY,
+                "style": settings.style,
                 "use_speaker_boost": true,
-                "speed": 1.1,
+                "speed": settings.speed,
             })
         };
     }
@@ -255,6 +316,7 @@ pub fn default_voice(voices: &[Voice]) -> Option<&Voice> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::companion::Kind;
 
     #[test]
     fn a_lively_voice_is_picked_to_start_with() {
@@ -273,21 +335,129 @@ mod tests {
         assert!(default_voice(&[]).is_none());
     }
 
-    #[test]
-    fn a_line_is_asked_for_lively_and_quick() {
-        let body = request("Pot now!", "eleven_flash_v2_5", false);
+    fn delivery(attitude: Attitude, kind: Kind, long: bool) -> Delivery {
+        Delivery {
+            attitude,
+            kind,
+            long,
+        }
+    }
+
+    /// The settings a request carries, checked against ElevenLabs's ranges.
+    fn asked(attitude: Attitude, kind: Kind, long: bool) -> Settings {
+        let body = request(
+            "Pot now!",
+            "eleven_flash_v2_5",
+            false,
+            delivery(attitude, kind, long),
+        );
         assert_eq!(body["model_id"], "eleven_flash_v2_5");
         assert_eq!(body["text"], "Pot now!");
-        assert!(body["voice_settings"]["speed"].as_f64().unwrap() > 1.0);
-        // v4 takes no style or speed.
-        let body = request("היי!", "eleven_v4_turbo", false);
-        assert!(body["voice_settings"].get("speed").is_none());
-        assert!(body["voice_settings"].get("style").is_none());
+        let v = &body["voice_settings"];
+        assert_eq!(v["similarity_boost"], 0.8);
+        assert_eq!(v["use_speaker_boost"], true);
+        let s = Settings {
+            stability: v["stability"].as_f64().unwrap(),
+            style: v["style"].as_f64().unwrap(),
+            speed: v["speed"].as_f64().unwrap(),
+        };
         assert!(
-            request("היי!", "eleven_v4_turbo", true)
-                .get("voice_settings")
-                .is_none()
+            (0.0..=1.0).contains(&s.stability)
+                && (0.0..=1.0).contains(&s.style)
+                && SPEED_RANGE.contains(&s.speed),
+            "{attitude:?} {kind:?} long={long}: {s:?}"
         );
+        s
+    }
+
+    #[test]
+    fn a_warning_is_faster_and_sharper_than_a_reply_and_an_explanation_steadier() {
+        for attitude in Attitude::ALL {
+            let alert = asked(attitude, Kind::Alert, false);
+            let reply = asked(attitude, Kind::Reply, false);
+            let long = asked(attitude, Kind::Reply, true);
+            // A warning: the top of the range, less steady, more style.
+            assert_eq!(alert.speed, 1.2, "{attitude:?}");
+            assert!(alert.speed > reply.speed, "{attitude:?}");
+            assert!(alert.stability < reply.stability, "{attitude:?}");
+            assert!(alert.style > reply.style, "{attitude:?}");
+            // A long explanation: a touch slower and steadier than a reply.
+            assert!(long.speed < reply.speed, "{attitude:?}");
+            assert!(long.stability > reply.stability, "{attitude:?}");
+            assert!(long.style < reply.style, "{attitude:?}");
+            // News about itself goes like a reply; a warning is never long.
+            assert_eq!(asked(attitude, Kind::Info, false), reply);
+            assert_eq!(asked(attitude, Kind::Alert, true), alert);
+        }
+        // Friendly warmer and steadier, blunt punchy, savage loud and
+        // expressive: style up and stability down from one to the next.
+        let reply = |a| settings(delivery(a, Kind::Reply, false));
+        let alert = |a| settings(delivery(a, Kind::Alert, false));
+        let (friendly, blunt, savage) = (
+            reply(Attitude::Friendly),
+            reply(Attitude::Blunt),
+            reply(Attitude::Savage),
+        );
+        assert_eq!(blunt.speed, 1.1);
+        assert!(savage.style > blunt.style && blunt.style > friendly.style);
+        assert!(savage.stability < blunt.stability && blunt.stability < friendly.stability);
+        assert!(savage.speed > friendly.speed);
+        assert!(alert(Attitude::Savage).style > alert(Attitude::Friendly).style);
+        assert!(alert(Attitude::Savage).stability < alert(Attitude::Friendly).stability);
+    }
+
+    #[test]
+    fn eleven_v4_gets_stability_in_its_three_steps_and_nothing_else() {
+        let step = |attitude, kind, long| {
+            let body = request(
+                "היי!",
+                "eleven_v4_turbo",
+                false,
+                delivery(attitude, kind, long),
+            );
+            assert_eq!(body["model_id"], "eleven_v4_turbo");
+            let v = &body["voice_settings"];
+            assert_eq!(v.as_object().unwrap().len(), 2, "{v}");
+            assert!(v.get("speed").is_none() && v.get("style").is_none());
+            assert!(v.get("use_speaker_boost").is_none());
+            assert_eq!(v["similarity_boost"], 0.8);
+            let stability = v["stability"].as_f64().unwrap();
+            assert!(
+                [0.0, 0.5, 1.0].contains(&stability),
+                "{attitude:?} {kind:?} long={long}: {stability}"
+            );
+            stability
+        };
+        for attitude in Attitude::ALL {
+            let alert = step(attitude, Kind::Alert, false);
+            let reply = step(attitude, Kind::Reply, false);
+            let long = step(attitude, Kind::Reply, true);
+            step(attitude, Kind::Info, false);
+            // A warning is never steadier than a reply, nor a reply than
+            // an explanation.
+            assert!(alert <= reply && reply <= long, "{attitude:?}");
+        }
+        // The usual chat is the natural step; savage's warning the creative one.
+        assert_eq!(step(Attitude::Blunt, Kind::Reply, false), 0.5);
+        assert_eq!(step(Attitude::Savage, Kind::Alert, false), 0.0);
+        assert_eq!(v4_stability(0.74), 0.5);
+        assert_eq!(v4_stability(0.76), 1.0);
+        assert_eq!(v4_stability(0.24), 0.0);
+    }
+
+    #[test]
+    fn plain_is_the_voice_as_it_is_on_either_family() {
+        for model in ["eleven_v4_turbo", "eleven_flash_v2_5"] {
+            let body = request(
+                "Pot now!",
+                model,
+                true,
+                delivery(Attitude::Savage, Kind::Alert, false),
+            );
+            assert!(body.get("voice_settings").is_none(), "{model}");
+            assert_eq!(body["text"], "Pot now!");
+            assert_eq!(body["model_id"], model);
+        }
     }
 
     #[test]

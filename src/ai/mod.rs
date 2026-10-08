@@ -47,9 +47,10 @@ use std::time::{Duration, Instant};
 pub use brain::Brain;
 pub use images::NBox;
 pub use memory::Learning;
-pub use openai::{AiError, OpenAi};
+pub use openai::{AiError, Delivery, OpenAi};
 pub use tools::{Effect, Toolbox};
 
+use crate::companion::{Attitude, Kind};
 pub use openai::Stop;
 use openai::{Ask, Piece, Turn};
 
@@ -502,9 +503,10 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             Line {
                                 text: &text,
                                 language: language.as_deref(),
-                                show: show.then_some(kind),
+                                kind,
+                                show,
                                 aloud: speak,
-                                style: brain::voice_style(brain.attitude()),
+                                attitude: brain.attitude(),
                             },
                             &mut translations,
                             &tx,
@@ -547,10 +549,17 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     text: text.clone(),
                                 },
                             });
-                            let style = brain::voice_style(brain.attitude());
-                            if let Err(error) =
-                                speak_line(mouth, id, &stop, &text, style, Instant::now(), false, &tx)
-                            {
+                            let delivery = Delivery::of(brain.attitude(), Kind::Reply, &text);
+                            if let Err(error) = speak_line(
+                                mouth,
+                                id,
+                                &stop,
+                                &text,
+                                delivery,
+                                Instant::now(),
+                                false,
+                                &tx,
+                            ) {
                                 let _ = tx.send(Done::Failed {
                                     id,
                                     heard: None,
@@ -693,12 +702,14 @@ struct Line<'a> {
     text: &'a str,
     /// The player's language: translated into it when it isn't English.
     language: Option<&'a str>,
+    /// What kind of line it is (a warning is said faster and sharper).
+    kind: Kind,
     /// Shown (it comes back as `Shown`, translated).
-    show: Option<crate::companion::Kind>,
+    show: bool,
     /// Said aloud too.
     aloud: bool,
-    /// How the voice sounds.
-    style: &'a str,
+    /// How it talks now: the voice sounds like it.
+    attitude: Attitude,
 }
 
 /// One of MapleSyrup's own lines: translated into the player's language
@@ -721,16 +732,17 @@ fn say_line(
     if stop.stopped() {
         return;
     }
-    if let Some(kind) = line.show {
+    if line.show {
         let _ = tx.send(Done::Shown {
-            kind,
+            kind: line.kind,
             text: text.clone(),
         });
     }
     if !line.aloud {
         return;
     }
-    if let Err(error) = speak_line(mouth, id, stop, &text, line.style, asked, false, tx) {
+    let delivery = Delivery::of(line.attitude, line.kind, &text);
+    if let Err(error) = speak_line(mouth, id, stop, &text, delivery, asked, false, tx) {
         let _ = tx.send(Done::Failed {
             id,
             heard: None,
@@ -739,16 +751,17 @@ fn say_line(
     }
 }
 
-/// Say `text` in the natural voice, handing it over a piece at a time as it
-/// is made. Returns whether any of it was made (it may be called off, and
-/// there is nothing to say for an empty line).
+/// Say `text` in the natural voice, delivered as `delivery` says, handing
+/// it over a piece at a time as it is made. Returns whether any of it was
+/// made (it may be called off, and there is nothing to say for an empty
+/// line).
 #[allow(clippy::too_many_arguments)]
 fn speak_line(
     mouth: Mouth,
     id: u64,
     stop: &Stop,
     text: &str,
-    style: &str,
+    delivery: Delivery,
     asked: Instant,
     first: bool,
     tx: &Sender<Done>,
@@ -756,6 +769,7 @@ fn speak_line(
     if !text.chars().any(char::is_alphanumeric) {
         return Ok(false);
     }
+    let style = brain::voice_style(delivery);
     let start = std::cell::Cell::new(true);
     let mut send = |samples: &[i16]| {
         let opens = start.replace(false);
@@ -776,7 +790,7 @@ fn speak_line(
     let result = match mouth.eleven {
         // ElevenLabs, unless it is resting after failing.
         Some((eleven, voice)) if !eleven.resting() => {
-            match eleven.speech_stream(text, voice, Some(stop), &mut send) {
+            match eleven.speech_stream(text, voice, delivery, Some(stop), &mut send) {
                 // ElevenLabs couldn't: OpenAI's voice says it.
                 Err(error) if start.get() && !matches!(error, AiError::Cancelled) => {
                     if !mouth.failed.swap(true, Ordering::Relaxed) {
@@ -789,14 +803,14 @@ fn speak_line(
                     }
                     mouth
                         .openai
-                        .speech_stream(text, style, Some(stop), &mut send)
+                        .speech_stream(text, &style, Some(stop), &mut send)
                 }
                 other => other,
             }
         }
         _ => mouth
             .openai
-            .speech_stream(text, style, Some(stop), &mut send),
+            .speech_stream(text, &style, Some(stop), &mut send),
     };
     let made = !start.get();
     if made {
@@ -1061,11 +1075,12 @@ engine:\n{snapshot}\n\n{reason}"
                 brain.said(&line);
                 if speak {
                     let _ = tx.send(Done::Shown {
-                        kind: crate::companion::Kind::Alert,
+                        kind: Kind::Alert,
                         text: line.clone(),
                     });
-                    let style = brain::voice_style(brain.attitude());
-                    if let Err(error) = speak_line(mouth, id, stop, &line, style, started, true, tx)
+                    let delivery = Delivery::of(brain.attitude(), Kind::Alert, &line);
+                    if let Err(error) =
+                        speak_line(mouth, id, stop, &line, delivery, started, true, tx)
                     {
                         let _ = tx.send(Done::Failed {
                             id,
@@ -1163,7 +1178,8 @@ fn converse<'a>(
         instructions.push('\n');
         instructions.push_str(&learned);
     }
-    let style = brain::voice_style(brain.attitude());
+    // The voice sounds like the attitude of the moment.
+    let attitude = brain.attitude();
     // The player's sentence joins the conversation once it is answered (or
     // was talked over after part of the answer was said).
     let mut turns = brain.turns();
@@ -1211,7 +1227,10 @@ fn converse<'a>(
                     if stop.stopped() {
                         break;
                     }
-                    match speak_line(mouth, id, stop, &text, style, started, first, &tx) {
+                    // (A long piece of the reply is an explanation: a touch
+                    // slower and steadier.)
+                    let delivery = Delivery::of(attitude, Kind::Reply, &text);
+                    match speak_line(mouth, id, stop, &text, delivery, started, first, &tx) {
                         Ok(true) => {
                             first = false;
                             if !spoken.is_empty() {
@@ -1512,7 +1531,7 @@ fn greet(
 ) {
     let asked = Instant::now();
     let learned = brain.learned();
-    let style = brain::voice_style(brain.attitude());
+    let attitude = brain.attitude();
     let mut text = String::new();
     if !learned.is_empty() {
         let tongue = language
@@ -1557,9 +1576,10 @@ fn greet(
             Line {
                 text: HELLO,
                 language,
-                show: Some(crate::companion::Kind::Reply),
+                kind: Kind::Reply,
+                show: true,
                 aloud: true,
-                style,
+                attitude,
             },
             &mut translations,
             tx,
@@ -1567,11 +1587,12 @@ fn greet(
         return;
     }
     let _ = tx.send(Done::Shown {
-        kind: crate::companion::Kind::Reply,
+        kind: Kind::Reply,
         text: text.clone(),
     });
     brain.said(&text);
-    if let Err(error) = speak_line(mouth, id, stop, &text, style, asked, false, tx) {
+    let delivery = Delivery::of(attitude, Kind::Reply, &text);
+    if let Err(error) = speak_line(mouth, id, stop, &text, delivery, asked, false, tx) {
         let _ = tx.send(Done::Failed {
             id,
             heard: None,

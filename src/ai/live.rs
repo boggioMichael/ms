@@ -72,6 +72,12 @@ you have: pass it on in one short clause, in the language you're speaking with t
 the number (\"HP's at 11, pot now\") rather than the watcher's words. Never restate the whole line, never argue \
 with it, never answer it with what your side shows. If the player was talking, their words come first: answer \
 them, then the watcher in a few words.
+- Presence: greet once per session, the first time they talk to you; \"welcome back\" at most once, after 20 \
+minutes or more without a word from them; ask whether they're still there once at most. The session facts you \
+get (how long, deaths, level-ups, when they last spoke, the lowest HP) are for you, not for them: never recite \
+them; one comes up only when it changes what you'd say.
+- What you know about them from before comes in only when it bears on what they just said, as a clause, never \
+as a list: \"that boss again?\", not \"I remember you fought Zakum, wanted a Fafnir and play Mu Lung Dojo\".
 - You can't press keys or play for them; you watch and talk.
 
 Tools (never announce one before using it; after one, a few words at most):
@@ -412,6 +418,46 @@ mod tests {
         assert!(fresh.contains("Your attitude: blunt"));
         assert!(!fresh.contains("conversation so far"));
         assert!(!fresh.contains("learned from playing together"));
+    }
+
+    /// The rules a call shares with the conversation word for word: how to
+    /// be present (greet once, "welcome back" once, "still there?" once,
+    /// never recite the session facts) and how what it knows about the
+    /// player comes up (a clause when it bears on what they said, never a
+    /// list). (They are copied: the conversation's live in its own
+    /// module, out of reach of a shared constant.)
+    fn shared_rules() -> Vec<&'static str> {
+        LIVE_MORE
+            .lines()
+            .filter(|l| l.starts_with("- Presence:") || l.starts_with("- What you know about them"))
+            .collect()
+    }
+
+    #[test]
+    fn a_call_keeps_the_conversations_rules_on_presence_and_on_what_it_knows() {
+        let rules = shared_rules();
+        assert_eq!(rules.len(), 2, "{rules:?}");
+        // Each, word for word, is the conversation's rule too.
+        let persona = super::super::Brain::new().persona();
+        for rule in &rules {
+            assert!(rule.split_whitespace().count() > 20, "{rule}");
+            assert!(persona.contains(rule), "the conversation lacks: {rule}");
+        }
+        // And every call gets them, whatever the attitude.
+        for attitude in crate::companion::Attitude::ALL {
+            let text = instructions("", &[], None, attitude);
+            assert!(text.contains("greet once per session, the first time they talk to you"));
+            assert!(text.contains("\"welcome back\" at most once, after 20 minutes or more"));
+            assert!(text.contains("ask whether they're still there once at most"));
+            assert!(
+                text.contains(
+                    "never recite them; one comes up only when it changes what you'd say"
+                )
+            );
+            assert!(text.contains(
+                "only when it bears on what they just said, as a clause, never as a list: \"that boss again?\""
+            ));
+        }
     }
 
     #[test]

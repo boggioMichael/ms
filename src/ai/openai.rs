@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::companion::{Attitude, Kind};
+
 /// Models tried for conversation, fastest first; the first one the key can
 /// use is kept. (As of October 2026, gpt-6-luna is OpenAI's efficient model.)
 pub const CHAT_MODELS: &[&str] = &[
@@ -37,6 +39,39 @@ pub const VISION_MODELS: &[&str] = &[
 pub const SPEECH_MODEL: &str = "gpt-4o-mini-tts";
 /// Raw PCM from `/audio/speech` is 24 kHz, 16-bit, mono.
 pub const SPEECH_RATE: u32 = 24_000;
+
+/// A reply of more words than this is a long explanation.
+pub const LONG_WORDS: usize = 20;
+
+/// How a line is to be said: in the attitude the player picked, as the
+/// kind of line it is (a warning is faster and sharper than a chat reply),
+/// and whether it is a long explanation (a touch slower and steadier).
+/// Both voices take it: ElevenLabs as its voice settings, OpenAI's as a
+/// line of its instructions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Delivery {
+    pub attitude: Attitude,
+    pub kind: Kind,
+    /// A reply of more than [`LONG_WORDS`] words.
+    pub long: bool,
+}
+
+impl Delivery {
+    /// How `text` is to be said, as a line of `kind` in `attitude`.
+    pub fn of(attitude: Attitude, kind: Kind, text: &str) -> Delivery {
+        Delivery {
+            attitude,
+            kind,
+            long: kind == Kind::Reply && text.split_whitespace().count() > LONG_WORDS,
+        }
+    }
+
+    /// A warning (a beating, low HP, a death): said faster and sharper than
+    /// talk.
+    pub fn urgent(self) -> bool {
+        self.kind == Kind::Alert
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AiError {
@@ -1120,6 +1155,22 @@ mod tests {
             AiError::Http(401, "quota_exceeded: no credits".into()).detail(),
             "the key was refused (quota_exceeded: no credits)"
         );
+    }
+
+    #[test]
+    fn a_long_reply_is_an_explanation_and_a_warning_is_urgent() {
+        let short = "Pot now, you're at 20.";
+        let long = "Zakum's arms go down in order, left first, and the body only once all eight \
+arms are gone, so keep hitting the arms until they drop.";
+        assert!(long.split_whitespace().count() > LONG_WORDS);
+        assert!(!Delivery::of(Attitude::Blunt, Kind::Reply, short).long);
+        assert!(Delivery::of(Attitude::Blunt, Kind::Reply, long).long);
+        // A warning is never long, however many words; neither is news.
+        assert!(!Delivery::of(Attitude::Blunt, Kind::Alert, long).long);
+        assert!(!Delivery::of(Attitude::Blunt, Kind::Info, long).long);
+        assert!(Delivery::of(Attitude::Savage, Kind::Alert, short).urgent());
+        assert!(!Delivery::of(Attitude::Savage, Kind::Reply, short).urgent());
+        assert!(!Delivery::of(Attitude::Savage, Kind::Info, short).urgent());
     }
 
     #[test]

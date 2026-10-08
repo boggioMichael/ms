@@ -1009,6 +1009,74 @@ fn speech_comes_back_as_samples() {
 }
 
 #[test]
+fn a_warning_is_spoken_with_urgency_and_a_reply_at_the_usual_pace() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // The voice's instructions for a line the worker says for `job`.
+    let instructions_for = |job: Job| {
+        let from = seen.lock().unwrap().len();
+        worker.send(job);
+        loop {
+            match worker.done.recv_timeout(Duration::from_secs(30)) {
+                Ok(Done::Audio { end: true, .. }) => break,
+                Ok(Done::Failed { error, .. }) => panic!("{error}"),
+                Ok(_) => {}
+                Err(e) => panic!("{e}"),
+            }
+        }
+        let requests = seen.lock().unwrap();
+        let speech: Vec<&Value> = requests[from..]
+            .iter()
+            .filter(|r| r["path"] == "/v1/audio/speech")
+            .collect();
+        assert_eq!(speech.len(), 1, "{speech:?}");
+        assert_eq!(speech[0]["body"]["model"], "gpt-4o-mini-tts");
+        speech[0]["body"]["instructions"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let alert = instructions_for(Job::Speak {
+        text: "Pot now, you're at 20.".into(),
+        language: None,
+        kind: ms::companion::Kind::Alert,
+        show: false,
+        speak: true,
+    });
+    let reply = instructions_for(Job::Say {
+        heard: None,
+        text: "Go left, the portal's there.".into(),
+    });
+    let long = instructions_for(Job::Say {
+        heard: None,
+        text:
+            "Zakum's arms go down in order, left first, and the body only once all eight arms are \
+gone, so keep hitting the arms until they drop."
+                .into(),
+    });
+    // The attitude's voice (blunt, the usual) in each; then how this line
+    // goes: a warning urgent, a reply at the usual pace, a long explanation
+    // a touch slower.
+    for text in [&alert, &reply, &long] {
+        assert!(
+            text.contains("a cocky gamer friend on voice chat"),
+            "{text}"
+        );
+    }
+    assert!(alert.contains("This line is a warning"), "{alert}");
+    assert!(alert.contains("urgent, faster and sharper"), "{alert}");
+    assert!(!reply.contains("warning"), "{reply}");
+    assert!(reply.contains("your usual pace"), "{reply}");
+    assert!(long.contains("a touch slower and steadier"), "{long}");
+    assert_ne!(alert, reply);
+    assert_ne!(reply, long);
+}
+
+#[test]
 fn a_refused_key_says_so() {
     if !have_curl() {
         return;

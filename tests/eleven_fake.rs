@@ -2,8 +2,9 @@
 //! same `curl` the real calls use: the voices on the account, speech
 //! streamed as it is made, a model the account can't use skipped from then
 //! on, voice settings a model won't take dropped, Hebrew only to the model
-//! that speaks it, and OpenAI's voice standing in (said once) whenever
-//! ElevenLabs can't, with ElevenLabs resting a while when it keeps failing.
+//! that speaks it, OpenAI's voice standing in (said once) whenever
+//! ElevenLabs can't, with ElevenLabs resting a while when it keeps failing,
+//! and the delivery: a warning asked for faster and sharper than a reply.
 
 use std::io::Write;
 use std::net::TcpListener;
@@ -11,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ms::ai::eleven::{Eleven, default_voice};
-use ms::ai::{AiError, Brain, Brains, Done, Job, OpenAi};
+use ms::ai::{AiError, Brain, Brains, Delivery, Done, Job, OpenAi};
+use ms::companion::{Attitude, Kind};
 use ms::phone::http::{Conn, Response};
 use serde_json::{Value, json};
 
@@ -130,10 +132,19 @@ fn models_asked(seen: &Mutex<Vec<Value>>, from: usize) -> Vec<String> {
         .collect()
 }
 
+/// A chat reply, in the usual attitude.
+fn reply() -> Delivery {
+    Delivery {
+        attitude: Attitude::Blunt,
+        kind: Kind::Reply,
+        long: false,
+    }
+}
+
 fn say(eleven: &Eleven, text: &str, voice: &str) -> Result<Vec<i16>, AiError> {
     let mut all = Vec::new();
     let mut pieces = 0;
-    eleven.speech_stream(text, voice, None, &mut |samples| {
+    eleven.speech_stream(text, voice, reply(), None, &mut |samples| {
         pieces += 1;
         all.extend_from_slice(samples)
     })?;
@@ -263,12 +274,20 @@ fn picked(name: &str, voice: &str) -> (std::path::PathBuf, ms::ai::Learning) {
     (settings, learning)
 }
 
-/// A line said by the worker: its samples, and what it noted.
+/// A reply said by the worker: its samples, and what it noted.
 fn worker_says(worker: &ms::ai::Worker, text: &str) -> (Vec<i16>, Vec<String>) {
-    worker.send(Job::Say {
-        heard: None,
-        text: text.into(),
-    });
+    worker_speaks(
+        worker,
+        Job::Say {
+            heard: None,
+            text: text.into(),
+        },
+    )
+}
+
+/// A line the worker says for `job`: its samples, and what it noted.
+fn worker_speaks(worker: &ms::ai::Worker, job: Job) -> (Vec<i16>, Vec<String>) {
+    worker.send(job);
     let (mut samples, mut noted, mut ended) = (Vec::new(), Vec::new(), false);
     while !ended {
         match worker.done.recv_timeout(Duration::from_secs(30)) {
@@ -326,5 +345,108 @@ fn the_worker_speaks_in_the_picked_voice_and_openai_stands_in_when_it_cant() {
     learning.memory().voice = Some("openai".into());
     let (samples, _) = worker_says(&worker, "Pot now!");
     assert!(samples.iter().all(|&s| s == OPENAI_SAMPLE));
+    let _ = std::fs::remove_dir_all(settings);
+}
+
+/// The voice settings of the last speech request since `from`.
+fn last_settings(seen: &Mutex<Vec<Value>>, from: usize) -> Value {
+    seen.lock().unwrap()[from..]
+        .iter()
+        .rev()
+        .find(|r| r["path"].as_str().unwrap_or("").ends_with("/stream"))
+        .map(|r| r["body"]["voice_settings"].clone())
+        .expect("a speech request")
+}
+
+#[test]
+fn a_warning_is_asked_for_faster_and_sharper_than_a_reply() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let (settings, learning) = picked("delivery", "v-ok");
+    let mut brain = Brain::new();
+    brain.learning = Some(learning.clone());
+    let worker = ms::ai::spawn_brains(
+        Brains {
+            openai: OpenAi::new(OPENAI_KEY, &base, "cedar", None),
+            fast: None,
+            eleven: Some(Eleven::new(KEY, &base)),
+        },
+        brain,
+        None,
+    );
+    let number = |v: &Value, key: &str| v[key].as_f64().unwrap_or_else(|| panic!("{key} in {v}"));
+    let alert = || Job::Speak {
+        text: "Pot now, you're at 20.".into(),
+        language: None,
+        kind: Kind::Alert,
+        show: false,
+        speak: true,
+    };
+    // Eleven v4 speaks this voice: a warning gets only stability (in one
+    // of v4's three steps) and similarity, since it takes nothing else.
+    let from = seen.lock().unwrap().len();
+    let (samples, _) = worker_speaks(&worker, alert());
+    assert!(samples.iter().all(|&s| s == ELEVEN_SAMPLE));
+    let v4 = last_settings(&seen, from);
+    assert_eq!(v4.as_object().unwrap().len(), 2, "{v4}");
+    assert!(
+        v4.get("speed").is_none() && v4.get("style").is_none(),
+        "{v4}"
+    );
+    assert!([0.0, 0.5, 1.0].contains(&number(&v4, "stability")), "{v4}");
+    // The player picks a voice without Eleven v4: the flash model, which
+    // takes the pace and the style. A chat reply in the usual (blunt)
+    // attitude: punchy, at its pace.
+    learning.memory().voice = Some("v-nov4".into());
+    let from = seen.lock().unwrap().len();
+    worker_says(&worker, "Go left, the portal's there.");
+    let reply = last_settings(&seen, from);
+    assert_eq!(number(&reply, "speed"), 1.1, "{reply}");
+    // A warning of its own: the top of the pace range, less steady, more
+    // style.
+    let from = seen.lock().unwrap().len();
+    worker_speaks(&worker, alert());
+    let alert = last_settings(&seen, from);
+    assert_eq!(number(&alert, "speed"), 1.2, "{alert}");
+    assert!(
+        number(&alert, "stability") < number(&reply, "stability"),
+        "{alert} {reply}"
+    );
+    assert!(
+        number(&alert, "style") > number(&reply, "style"),
+        "{alert} {reply}"
+    );
+    // A long explanation: a touch slower and steadier than a reply.
+    let from = seen.lock().unwrap().len();
+    worker_says(
+        &worker,
+        "Zakum's arms go down in order, left first, and the body only once all eight arms are gone, \
+so keep hitting the arms until they drop.",
+    );
+    let long = last_settings(&seen, from);
+    assert!(
+        number(&long, "speed") < number(&reply, "speed"),
+        "{long} {reply}"
+    );
+    assert!(
+        number(&long, "stability") > number(&reply, "stability"),
+        "{long} {reply}"
+    );
+    // The attitude switched to savage on the phone: louder and more
+    // expressive than blunt, from the next line on.
+    learning.memory().attitude = Attitude::Savage;
+    let from = seen.lock().unwrap().len();
+    worker_says(&worker, "Go left, the portal's there.");
+    let savage = last_settings(&seen, from);
+    assert!(
+        number(&savage, "style") > number(&reply, "style"),
+        "{savage} {reply}"
+    );
+    assert!(
+        number(&savage, "stability") < number(&reply, "stability"),
+        "{savage} {reply}"
+    );
     let _ = std::fs::remove_dir_all(settings);
 }

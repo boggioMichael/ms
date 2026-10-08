@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use super::memory::Learning;
-use super::openai::Turn;
+use super::openai::{Delivery, Turn};
 use super::style::{self, Attitude};
 use crate::companion::{GameView, Gauge, Observation, Progress, SoFar};
 
@@ -235,9 +235,12 @@ pub fn sentences_of(text: &str) -> Vec<String> {
     out
 }
 
-/// How the voice should sound, for the attitude the player picked.
-pub fn voice_style(attitude: Attitude) -> &'static str {
-    match attitude {
+/// How the voice should sound (OpenAI's voice takes it as its
+/// instructions): the attitude the player picked, and how this line is
+/// to be delivered — a warning faster and sharper than talk, a reply at
+/// the attitude's pace, a long explanation a touch slower and steadier.
+pub fn voice_style(delivery: Delivery) -> String {
+    let voice = match delivery.attitude {
         Attitude::Friendly => {
             "Voice: a warm, upbeat friend sitting next to someone playing a video game. Delivery: quick and \
 flowing, no pauses, the rhythm of real talk. Tone: genuine and playful. Never an announcer or a robot."
@@ -250,7 +253,17 @@ Tone: confident, teasing, a little bossy. Never an announcer or a robot."
             "Voice: a loud, sarcastic gamer friend roasting their buddy on voice chat. Delivery: fast, sharp, \
 punchy, no pauses. Tone: mocking, cocky, energetic, laughing at them. Never an announcer or a robot."
         }
-    }
+    };
+    let pace = if delivery.urgent() {
+        "This line is a warning (a beating, low HP, a death): urgent, faster and sharper than your usual talk, \
+like shouting a heads-up to a teammate mid-fight. No lead-in; the first word hits."
+    } else if delivery.long {
+        "This line is a longer explanation: a touch slower and steadier than your usual chat, so every word \
+lands, still without pauses."
+    } else {
+        "This line is a reply in the chat: your usual pace."
+    };
+    format!("{voice} {pace}")
 }
 
 /// Who MapleSyrup is.
@@ -1753,6 +1766,46 @@ just now). Lowest HP in the last minute: 8%."
         assert!(
             text.starts_with("MapleStory can't be seen right now (for 12 min): minimised."),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn the_voice_is_told_the_attitude_and_how_this_line_is_delivered() {
+        use crate::companion::Kind;
+        let style = |attitude, kind, long| {
+            voice_style(Delivery {
+                attitude,
+                kind,
+                long,
+            })
+        };
+        for attitude in Attitude::ALL {
+            let alert = style(attitude, Kind::Alert, false);
+            let reply = style(attitude, Kind::Reply, false);
+            let long = style(attitude, Kind::Reply, true);
+            // The attitude's voice, whatever the line.
+            for text in [&alert, &reply, &long] {
+                assert!(text.starts_with("Voice: "), "{text}");
+                assert!(text.contains("Never an announcer or a robot."), "{text}");
+            }
+            // A warning is urgent, a reply at the usual pace, a long
+            // explanation a touch slower: three different deliveries.
+            assert!(alert.contains("This line is a warning"), "{alert}");
+            assert!(alert.contains("urgent, faster and sharper"), "{alert}");
+            assert!(
+                reply.contains("This line is a reply in the chat"),
+                "{reply}"
+            );
+            assert!(long.contains("a touch slower and steadier"), "{long}");
+            assert!(alert != reply && reply != long && alert != long);
+            // News about itself goes like a reply; a warning is never long.
+            assert_eq!(style(attitude, Kind::Info, false), reply);
+            assert_eq!(style(attitude, Kind::Alert, true), alert);
+        }
+        assert!(style(Attitude::Friendly, Kind::Reply, false).contains("a warm, upbeat friend"));
+        assert!(style(Attitude::Blunt, Kind::Reply, false).contains("a cocky gamer friend"));
+        assert!(
+            style(Attitude::Savage, Kind::Reply, false).contains("a loud, sarcastic gamer friend")
         );
     }
 
