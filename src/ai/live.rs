@@ -18,7 +18,11 @@
 //! while it talks (the phone cancels its own voice from its microphone), and
 //! stops and answers when talked over. MapleSyrup's own lines (low HP, a
 //! level-up) are handed to it to say, so they come in the same voice and
-//! language.
+//! language: the watcher's at most once per 20 s and with the reading
+//! behind them (the PC's `Relay`), so the call passes a number on instead
+//! of restating the watcher every few seconds. When the attitude changes
+//! mid-call the phone fetches the instructions again (`/api/instructions`)
+//! and hands them to the call (`session.update`).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -61,9 +65,13 @@ right now (level, HP, MP, EXP; values marked \"about\" are estimates) and, now a
 screen with rulers on its edges (0 to 1000 across and down, for pointing at things). Use it like a friend looking \
 at the same screen; never ask them to read the screen to you (look_closer reads small print). If what they say \
 clearly disagrees with what you see, say what you see.
-- MapleSyrup's game watcher sometimes tells you something to say (low HP or MP, a level-up, something they asked \
-you to watch for, a correction from a look-up): say it right away, in a few words, in your attitude and in the \
-language you're speaking with them.
+- Now and then a message comes from MapleSyrup's game watcher, never from the player: a line it wants said (low \
+HP or MP, a death, a level-up, something they asked you to watch for, a tip, a correction from a look-up), with \
+its reading of HP and MP at that moment and the game as read right then. That reading is newer than any picture \
+you have: pass it on in one short clause, in the language you're speaking with them and in your attitude, with \
+the number (\"HP's at 11, pot now\") rather than the watcher's words. Never restate the whole line, never argue \
+with it, never answer it with what your side shows. If the player was talking, their words come first: answer \
+them, then the watcher in a few words.
 - You can't press keys or play for them; you watch and talk.
 
 Tools (never announce one before using it; after one, a few words at most):
@@ -390,6 +398,11 @@ mod tests {
         assert!(text.contains("MapleSyrup's rules"));
         assert!(text.contains("Your attitude: savage"));
         assert!(text.contains("look_it_up never makes them wait"));
+        // The watcher's line: its number, passed on, never argued with.
+        assert!(text.contains("newer than any picture you have"));
+        assert!(text.contains("never argue with it"));
+        assert!(text.contains("their words come first"));
+        assert!(!text.contains("say it right away"));
         assert!(text.contains("switch with them"));
         assert!(text.contains("set to Hebrew"));
         assert!(text.contains("learned from playing together"));

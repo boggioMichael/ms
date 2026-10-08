@@ -6,10 +6,14 @@ stand-in call and a microphone fed from a file: the words so far never
 land after the sentence, a sentence cut off by a clip is still sent, a
 loud sound over a clip pauses it until the PC's word, a PC started again
 is greeted again and its clips play, and on a call MapleSyrup's own lines
-are said by the call, never by the phone's own voice. Needs `pip install
-playwright && playwright install chromium`; run from the repository root:
-`python3 tools/phone_ui_check.py` (or with some of `ui`, `recognition`,
-`live`, `loudness` to run those alone). Screenshots land in
+are said by the call, never by the phone's own voice: handed over with the
+reading behind them and the game as read now, never while the call is
+answering (one turn asked for at a time), dropped once stale, and a change
+of attitude retunes the call in place. Needs `pip install playwright &&
+playwright install chromium`; run from the repository root: `python3
+tools/phone_ui_check.py` (or with some of `ui`, `recognition`, `live`,
+`loudness` to run those alone; PHONE_PAGE=path checks another copy of the
+page, to see a check fail against the page as it was). Screenshots land in
 `target/phone-ui/`."""
 import json, os, struct, sys, threading, time, http.server, socketserver
 from urllib.parse import parse_qs, urlparse
@@ -18,6 +22,9 @@ from playwright.sync_api import sync_playwright
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 ROOT = os.path.join(REPO, "src", "phone")
+# The page under test (PHONE_PAGE: another copy of it, to see a check fail
+# against the page as it was).
+PAGE = os.environ.get("PHONE_PAGE") or os.path.join(ROOT, "page.html")
 SHOTS = os.path.join(REPO, "target", "phone-ui")
 os.makedirs(SHOTS, exist_ok=True)
 STATUS = {
@@ -64,6 +71,10 @@ def wav(rate, data):
 
 # The spoken lines the stand-in PC hands out: silent, this long.
 CLIP_SECONDS = {"default": 8}
+# What the stand-in PC reads off the game for a call (/api/eyes), and the
+# call's instructions once the attitude has changed (/api/instructions).
+EYES = "The MapleStory window is open and in view.\nCharacter: level 152.\nHP 11%, MP about 40%."
+INSTRUCTIONS = "You are MapleSyrup. Your attitude: friendly."
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -77,7 +88,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             REQUESTS.append({"method": self.command, "path": url.path, "query": {k: v[0] for k, v in parse_qs(url.query).items()}, "body": body, "t": time.time()})
     def do_GET(self):
         url = urlparse(self.path); path = url.path; q = {k: v[0] for k, v in parse_qs(url.query).items()}
-        if path == "/": self._send(200, open(ROOT + "/page.html", "rb").read(), "text/html; charset=utf-8")
+        if path == "/": self._send(200, open(PAGE, "rb").read(), "text/html; charset=utf-8")
         elif path == "/dog.js": self._send(200, open(ROOT + "/dog.js", "rb").read(), "application/javascript")
         elif path == "/dog-parts.png": self._send(200, open(os.path.join(REPO, "assets", "companion", "dog-parts.png"), "rb").read(), "image/png")
         elif path == "/api/state":
@@ -94,6 +105,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with LOCK: seconds = CLIP_SECONDS.get(q.get("seq"), CLIP_SECONDS["default"])
             self._send(200, wav(8000, pcm(seconds, 8000)), "audio/wav")
         elif path == "/api/mouth": self._log(); self._send(200, b'{"step_ms": 40, "levels": []}', "application/json")
+        elif path == "/api/eyes": self._log(); self._send(200, json.dumps({"snapshot": EYES, "image": None}).encode(), "application/json")
+        elif path == "/api/instructions": self._log(); self._send(200, json.dumps({"instructions": INSTRUCTIONS, "attitude": "friendly"}).encode(), "application/json")
         else: self._log(); self._send(404, b"{}", "application/json")
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0); raw = self.rfile.read(n)
@@ -102,7 +115,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception: pass
         self._log(body)
         path = urlparse(self.path).path
-        if path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": ""}).encode(), "application/json")
+        if path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "attitude": "savage"}).encode(), "application/json")
         elif path == "/sdp": self._send(200, b"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n", "application/sdp")
         else: self._send(200, b'{"ok":true}', "application/json")
 
@@ -137,7 +150,7 @@ FAKES = """
   }
   window.__dcSent = [];
   class FakeChannel {
-    constructor() { this.readyState = "connecting"; this.onopen = null; this.onmessage = null; this.onclose = null; }
+    constructor() { this.readyState = "connecting"; this.onopen = null; this.onmessage = null; this.onclose = null; window.__dc = this; }
     send(s) { window.__dcSent.push(JSON.parse(s)); }
     close() { this.readyState = "closed"; }
   }
@@ -353,6 +366,7 @@ def loudness_checks(p):
 
 def live_checks(browser):
     STATUS["live"] = True
+    STATUS["attitude"] = "savage"
     reset_pc()
     with LOCK: STATE["voice_on"] = "phone"
     page = browser.new_page(viewport={"width": 390, "height": 844})
@@ -363,17 +377,68 @@ def live_checks(browser):
     t0 = time.time()
     page.click("#listen")
     wait_for(lambda: any(r["body"] == {"live": True} for r in requests_since(t0, "/api/mode")), 5, "the call did not open")
+    # What the page sent down the call's data channel, and the call's
+    # events fed to it (the stand-in call answers nothing on its own).
+    def sent(kind): return [e for e in page.evaluate("window.__dcSent") if e["type"] == kind]
+    def items_with(text): return [e for e in sent("conversation.item.create") if text in json.dumps(e)]
+    def event(ev): page.evaluate("(ev) => window.__dc.onmessage({ data: JSON.stringify(ev) })", ev)
+    def line(id, kind, text, fact=None):
+        m = {"id": id, "t": 100.0 + id, "kind": kind, "text": text, "speak": True}
+        if fact: m["fact"] = fact
+        with LOCK: STATE["messages"].append(m)
+    # The greeting asks for a turn; the call takes it and is done.
+    wait_for(lambda: len(sent("response.create")) == 1, 4, "the greeting asked for no turn")
+    event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
     # On the call, one of MapleSyrup's own lines (the answer to a button) is
     # handed to the call to say, never to the phone's own voice.
-    t1 = time.time()
-    with LOCK: STATE["messages"].append({"id": 1, "t": 101.0, "kind": "reply", "text": "Marked. That's mark 1.", "speak": True})
-    wait_for(lambda: page.evaluate('window.__dcSent.some((e) => e.type === "conversation.item.create" && JSON.stringify(e).includes("Marked"))'), 4, "the call was not handed the line")
+    line(1, "reply", "Marked. That's mark 1.")
+    wait_for(lambda: items_with("Marked"), 4, "the call was not handed the line")
     assert page.evaluate("window.__spoken") == [], page.evaluate("window.__spoken")
+    wait_for(lambda: len(sent("response.create")) == 2, 2, "no turn asked for the line")
+    event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
+    # A watcher line goes with the reading the PC sent behind it and the
+    # game as read right now (the call's own picture is older), as one
+    # message not from the player, and one turn is asked for after it.
+    line(2, "alert", "Back off, you're getting shredded.", "HP 11% (read 0 s ago), MP about 40% (estimated 0 s ago)")
+    wait_for(lambda: items_with("shredded"), 4, "the call was not handed the warning")
+    text = items_with("shredded")[-1]["item"]["content"][0]["text"]
+    assert "not the player" in text and "HP 11% (read 0 s ago)" in text, text
+    assert "The game right now" in text and "Character: level 152." in text, text
+    assert len(sent("response.create")) == 3, sent("response.create")
+    # A response under way (the call answering the player): the next line
+    # waits, and no second turn is asked for until the response is done.
+    event({"type": "response.created"})
+    line(3, "alert", "Pot now, HP's at 9%.", "HP 9.0% (read 0 s ago)")
+    page.wait_for_timeout(1500)
+    assert not items_with("Pot now") and len(sent("response.create")) == 3, "a turn was asked for while one was under way"
+    event({"type": "response.done", "response": {"output": []}})
+    wait_for(lambda: items_with("Pot now") and len(sent("response.create")) == 4, 4, "the line did not go once the response was done")
+    assert items_with("Pot now")[-1]["item"]["content"][0]["text"].count("Its reading") == 1
+    # A line that waited too long (the call talked on for a while) is not
+    # said as news when the talking stops.
+    event({"type": "response.created"}); event({"type": "output_audio_buffer.started"})
+    line(4, "alert", "Level 153! Nice.")
+    page.wait_for_timeout(6500)
+    event({"type": "output_audio_buffer.stopped"}); event({"type": "response.done", "response": {"output": []}})
+    page.wait_for_timeout(1500)
+    assert not items_with("Level 153") and len(sent("response.create")) == 4, "a stale line was said as news"
+    # The attitude changed on the PC (the picker here, or the player
+    # objecting to the tone): the call gets its instructions again and goes
+    # on, not started over.
+    t1 = time.time()
+    STATUS["attitude"] = "friendly"
+    wait_for(lambda: sent("session.update"), 4, "the call was not retuned to the new attitude")
+    update = sent("session.update")[-1]["session"]
+    assert update == {"type": "realtime", "instructions": INSTRUCTIONS}, update
+    assert requests_since(t1, "/api/instructions") and not requests_since(t1, "/api/live"), "the call was started over"
+    page.wait_for_timeout(600)
+    assert len(sent("session.update")) == 1, "retuned more than once"
     # The PC started again while the call is on: it hears of the call.
     t2 = time.time()
     with LOCK: STATE.update({"boot": "b2", "clip": 0, "messages": []})
     wait_for(lambda: any(r["body"] == {"live": True} for r in requests_since(t2, "/api/mode")), 4, "the restarted PC was not told of the call")
     assert requests_since(t2, "/api/hello"), "no hello to the restarted PC"
+    STATUS["attitude"] = "savage"
     page.close()
 
 def browser_args(mic_file):

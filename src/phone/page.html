@@ -1030,6 +1030,10 @@
     if (status.attitude && Date.now() > attitudeHeldUntil) {
       for (const b of $("attitudeSeg").children) b.classList.toggle("sel", b.dataset.a === status.attitude);
     }
+    // The attitude changed during a call (the picker, or the player
+    // objecting to the tone): the call gets its instructions again and
+    // goes on in the new tone, without starting over.
+    if (liveCall.on && status.attitude && liveCall.attitude && status.attitude !== liveCall.attitude) retune(status.attitude);
     if (typeof status.always_listen === "boolean" && document.activeElement !== $("always")) $("always").checked = status.always_listen;
     if (typeof status.coach === "boolean" && Date.now() > coachHeldUntil) $("coachBox").checked = status.coach;
     renderUpdate(status.update);
@@ -1241,7 +1245,7 @@
     // answer to a button) are handed to the call to say, every one of them:
     // the phone's own voice over the call's would be a second voice.
     // Without a natural voice, the phone speaks them with its own.
-    if (live && m.speak && !status.muted && liveCall.on) sayLive(m.text);
+    if (live && m.speak && !status.muted && liveCall.on) sayLive(m.text, m.fact);
     else if (live && m.speak && !status.muted && (voiceOn === "phone" || voiceOn === "both")) speakHere(m.text);
   }
 
@@ -1553,13 +1557,13 @@
     remember("live", liveWanted ? "1" : "0");
     if (listening) restartListening();
   });
-  // How it talks: the PC keeps it; a live call starts again in the new voice.
+  // How it talks: the PC keeps it, and a live call is retuned to it once
+  // the PC reports it (render), the conversation kept.
   let attitudeHeldUntil = 0;
   for (const b of $("attitudeSeg").children) b.addEventListener("click", () => {
     attitudeHeldUntil = Date.now() + 2000;
     for (const x of $("attitudeSeg").children) x.classList.toggle("sel", x === b);
     postJson("/api/attitude", { attitude: b.dataset.a }).catch(() => {});
-    if (listening && (liveCall.on || liveCall.starting)) setTimeout(() => { if (listening) restartListening(); }, 400);
   });
   $("always").addEventListener("change", () => postJson("/api/listen", { always: $("always").checked }).catch(() => {}));
   const lang = $("lang");
@@ -1963,7 +1967,10 @@
   // MapleSyrup's tools, and MapleSyrup's own lines to say.
   const liveCall = { pc: null, dc: null, audio: null, on: false, starting: false, userTalking: false, talking: false,
     pending: [], eyesAt: 0, pictureAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false, hint: "",
-    stoppedAt: 0, firstSoundTold: true };
+    stoppedAt: 0, firstSoundTold: true,
+    // A response under way (since when; 0: none), one asked for while it
+    // was, and the attitude and API the call was started with.
+    responding: 0, respondWanted: false, flushing: false, attitude: "", api: "ga" };
   function canLive() { return !!status.live && !!window.RTCPeerConnection && status.always_listen !== false; }
   // The live call can be turned off (liveWanted, with the settings): then
   // Grok answers and the voice picked speaks, on the phone too.
@@ -1994,6 +2001,8 @@
       const call = await r.json().catch(() => ({}));
       if (!r.ok || !call.key) throw new Error(call.error || ("PC " + r.status));
       liveCall.hint = call.hint || "";
+      liveCall.attitude = call.attitude || "";
+      liveCall.api = call.api || "ga";
       const track = stream && stream.getAudioTracks()[0];
       if (!track) throw new Error("no microphone");
       const pc = new RTCPeerConnection();
@@ -2034,7 +2043,7 @@
       liveCall.greeted = true;
       liveSend({ type: "conversation.item.create", item: { type: "message", role: "system",
         content: [{ type: "input_text", text: "[The player just opened the call. Say hi in one short line; if you know what they were up to lately, you may pick up from there.]" }] } });
-      liveSend({ type: "response.create" });
+      respond();
     }
     flushSay();
   }
@@ -2046,6 +2055,8 @@
         // PC counts these, and makes calls wait a little longer).
         if (liveCall.talking && Date.now() - liveCall.talkingAt < 1000) postJson("/api/turn", { what: "jumped in" }).catch(() => {});
         liveCall.userTalking = true;
+        // The answer to their words will take in what was added meanwhile.
+        liveCall.respondWanted = false;
         // The PC hears of it too (its coach keeps quiet while they talk).
         postJson("/api/talking", { on: true, who: "player" }).catch(() => {});
         $("heard").textContent = "…";
@@ -2078,13 +2089,39 @@
       case "output_audio_buffer.cleared":
         liveTalking(false);
         break;
+      case "response.created":
+        liveCall.responding = Date.now();
+        break;
       case "response.done":
+        // (Always comes, whatever became of the response.)
+        liveCall.responding = 0;
+        if (liveCall.respondWanted) respond();
         liveCalls(ev.response, Date.now());
+        setTimeout(flushSay, 300);
         break;
       case "error":
+        // A turn asked for while one was under way (the server's own, for
+        // the player's words, created meanwhile): asked again after it.
+        if (ev.error && ev.error.code === "conversation_already_has_active_response") { liveCall.respondWanted = true; break; }
         if (ev.error && ev.error.message) note(ev.error.message);
         break;
     }
+  }
+
+  // How long a response is taken to be under way without word of its end
+  // (an answer runs well under this; the flag must not stick).
+  const RESPONSE_MS = 90000;
+  function responding() { return !!liveCall.responding && Date.now() - liveCall.responding < RESPONSE_MS; }
+  // A turn for the call, once no response is under way: a second one
+  // asked for meanwhile is refused, and the lines added for it would be
+  // lost. While the player talks, the call answers with their next words,
+  // and that answer sees what was added.
+  function respond() {
+    if (liveCall.userTalking) return;
+    if (responding()) { liveCall.respondWanted = true; return; }
+    liveCall.respondWanted = false;
+    liveCall.responding = Date.now();
+    liveSend({ type: "response.create" });
   }
 
   // On silence, the transcriber sometimes hands back its own vocabulary
@@ -2155,10 +2192,11 @@
     for (const [id, output] of outputs) {
       liveSend({ type: "conversation.item.create", item: { type: "function_call_output", call_id: id, output } });
     }
-    // The player started talking meanwhile: the answer to that will see the
-    // tools' results too, and asking for another response now would only
-    // fight it (and lose: the model drops the thread and never answers).
-    if (!liveCall.userTalking) liveSend({ type: "response.create" });
+    // (The player started talking meanwhile: the answer to that will see
+    // the tools' results too, and asking for another response now would
+    // only fight it, and lose: the model drops the thread and never
+    // answers. `respond` knows.)
+    respond();
     // The call answers again after the tools: the player waits for that too.
     liveCall.stoppedAt = doneAt || Date.now();
     liveCall.firstSoundTold = false;
@@ -2170,20 +2208,61 @@
     postJson("/api/said", { who: "timing", text }).catch(() => {});
   }
 
-  // MapleSyrup's own lines, said by the call at the next quiet moment.
-  function sayLive(text) {
-    liveCall.pending.push(text);
+  // MapleSyrup's own lines, said by the call at the next quiet moment:
+  // nobody talking, no answer under way. A line that waited longer than
+  // SAY_STALE_MS is not news any more ("you're taking a beating" half a
+  // minute late is noise) and is dropped. What goes carries the reading
+  // the PC sent with it and the game as read right now, so the call's
+  // picture is as new as the watcher's and it passes a number on.
+  const SAY_STALE_MS = 6000;
+  function sayLive(text, fact) {
+    liveCall.pending.push({ text, fact: fact || "", at: Date.now() });
     flushSay();
   }
-  function flushSay() {
-    if (!liveCall.on || !liveCall.pending.length || liveCall.userTalking || liveCall.talking) return;
+  async function flushSay() {
+    if (!liveCall.on || liveCall.flushing || liveCall.userTalking || liveCall.talking || responding()) return;
+    const now = Date.now();
+    liveCall.pending = liveCall.pending.filter((p) => now - p.at < SAY_STALE_MS);
+    if (!liveCall.pending.length) return;
     const lines = liveCall.pending.splice(0);
+    liveCall.flushing = true;
+    let snapshot = "";
+    try {
+      const r = await api("/api/eyes?image=0");
+      if (r.ok) snapshot = ((await r.json()).snapshot || "").trim();
+    } catch (x) {}
+    liveCall.flushing = false;
+    if (!liveCall.on) return;
+    const age = Math.round((Date.now() - lines[0].at) / 1000);
+    const fact = lines.map((l) => l.fact).filter(Boolean).pop();
+    let text = "[MapleSyrup's game watcher, not the player" + (age >= 2 ? ", " + age + " s ago" : "") + ": " +
+      lines.map((l) => l.text).join(" ") + "]";
+    if (fact) text += "\n[Its reading: " + fact + "]";
+    if (snapshot) text += "\n[The game right now, read by your vision engine, not said by the player]\n" + snapshot;
     liveSend({ type: "conversation.item.create", item: { type: "message", role: "system",
-      content: [{ type: "input_text", text: "[MapleSyrup's game watcher: " + lines.join(" ") +
-        "] Tell the player now, briefly, in your own words and in the language you're speaking with them." }] } });
-    liveSend({ type: "response.create" });
+      content: [{ type: "input_text", text }] } });
+    respond();
   }
   setInterval(flushSay, 1000);
+
+  // The call's instructions again, in the attitude the PC reports now,
+  // handed to the call as it goes (session.update): the conversation is
+  // kept, and the next thing it says is in the new tone.
+  async function retune(attitude) {
+    const was = liveCall.attitude;
+    liveCall.attitude = attitude;
+    try {
+      const r = await api("/api/instructions?lang=" + encodeURIComponent(locale));
+      const j = r.ok ? await r.json() : {};
+      if (!liveCall.on) return;
+      if (!j.instructions) throw new Error("no instructions");
+      const session = liveCall.api === "beta" ? { instructions: j.instructions } : { type: "realtime", instructions: j.instructions };
+      liveSend({ type: "session.update", session });
+    } catch (e) {
+      // (The next poll tries again.)
+      if (liveCall.attitude === attitude) liveCall.attitude = was;
+    }
+  }
 
   function liveDropped(why) {
     const wasOn = liveCall.on;
@@ -2214,6 +2293,9 @@
     liveCall.on = false;
     liveCall.starting = false;
     liveCall.userTalking = false;
+    liveCall.responding = 0;
+    liveCall.respondWanted = false;
+    liveCall.flushing = false;
     if (liveCall.talking) liveTalking(false);
     if (liveCall.audio) liveCall.audio.srcObject = null;
     disconnectPlayed();

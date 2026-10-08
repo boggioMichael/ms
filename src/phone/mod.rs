@@ -17,9 +17,12 @@
 //!
 //! On a live call (`crate::ai::live`) the phone talks to OpenAI itself and
 //! asks the PC for a short-lived key (`/api/live`), the screen
-//! (`/api/eyes`) and MapleSyrup's tools (`/api/tool`); it tells the PC what
-//! was said (`/api/said`) and when MapleSyrup's voice is playing
-//! (`/api/talking`, to turn the game down).
+//! (`/api/eyes`), MapleSyrup's tools (`/api/tool`) and, when the attitude
+//! changes mid-call, the call's instructions again (`/api/instructions`);
+//! it tells the PC what was said (`/api/said`) and when MapleSyrup's voice
+//! is playing (`/api/talking`, to turn the game down). MapleSyrup's own
+//! lines for the call come as messages with `speak` and, behind a
+//! watcher's line, the reading (`fact`).
 //!
 //! While the session is recorded ([`Recording`]), the phone's sound goes
 //! into the recording too: its microphone and what it plays (a live call's
@@ -184,9 +187,14 @@ pub enum UpdateAsk {
 /// What the phone's live call asks the PC for.
 pub trait Service: Send + Sync {
     /// A short-lived key for the call, and where to connect: `{key, url,
-    /// model}`. `recent`: the last things said (a call picked up again);
-    /// `language`: the phone's language.
+    /// model, attitude}`. `recent`: the last things said (a call picked up
+    /// again); `language`: the phone's language.
     fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String>;
+    /// The call's instructions as they are now: `{instructions, attitude}`.
+    /// The phone asks for them when the attitude changes during a call
+    /// (the picker, or the player objecting to the tone) and hands them to
+    /// the call, which goes on in the new tone without starting over.
+    fn instructions(&self, language: Option<&str>) -> Value;
     /// Run one of MapleSyrup's tools the call's model asked for, on the
     /// frame the player is looking at. Returns what to tell the model.
     fn tool(
@@ -249,6 +257,11 @@ pub struct Message {
     pub text: String,
     /// Whether it is meant to be spoken (when replies are spoken on the phone).
     pub speak: bool,
+    /// On a live call, the reading behind one of MapleSyrup's own lines
+    /// ("HP 11% (read 0 s ago), MP 40% (read 0 s ago)"): the call passes
+    /// the number on, and knows it is newer than any picture it has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fact: Option<String>,
 }
 
 /// What the console shows about the phone.
@@ -363,6 +376,12 @@ impl Hub {
 
     /// Add a line to the phone's screen; returns its id.
     pub fn post(&self, kind: Kind, text: &str, speak: bool) -> u64 {
+        self.post_with_fact(kind, text, speak, None)
+    }
+
+    /// Add a line of MapleSyrup's own for a live call to say, with the
+    /// reading behind it (`fact`, when there is one).
+    pub fn post_with_fact(&self, kind: Kind, text: &str, speak: bool, fact: Option<&str>) -> u64 {
         let t = self.started.elapsed().as_secs_f64();
         let mut state = self.lock();
         let id = state.next_id;
@@ -373,6 +392,7 @@ impl Hub {
             kind,
             text: text.to_string(),
             speak,
+            fact: fact.map(str::to_string),
         });
         while state.messages.len() > KEEP_MESSAGES {
             state.messages.pop_front();
@@ -779,6 +799,19 @@ impl Hub {
                     Err(why) => Response::json(502, &json!({"error": why})),
                 }
             }
+            ("GET", "/api/instructions") => {
+                // The call's instructions as they are now (the attitude
+                // changed mid-call): the page hands them to the call.
+                let Some(service) = self.service() else {
+                    return Response::json(503, &json!({"error": "live calls need an OpenAI key"}));
+                };
+                let language = request
+                    .param("lang")
+                    .filter(|l| plausible_locale(l))
+                    .map(str::to_string);
+                Response::json(200, &service.instructions(language.as_deref()))
+                    .with_header("Cache-Control", "no-store")
+            }
             ("GET", "/api/eyes") => {
                 let sight = self.lock().sight.clone();
                 // (`image=0`: what is read off it only; the picture went lately.)
@@ -1127,8 +1160,11 @@ mod tests {
     impl Service for FakeService {
         fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String> {
             Ok(
-                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language}),
+                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language, "attitude": "savage"}),
             )
+        }
+        fn instructions(&self, language: Option<&str>) -> Value {
+            json!({"instructions": format!("Your attitude: friendly ({})", language.unwrap_or("-")), "attitude": "friendly"})
         }
         fn tool(
             &self,
@@ -1149,6 +1185,11 @@ mod tests {
         // No key: no calls.
         let r = hub.handle(&request("POST", "/api/live?k=k1", "{}"));
         assert_eq!(r.status, 503);
+        assert_eq!(
+            hub.handle(&request("GET", "/api/instructions?k=k1", ""))
+                .status,
+            503
+        );
         hub.set_service(Arc::new(FakeService));
         let r = hub.handle(&request(
             "POST",
@@ -1162,6 +1203,18 @@ mod tests {
             (Some("ek_1"), Some(2))
         );
         assert_eq!(call["lang"], "he-IL");
+        assert_eq!(call["attitude"], "savage");
+        // The attitude changed mid-call: the instructions as they are now,
+        // for the page to hand to the call.
+        let r = hub.handle(&request("GET", "/api/instructions?k=k1&lang=he-IL", ""));
+        assert_eq!(r.status, 200);
+        let now: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(now["instructions"], "Your attitude: friendly (he-IL)");
+        assert_eq!(now["attitude"], "friendly");
+        assert_eq!(
+            hub.handle(&request("GET", "/api/instructions", "")).status,
+            403
+        );
         // The screen only once there is one (the game in front); always the snapshot.
         let r = hub.handle(&request("GET", "/api/eyes?k=k1", ""));
         let eyes: Value = serde_json::from_slice(&r.body).unwrap();
@@ -1584,6 +1637,31 @@ mod tests {
                 Inbound::Language("ko-KR".into()),
                 Inbound::Hello("iPhone".into())
             ]
+        );
+    }
+
+    #[test]
+    fn a_line_for_the_call_reaches_the_page_with_the_reading_behind_it() {
+        let hub = hub();
+        hub.post(Kind::Reply, "Marked.", true);
+        hub.post_with_fact(
+            Kind::Alert,
+            "Back off, you're getting shredded.",
+            true,
+            Some("HP 11% (read 0 s ago), MP 40% (read 0 s ago)"),
+        );
+        let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        let messages = state["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        // An ordinary line carries no reading at all (not even a null).
+        assert!(messages[0].get("fact").is_none(), "{}", messages[0]);
+        assert_eq!(
+            messages[1]["fact"],
+            "HP 11% (read 0 s ago), MP 40% (read 0 s ago)"
+        );
+        assert_eq!(
+            (messages[1]["kind"].as_str(), messages[1]["speak"].as_bool()),
+            (Some("alert"), Some(true))
         );
     }
 

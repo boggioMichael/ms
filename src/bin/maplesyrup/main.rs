@@ -845,11 +845,22 @@ struct LiveService {
     learning: ai::Learning,
 }
 
+impl LiveService {
+    /// The call's instructions as of now, and the attitude they carry.
+    fn instructions_with(
+        &self,
+        recent: &[String],
+        language: Option<&str>,
+    ) -> (String, ms::companion::Attitude) {
+        let attitude = self.learning.memory().attitude;
+        let text = ai::live::instructions(&self.learning.prompt(), recent, language, attitude);
+        (text, attitude)
+    }
+}
+
 impl phone::Service for LiveService {
     fn live(&self, recent: &[String], language: Option<&str>) -> Result<serde_json::Value, String> {
-        let attitude = self.learning.memory().attitude;
-        let instructions =
-            ai::live::instructions(&self.learning.prompt(), recent, language, attitude);
+        let (instructions, attitude) = self.instructions_with(recent, language);
         let tools = ai::live::tools(self.toolbox.definitions());
         // How it adapted to the player: how soon to answer, their words.
         let tuning = {
@@ -860,9 +871,19 @@ impl phone::Service for LiveService {
                 speed: ai::live::SPEED,
             }
         };
-        self.live
+        let mut call = self
+            .live
             .session(&instructions, &tools, &tuning)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // The page watches for the attitude to change from this one.
+        call["attitude"] = json!(attitude);
+        Ok(call)
+    }
+
+    fn instructions(&self, language: Option<&str>) -> serde_json::Value {
+        // (No "conversation so far": the call has it.)
+        let (instructions, attitude) = self.instructions_with(&[], language);
+        json!({"instructions": instructions, "attitude": attitude})
     }
 
     fn tool(
@@ -1305,6 +1326,56 @@ fn kind_label(kind: Kind) -> &'static str {
     }
 }
 
+/// MapleSyrup's own lines on a live call, as the call gets them to say.
+/// The watcher's lines (an alert, the coach's, a look-up's) go at most
+/// once per [`RELAY_GAP`]: what comes meanwhile waits, the newest of each
+/// kind, and goes together when the gap is up. A death or a level-up goes
+/// at once. Every line handed over carries the reading behind it, so the
+/// call passes on a number rather than restating the watcher's mood in
+/// its own words every few seconds, which is what the player shouted at.
+#[derive(Default)]
+struct Relay {
+    /// When lines last went to the call.
+    sent: Option<Instant>,
+    /// The lines waiting for the gap: the newest of each kind (a later
+    /// alert is the state of things now; a correction keeps its place).
+    waiting: Vec<(Kind, String)>,
+}
+
+/// How long the call keeps the watcher to itself after passing a line on.
+/// In a fight the warnings come every 12 to 20 s; once in that time the
+/// call says the number, and the rest of the time is the player's.
+const RELAY_GAP: Duration = Duration::from_secs(20);
+
+impl Relay {
+    fn open(&self) -> bool {
+        self.sent.is_none_or(|at| at.elapsed() >= RELAY_GAP)
+    }
+
+    /// A line for the call: the lines to hand over now (this one with
+    /// those that waited), or none while it waits for the gap.
+    fn offer(&mut self, kind: Kind, text: &str, urgent: bool) -> Vec<(Kind, String)> {
+        if !urgent && !self.open() {
+            self.waiting.retain(|(k, _)| *k != kind);
+            self.waiting.push((kind, text.to_string()));
+            return Vec::new();
+        }
+        self.sent = Some(Instant::now());
+        let mut lines = std::mem::take(&mut self.waiting);
+        lines.push((kind, text.to_string()));
+        lines
+    }
+
+    /// What waited, once the gap is up.
+    fn due(&mut self) -> Vec<(Kind, String)> {
+        if self.waiting.is_empty() || !self.open() {
+            return Vec::new();
+        }
+        self.sent = Some(Instant::now());
+        std::mem::take(&mut self.waiting)
+    }
+}
+
 /// Everything an action can touch.
 struct Outputs {
     mouth: Mouth,
@@ -1322,6 +1393,8 @@ struct Outputs {
     /// A live call is on: MapleSyrup's own lines are handed to the call to
     /// say (in its voice and the language being spoken), not to the PC.
     live: bool,
+    /// How they are handed over.
+    relay: Relay,
 }
 
 impl Outputs {
@@ -1355,7 +1428,14 @@ impl Outputs {
             // The call says it, in its voice and the language being spoken.
             self.session.line(kind_label(kind), text);
             self.push(kind, text.to_string());
-            hub.post(kind, text, speak && !companion.muted());
+            if !speak || companion.muted() {
+                hub.post(kind, text, false);
+            } else if kind == Kind::Reply {
+                // The answer to something they did (a button): theirs at once.
+                hub.post(kind, text, true);
+            } else {
+                self.relay(kind, text, companion);
+            }
             return;
         }
         self.show(kind, text);
@@ -1364,16 +1444,87 @@ impl Outputs {
         }
     }
 
+    /// A watcher line for the call to say: handed over now, or when the
+    /// call has said one lately, at the next gap (`relay_due`), the newest
+    /// of its kind. A death or a level-up goes at once. (While the
+    /// character is dead the only alert is the death's; a level-up is the
+    /// one announced from the frame being acted on.)
+    fn relay(&mut self, kind: Kind, text: &str, companion: &Companion) {
+        let urgent = companion.dead() || companion.last_level_up() >= companion.progress().seconds;
+        if let Some((_, old)) = self.relay.waiting.iter().find(|(k, _)| *k == kind)
+            && !urgent
+            && !self.relay.open()
+        {
+            self.session
+                .line("live", &format!("not said, a newer line came: {old}"));
+        }
+        let lines = self.relay.offer(kind, text, urgent);
+        if lines.is_empty() {
+            self.session
+                .line("live", "waits: the call said a line of mine lately");
+        }
+        self.hand(lines, companion);
+    }
+
+    /// The lines that waited for the gap, once it is up.
+    fn relay_due(&mut self, companion: &Companion) {
+        let lines = self.relay.due();
+        self.hand(lines, companion);
+    }
+
+    /// Hand lines to the call, each with the reading behind it (shown
+    /// only, when muted meanwhile).
+    fn hand(&mut self, lines: Vec<(Kind, String)>, companion: &Companion) {
+        let Some(hub) = &self.phone else {
+            return;
+        };
+        let fact = self.fact(companion);
+        for (kind, text) in lines {
+            self.session.line(
+                "live",
+                &format!(
+                    "to the call: {text} [{}]",
+                    fact.as_deref().unwrap_or("no reading")
+                ),
+            );
+            hub.post_with_fact(kind, &text, !companion.muted(), fact.as_deref());
+        }
+    }
+
+    /// The reading behind a watcher line, for the call: HP and MP as last
+    /// seen, each read (the number in the game's font) or estimated (the
+    /// bar's fill), and how old the frame is. The call's own picture is
+    /// from the last time the player spoke; this is newer, and a number.
+    fn fact(&self, companion: &Companion) -> Option<String> {
+        let obs = companion.last().filter(|o| o.game.is_seen())?;
+        let age = (self.start.elapsed().as_secs_f64() - companion.progress().seconds).max(0.0);
+        let gauge = |name: &str, g: ms::companion::Gauge| {
+            let pct = if g.percent >= 10.0 {
+                format!("{:.0}%", g.percent)
+            } else {
+                format!("{:.1}%", g.percent)
+            };
+            if g.read {
+                format!("{name} {pct} (read {age:.0} s ago)")
+            } else {
+                format!("{name} about {pct} (estimated {age:.0} s ago)")
+            }
+        };
+        let parts: Vec<String> = [("HP", obs.hp), ("MP", obs.mp)]
+            .into_iter()
+            .filter_map(|(name, g)| g.map(|g| gauge(name, g)))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+
     /// Say `text`, a line of its own of this `kind`, out loud where replies
     /// are spoken.
     fn speak(&mut self, kind: Kind, text: &str, companion: &mut Companion) {
         if companion.muted() {
             return;
         }
-        if self.live
-            && let Some(hub) = &self.phone
-        {
-            hub.post(Kind::Info, text, true);
+        if self.live && self.phone.is_some() {
+            self.relay(Kind::Info, text, companion);
             return;
         }
         let now = self.start.elapsed().as_secs_f64();
@@ -2102,6 +2253,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         language: None,
         live_ok: live_service.is_some(),
         live: false,
+        relay: Relay::default(),
     };
     let hello = companion.hello();
     out.apply(hello, &mut companion, None);
@@ -2545,6 +2697,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     Inbound::Live(on) => {
                         if on != out.live {
                             out.live = on;
+                            // (Lines waiting for the old call are not for the new.)
+                            out.relay = Relay::default();
                             out.session.line(
                                 "info",
                                 if on {
@@ -2871,6 +3025,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
 
         recording.tick(&mut out, panel_window.as_mut());
         out.release_clips(player_quiet(player_heard, &turns));
+        // On a call, the watcher's lines that waited for their turn.
+        if out.live {
+            out.relay_due(&companion);
+        }
 
         // Words that waited for the rest of a sentence that never came.
         if let Some(text) = turns.overdue() {
@@ -3468,6 +3626,7 @@ mod tests {
             language: None,
             live_ok: false,
             live: false,
+            relay: Relay::default(),
         }
     }
 
@@ -3629,6 +3788,127 @@ mod tests {
         assert_eq!(turns.hearing(&mut out, &companion, 5.0, "wait stop"), None);
         assert!(!cancelled(&out, id));
         assert_eq!(cuts(&out), 0);
+    }
+
+    /// The lines on the phone's screen that the call is to say, in order,
+    /// with the reading behind each.
+    fn said(out: &Outputs) -> Vec<(String, Option<String>)> {
+        let hub = out.phone.as_ref().unwrap();
+        let state = hub.handle(&phone::http::Request {
+            method: "GET".into(),
+            path: "/api/state".into(),
+            query: vec![("k".into(), "k1".into())],
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["speak"] == true)
+            .map(|m| {
+                (
+                    m["text"].as_str().unwrap().to_string(),
+                    m["fact"].as_str().map(str::to_string),
+                )
+            })
+            .collect()
+    }
+
+    fn frame(hp: f32, read: bool, level: u32) -> Observation {
+        let gauge = |percent: f32, read: bool| ms::companion::Gauge {
+            percent,
+            current: None,
+            max: None,
+            read,
+        };
+        Observation {
+            game: GameView::Seen("MapleStory".into()),
+            hp: Some(gauge(hp, read)),
+            mp: Some(gauge(40.0, false)),
+            exp: None,
+            level: Some(level),
+            name: None,
+            job: None,
+        }
+    }
+
+    #[test]
+    fn on_a_call_the_watcher_speaks_once_per_gap_and_with_a_number() {
+        let mut out = outputs();
+        out.live = true;
+        let mut companion = Companion::new(Settings::default());
+        let now = |out: &Outputs| out.start.elapsed().as_secs_f64();
+        companion.observe(now(&out), frame(11.0, true, 165));
+        // Six beatings in a few seconds: the first goes, with the reading
+        // behind it; the rest wait, and only the newest of them.
+        for i in 0..6 {
+            out.tell(Kind::Alert, &format!("beating {i}"), true, &mut companion);
+        }
+        assert_eq!(
+            said(&out),
+            [(
+                "beating 0".to_string(),
+                Some("HP 11% (read 0 s ago), MP about 40% (estimated 0 s ago)".to_string())
+            )]
+        );
+        // A correction from a look-up waits alongside: an alert does not
+        // push it out. Nothing goes before the gap is up.
+        out.tell(
+            Kind::Info,
+            "Actually, Zakum is level 110.",
+            true,
+            &mut companion,
+        );
+        out.tell(Kind::Alert, "beating 6", true, &mut companion);
+        out.relay_due(&companion);
+        assert_eq!(said(&out).len(), 1);
+        // The answer to a button is theirs at once, gap or no gap.
+        out.tell(Kind::Reply, "Marked.", true, &mut companion);
+        assert_eq!(said(&out).len(), 2);
+        // The gap up: what waited goes together (one turn for the call),
+        // each line with the reading as it is now.
+        out.relay.sent = Some(Instant::now() - RELAY_GAP);
+        companion.observe(now(&out), frame(62.0, true, 165));
+        out.relay_due(&companion);
+        let lines: Vec<String> = said(&out).into_iter().map(|(t, _)| t).collect();
+        assert_eq!(
+            lines,
+            [
+                "beating 0",
+                "Marked.",
+                "Actually, Zakum is level 110.",
+                "beating 6"
+            ]
+        );
+        assert_eq!(
+            said(&out)[3].1.as_deref(),
+            Some("HP 62% (read 0 s ago), MP about 40% (estimated 0 s ago)")
+        );
+        assert!(out.relay.waiting.is_empty());
+        // A death goes at once, whatever went before.
+        for _ in 0..3 {
+            let actions = companion.observe(now(&out), frame(0.0, true, 165));
+            out.apply(actions, &mut companion, None);
+        }
+        assert!(companion.dead());
+        let death = said(&out).last().unwrap().0.clone();
+        assert!(death.starts_with("Your HP hit zero"), "{death}");
+        // So does a level-up (the number held for a moment, one up).
+        let t = now(&out) + 100.0;
+        for at in [t, t + 3.5, t + 10.0, t + 13.5] {
+            let level = if at < t + 10.0 { 165 } else { 166 };
+            let actions = companion.observe(at, frame(80.0, true, level));
+            out.apply(actions, &mut companion, None);
+        }
+        assert_eq!(said(&out).last().unwrap().0, "Level up! You're level 166.");
+        assert!(said(&out).last().unwrap().1.is_some());
+        // Muted: shown, not said, and nothing waits for the gap.
+        let actions = companion.command(t + 20.0, Command::Mute);
+        out.apply(actions, &mut companion, None);
+        let before = said(&out).len();
+        out.tell(Kind::Alert, "beating 7", true, &mut companion);
+        assert_eq!((said(&out).len(), out.relay.waiting.len()), (before, 0));
     }
 
     #[test]
