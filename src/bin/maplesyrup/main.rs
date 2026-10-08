@@ -796,17 +796,20 @@ struct Mouth {
     phone_until: Instant,
     /// When the phone is expected to finish the clips it was handed.
     phone_end: Instant,
-    /// The line being made for the phone (it gets a line at a time), and
-    /// what kind of line it is.
+    /// The line under way (the last the voice started making, by job) and
+    /// what kind of line it is: a cut lets a warning's play out and hushes
+    /// the rest.
+    line: Option<(u64, Kind)>,
+    /// A line a cut hushed: what was still to come of it is dropped, here
+    /// and on the phone (hushed on its first half, a reply went on from
+    /// its second).
+    hushed: Option<u64>,
+    /// The line being made for the phone (it gets a line at a time).
     phone_line: Vec<i16>,
-    phone_line_kind: Kind,
     /// Lines of its own (a warning, a hello) made while the player was
     /// talking or their answer was being made, handed over once there is
     /// room.
     phone_held: Vec<HeldClip>,
-    /// What kind of line each of its own lines being made is, by job: an
-    /// alert's clip is the one a cut keeps.
-    kinds: std::collections::VecDeque<(u64, Kind)>,
     /// When it was last heard speaking (the phone may still hand its last
     /// words back for a moment); None: not yet.
     last_voice: Option<Instant>,
@@ -825,33 +828,21 @@ struct HeldClip {
     length: Duration,
 }
 
-/// How many of its own lines' kinds are remembered by job: a line's voice
-/// is over within seconds of its job, so the last few are all that can
-/// still be asked about.
-const KINDS_REMEMBERED: usize = 64;
+/// A piece of a line's voice, as the worker hands it over: which line
+/// (the job), what kind of line, its samples, and whether it opens or
+/// closes the line.
+struct Piece<'a> {
+    id: u64,
+    kind: Kind,
+    samples: &'a [i16],
+    start: bool,
+    end: bool,
+}
 
 impl Mouth {
     fn speaking(&self) -> bool {
         let now = Instant::now();
         self.player.speaking() || now < self.sapi_until || now < self.phone_until
-    }
-
-    /// Job `id` makes a line of this kind.
-    fn making(&mut self, id: u64, kind: Kind) {
-        self.kinds.push_back((id, kind));
-        while self.kinds.len() > KINDS_REMEMBERED {
-            self.kinds.pop_front();
-        }
-    }
-
-    /// What kind of line job `id` makes, when it is one of its own lines
-    /// (a reply's, a hello's: a reply).
-    fn kind_of(&self, id: u64) -> Kind {
-        self.kinds
-            .iter()
-            .find(|(job, _)| *job == id)
-            .map(|(_, kind)| *kind)
-            .unwrap_or(Kind::Reply)
     }
 
     /// Speaking on the PC's speakers (not on the phone).
@@ -1701,14 +1692,13 @@ impl Outputs {
         companion.remember_spoken(now, text);
         match &self.mouth.ai {
             Some(worker) => {
-                let id = worker.send(Job::Speak {
+                worker.send(Job::Speak {
                     text: text.to_string(),
                     language: self.language.clone(),
                     kind,
                     show: false,
                     speak: true,
                 });
-                self.mouth.making(id, kind);
             }
             None => {
                 if self.voice_on().pc()
@@ -1721,23 +1711,25 @@ impl Outputs {
         }
     }
 
-    /// A piece of natural-voice speech (of a line of this `kind`), played
-    /// as it comes where replies are spoken: on the PC at once (a new line
-    /// after a short pause), on the phone a line at a time, once the line
-    /// is complete — or, with `hold`, once the player has stopped talking
-    /// (`release_clips`): a clip starting on the phone stops its
-    /// recognition.
-    fn play_piece(
-        &mut self,
-        samples: &[i16],
-        start: bool,
-        end: bool,
-        hold: bool,
-        kind: Kind,
-        companion: &Companion,
-    ) {
-        if companion.muted() {
+    /// A piece of natural-voice speech, played as it comes where replies
+    /// are spoken: on the PC at once (a new line after a short pause), on
+    /// the phone a line at a time, once the line is complete — or, with
+    /// `hold`, once the player has stopped talking (`release_clips`): a
+    /// clip starting on the phone stops its recognition. A piece of a line
+    /// a cut hushed is dropped.
+    fn play_piece(&mut self, piece: Piece, hold: bool, companion: &Companion) {
+        let Piece {
+            id,
+            kind,
+            samples,
+            start,
+            end,
+        } = piece;
+        if companion.muted() || self.mouth.hushed == Some(id) {
             return;
+        }
+        if start {
+            self.mouth.line = Some((id, kind));
         }
         let voice_on = self.voice_on();
         let rate = ai::openai::SPEECH_RATE;
@@ -1754,7 +1746,6 @@ impl Outputs {
         if voice_on.phone() && self.phone.is_some() {
             if start {
                 self.mouth.phone_line.clear();
-                self.mouth.phone_line_kind = kind;
             }
             self.mouth.phone_line.extend_from_slice(samples);
             if end && !self.mouth.phone_line.is_empty() {
@@ -1826,11 +1817,19 @@ impl Outputs {
     /// Stop talking at once (the player talked over it), here and on the
     /// phone, and drop what was still to come — except a warning's line or
     /// news: a warning the player talked over (or that waited for their
-    /// turn) is still true, and goes after their turn as it would have.
+    /// turn) is still true. On the PC's speakers it plays out; on the
+    /// phone it is finished whole and goes after their turn, as it would
+    /// have. Any other line is hushed, and what was still to come of it
+    /// dropped: hushed on its first half, a reply went on from its
+    /// second, and a warning was cut like chat. (The PC has one queue: the
+    /// line under way is the last one started; a reply's tail still
+    /// sounding when a warning starts behind it is let play out with it.)
     fn cut(&mut self) {
-        self.mouth.hush();
-        if !kept(self.mouth.phone_line_kind) {
+        let line_kept = self.mouth.line.is_some_and(|(_, kind)| kept(kind));
+        if !line_kept {
+            self.mouth.hush();
             self.mouth.phone_line.clear();
+            self.mouth.hushed = self.mouth.line.map(|(id, _)| id);
         }
         self.mouth.phone_held.retain(|clip| kept(clip.kind));
         self.mouth.phone_until = Instant::now();
@@ -2421,10 +2420,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             sapi_until: Instant::now(),
             phone_until: Instant::now(),
             phone_end: Instant::now(),
+            line: None,
+            hushed: None,
             phone_line: Vec::new(),
-            phone_line_kind: Kind::Reply,
             phone_held: Vec::new(),
-            kinds: std::collections::VecDeque::new(),
             last_voice: None,
             phone_ducked: false,
             game_pid: None,
@@ -3265,13 +3264,22 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     label,
                     text,
                     error,
+                    called_off,
                     took,
                 } => {
                     if coach_job == Some(id) {
                         coach_job = None;
                     }
-                    coach.answered(now, text.as_deref());
                     let took = took.as_secs_f64();
+                    // A look the player's words called off never answered:
+                    // the coach looks again at the next gap, no slower.
+                    if called_off {
+                        coach.called_off();
+                        out.session
+                            .line("coach", &format!("{label}: called off ({took:.1} s)"));
+                        continue;
+                    }
+                    coach.answered(now, text.as_deref());
                     match (text, error) {
                         (Some(line), _) => {
                             companion.remember_spoken(now, &line);
@@ -3352,6 +3360,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 }
                 Done::Audio {
                     id,
+                    kind,
                     text,
                     samples,
                     after,
@@ -3385,8 +3394,17 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     // sentence it is writing down.
                     let own = turns.reply_id() != Some(id);
                     let hold = own && !player_quiet(player_heard, &turns);
-                    let kind = out.mouth.kind_of(id);
-                    out.play_piece(&samples, start, end, hold, kind, &companion);
+                    out.play_piece(
+                        Piece {
+                            id,
+                            kind,
+                            samples: &samples,
+                            start,
+                            end,
+                        },
+                        hold,
+                        &companion,
+                    );
                 }
                 Done::Silent { id, heard } => {
                     turns.finished(id);
@@ -3816,10 +3834,10 @@ mod tests {
                 sapi_until: now,
                 phone_until: now,
                 phone_end: now,
+                line: None,
+                hushed: None,
                 phone_line: Vec::new(),
-                phone_line_kind: Kind::Reply,
                 phone_held: Vec::new(),
-                kinds: std::collections::VecDeque::new(),
                 last_voice: None,
                 phone_ducked: false,
                 game_pid: None,
@@ -4182,36 +4200,45 @@ mod tests {
         assert_eq!((said(&out).len(), out.relay.waiting.len()), (before, 0));
     }
 
+    /// The phone's clip counter.
+    fn clip(out: &Outputs) -> u64 {
+        let hub = out.phone.as_ref().unwrap();
+        let state = hub.handle(&phone::http::Request {
+            method: "GET".into(),
+            path: "/api/state".into(),
+            query: vec![("k".into(), "k1".into())],
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["clip"]
+            .as_u64()
+            .unwrap()
+    }
+
     #[test]
     fn a_line_of_its_own_waits_while_the_player_talks() {
         let mut out = outputs();
-        let mut companion = Companion::new(Settings::default());
+        let companion = Companion::new(Settings::default());
         let mut turns = Turns::default();
         let samples = vec![100i16; 2400];
+        let piece = |id: u64, kind: Kind, start: bool, end: bool| Piece {
+            id,
+            kind,
+            samples: &samples,
+            start,
+            end,
+        };
         // The answer they are waiting for goes at once.
         let answer = job(&out);
         turns.asked(answer, "what's my level");
         let own = turns.reply_id() != Some(answer);
         assert!(!own);
-        out.play_piece(&samples, true, true, false, Kind::Reply, &companion);
-        let clip = |out: &Outputs| {
-            let hub = out.phone.as_ref().unwrap();
-            let state = hub.handle(&phone::http::Request {
-                method: "GET".into(),
-                path: "/api/state".into(),
-                query: vec![("k".into(), "k1".into())],
-                headers: Vec::new(),
-                body: Vec::new(),
-            });
-            serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["clip"]
-                .as_u64()
-                .unwrap()
-        };
+        out.play_piece(piece(answer, Kind::Reply, true, true), false, &companion);
         assert_eq!(clip(&out), 1);
         // A line of its own while they talk (or while the answer is made): held.
         let heard = Some(Instant::now());
         assert!(!player_quiet(heard, &turns));
-        out.play_piece(&samples, true, true, true, Kind::Info, &companion);
+        out.play_piece(piece(101, Kind::Info, true, true), true, &companion);
         out.release_clips(player_quiet(heard, &turns));
         assert_eq!((clip(&out), out.mouth.phone_held.len()), (1, 1));
         // Once they are quiet and answered, it goes.
@@ -4221,32 +4248,20 @@ mod tests {
         out.release_clips(player_quiet(quiet, &turns));
         assert_eq!((clip(&out), out.mouth.phone_held.len()), (2, 0));
         // Held too long, it goes anyway; cut, it is dropped.
-        out.play_piece(&samples, true, true, true, Kind::Info, &companion);
+        out.play_piece(piece(102, Kind::Info, true, true), true, &companion);
         out.mouth.phone_held[0].since = earlier(CLIP_WAITS);
         out.release_clips(false);
         assert_eq!(clip(&out), 3);
-        out.play_piece(&samples, true, true, true, Kind::Info, &companion);
+        out.play_piece(piece(103, Kind::Info, true, true), true, &companion);
         out.cut();
         assert!(out.mouth.phone_held.is_empty());
         // A warning's clip, held for their turn, is not dropped by their
         // next sentence: the warning is still true. Nor is news (a death,
         // a level-up). They go after their turn, as they would have; the
         // note held with them is dropped.
-        out.speak(Kind::Warning, "HP 20 percent. Pot now!", &mut companion);
-        let (warning, kind) = *out.mouth.kinds.back().unwrap();
-        assert_eq!(kind, Kind::Warning);
-        assert_eq!(out.mouth.kind_of(warning), Kind::Warning);
-        assert_eq!(out.mouth.kind_of(warning + 1), Kind::Reply);
-        out.play_piece(
-            &samples,
-            true,
-            true,
-            true,
-            out.mouth.kind_of(warning),
-            &companion,
-        );
-        out.play_piece(&samples, true, true, true, Kind::Alert, &companion);
-        out.play_piece(&samples, true, true, true, Kind::Info, &companion);
+        out.play_piece(piece(104, Kind::Warning, true, true), true, &companion);
+        out.play_piece(piece(105, Kind::Alert, true, true), true, &companion);
+        out.play_piece(piece(106, Kind::Info, true, true), true, &companion);
         assert_eq!(out.mouth.phone_held.len(), 3);
         out.cut();
         assert_eq!(
@@ -4263,11 +4278,81 @@ mod tests {
         assert_eq!((clip(&out), out.mouth.phone_held.len()), (5, 0));
         // A warning still being made when the cut comes keeps what was
         // made of it: the clip is whole, not its second half.
-        out.play_piece(&samples, true, false, false, Kind::Warning, &companion);
+        out.play_piece(piece(107, Kind::Warning, true, false), false, &companion);
         out.cut();
-        out.play_piece(&samples, false, true, false, Kind::Warning, &companion);
+        out.play_piece(piece(107, Kind::Warning, false, true), false, &companion);
         assert_eq!(clip(&out), 6);
         assert_eq!(clip_bytes(&out, 6), 44 + 2 * 2 * samples.len());
+    }
+
+    #[test]
+    fn a_cut_hushes_a_reply_and_lets_a_warning_play_out() {
+        let mut out = outputs();
+        let companion = Companion::new(Settings::default());
+        // Replies on the PC's speakers.
+        out.phone.as_ref().unwrap().set_voice_on(VoiceOn::Pc);
+        let samples = vec![100i16; 24_000];
+        let piece = |id: u64, kind: Kind, start: bool, end: bool| Piece {
+            id,
+            kind,
+            samples: &samples,
+            start,
+            end,
+        };
+        // A reply under way; the player talks over it: the speakers stop,
+        // and the rest of the reply is dropped — hushed on its first half,
+        // a reply went on from its second.
+        out.play_piece(piece(1, Kind::Reply, true, false), false, &companion);
+        assert!(out.mouth.player.speaking());
+        out.cut();
+        assert!(!out.mouth.player.speaking());
+        assert_eq!(out.mouth.hushed, Some(1));
+        out.play_piece(piece(1, Kind::Reply, false, true), false, &companion);
+        assert!(
+            !out.mouth.player.speaking(),
+            "the hushed reply's second half must not play"
+        );
+        // A warning under way is not hushed: it is still true, and plays
+        // out, the rest of it too.
+        out.play_piece(piece(2, Kind::Warning, true, false), false, &companion);
+        out.cut();
+        assert!(
+            out.mouth.player.speaking(),
+            "a warning must play on through the cut"
+        );
+        let before = out.mouth.player.remaining();
+        out.play_piece(piece(2, Kind::Warning, false, true), false, &companion);
+        assert!(out.mouth.player.remaining() > before);
+        assert_eq!(out.mouth.hushed, Some(1));
+        // News (a death, a level-up) the same.
+        out.mouth.player.stop();
+        out.play_piece(piece(3, Kind::Alert, true, true), false, &companion);
+        out.cut();
+        assert!(
+            out.mouth.player.speaking(),
+            "news must play on through the cut"
+        );
+        // A note of its own (a hello) is chat: hushed.
+        out.mouth.player.stop();
+        out.play_piece(piece(4, Kind::Info, true, false), false, &companion);
+        out.cut();
+        assert!(!out.mouth.player.speaking());
+        assert_eq!(out.mouth.hushed, Some(4));
+        // On the phone the same: a reply hushed on its first half does
+        // not come out as its second half once its last piece arrives.
+        out.phone.as_ref().unwrap().set_voice_on(VoiceOn::Phone);
+        let clips = clip(&out);
+        out.play_piece(piece(5, Kind::Reply, true, false), false, &companion);
+        out.cut();
+        out.play_piece(piece(5, Kind::Reply, false, true), false, &companion);
+        assert_eq!(
+            clip(&out),
+            clips,
+            "no clip of the hushed reply's second half"
+        );
+        // The next line is a new one: heard in full.
+        out.play_piece(piece(6, Kind::Reply, true, true), false, &companion);
+        assert_eq!(clip(&out), clips + 1);
     }
 
     #[test]
@@ -4294,12 +4379,11 @@ mod tests {
                 .filter(|m| m["text"] == "Connected to MapleSyrup on this iPhone.")
                 .count()
         };
-        // No key (no call to come): a hello of its own, said as a clip.
+        // No key (no call to come): a hello of its own, said as a clip
+        // (one job for the worker, remembered as its own words).
         let first = job(&out);
         assert_eq!(hello(&mut out, &mut companion, true, None), Hello::Clip);
         assert_eq!(shown(&out), 1);
-        let said = *out.mouth.kinds.back().unwrap();
-        assert_eq!(said, (first + 1, Kind::Info));
         assert!(
             companion
                 .own_words(1.0, "hey I'm here just talk to me", 0)
@@ -4307,23 +4391,22 @@ mod tests {
             "the hello was not said"
         );
         // The page reloaded a moment later (the same visit): "Connected"
-        // on the screen, no second hello.
+        // on the screen, no second hello (no second job).
         assert_eq!(
             hello(&mut out, &mut companion, true, Some(Duration::from_secs(2))),
             Hello::Quiet
         );
         assert_eq!(shown(&out), 2);
-        assert_eq!(*out.mouth.kinds.back().unwrap(), said);
         assert_eq!(job(&out), first + 2);
         // Gone for half an hour: a visit of its own, hello again.
+        let before = job(&out);
         assert_eq!(
             hello(&mut out, &mut companion, true, Some(HELLO_AGAIN)),
             Hello::Clip
         );
-        assert_eq!(out.mouth.kinds.back().unwrap().1, Kind::Info);
-        assert!(out.mouth.kinds.back().unwrap().0 > said.0);
+        assert_eq!(job(&out), before + 2);
         // Knowing the player, the hello picks up from last time (a job of
-        // its own, not a line of this kind).
+        // its own).
         let before = job(&out);
         assert_eq!(
             out.hello(
@@ -4337,7 +4420,6 @@ mod tests {
             Hello::Clip
         );
         assert_eq!(job(&out), before + 2);
-        assert_eq!(out.mouth.kinds.back().unwrap().0, said.0 + 2);
         // With a key, and the page's toggle on: the call about to open says
         // hello, and nothing is said meanwhile; the page is told so.
         out.live_ok = true;

@@ -611,11 +611,13 @@ fn what_a_reply_talked_over_never_said_is_said_when_asked_again() {
         match worker.done.recv_timeout(Duration::from_secs(30)) {
             Ok(Done::Audio {
                 id,
+                kind,
                 text,
                 start: true,
                 ..
             }) => {
                 assert_eq!(id, first);
+                assert_eq!(kind, ms::companion::Kind::Reply);
                 assert!(text.starts_with("Take it slowly"), "{text}");
                 break;
             }
@@ -731,8 +733,16 @@ fn its_own_lines_are_translated_shown_and_spoken() {
                 shown = Some(text);
             }
             Ok(Done::Audio {
-                text, start: true, ..
-            }) => spoken = Some(text),
+                text,
+                kind,
+                start: true,
+                ..
+            }) => {
+                // (Its voice says what kind of line it is: the main loop
+                // keeps a warning's clip through a cut by it.)
+                assert_eq!(kind, ms::companion::Kind::Alert);
+                spoken = Some(text);
+            }
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
             Err(e) => panic!("{e}"),
@@ -872,7 +882,15 @@ fn what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees() {
     });
     loop {
         match worker.done.recv_timeout(Duration::from_secs(30)) {
-            Ok(Done::Audio { id, end: true, .. }) if id == alert => break,
+            Ok(Done::Audio {
+                id,
+                kind,
+                end: true,
+                ..
+            }) if id == alert => {
+                assert_eq!(kind, ms::companion::Kind::Warning);
+                break;
+            }
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
             Err(e) => panic!("{e}"),
@@ -1101,6 +1119,64 @@ fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
 }
 
 #[test]
+fn a_look_called_off_says_so_and_is_not_nothing_to_say() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let look = |reason: &str| {
+        worker.send(Job::Coach {
+            reason: reason.into(),
+            label: "a look".into(),
+            snapshot: "HP 80%".into(),
+            eyes: None,
+            said: Vec::new(),
+            language: None,
+            speak: true,
+        })
+    };
+    // A look that takes its time, and one queued behind it; the player
+    // speaks: both are called off — the one in flight and the one that
+    // never began — and say so. Neither is "nothing to say".
+    let slow = look("Nothing in particular happened (think it over).");
+    let queued = look("Nothing in particular happened (nothing is happening).");
+    std::thread::sleep(Duration::from_millis(300));
+    worker.cancel_all();
+    let mut came_back = Vec::new();
+    while came_back.len() < 2 {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Coached {
+                id,
+                text,
+                error,
+                called_off,
+                ..
+            }) => came_back.push((id, text, error, called_off)),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert_eq!(
+        came_back,
+        [(slow, None, None, true), (queued, None, None, true)]
+    );
+    // A look that came back with nothing is nothing to say, not called off.
+    let quiet = look("Nothing in particular happened (nothing is happening).");
+    match worker.done.recv_timeout(Duration::from_secs(30)) {
+        Ok(Done::Coached {
+            id,
+            text,
+            called_off,
+            ..
+        }) => assert_eq!((id, text, called_off), (quiet, None, false)),
+        other => panic!("{}", describe(other)),
+    }
+}
+
+#[test]
 fn two_lines_pieces_are_never_shuffled_together() {
     if !have_curl() {
         return;
@@ -1174,11 +1250,16 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
     });
     match worker.done.recv_timeout(Duration::from_secs(30)) {
         Ok(Done::Coached {
-            id, text, error, ..
+            id,
+            text,
+            error,
+            called_off,
+            ..
         }) => {
             assert_eq!(id, quiet);
             assert_eq!(text, None);
             assert_eq!(error, None);
+            assert!(!called_off);
         }
         other => panic!("{}", describe(other)),
     }
@@ -1201,11 +1282,13 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
             }
             Ok(Done::Audio {
                 id,
+                kind,
                 text,
                 start: true,
                 ..
             }) => {
                 assert_eq!(id, scene);
+                assert_eq!(kind, ms::companion::Kind::Alert);
                 spoken = Some(text);
             }
             Ok(Done::Coached { id, text, .. }) => {

@@ -849,7 +849,8 @@ impl Coach {
         self.quiet_since = now;
     }
 
-    /// The consult came back: `line` was said, or nothing was (None).
+    /// The consult came back: `line` was said, or nothing was (None): the
+    /// looks come less often each time there was nothing to say.
     pub fn answered(&mut self, now: f64, line: Option<&str>) {
         self.consulting = false;
         match line {
@@ -868,6 +869,15 @@ impl Coach {
                 self.look_every = (self.look_every * 1.5).min(LOOK_AT_MOST);
             }
         }
+    }
+
+    /// The consult was called off before it answered (the player spoke:
+    /// every word of theirs calls off the look in flight). Not "nothing to
+    /// say": the pace of the looks is left as it was, and the game is
+    /// looked at again at the next gap. Counted as silent, a chatty hour
+    /// had slowed the looks to their fewest.
+    pub fn called_off(&mut self) {
+        self.consulting = false;
     }
 
     /// What it said on its own lately, oldest first.
@@ -938,6 +948,28 @@ mod tests {
         activity: f32,
         answer: Option<&str>,
     ) -> Vec<(f64, Reason)> {
+        play_with(
+            coach,
+            from,
+            seconds,
+            exp,
+            gaining,
+            activity,
+            |coach, now| coach.answered(now, answer),
+        )
+    }
+
+    /// [`play`], every consult met with `came_back` (what the worker came
+    /// back with) at once.
+    fn play_with(
+        coach: &mut Coach,
+        from: f64,
+        seconds: f64,
+        exp: f32,
+        gaining: bool,
+        activity: f32,
+        mut came_back: impl FnMut(&mut Coach, f64),
+    ) -> Vec<(f64, Reason)> {
         let mut consults = Vec::new();
         let frames = (seconds * 10.0) as usize;
         for i in 0..frames {
@@ -956,7 +988,7 @@ mod tests {
             };
             if let Some(reason) = coach.observe(&g) {
                 consults.push((now, reason));
-                coach.answered(now, answer);
+                came_back(coach, now);
             }
         }
         consults
@@ -993,6 +1025,40 @@ mod tests {
             (after[0].0 - more[0].0 - LOOK_EVERY).abs() < 0.11,
             "{after:?} {more:?}"
         );
+    }
+
+    #[test]
+    fn a_look_called_off_is_not_nothing_to_say_and_the_looks_come_no_less_often() {
+        // Every word of the player's calls off the look in flight. Counted
+        // as "nothing to say", each one grew the wait by half: a chatty
+        // hour had the looks three minutes apart, and then none. Called
+        // off, the look is simply had again at the next gap.
+        let mut coach = Coach::new(true);
+        let consults = play_with(&mut coach, 0.0, 600.0, 18.99, true, 0.02, |coach, _| {
+            coach.called_off()
+        });
+        let times: Vec<f64> = consults
+            .iter()
+            .map(|(t, _)| (t * 10.0).round() / 10.0)
+            .collect();
+        assert_eq!(times[0], SETTLE_IN);
+        let gaps: Vec<f64> = times
+            .windows(2)
+            .map(|w| ((w[1] - w[0]) * 10.0).round() / 10.0)
+            .collect();
+        assert!(gaps.len() >= 10, "{gaps:?}");
+        assert!(
+            gaps.iter().all(|gap| *gap == LOOK_EVERY),
+            "every 45 s, not growing: {gaps:?}"
+        );
+        assert!(!coach.consulting());
+        // A look that did come back with nothing still slows them.
+        let silent = play(&mut coach, 600.0, 300.0, 25.0, true, 0.02, None);
+        let gaps: Vec<f64> = silent
+            .windows(2)
+            .map(|w| ((w[1].0 - w[0].0) * 10.0).round() / 10.0)
+            .collect();
+        assert_eq!(gaps, vec![67.5, 101.3], "{silent:?}");
     }
 
     #[test]

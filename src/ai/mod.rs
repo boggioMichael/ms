@@ -259,10 +259,12 @@ pub enum Done {
     /// reply is spoken in a few lines (the first sentence alone, so it
     /// starts soon; then what was written meanwhile, together, so it
     /// flows). `start` opens a line (its words are in `text`), `end`
-    /// closes it (no samples). `after`: since the job was handed over;
-    /// `first`: the first line of a reply.
+    /// closes it (no samples). `kind`: what kind of line it is (a
+    /// warning's clip is the one a cut keeps); `after`: since the job was
+    /// handed over; `first`: the first line of a reply.
     Audio {
         id: u64,
+        kind: crate::companion::Kind,
         text: String,
         samples: Vec<i16>,
         after: Duration,
@@ -300,12 +302,15 @@ pub enum Done {
         language: Option<String>,
     },
     /// The coach looked: the line it has to say (None: nothing worth
-    /// saying, or `error`), and how long the look took.
+    /// saying, or `error`, or `called_off` — the player spoke before the
+    /// look was done, so it never answered: not "nothing to say", and no
+    /// reason to look less often), and how long the look took.
     Coached {
         id: u64,
         label: String,
         text: Option<String>,
         error: Option<String>,
+        called_off: bool,
         took: Duration,
     },
 }
@@ -587,13 +592,15 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                         Stop::new(Arc::clone(&marks), id)
                     };
                     if stop.stopped() {
-                        // (The coach waits to hear back from every look.)
+                        // (The coach waits to hear back from every look:
+                        // this one was called off before it began.)
                         if let Job::Coach { label, .. } = job {
                             let _ = tx.send(Done::Coached {
                                 id,
                                 label,
                                 text: None,
                                 error: None,
+                                called_off: true,
                                 took: Duration::ZERO,
                             });
                         }
@@ -932,6 +939,7 @@ fn speak_line(
         let opens = start.replace(false);
         let _ = tx.send(Done::Audio {
             id,
+            kind: delivery.kind,
             text: if opens {
                 text.to_string()
             } else {
@@ -973,6 +981,7 @@ fn speak_line(
     if made {
         let _ = tx.send(Done::Audio {
             id,
+            kind: delivery.kind,
             text: String::new(),
             samples: Vec::new(),
             after: asked.elapsed(),
@@ -1195,24 +1204,17 @@ engine:\n{snapshot}\n\n{reason}"
             mouth.openai.ask(&ask, None)
         }
     });
-    let mut done = Done::Coached {
-        id,
-        label: label.clone(),
-        text: None,
-        error: None,
-        took: started.elapsed(),
-    };
+    // What the look came to: a line, nothing, an error — or nothing
+    // because the player spoke before it was done (`called_off`), which
+    // is not the same as nothing to say: every word of theirs calls off
+    // the look in flight, and a chatty hour counted as silent had the
+    // looks slowed to their fewest.
+    let mut text = None;
+    let mut error = None;
+    let mut called_off = false;
     match answer {
-        Err(AiError::Cancelled) => {}
-        Err(error) => {
-            done = Done::Coached {
-                id,
-                label,
-                text: None,
-                error: Some(error.detail()),
-                took: started.elapsed(),
-            };
-        }
+        Err(AiError::Cancelled) => called_off = true,
+        Err(e) => error = Some(e.detail()),
         Ok(answer) if brain::is_silent(&answer.text) => {}
         Ok(answer) => {
             // Nothing it said lately is said again: a coach that keeps
@@ -1253,19 +1255,23 @@ engine:\n{snapshot}\n\n{reason}"
                     };
                     brain.recent.settle(taken, if made { &line } else { "" });
                 }
-                done = Done::Coached {
-                    id,
-                    label,
-                    text: Some(line),
-                    error: None,
-                    took: started.elapsed(),
-                };
+                text = Some(line);
             } else {
+                // (Called off between the answer and the voice: never
+                // handed over, so not said — and not silent either.)
+                called_off = stop.stopped();
                 brain.recent.settle(taken, "");
             }
         }
     }
-    let _ = tx.send(done);
+    let _ = tx.send(Done::Coached {
+        id,
+        label,
+        text,
+        error,
+        called_off,
+        took: started.elapsed(),
+    });
 }
 
 /// What the player said, and what goes with it.
