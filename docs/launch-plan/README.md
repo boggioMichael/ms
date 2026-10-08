@@ -120,23 +120,23 @@
 
 ## כל המשימות
 
-| # | משימה | שבוע | מי | עד |
-|---|---|---|---|---|
-| [1.0](tasks/1.0-knowledge-db.md) | לסיים את ה-knowledge DB | 1 | יוחאי, מיכאל | ה׳ 15.10 |
-| [1.1](tasks/1.1-master-review.md) | ריוויו של master: כל ממצא הופך ל-PR | 1 | איתן, מיכאל | ה׳ 15.10 |
-| [1.2](tasks/1.2-real-game-test.md) | מבחן לחץ על המשחק האמיתי | 1 | איתן, יוחאי, מיכאל | ד׳ 14.10 |
-| [1.3](tasks/1.3-fix-planning.md) | תכנון התיקונים לשבוע 2 | 1 | איתן, מיכאל | ה׳ 15.10 |
-| [1.4](tasks/1.4-launch-blockers.md) | שלוש תוספות שחוסמות השקה | 1 | מיכאל | א׳ 11.10 |
-| [2.1](tasks/2.1-fixes.md) | התיקונים משבוע 1 | 2 | איתן, יוחאי, מיכאל | ד׳ 21.10 |
-| [2.2](tasks/2.2-distribution-and-qa.md) | הפצה ולולאת QA מול שחקנים | 2 | מיכאל | ג׳ 20.10 |
-| [2.3](tasks/2.3-telemetry-and-crashes.md) | קריסות וטלמטריה, רק בהסכמה | 2 | איתן, יוחאי, מיכאל | ד׳ 21.10 |
-| [2.4](tasks/2.4-beta.md) | בטא פתוחה בערב ש-Classic World נפתח | 2 | יוחאי, מיכאל | ה׳ 22.10 |
-| [2.5](tasks/2.5-monetization.md) | מוניטיזציה ותכנית עסקית (מיכאל) | 2 | מיכאל | ה׳ 22.10 |
-| [3.1](tasks/3.1-code-freeze-and-rc.md) | הקפאת קוד וגרסת מועמד (RC) | 3 | איתן, יוחאי, מיכאל | ג׳ 27.10 |
-| [3.2](tasks/3.2-launch-readiness.md) | מוכנות להשקה | 3 | מיכאל | ג׳ 27.10 |
-| [3.3](tasks/3.3-launch-day.md) | יום ההשקה, ד׳ 28.10 | 3 | איתן, יוחאי, מיכאל | ה׳ 29.10 |
-| [4.1](tasks/4.1-support-and-fixes.md) | תמיכה ותיקונים אחרי ההשקה | 4 | איתן, יוחאי, מיכאל | ה׳ 5.11 |
-| [4.2](tasks/4.2-learn-and-plan.md) | ללמוד ולתכנן קדימה | 4 | יוחאי, מיכאל | ה׳ 5.11 |
+| # | משימה | שבוע | מי | עד | Issue |
+|---|---|---|---|---|---|
+| [1.0](tasks/1.0-knowledge-db.md) | לסיים את ה-knowledge DB | 1 | יוחאי, מיכאל | ה׳ 15.10 | [#21](https://github.com/boggioMichael/ms/issues/21) |
+| [1.1](tasks/1.1-master-review.md) | ריוויו של master: כל ממצא הופך ל-PR | 1 | איתן, מיכאל | ה׳ 15.10 | [#22](https://github.com/boggioMichael/ms/issues/22) |
+| [1.2](tasks/1.2-real-game-test.md) | מבחן לחץ על המשחק האמיתי | 1 | איתן, יוחאי, מיכאל | ד׳ 14.10 | [#23](https://github.com/boggioMichael/ms/issues/23) |
+| [1.3](tasks/1.3-fix-planning.md) | תכנון התיקונים לשבוע 2 | 1 | איתן, מיכאל | ה׳ 15.10 | [#24](https://github.com/boggioMichael/ms/issues/24) |
+| [1.4](tasks/1.4-launch-blockers.md) | שלוש תוספות שחוסמות השקה | 1 | מיכאל | א׳ 11.10 | [#25](https://github.com/boggioMichael/ms/issues/25) |
+| [2.1](tasks/2.1-fixes.md) | התיקונים משבוע 1 | 2 | איתן, יוחאי, מיכאל | ד׳ 21.10 | [#26](https://github.com/boggioMichael/ms/issues/26) |
+| [2.2](tasks/2.2-distribution-and-qa.md) | הפצה ולולאת QA מול שחקנים | 2 | מיכאל | ג׳ 20.10 | [#27](https://github.com/boggioMichael/ms/issues/27) |
+| [2.3](tasks/2.3-telemetry-and-crashes.md) | קריסות וטלמטריה, רק בהסכמה | 2 | איתן, יוחאי, מיכאל | ד׳ 21.10 | [#28](https://github.com/boggioMichael/ms/issues/28) |
+| [2.4](tasks/2.4-beta.md) | בטא פתוחה בערב ש-Classic World נפתח | 2 | יוחאי, מיכאל | ה׳ 22.10 | [#29](https://github.com/boggioMichael/ms/issues/29) |
+| [2.5](tasks/2.5-monetization.md) | מוניטיזציה ותכנית עסקית (מיכאל) | 2 | מיכאל | ה׳ 22.10 | [#30](https://github.com/boggioMichael/ms/issues/30) |
+| [3.1](tasks/3.1-code-freeze-and-rc.md) | הקפאת קוד וגרסת מועמד (RC) | 3 | איתן, יוחאי, מיכאל | ג׳ 27.10 | [#31](https://github.com/boggioMichael/ms/issues/31) |
+| [3.2](tasks/3.2-launch-readiness.md) | מוכנות להשקה | 3 | מיכאל | ג׳ 27.10 | [#32](https://github.com/boggioMichael/ms/issues/32) |
+| [3.3](tasks/3.3-launch-day.md) | יום ההשקה, ד׳ 28.10 | 3 | איתן, יוחאי, מיכאל | ה׳ 29.10 | [#33](https://github.com/boggioMichael/ms/issues/33) |
+| [4.1](tasks/4.1-support-and-fixes.md) | תמיכה ותיקונים אחרי ההשקה | 4 | איתן, יוחאי, מיכאל | ה׳ 5.11 | [#34](https://github.com/boggioMichael/ms/issues/34) |
+| [4.2](tasks/4.2-learn-and-plan.md) | ללמוד ולתכנן קדימה | 4 | יוחאי, מיכאל | ה׳ 5.11 | [#35](https://github.com/boggioMichael/ms/issues/35) |
 
 ## כללים לחודש הזה
 
