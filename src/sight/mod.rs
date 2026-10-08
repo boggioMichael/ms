@@ -1380,6 +1380,13 @@ mod tests {
         dir
     }
 
+    /// `secs` ago — or `None` when the monotonic clock is younger than that
+    /// (a CI runner that booted a minute before the tests), where
+    /// `Instant - Duration` would panic.
+    fn earlier(secs: u64) -> Option<Instant> {
+        Instant::now().checked_sub(Duration::from_secs(secs))
+    }
+
     /// A modern status bar: dark background, a red HP bar and a blue MP bar
     /// with white text over them and a gradient on each, and a thin
     /// yellow-green EXP bar along the bottom (here 50% full).
@@ -1528,7 +1535,13 @@ mod tests {
             ),
             "{text}"
         );
-        sight.map_at = Some(Instant::now() - Duration::from_secs(5 * 60));
+        let (Some(five_min_ago), Some(quarter_hour_ago)) = (earlier(5 * 60), earlier(15 * 60))
+        else {
+            eprintln!("the clock is too young for this test's aged map: skipping the rest");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        sight.map_at = Some(five_min_ago);
         let text = sight.describe().join("\n");
         assert!(
             text.contains("map Gate of the Future, as read 5 min ago (it may have changed)"),
@@ -1537,7 +1550,7 @@ mod tests {
         // A quarter of an hour on, a read without a map (the regular check
         // reads the status strip, where the name is not): the name is not
         // said any more.
-        sight.map_at = Some(Instant::now() - Duration::from_secs(15 * 60));
+        sight.map_at = Some(quarter_hour_ago);
         let without_map = HudValues {
             hp: Some((3000, 5000)),
             ..Default::default()
@@ -2045,7 +2058,12 @@ mod tests {
         );
         sight.observe(&blank, t0 + LOST_FOR + Duration::from_secs(1));
         assert_eq!(sight.wants(1280, 720), None, "held back");
-        sight.asked = Some(Instant::now() - Duration::from_secs(121));
+        let Some(two_minutes_ago) = earlier(121) else {
+            eprintln!("the clock is younger than two minutes: skipping the rest");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        sight.asked = Some(two_minutes_ago);
         assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
         let second = sight.verified(&blank, &HudValues::default());
         assert!(second.contains("the next look waits 240 s"), "{second}");

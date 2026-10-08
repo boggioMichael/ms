@@ -496,11 +496,17 @@ const LOW_HP_WORTH_A_WORD: f32 = 50.0;
 /// out. (How long the session has run goes with the EXP rate.)
 fn presence(so_far: &SoFar) -> Option<String> {
     let mut parts = Vec::new();
-    match so_far.since_player_spoke {
-        None if so_far.seconds >= QUIET_PLAYER_SECS => {
+    // (What they just said ended a long silence: the reply to it is the
+    // one that may welcome them back; `since_player_spoke` is 0 by now.)
+    match (so_far.quiet_before, so_far.since_player_spoke) {
+        (Some(quiet), _) => parts.push(format!(
+            "They had been quiet for {} until just now.",
+            short(quiet)
+        )),
+        (None, None) if so_far.seconds >= QUIET_PLAYER_SECS => {
             parts.push("They haven't said anything yet this session.".to_string())
         }
-        Some(since) if since >= QUIET_PLAYER_SECS => {
+        (None, Some(since)) if since >= QUIET_PLAYER_SECS => {
             parts.push(format!("They last spoke {}.", ago(since)))
         }
         _ => {}
@@ -1708,6 +1714,7 @@ Pot now, you're at 20.",
         let so_far = SoFar {
             seconds: 72.0 * 60.0 + 20.0,
             since_player_spoke: Some(25.0 * 60.0 + 10.0),
+            quiet_before: None,
             deaths: 3,
             since_last_death: Some(4.0 * 60.0 + 5.0),
             level_ups: 1,

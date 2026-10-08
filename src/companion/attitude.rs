@@ -64,8 +64,11 @@ impl Attitude {
 /// A situation's lines, dealt like a deck of cards: every line once before
 /// any comes again, never the same line twice in a row, and the first line
 /// of the list — the most informative, the one with the number — first in a
-/// session. The order is shuffled, but deterministically (from the round
-/// and the lines themselves), so a session plays out the same way twice.
+/// session. The order is shuffled from the lines, the round and a seed the
+/// session gives it, so that no two nights hear a deck in the same order
+/// (death #2 was the same line every night when the seed was the lines
+/// alone); a deck seeded the same plays out the same way twice, which is
+/// how the tests keep it.
 ///
 /// One per situation and per [`Attitude`]: dealt in another attitude, it
 /// starts over in that voice.
@@ -75,13 +78,23 @@ pub struct Deck {
     attitude: Option<Attitude>,
     /// How many lines were dealt in it.
     dealt: u32,
+    /// The session's seed.
+    seed: u64,
 }
 
 impl Deck {
+    /// A deck with no seed of its own: the lines alone shuffle it (what
+    /// [`Attitude::pick`] deals).
     pub const fn new() -> Self {
+        Self::seeded(0)
+    }
+
+    /// A deck shuffled by `seed` too.
+    pub const fn seeded(seed: u64) -> Self {
         Self {
             attitude: None,
             dealt: 0,
+            seed,
         }
     }
 
@@ -91,7 +104,7 @@ impl Deck {
             self.attitude = Some(attitude);
             self.dealt = 0;
         }
-        let line = attitude.pick(lines, self.dealt);
+        let line = nth_seeded(attitude.lines(lines), self.dealt, self.seed);
         self.dealt = self.dealt.wrapping_add(1);
         line
     }
@@ -103,13 +116,18 @@ impl Deck {
 /// one round and the start of the next. A deck of one line can only repeat
 /// it; a deck of two alternates.
 pub fn nth<'a>(lines: &[&'a str], n: u32) -> &'a str {
+    nth_seeded(lines, n, 0)
+}
+
+/// [`nth`], the shuffle seeded by `seed` as well as the lines.
+fn nth_seeded<'a>(lines: &[&'a str], n: u32, seed: u64) -> &'a str {
     let len = lines.len();
     if len == 0 {
         return "";
     }
     let round = n / len as u32;
     let at = (n % len as u32) as usize;
-    lines[round_order(len, round, salt(lines))[at]]
+    lines[round_order(len, round, salt(lines) ^ seed.rotate_left(29))[at]]
 }
 
 /// The order a deck of `len` lines is dealt in round `round`. The first
@@ -219,6 +237,37 @@ mod tests {
         // A caller counting for itself gets the very same sequence.
         let counted: Vec<&str> = (0..70).map(|n| Attitude::Blunt.pick(lines, n)).collect();
         assert_eq!(dealt, counted);
+    }
+
+    #[test]
+    fn a_deck_seeded_by_the_session_is_dealt_in_another_order_each_night() {
+        // Two sessions (two seeds — these two were checked to differ, as
+        // nearly any two do): the lead opens both, every rule holds in
+        // both, and the rest comes in another order. Unseeded, a deck is
+        // dealt as `pick` deals it.
+        let lines = [&SEVEN[..], &SEVEN[..], &SEVEN[..]];
+        let deal = |seed: u64| -> Vec<&str> {
+            let mut deck = Deck::seeded(seed);
+            (0..21).map(|_| deck.deal(Attitude::Blunt, lines)).collect()
+        };
+        let (one, two) = (deal(1), deal(2));
+        assert_ne!(one, two);
+        for dealt in [&one, &two] {
+            assert_eq!(dealt[0], "lead 1");
+            for (r, round) in dealt.chunks(7).enumerate() {
+                let mut seen: Vec<&str> = round.to_vec();
+                seen.sort_unstable();
+                seen.dedup();
+                assert_eq!(seen.len(), 7, "round {r}: {round:?}");
+            }
+            for pair in dealt.windows(2) {
+                assert_ne!(pair[0], pair[1], "{dealt:?}");
+            }
+        }
+        assert_eq!(deal(1), deal(1));
+        let counted: Vec<&str> = (0..21).map(|n| Attitude::Blunt.pick(lines, n)).collect();
+        assert_eq!(deal(0), counted);
+        assert_eq!(Deck::new(), Deck::seeded(0));
     }
 
     #[test]

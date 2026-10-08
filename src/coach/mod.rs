@@ -26,9 +26,11 @@
 //!
 //! Pacing is deterministic and tested here: a model is consulted at most
 //! every few seconds and only while nobody is talking, and nothing is said
-//! sooner than a quarter minute after the last unprompted line. The model
-//! is never asked what to say about a danger: the companion's own lines
-//! for those come at once, with no model in the way.
+//! sooner than a quarter minute after the last unprompted line — except a
+//! reaction (a close call, a streak), which waits only for the talking to
+//! stop: it is about the moment, and the moment passes. The model is never
+//! asked what to say about a danger: the companion's own lines for those
+//! come at once, with no model in the way.
 
 pub mod scene;
 
@@ -174,18 +176,27 @@ pub mod examples {
         ],
     ];
 
-    /// A look at nothing in particular.
+    /// A look at nothing in particular. Only what a small, soft picture
+    /// of the screen shows: a crowd of mobs on the character, a boss, a
+    /// low bar, a dialog, an empty map, the character standing still.
+    /// Never loot, runes or buff icons — the model cannot make those out
+    /// at that size, and an invented "loot behind you" is worse than
+    /// silence.
     pub const LOOK: [&[&str]; 3] = [
         &[
-            "Your buffs ran out.",
-            "There's loot behind you.",
-            "Rune on the right, grab it.",
+            "That's a crowd on you. Thin it out before it bites.",
+            "Boss on screen. Get ready before you go in.",
+            "You've been standing still a while. Go hit something.",
         ],
-        &["Rebuff.", "Loot. Behind you.", "Rune, right side. Go."],
         &[
-            "Rebuff, you're fighting naked.",
-            "You left loot on the floor again.",
-            "Rune's been sitting there a minute. Open your eyes.",
+            "You're surrounded. Move.",
+            "That's a boss. Pot up first.",
+            "Standing around again. Play.",
+        ],
+        &[
+            "Half the map's on you and you're just standing there. Move.",
+            "A boss. Try not to die in the first ten seconds.",
+            "Standing still on an empty map. Change channel, genius.",
         ],
     ];
 
@@ -201,6 +212,20 @@ pub mod examples {
 }
 
 impl Reason {
+    /// A reaction to a moment (a close call, a streak), as against company
+    /// (a look, a new scene, a level-up, a stall): said soon or not at all,
+    /// and from the facts in the reason alone.
+    pub fn is_reaction(&self) -> bool {
+        matches!(self, Reason::CloseCall { .. } | Reason::Streak { .. })
+    }
+
+    /// Whether the model should be shown the screen for this reason. A
+    /// reaction carries its facts (the lowest HP, the deaths); the picture
+    /// would cost a second and add nothing — and the moment is the point.
+    pub fn wants_picture(&self) -> bool {
+        !self.is_reaction()
+    }
+
     /// The more urgent, the lower.
     fn rank(&self) -> u8 {
         match self {
@@ -281,8 +306,9 @@ just opened; else [silent]."
 doing makes sense (a menu, a trade, a boss, a chat), [silent]; if not, one line that gets them going again."
             ),
             Reason::Look => "Nothing in particular happened; you're just glancing at their screen. A line only \
-if something there deserves one right now — danger building, a buff that ran out, loot on the ground, a \
-clearly better move; else [silent], as most glances are."
+if something there deserves one right now — danger building (a crowd of mobs on them, a boss, the HP bar \
+low), a dialog they're stuck in, an empty map, them standing still; else [silent], as most glances are. The \
+picture is small and soft: you can't make out loot, runes or buff icons in it, so never call those."
                 .to_string(),
         };
         format!("{what} Like: {}", self.examples(attitude))
@@ -427,7 +453,6 @@ pub struct Coach {
     /// When the EXP reading last changed, and what it was.
     exp_changed: Option<(f64, f32)>,
     stall_told: Option<f64>,
-    level: Option<u32>,
     /// A reason waiting for a quiet moment, and since when.
     pending: Option<(Reason, f64)>,
     /// A level-up waiting for its moment.
@@ -474,7 +499,6 @@ impl Coach {
             consulting: false,
             exp_changed: None,
             stall_told: None,
-            level: None,
             pending: None,
             level_up: None,
             seen_since: None,
@@ -571,7 +595,17 @@ impl Coach {
         }
         let quiet = now - self.quiet_since >= MIN_GAP;
         let apart = now - self.last_consult >= CONSULT_GAP;
-        if quiet && apart && self.pending.is_some() {
+        // A reaction (a close call, a streak) is about the moment: it waits
+        // for nobody's quiet quarter minute, only for the talking to stop
+        // and the consults to be apart. "That was close" a quarter minute
+        // after the companion's own "pot now" landed when the fight was
+        // over. Company (a new scene, a level-up, a stall, a look) keeps
+        // the quarter minute.
+        let reaction = self
+            .pending
+            .as_ref()
+            .is_some_and(|(reason, _)| reason.is_reaction());
+        if (quiet || reaction) && apart && self.pending.is_some() {
             let (reason, _) = self.pending.take()?;
             return Some(self.consult(reason, now));
         }
@@ -596,14 +630,10 @@ impl Coach {
         self.track_talk(g);
         self.track_deaths(g);
         self.track_scare(g);
-        if let Some(level) = g.obs.level {
-            if let Some(before) = self.level
-                && level == before + 1
-            {
-                self.leveled(now, Some(level));
-            }
-            self.level = Some(level);
-        }
+        // (A level-up reaches the coach through `leveled`, from the
+        // companion's verified one — not from the level as read each frame:
+        // a reading that flips 165, 166, 165, 166 had the coach propose
+        // "they just hit 166" every time it came back up.)
         if let Some(exp) = g.obs.exp {
             // A printed number moves in hundredths; a bar's fill flickers.
             let tolerance = if exp.read { 0.005 } else { 0.3 };
@@ -1065,6 +1095,59 @@ mod tests {
     }
 
     #[test]
+    fn a_level_reading_that_flips_is_not_the_coachs_to_celebrate() {
+        // The sight's reader gives 165, then 166, then 165 again, every
+        // 40 s (a misread it holds for a while): the coach took each 166
+        // for a level-up and had the model told "they just hit level 166"
+        // five times in 400 s. A level-up reaches the coach only through
+        // `leveled`, from the companion's verified one — once.
+        fn flipping(coach: &mut Coach, from: f64, seconds: f64) -> Vec<(f64, Reason)> {
+            let mut consults = Vec::new();
+            for i in 0..(seconds * 10.0) as usize {
+                let now = from + i as f64 * 0.1;
+                let level = if (i / 400) % 2 == 0 { 165 } else { 166 };
+                // (EXP creeping: no stall.)
+                let o = obs(10.0 + i as f32 * 0.001, level);
+                let v = verdict(0.02, false);
+                let g = Glance {
+                    now,
+                    obs: &o,
+                    scene: Some(&v),
+                    in_view: true,
+                    talking: false,
+                    muted: false,
+                    dead: false,
+                };
+                if let Some(reason) = coach.observe(&g) {
+                    coach.answered(now, None);
+                    consults.push((now, reason));
+                }
+            }
+            consults
+        }
+        let level_ups = |consults: &[(f64, Reason)]| {
+            consults
+                .iter()
+                .filter(|(_, r)| matches!(r, Reason::LevelUp { .. }))
+                .count()
+        };
+        let mut coach = Coach::new(true);
+        let consults = flipping(&mut coach, 0.0, 400.0);
+        assert_eq!(level_ups(&consults), 0, "{consults:?}");
+        // The companion's verified level-up: one word on it, and the
+        // flipping reading after it adds nothing.
+        coach.leveled(400.0, Some(166));
+        let after = flipping(&mut coach, 400.0, 400.0);
+        assert_eq!(level_ups(&after), 1, "{after:?}");
+        let up = after
+            .iter()
+            .find(|(_, r)| matches!(r, Reason::LevelUp { .. }))
+            .unwrap();
+        assert_eq!(up.1, Reason::LevelUp { level: Some(166) });
+        assert!((up.0 - 400.0 - LEVEL_UP_AFTER).abs() < 0.11, "{after:?}");
+    }
+
+    #[test]
     fn it_waits_while_someone_talks_and_after_anything_was_said() {
         let mut coach = Coach::new(true);
         play(&mut coach, 0.0, 12.0, 18.99, true, 0.02, None);
@@ -1370,6 +1453,47 @@ mod tests {
     }
 
     #[test]
+    fn a_close_call_is_reacted_to_at_once_not_a_quarter_minute_after_the_warning() {
+        // The companion's own "HP 8 percent. Pot now!" at 20 s, the potion
+        // a second later: "that was close" waited the quarter minute's
+        // quiet after the warning and was consulted at 35 s, with the
+        // fight long over. A reaction waits for nothing but the talking
+        // to stop: consulted as soon as the save has held.
+        let mut coach = Coach::new(true);
+        play(&mut coach, 0.0, 20.0, 18.99, true, 0.02, None);
+        coach.someone_spoke(20.0);
+        let mut all = hp_frames(&mut coach, 20.0, 1.0, 8.0, false, false);
+        all.extend(hp_frames(&mut coach, 21.0, 30.0, 60.0, false, false));
+        assert_eq!(close_calls(&all), vec![(21.6, 8)], "{all:?}");
+        // With the warning's clip still playing for three seconds after
+        // the save: as soon as it is done.
+        hp_frames(&mut coach, 51.0, 349.0, 60.0, false, false);
+        coach.someone_spoke(400.0);
+        let mut all = hp_frames(&mut coach, 400.0, 1.0, 8.0, false, true);
+        all.extend(hp_frames(&mut coach, 401.0, 3.0, 60.0, false, true));
+        all.extend(hp_frames(&mut coach, 404.0, 30.0, 60.0, false, false));
+        assert_eq!(close_calls(&all), vec![(404.0, 8)], "{all:?}");
+        // A reaction carries its facts: no picture for it; company looks.
+        assert!(!Reason::CloseCall { lowest: 8 }.wants_picture());
+        assert!(
+            !Reason::Streak {
+                deaths: 3,
+                minutes: 7
+            }
+            .wants_picture()
+        );
+        for company in [
+            Reason::Look,
+            Reason::NewScene,
+            Reason::LevelUp { level: None },
+            Reason::ExpStalled { minutes: 3 },
+        ] {
+            assert!(company.wants_picture(), "{company:?}");
+            assert!(!company.is_reaction(), "{company:?}");
+        }
+    }
+
+    #[test]
     fn the_third_death_in_ten_minutes_is_a_streak_said_once_per_streak() {
         let mut coach = Coach::new(true);
         play(&mut coach, 0.0, 20.0, 18.99, true, 0.02, None);
@@ -1386,10 +1510,11 @@ mod tests {
         assert_eq!(coach.deaths.len(), 1);
         let second = die(&mut coach, 300.0);
         assert!(streaks(&first).is_empty() && streaks(&second).is_empty());
-        // The third, 6 min 40 s after the first: a streak, looked at a
-        // quarter minute after the companion's line.
+        // The third, 6 min 40 s after the first: a streak, looked at as
+        // soon as the companion's line is out of the way (a reaction, not
+        // company: no quarter minute's wait).
         let third = die(&mut coach, 500.0);
-        assert_eq!(streaks(&third), vec![(515.0, 3, 7)], "{third:?}");
+        assert_eq!(streaks(&third), vec![(500.0, 3, 7)], "{third:?}");
         // A fourth and a fifth, each within ten minutes of the last: the
         // same streak, said already.
         let fourth = die(&mut coach, 700.0);
@@ -1401,7 +1526,7 @@ mod tests {
         let mut next = die(&mut coach, 1700.0);
         next.extend(die(&mut coach, 1800.0));
         next.extend(die(&mut coach, 1900.0));
-        assert_eq!(streaks(&next), vec![(1915.0, 3, 4)], "{next:?}");
+        assert_eq!(streaks(&next), vec![(1900.0, 3, 4)], "{next:?}");
         // Two deaths far apart are no streak at all.
         let mut sparse = Coach::new(true);
         play(&mut sparse, 0.0, 20.0, 18.99, true, 0.02, None);
@@ -1511,6 +1636,24 @@ line: a breather, an easier map, or what keeps killing them"
             look.contains("else [silent], as most glances are"),
             "{look}"
         );
+        // The look's examples are of what a small, soft picture shows (a
+        // crowd, a boss, standing still), never of what it cannot (loot,
+        // runes, buffs): "Loot. Behind you." was an invitation to invent
+        // one, and a wrong callout is worse than silence.
+        assert!(
+            look.contains(
+                "you can't make out loot, runes or buff icons in it, so never call those"
+            ),
+            "{look}"
+        );
+        for attitude in Attitude::ALL {
+            for line in attitude.lines(examples::LOOK) {
+                let lower = line.to_lowercase();
+                for unseen in ["loot", "rune", "buff"] {
+                    assert!(!lower.contains(unseen), "{line:?}");
+                }
+            }
+        }
         // The savage close call, as the model gets it.
         assert!(reasons[0].describe(Attitude::Savage).ends_with(
             "Like: \"That was close, you absolute clown.\" \"8 percent. One more hit and I'd be \
