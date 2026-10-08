@@ -131,6 +131,39 @@ pub struct Progress {
     pub marks: u32,
 }
 
+/// What a friend in the room would know of the session so far, for the
+/// model (`Companion::so_far`): all in seconds, `None` where there is
+/// nothing to say yet.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SoFar {
+    /// How long the session has run.
+    pub seconds: f64,
+    /// Since the player last said anything (`None`: not yet this session).
+    pub since_player_spoke: Option<f64>,
+    /// Deaths so far, and since the last.
+    pub deaths: u32,
+    pub since_last_death: Option<f64>,
+    /// Level-ups so far, and since the last one celebrated.
+    pub level_ups: u32,
+    pub since_last_level_up: Option<f64>,
+    /// The lowest HP read in the last minute, in percent (while alive and
+    /// the bar was being read, not guessed at).
+    pub lowest_hp_lately: Option<f32>,
+    /// How long neither HP nor EXP has moved, with the game in view.
+    pub quiet_for: Option<f64>,
+    /// How long the game has been out of sight (`None`: it is in view, or
+    /// was never seen).
+    pub unseen_for: Option<f64>,
+}
+
+/// HP or EXP moving by less than this is the bar's flicker, not something
+/// happening: a hit, a potion or a kill moves more.
+const QUIET_HP_POINTS: f32 = 2.0;
+const QUIET_EXP_READ: f32 = 0.01;
+const QUIET_EXP_BAR: f32 = 0.5;
+/// HP readings are kept this long for the lowest lately, in seconds.
+const LOWEST_HP_SECS: f64 = 60.0;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Warning {
     /// Below the threshold, warned at this time.
@@ -215,6 +248,17 @@ pub struct Companion {
     /// last said.
     hold_until: f64,
     hold_told: f64,
+    /// Deaths this session, and when the last was (for `so_far`; no rule
+    /// reads them).
+    deaths: u32,
+    last_death: f64,
+    /// HP read lately (when, percent), alive and steady, for the lowest in
+    /// the last minute.
+    hp_minute: std::collections::VecDeque<(f64, f32)>,
+    /// When HP or EXP last moved noticeably, and what they were then.
+    changed_at: f64,
+    hp_at_change: Option<f32>,
+    exp_at_change: Option<f32>,
 }
 
 /// A bar's readings lately, to tell a bar that is being read from one
@@ -917,6 +961,12 @@ impl Companion {
             spoke_at: f64::NEG_INFINITY,
             hold_until: f64::NEG_INFINITY,
             hold_told: f64::NEG_INFINITY,
+            deaths: 0,
+            last_death: f64::NEG_INFINITY,
+            hp_minute: std::collections::VecDeque::new(),
+            changed_at: f64::NEG_INFINITY,
+            hp_at_change: None,
+            exp_at_change: None,
         }
     }
 
@@ -1195,6 +1245,64 @@ impl Companion {
         }
     }
 
+    /// The session so far, as a friend in the room would know it, as of
+    /// the last frame: how long, when the player last spoke, deaths and
+    /// level-ups and when the last of each was, the lowest HP in the last
+    /// minute, how long the game has been quiet, or out of sight.
+    pub fn so_far(&self) -> SoFar {
+        let now = self.now;
+        let seen = self.last.as_ref().is_some_and(|o| o.game.is_seen());
+        let since = |at: f64| at.is_finite().then(|| (now - at).max(0.0));
+        SoFar {
+            seconds: now,
+            since_player_spoke: since(self.spoke_at),
+            deaths: self.deaths,
+            since_last_death: since(self.last_death),
+            level_ups: self.exp.levels_gained(),
+            since_last_level_up: since(self.announced_level_up),
+            lowest_hp_lately: self
+                .hp_minute
+                .iter()
+                .filter(|(t, _)| now - t <= LOWEST_HP_SECS)
+                .map(|(_, p)| *p)
+                .reduce(f32::min),
+            quiet_for: since(self.changed_at).filter(|_| seen),
+            unseen_for: match (seen, self.seen_at) {
+                (false, Some(at)) => Some((now - at).max(0.0)),
+                _ => None,
+            },
+        }
+    }
+
+    /// When HP or EXP last moved by more than the bar's flicker: the game
+    /// is quiet while neither does.
+    fn track_change(&mut self, now: f64, obs: &Observation) {
+        let hp = obs.hp.map(|g| g.percent);
+        let exp = obs.exp;
+        let hp_moved = match (self.hp_at_change, hp) {
+            (Some(then), Some(v)) => (v - then).abs() >= QUIET_HP_POINTS,
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        let exp_moved = match (self.exp_at_change, exp) {
+            (Some(then), Some(g)) => {
+                let flicker = if g.read {
+                    QUIET_EXP_READ
+                } else {
+                    QUIET_EXP_BAR
+                };
+                (g.percent - then).abs() >= flicker
+            }
+            (None, Some(_)) => true,
+            _ => false,
+        };
+        if hp_moved || exp_moved {
+            self.changed_at = now;
+            self.hp_at_change = hp.or(self.hp_at_change);
+            self.exp_at_change = exp.map(|g| g.percent).or(self.exp_at_change);
+        }
+    }
+
     /// Whether a sentence now would count as addressed without the wake word.
     /// When a level-up was last announced (never: minus infinity).
     pub fn last_level_up(&self) -> f64 {
@@ -1225,6 +1333,7 @@ impl Companion {
         let mut alerts = Vec::new();
         self.track_window(now, &obs, &mut out);
         if obs.game.is_seen() {
+            self.track_change(now, &obs);
             self.watch_hp(now, &obs, &mut out, &mut alerts);
             self.watch_mp(now, &obs, &mut out, &mut alerts);
             self.watch_progress(now, &obs, &mut out, &mut alerts);
@@ -1409,6 +1518,8 @@ impl Companion {
             let held = if hp.read { 0.0 } else { ZERO_HOLD_SECS };
             if self.zero_hp_frames >= 3 && now - self.zero_hp_since >= held && !self.dead {
                 self.dead = true;
+                self.deaths += 1;
+                self.last_death = now;
                 let sooner = self.sooner_warning(now);
                 if let Some(sooner) = sooner {
                     self.settings.hp_low = sooner;
@@ -1422,6 +1533,15 @@ impl Companion {
         self.hp_lately.push_back((now, hp.percent));
         while self.hp_lately.front().is_some_and(|(t, _)| now - t > 10.0) {
             self.hp_lately.pop_front();
+        }
+        // (The same readings, kept a minute, for `so_far`.)
+        self.hp_minute.push_back((now, hp.percent));
+        while self
+            .hp_minute
+            .front()
+            .is_some_and(|(t, _)| now - t > LOWEST_HP_SECS)
+        {
+            self.hp_minute.pop_front();
         }
         if self.dead && hp.percent > 10.0 {
             self.dead = false;
@@ -3162,5 +3282,93 @@ mod tests {
         assert_eq!(percent_amount(4.56), "4.6 percent");
         assert_eq!(percent_amount(4.0), "4 percent");
         assert_eq!(percent_amount(0.25), "0.25 percent");
+    }
+
+    #[test]
+    fn the_session_so_far_is_what_a_friend_in_the_room_would_know() {
+        let mut c = Companion::new(Settings::default());
+        // Nothing yet: no game, nobody spoke, nothing to say.
+        assert_eq!(c.so_far(), SoFar::default());
+        // Five minutes of play, ten frames a second: HP read, swinging
+        // 90–94 (a hit, a potion), EXP still.
+        for i in 0..3000 {
+            c.observe(i as f64 * 0.1, read(90.0 + (i / 10 % 5) as f32));
+        }
+        let so_far = c.so_far();
+        assert!((so_far.seconds - 299.9).abs() < 0.01, "{so_far:?}");
+        assert_eq!(so_far.since_player_spoke, None);
+        assert_eq!((so_far.deaths, so_far.since_last_death), (0, None));
+        assert_eq!((so_far.level_ups, so_far.since_last_level_up), (0, None));
+        assert_eq!(so_far.lowest_hp_lately, Some(90.0));
+        // HP moving is the game going on: not quiet.
+        assert!(so_far.quiet_for.unwrap() < 5.0, "{so_far:?}");
+        assert_eq!(so_far.unseen_for, None);
+        // They say something; a hit to 8% and a potion; four minutes at
+        // 60; then a death, read from the number at once.
+        c.player_spoke(300.0);
+        c.observe(300.1, read(8.0));
+        c.observe(300.2, read(8.0));
+        for i in 3..2400 {
+            c.observe(300.0 + i as f64 * 0.1, read(60.0));
+        }
+        for i in 0..3 {
+            c.observe(540.0 + i as f64 * 0.1, read(0.0));
+        }
+        assert!(c.dead());
+        for i in 3..50 {
+            c.observe(540.0 + i as f64 * 0.1, read(0.0));
+        }
+        let so_far = c.so_far();
+        assert_eq!(so_far.deaths, 1);
+        assert!(
+            (so_far.since_last_death.unwrap() - 4.7).abs() < 0.11,
+            "{so_far:?}"
+        );
+        assert!(
+            (so_far.since_player_spoke.unwrap() - 244.9).abs() < 0.11,
+            "{so_far:?}"
+        );
+        // The 8% was more than a minute ago; the lowest reading of the
+        // last minute is the 60 (a death is no reading).
+        assert_eq!(so_far.lowest_hp_lately, Some(60.0));
+        // HP sat at 60 and EXP at 10 for four minutes — but the death
+        // moved HP, 4.7 s ago.
+        assert!(so_far.quiet_for.unwrap() < 5.0, "{so_far:?}");
+        // A revive, then a long stand in town: quiet for the duration.
+        for i in 0..710 {
+            c.observe(545.0 + i as f64 * 0.5, read(100.0));
+        }
+        let so_far = c.so_far();
+        assert!(!c.dead());
+        assert!(
+            (so_far.quiet_for.unwrap() - 354.5).abs() < 0.01,
+            "{so_far:?}"
+        );
+        assert_eq!(so_far.lowest_hp_lately, Some(100.0));
+        // A level-up: counted, and when.
+        let mut up = read(100.0);
+        up.level = Some(166);
+        for i in 0..40 {
+            c.observe(900.0 + i as f64 * 0.1, up.clone());
+        }
+        let so_far = c.so_far();
+        assert_eq!(so_far.level_ups, 1);
+        assert!(so_far.since_last_level_up.unwrap() < 1.5, "{so_far:?}");
+        // The game out of sight: for how long; nothing is quiet about it.
+        for i in 0..100 {
+            c.observe(
+                904.0 + i as f64 * 0.1,
+                Observation::unseen(GameView::NotFound),
+            );
+        }
+        let so_far = c.so_far();
+        assert!(
+            (so_far.unseen_for.unwrap() - 10.0).abs() < 0.01,
+            "{so_far:?}"
+        );
+        assert_eq!(so_far.quiet_for, None);
+        // Back in view.
+        c.observe(914.0, read(100.0));
+        assert_eq!(c.so_far().unseen_for, None);
     }
 }

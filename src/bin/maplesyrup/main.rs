@@ -1229,9 +1229,11 @@ fn drop_the_attitude(companion: &mut Companion, learning: &ai::Learning, out: &m
 }
 
 /// What is on screen, as a few lines for a model: what the vision engine
-/// reads, and what MapleSyrup learned about this screen.
+/// reads, what a friend in the room would know of the session so far, and
+/// what MapleSyrup learned about this screen.
 fn snapshot_text(companion: &Companion, sight: Option<&Arc<Mutex<Sight>>>) -> String {
-    let mut snapshot = ai::brain::snapshot(companion.last(), &companion.progress());
+    let mut snapshot =
+        ai::brain::snapshot(companion.last(), &companion.progress(), &companion.so_far());
     if let Some(sight) = sight {
         let sight = sight.lock().unwrap_or_else(|e| e.into_inner());
         for line in sight.describe() {
@@ -2422,7 +2424,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         ),
                     );
                     coach_job = Some(worker.send(Job::Coach {
-                        reason: reason.describe(),
+                        reason: reason.describe(companion.settings.attitude),
                         label: reason.label(),
                         snapshot,
                         eyes,

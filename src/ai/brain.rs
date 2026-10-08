@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::memory::Learning;
 use super::openai::Turn;
 use super::style::{self, Attitude};
-use crate::companion::{GameView, Gauge, Observation, Progress};
+use crate::companion::{GameView, Gauge, Observation, Progress, SoFar};
 
 /// Turns of conversation kept (a turn is one sentence each way).
 const KEEP_TURNS: usize = 16;
@@ -263,13 +263,20 @@ const MORE: &str = "More:
 - Answer in the language of what they just said, every time; say game names the way players say them. A language \
 you were told to use \"by default\" is for when their words have no language (a button): it never overrides the \
 language they are speaking now.
-- Never say again what you said in your last two replies unless they ask again, and never open with where they \
-are unless they asked where they are. If what you heard makes no sense (a bad transcription), say in a few words \
-that you didn't catch it; don't guess what they meant.
+- Don't say again what you said in your last two replies unless they ask again, and never open with where they \
+are unless they asked. If what you heard makes no sense (a bad transcription), say in a few words that you didn't \
+catch it; don't guess what they meant.
 - If your last reply ends with \"…\", they talked over you there: don't repeat it; go with what they said now.
-- Use what you can see when it's relevant; values marked \"about\" are estimates. Never ask them to read the screen to you: look closer instead.
+- Trust your eyes: use what you see when it bears on the moment (values marked \"about\" are estimates); if the \
+screen clearly shows something other than what they say, say what you see; never ask them to read the screen to \
+you — look closer instead.
 - When they correct you, take it in a word and keep it (note_correction); what they corrected you on before beats what you think you know.
-- Trust your eyes: if the screen clearly shows something other than what they say, say what you see.
+- Presence: greet once per session, the first time they talk to you; \"welcome back\" at most once, after 20 \
+minutes or more without a word from them; ask whether they're still there once at most. The session facts you \
+get (how long, deaths, level-ups, when they last spoke, the lowest HP) are for you, not for them: never recite \
+them; one comes up only when it changes what you'd say.
+- What you know about them from before comes in only when it bears on what they just said, as a clause, never \
+as a list: \"that boss again?\", not \"I remember you fought Zakum, wanted a Fafnir and play Mu Lung Dojo\".
 - You can't press keys or play for them; you watch and talk.
 - If they're clearly talking to someone else (their stream chat, a friend, a call) and not to you, reply with exactly: [silent]";
 
@@ -441,17 +448,93 @@ fn duration(seconds: f64) -> String {
     }
 }
 
-/// What the companion sees, as a few plain lines for the model.
-pub fn snapshot(obs: Option<&Observation>, progress: &Progress) -> String {
+/// A duration the short way: "under a minute", "25 min", "1 h 12 min",
+/// "2 h".
+fn short(seconds: f64) -> String {
+    let minutes = (seconds / 60.0).round() as u64;
+    match (minutes / 60, minutes % 60) {
+        (0, 0) => "under a minute".to_string(),
+        (0, m) => format!("{m} min"),
+        (h, 0) => format!("{h} h"),
+        (h, m) => format!("{h} h {m} min"),
+    }
+}
+
+/// How long ago, rounded: "just now" within the minute.
+fn ago(seconds: f64) -> String {
+    if seconds < 60.0 {
+        "just now".to_string()
+    } else {
+        format!("{} ago", short(seconds))
+    }
+}
+
+/// Silence from the player long enough to be worth a word, in seconds.
+const QUIET_PLAYER_SECS: f64 = 60.0;
+/// The game unmoving (no HP or EXP change) for this long is worth a word.
+const QUIET_GAME_SECS: f64 = 120.0;
+/// The game out of sight for this long is worth a word.
+const UNSEEN_SECS: f64 = 60.0;
+/// The lowest HP lately is worth a word under this.
+const LOW_HP_WORTH_A_WORD: f32 = 50.0;
+
+/// The session so far, as a friend in the room would know it, in one line
+/// or none: what has something to say is said, rounded; the rest is left
+/// out. (How long the session has run goes with the EXP rate.)
+fn presence(so_far: &SoFar) -> Option<String> {
+    let mut parts = Vec::new();
+    match so_far.since_player_spoke {
+        None if so_far.seconds >= QUIET_PLAYER_SECS => {
+            parts.push("They haven't said anything yet this session.".to_string())
+        }
+        Some(since) if since >= QUIET_PLAYER_SECS => {
+            parts.push(format!("They last spoke {}.", ago(since)))
+        }
+        _ => {}
+    }
+    if so_far.deaths > 0 {
+        let last = so_far
+            .since_last_death
+            .map(|s| format!(" (last one {})", ago(s)))
+            .unwrap_or_default();
+        parts.push(format!("Deaths: {}{last}.", so_far.deaths));
+    }
+    if so_far.level_ups > 0 {
+        let last = so_far
+            .since_last_level_up
+            .map(|s| format!(" (last one {})", ago(s)))
+            .unwrap_or_default();
+        parts.push(format!("Level-ups: {}{last}.", so_far.level_ups));
+    }
+    if let Some(lowest) = so_far.lowest_hp_lately.filter(|l| *l < LOW_HP_WORTH_A_WORD) {
+        parts.push(format!("Lowest HP in the last minute: {:.0}%.", lowest));
+    }
+    if let Some(quiet) = so_far.quiet_for.filter(|q| *q >= QUIET_GAME_SECS) {
+        parts.push(format!(
+            "The game has been quiet for {} (no HP or EXP change).",
+            short(quiet)
+        ));
+    }
+    (!parts.is_empty()).then(|| parts.join(" "))
+}
+
+/// What the companion sees, as a few plain lines for the model, and what
+/// a friend in the room would know of the session so far (`so_far`).
+pub fn snapshot(obs: Option<&Observation>, progress: &Progress, so_far: &SoFar) -> String {
     let mut lines = Vec::new();
+    let unseen = so_far
+        .unseen_for
+        .filter(|u| *u >= UNSEEN_SECS)
+        .map(|u| format!(" (for {})", short(u)))
+        .unwrap_or_default();
     match obs.map(|o| &o.game) {
         Some(GameView::Seen(_)) => {
             lines.push("The MapleStory window is open and in view.".to_string())
         }
-        Some(GameView::Unavailable(why)) => {
-            lines.push(format!("MapleStory can't be seen right now: {why}."))
-        }
-        _ => lines.push("No MapleStory window is open right now.".to_string()),
+        Some(GameView::Unavailable(why)) => lines.push(format!(
+            "MapleStory can't be seen right now{unseen}: {why}."
+        )),
+        _ => lines.push(format!("No MapleStory window is open right now{unseen}.")),
     }
     if let Some(obs) = obs.filter(|o| o.game.is_seen()) {
         let mut who = Vec::new();
@@ -481,20 +564,17 @@ pub fn snapshot(obs: Option<&Observation>, progress: &Progress) -> String {
             lines.push(format!("{}.", bars.join(", ")));
         }
     }
-    let mut session = vec![format!(
-        "This session has run {}",
-        duration(progress.seconds)
-    )];
+    let mut session = vec![format!("Session: {}", short(progress.seconds))];
     if let Some(rate) = progress.exp_per_hour {
         session.push(format!("EXP rate about {rate:+.1}% per hour"));
     }
     if let Some(eta) = progress.seconds_to_level {
         session.push(format!("next level in about {}", duration(eta)));
     }
-    if progress.levels_gained > 0 {
-        session.push(format!("{} level-up(s) so far", progress.levels_gained));
-    }
     lines.push(format!("{}.", session.join("; ")));
+    if let Some(line) = presence(so_far) {
+        lines.push(line);
+    }
     lines.join("\n")
 }
 
@@ -1571,11 +1651,145 @@ Pot now, you're at 20.",
             levels_gained: 0,
             marks: 0,
         };
-        let text = snapshot(Some(&obs), &progress);
+        let so_far = SoFar {
+            seconds: 42.0 * 60.0,
+            since_player_spoke: Some(12.0),
+            ..Default::default()
+        };
+        let text = snapshot(Some(&obs), &progress, &so_far);
         assert!(text.contains("Character: level 57, Assassin."));
         assert!(text.contains("HP 1291 of 1351 (82%), MP about 40%."));
-        assert!(text.contains("EXP rate about +9.1% per hour; next level in about 3 h 0 min"));
-        assert!(snapshot(None, &Progress::default()).starts_with("No MapleStory window"));
+        assert!(text.contains(
+            "Session: 42 min; EXP rate about +9.1% per hour; next level in about 3 h 0 min."
+        ));
+        // Nothing to say of the session so far (they just spoke, no
+        // deaths, no level-ups, HP fine): no line about it.
+        assert_eq!(text.lines().count(), 4, "{text}");
+        assert!(
+            snapshot(None, &Progress::default(), &SoFar::default())
+                .starts_with("No MapleStory window is open right now.")
+        );
+    }
+
+    #[test]
+    fn the_snapshot_says_what_a_friend_in_the_room_would_know() {
+        let obs = Observation {
+            game: GameView::Seen("MapleStory".into()),
+            hp: Some(Gauge {
+                percent: 100.0,
+                current: None,
+                max: None,
+                read: false,
+            }),
+            mp: None,
+            exp: None,
+            level: Some(165),
+            name: None,
+            job: None,
+        };
+        let progress = Progress {
+            seconds: 72.0 * 60.0 + 20.0,
+            levels_gained: 1,
+            ..Default::default()
+        };
+        let so_far = SoFar {
+            seconds: 72.0 * 60.0 + 20.0,
+            since_player_spoke: Some(25.0 * 60.0 + 10.0),
+            deaths: 3,
+            since_last_death: Some(4.0 * 60.0 + 5.0),
+            level_ups: 1,
+            since_last_level_up: Some(40.0),
+            lowest_hp_lately: Some(8.4),
+            quiet_for: Some(30.0),
+            unseen_for: None,
+        };
+        let text = snapshot(Some(&obs), &progress, &so_far);
+        assert!(text.contains("Session: 1 h 12 min."), "{text}");
+        assert!(
+            text.contains(
+                "They last spoke 25 min ago. Deaths: 3 (last one 4 min ago). Level-ups: 1 (last one \
+just now). Lowest HP in the last minute: 8%."
+            ),
+            "{text}"
+        );
+        // Half a minute without a change is not quiet; six minutes is.
+        assert!(!text.contains("quiet"), "{text}");
+        let quiet = SoFar {
+            quiet_for: Some(6.0 * 60.0),
+            lowest_hp_lately: Some(95.0),
+            since_player_spoke: Some(3.0 * 3600.0 + 5.0 * 60.0),
+            ..so_far.clone()
+        };
+        let text = snapshot(Some(&obs), &progress, &quiet);
+        assert!(
+            text.contains("The game has been quiet for 6 min (no HP or EXP change)."),
+            "{text}"
+        );
+        assert!(text.contains("They last spoke 3 h 5 min ago."), "{text}");
+        // HP that never went low lately is nothing to say.
+        assert!(!text.contains("Lowest HP"), "{text}");
+        // Not a word from them yet, a minute in; and the game out of sight.
+        let silent = SoFar {
+            seconds: 90.0,
+            since_player_spoke: None,
+            ..Default::default()
+        };
+        let text = snapshot(Some(&obs), &progress, &silent);
+        assert!(
+            text.contains("They haven't said anything yet this session."),
+            "{text}"
+        );
+        let gone = SoFar {
+            unseen_for: Some(12.0 * 60.0),
+            ..Default::default()
+        };
+        let text = snapshot(None, &Progress::default(), &gone);
+        assert!(
+            text.starts_with("No MapleStory window is open right now (for 12 min)."),
+            "{text}"
+        );
+        let hidden = Observation::unseen(GameView::Unavailable("minimised".into()));
+        let text = snapshot(Some(&hidden), &Progress::default(), &gone);
+        assert!(
+            text.starts_with("MapleStory can't be seen right now (for 12 min): minimised."),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_persona_says_how_to_be_present_and_how_to_use_what_it_knows() {
+        let persona = Brain::new().persona();
+        // Presence: greet once, welcome back once after a long silence,
+        // "still there" once, and the session facts never recited.
+        assert!(persona.contains("greet once per session"), "{persona}");
+        assert!(
+            persona.contains("\"welcome back\" at most once, after 20 minutes or more"),
+            "{persona}"
+        );
+        assert!(
+            persona.contains("ask whether they're still there once at most"),
+            "{persona}"
+        );
+        assert!(
+            persona.contains("never recite them; one comes up only when it changes what you'd say"),
+            "{persona}"
+        );
+        // Memory in talk: a clause when it bears on what they said, never
+        // a list.
+        assert!(
+            persona.contains(
+                "only when it bears on what they just said, as a clause, never as a list: \"that \
+boss again?\""
+            ),
+            "{persona}"
+        );
+        // Kept short: the two rules came with two merged, not on top.
+        assert!(MORE.lines().count() == 10, "{}", MORE.lines().count());
+        assert!(
+            MORE.split_whitespace().count() < 360,
+            "{}",
+            MORE.split_whitespace().count()
+        );
     }
 
     #[test]

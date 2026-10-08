@@ -841,13 +841,17 @@ const LOOKUP_GUIDE: &str = "\n- look_it_up never makes the player wait: when you
 ask you to look something up), say your best answer first, then call look_it_up with the question and what you \
 said. It checks in the background; you'll speak again only if you were wrong. Never mention it.";
 
-/// How the model is told it is watching on its own.
-const COACH_GUIDE: &str = "\n\nRight now nobody said anything to you. You're watching them play, and you may speak up \
-on your own, like a friend on voice chat who sees something: danger coming, a wasted buff or potion, loot left on \
-the ground, a map that's giving nothing, a wrong move, what to do next. One short line, direct, an instruction \
-when you can give one (\"Go left, the portal's there.\" \"Rebuff.\" \"This map's dead, move.\"). Most of the \
-time there is nothing worth interrupting them for: then reply with exactly [silent]. Never describe the screen, \
-never comment for the sake of it, never ask them anything, never repeat what you said lately, and never greet.";
+/// How the model is told it is watching on its own: it reacts to the one
+/// thing the watcher brings it, in the attitude's voice, or keeps quiet.
+/// (The reasons' own wording, with the example lines, is in `coach`.)
+const COACH_GUIDE: &str = "\n\nRight now nobody said anything to you. You're watching them play, like a friend \
+on voice chat glancing at their screen, and your watcher says why it's asking — what just happened — with a few \
+lines a friend would say in that spot, in your attitude: the pattern, not a script. React, don't report: one \
+specific thing that just happened or that you just saw, the way a friend blurts it out (\"That's the wrong \
+portal.\" \"Rebuff.\" \"Oof, that hit.\"), never a run-down of the screen (\"you're on a map with four \
+characters…\"). One short line, in your attitude's voice; an instruction when there is one. Most of the time \
+there is nothing worth saying: then reply with exactly [silent]. Never narrate or list what's on screen, never \
+comment for the sake of it, never ask them anything, never repeat what you said lately, and never greet.";
 
 /// How the model is told what it learned is there.
 const LEARNED_GUIDE: &str =
@@ -1627,5 +1631,23 @@ mod tests {
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(u32::from_le_bytes(wav[24..28].try_into().unwrap()), 24_000);
         assert_eq!(u32::from_le_bytes(wav[40..44].try_into().unwrap()), 8);
+    }
+
+    #[test]
+    fn the_coach_is_told_to_react_in_its_attitude_and_never_to_narrate() {
+        // (The fake server in tests/openai_fake.rs knows a coach's look by
+        // its first sentence.)
+        assert!(COACH_GUIDE.contains("Right now nobody said anything to you."));
+        assert!(COACH_GUIDE.contains("your watcher says why it's asking"));
+        assert!(COACH_GUIDE.contains("in your attitude: the pattern, not a script"));
+        assert!(COACH_GUIDE.contains("React, don't report: one specific thing"));
+        assert!(COACH_GUIDE.contains("the way a friend blurts it out"));
+        assert!(COACH_GUIDE.contains(
+            "never a run-down of the screen (\"you're on a map with four characters…\")"
+        ));
+        assert!(COACH_GUIDE.contains("then reply with exactly [silent]"));
+        assert!(COACH_GUIDE.contains("Never narrate or list what's on screen"));
+        assert!(COACH_GUIDE.contains("never ask them anything"));
+        assert!(COACH_GUIDE.contains("never greet"));
     }
 }
