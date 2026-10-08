@@ -1,9 +1,10 @@
 //! The OpenAI client against a stand-in server on this machine, through the
 //! same `curl` the real calls use: model fallback, the reasoning retry,
 //! streamed replies, speech (streamed too), refused keys, calling a request
-//! off, the worker speaking a reply line by line, and learning: what it
-//! learned in every reply, a hello that picks up from last time, and the
-//! learner looking back on the session logs.
+//! off, the worker speaking a reply line by line (and what a reply talked
+//! over never said not counting as said), and learning: what it learned in
+//! every reply, a hello that picks up from last time, and the learner
+//! looking back on the session logs.
 
 use std::io::Write;
 use std::net::TcpListener;
@@ -145,9 +146,20 @@ Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
                                             })
                                             .unwrap_or("")
                                     });
-                                    let reply = format!(
-                                        "Hello there, my friend! ({model}) you said: {said}."
-                                    );
+                                    // Where they are: the first sentence is
+                                    // said slowly (see the speech above), so
+                                    // a test can talk over it while the
+                                    // second, complete (a word follows it),
+                                    // waits to be said.
+                                    let reply = if said.contains("where am I") {
+                                        "Take it slowly, you're at the Gate of the Future, level 165. \
+The quest marker is four maps to the left. Go!"
+                                            .to_string()
+                                    } else {
+                                        format!(
+                                            "Hello there, my friend! ({model}) you said: {said}."
+                                        )
+                                    };
                                     // Server-sent events, the text a few characters at a time.
                                     let mut events = String::from(
                                         "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
@@ -565,6 +577,126 @@ fn a_reply_talked_over_stops_and_the_next_is_answered() {
         "{:?}",
         started.elapsed()
     );
+}
+
+#[test]
+fn what_a_reply_talked_over_never_said_is_said_when_asked_again() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let ask = |heard: &str| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            speak: true,
+            eyes: None,
+            language: None,
+        })
+    };
+    // The reply is written in full while the voice is still on its first
+    // sentence, which is made slowly; the player talks over it there.
+    let first = ask("where am I");
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio {
+                id,
+                text,
+                start: true,
+                ..
+            }) => {
+                assert_eq!(id, first);
+                assert!(text.starts_with("Take it slowly"), "{text}");
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    worker.cancel_all();
+    // (The main loop keeps what was heard of it in the conversation.)
+    worker.send(Job::Cut {
+        heard: "Take it slowly, you're at the".into(),
+    });
+    // Asked the same thing again, what it never got to say is new, and
+    // said: not silence, and not the sentence that was said.
+    let second = ask("where am I");
+    let text = loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id, text, .. }) if id == second => break text,
+            Ok(Done::Silent { id, heard }) if id == second => panic!("silent: {heard}"),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert_eq!(text, "The quest marker is four maps to the left. Go!");
+}
+
+#[test]
+fn the_same_question_twice_gets_a_word_not_silence() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let ask = |heard: &str| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            speak: true,
+            eyes: None,
+            language: Some("he-IL".into()),
+        })
+    };
+    // Answered, and said in full: nothing talked over. (The next question
+    // waits for the voice to finish.)
+    let first = ask("where am I");
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id, text, .. }) => {
+                assert_eq!(id, first);
+                assert_eq!(
+                    text,
+                    "Take it slowly, you're at the Gate of the Future, level 165. \
+The quest marker is four maps to the left. Go!"
+                );
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    // The same question again: all of the answer was said lately, so none
+    // of it is said again — but they hear a word for it, in their language
+    // (the stand-in "translates" by saying it back), shown and said.
+    let second = ask("where am I");
+    let (mut reply, mut spoken) = (None, None);
+    while reply.is_none() || spoken.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id, text, .. }) if id == second => reply = Some(text),
+            Ok(Done::Audio {
+                id,
+                text,
+                start: true,
+                ..
+            }) if id == second => spoken = Some(text),
+            Ok(Done::Silent { id, heard }) if id == second => panic!("silent: {heard}"),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}: {reply:?} {spoken:?}"),
+        }
+    }
+    assert_eq!(
+        reply.as_deref(),
+        Some("(gpt-6.1-sol) you said: Same as before.")
+    );
+    assert_eq!(spoken, reply);
 }
 
 #[test]
@@ -1386,17 +1518,21 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
         .collect();
     assert_eq!(models.first().map(String::as_str), Some("grok-loop"));
     assert!(!models.last().unwrap().contains("grok"), "{models:?}");
-    // Asked to hear it again, the same lines are said again.
+    // The same lines for the next question are not said again — a word
+    // says so, rather than silence; asked to hear it again, they are (as
+    // they came, nothing left out).
     let worker = ms::ai::spawn_hybrid(
         OpenAi::with_models(key, &base, "cedar", vec!["grok-loop".into()]),
         None,
         Brain::new(),
         None,
     );
-    for (heard, expect_reply) in [
-        ("where to", true),
-        ("where to now", false),
-        ("say it again", true),
+    let once = "Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
+    let twice = format!("{once} {once}");
+    for (heard, expect) in [
+        ("where to", once),
+        ("where to now", "Same as before."),
+        ("say it again", twice.as_str()),
     ] {
         worker.send(Job::Converse {
             heard: heard.into(),
@@ -1407,14 +1543,14 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
         });
         let got = loop {
             match worker.done.recv_timeout(Duration::from_secs(30)) {
-                Ok(Done::Reply { .. }) => break true,
-                Ok(Done::Silent { .. }) => break false,
+                Ok(Done::Reply { text, .. }) => break text,
+                Ok(Done::Silent { heard, .. }) => panic!("silent: {heard}"),
                 Ok(Done::Failed { error, .. }) => panic!("{error}"),
                 Ok(_) => {}
                 Err(e) => panic!("{e}"),
             }
         };
-        assert_eq!(got, expect_reply, "{heard}: a reply came back = {got}");
+        assert_eq!(got, expect, "{heard}");
     }
 }
 

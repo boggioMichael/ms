@@ -625,6 +625,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     eyes: eyes.as_ref(),
                                     speak,
                                     language: language.as_deref(),
+                                    translations: &mut translations,
                                 },
                                 &tx,
                                 &busy_flag,
@@ -1091,7 +1092,14 @@ struct Talk<'a> {
     eyes: Option<&'a Eyes>,
     speak: bool,
     language: Option<&'a str>,
+    /// MapleSyrup's own lines in the player's language, translated once.
+    translations: &'a mut std::collections::HashMap<(String, String), String>,
 }
+
+/// What it says when everything it had to say, it said lately (the player
+/// asked the same thing twice; the model is going round in circles): a
+/// word rather than nothing, so they know they were heard.
+const SAME_AS_BEFORE: &str = "Same as before.";
 
 /// Answer the player. The reply is streamed and cut into sentences; they
 /// are turned into speech (on a second thread) as soon as they are complete:
@@ -1131,6 +1139,7 @@ fn converse<'a>(
         eyes,
         speak,
         language,
+        translations,
     } = talk;
     let openai = mouth.openai;
     let started = Instant::now();
@@ -1174,6 +1183,10 @@ fn converse<'a>(
     let mut kept: Vec<String> = Vec::new();
     let (mut total, mut dropped) = (0usize, 0usize);
     let mut looped = false;
+    // Where the record of what was said lately stands: this reply's
+    // sentences are checked (and recorded) as they are written, and settled
+    // against what the voice really said once it is done.
+    let taken = brain.recent.taken();
     std::thread::scope(|scope| {
         let (lines, to_say) = channel::<String>();
         let voice = speak.then(|| {
@@ -1368,18 +1381,11 @@ words (\"probably\" if you're not sure)."
         if stop.stopped() {
             failed = Some(AiError::Cancelled);
         }
+        // Talked over: the voice is waited for below, and what it said
+        // aloud stays in the conversation, cut off where it was.
+        let talked_over = matches!(failed, Some(AiError::Cancelled)).then(|| heard.clone());
         match failed {
-            Some(AiError::Cancelled) => {
-                // Talked over: what was said aloud stays, cut off where it was.
-                drop(lines);
-                let spoken = voice
-                    .map(|v| v.join().unwrap_or_default())
-                    .unwrap_or_default();
-                if !spoken.trim().is_empty() {
-                    brain.heard(&heard);
-                    brain.said(&format!("{}…", spoken.trim_end_matches(['.', ' '])));
-                }
-            }
+            Some(AiError::Cancelled) => {}
             Some(error) => {
                 brain.heard(&heard);
                 let _ = tx.send(Done::Failed {
@@ -1422,10 +1428,32 @@ words (\"probably\" if you're not sure)."
                     });
                 }
                 brain.heard(&heard);
-                if text.is_empty() {
-                    // Nothing new in it: better quiet than the same again.
-                    // The conversation keeps none of it, so the model has
-                    // no loop of its own to follow.
+                if text.is_empty() && dropped > 0 {
+                    // Nothing new in it: not the same again, but not
+                    // silence either — they asked, and hear that they were
+                    // heard. The conversation keeps none of what was
+                    // dropped, so the model has no loop of its own to
+                    // follow.
+                    let line = match language {
+                        Some(l) if !language::is_english(l) => {
+                            translate(openai, SAME_AS_BEFORE, l, stop, translations)
+                        }
+                        _ => SAME_AS_BEFORE.to_string(),
+                    };
+                    if !stop.stopped() {
+                        brain.said(&line);
+                        if speak {
+                            let _ = lines.send(line.clone());
+                        }
+                        let _ = tx.send(Done::Reply {
+                            id,
+                            heard,
+                            text: line,
+                            took: started.elapsed(),
+                        });
+                    }
+                } else if text.is_empty() {
+                    // Nothing in it to say (a link, an emoji): quiet.
                     let _ = tx.send(Done::Silent { id, heard });
                 } else {
                     brain.said(&text);
@@ -1440,6 +1468,21 @@ words (\"probably\" if you're not sure)."
         }
         // The words are out; the voice may still be on its last lines.
         busy.store(false, Ordering::Relaxed);
+        // Once it is done, what it said is what was said lately — and no
+        // more: the sentences went into the record as they were written,
+        // and the ones the voice never got to (the player talked over it)
+        // would otherwise be "said before" when they ask again.
+        drop(lines);
+        if let Some(voice) = voice {
+            let spoken = voice.join().unwrap_or_default();
+            brain.recent.settle(taken, &spoken);
+            if let Some(heard) = talked_over
+                && !spoken.trim().is_empty()
+            {
+                brain.heard(&heard);
+                brain.said(&format!("{}…", spoken.trim_end_matches(['.', ' '])));
+            }
+        }
     });
     Replied {
         used: chat,

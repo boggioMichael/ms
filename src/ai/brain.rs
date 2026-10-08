@@ -33,9 +33,19 @@ const ALIKE_SHARE: f32 = 0.8;
 /// to what is new, by the program, whatever its instructions say. A sentence
 /// said in the last [`RECENT_FOR`] is not said again; neither is one said
 /// twice in the same reply.
+///
+/// A reply's sentences go in as they are written, before the voice says
+/// them (that is when they are checked). What the voice never got to say
+/// (the player talked over it) must not count as said: once the voice is
+/// done, the reply's entries are settled against what it did say
+/// (`settle`).
 #[derive(Default)]
 pub struct Recent {
-    said: VecDeque<(Instant, String)>,
+    /// Each with when it was said, and its number (the `n`th recorded), so
+    /// that the entries made since a point can be found again.
+    said: VecDeque<(Instant, u64, String)>,
+    /// How many sentences were recorded so far.
+    taken: u64,
 }
 
 /// A reply with what was said lately left out, and the count.
@@ -61,7 +71,7 @@ impl Recent {
     /// when it is, that it is being said.
     pub fn fresh(&mut self, sentence: &str) -> bool {
         let now = Instant::now();
-        while self.said.front().is_some_and(|(at, _)| {
+        while self.said.front().is_some_and(|(at, _, _)| {
             now.duration_since(*at) > RECENT_FOR || self.said.len() > RECENT_MAX
         }) {
             self.said.pop_front();
@@ -70,11 +80,32 @@ impl Recent {
         if plain.is_empty() {
             return true;
         }
-        if self.said.iter().any(|(_, said)| alike(said, &plain)) {
+        if self.said.iter().any(|(_, _, said)| alike(said, &plain)) {
             return false;
         }
-        self.said.push_back((now, plain));
+        self.said.push_back((now, self.taken, plain));
+        self.taken += 1;
         true
+    }
+
+    /// Where the record stands: how many sentences it took so far. A reply
+    /// notes it before its first sentence, to `settle` by.
+    pub fn taken(&self) -> u64 {
+        self.taken
+    }
+
+    /// A reply's sentences went in as they were written (from the `taken`th
+    /// on), before the voice said them. Now the voice is done: what it did
+    /// not say (the player talked over it; it was called off) is not said
+    /// lately, and goes — and the sentences of `spoken`, what it did say,
+    /// are recorded in its place.
+    pub fn settle(&mut self, taken: u64, spoken: &str) {
+        while self.said.back().is_some_and(|(_, n, _)| *n >= taken) {
+            self.said.pop_back();
+        }
+        for sentence in sentences_of(spoken) {
+            self.fresh(&sentence);
+        }
     }
 
     /// `reply` with the sentences said lately (and the ones it says twice)
@@ -856,6 +887,31 @@ Pot now, you're at 20.",
         assert!(recent.fresh("About 25 percent to go."));
         assert!(recent.fresh("About 21 percent to go."));
         assert!(!recent.fresh("About 21 percent to go."));
+    }
+
+    #[test]
+    fn what_the_voice_never_said_is_not_said_lately() {
+        let mut recent = Recent::default();
+        assert!(recent.fresh("Pot now, you're at 20."));
+        // A reply of two sentences, written in full; the player talks over
+        // the first, so the voice never says the second.
+        let taken = recent.taken();
+        assert!(recent.fresh("You're at the Gate of the Future, level 165, EXP 74%."));
+        assert!(recent.fresh("The quest marker is four maps to the left."));
+        recent.settle(
+            taken,
+            "You're at the Gate of the Future, level 165, EXP 74%.",
+        );
+        // Asked again: the first sentence was said (at any EXP), the
+        // second was not; what came before the reply still counts.
+        assert!(!recent.fresh("You're at the Gate of the Future, level 165, EXP 75%."));
+        assert!(recent.fresh("The quest marker is four maps to the left."));
+        assert!(!recent.fresh("Pot now, you're at 20."));
+        // Nothing of it said: nothing of it counts.
+        let taken = recent.taken();
+        assert!(recent.fresh("Rebuff, you're naked."));
+        recent.settle(taken, "");
+        assert!(recent.fresh("Rebuff, you're naked."));
     }
 
     #[test]
