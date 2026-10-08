@@ -805,7 +805,7 @@ fn an_alerts_line_is_not_called_off_with_the_rest() {
     let alert = worker.send(Job::Speak {
         text: "Pot now, your HP is at 20 percent.".into(),
         language: Some("he-IL".into()),
-        kind: ms::companion::Kind::Alert,
+        kind: ms::companion::Kind::Warning,
         show: true,
         speak: true,
     });
@@ -823,7 +823,7 @@ fn an_alerts_line_is_not_called_off_with_the_rest() {
     while shown.is_none() || spoken.is_none() {
         match worker.done.recv_timeout(Duration::from_secs(30)) {
             Ok(Done::Shown { text, kind }) => {
-                assert_eq!(kind, ms::companion::Kind::Alert);
+                assert_eq!(kind, ms::companion::Kind::Warning);
                 shown = Some(text);
             }
             Ok(Done::Audio {
@@ -866,7 +866,7 @@ fn what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees() {
     let alert = worker.send(Job::Speak {
         text: "HP 20 percent. Pot now!".into(),
         language: None,
-        kind: ms::companion::Kind::Alert,
+        kind: ms::companion::Kind::Warning,
         show: false,
         speak: true,
     });
@@ -908,7 +908,7 @@ fn what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees() {
     assert_eq!(input[0]["role"], "user");
     assert_eq!(
         input[0]["content"],
-        "[Your game watcher, not the player: an alert.]"
+        "[Your game watcher, not the player: a warning.]"
     );
     assert_eq!(input[1]["role"], "assistant");
     assert_eq!(input[1]["content"], "HP 20 percent. Pot now!");
@@ -946,7 +946,7 @@ fn a_warning_never_waits_for_a_look() {
     let alert = worker.send(Job::Speak {
         text: "HP 20 percent. Pot now!".into(),
         language: None,
-        kind: ms::companion::Kind::Alert,
+        kind: ms::companion::Kind::Warning,
         show: false,
         speak: true,
     });
@@ -1119,7 +1119,7 @@ fn two_lines_pieces_are_never_shuffled_together() {
     let alert = worker.send(Job::Speak {
         text: "HP 20 percent. Pot now!".into(),
         language: None,
-        kind: ms::companion::Kind::Alert,
+        kind: ms::companion::Kind::Warning,
         show: false,
         speak: true,
     });
@@ -1349,6 +1349,13 @@ fn a_warning_is_spoken_with_urgency_and_a_reply_at_the_usual_pace() {
     let alert = instructions_for(Job::Speak {
         text: "Pot now, you're at 20.".into(),
         language: None,
+        kind: ms::companion::Kind::Warning,
+        show: false,
+        speak: true,
+    });
+    let news = instructions_for(Job::Speak {
+        text: "Aw, you died. Revive and get back in there, you've got this.".into(),
+        language: None,
         kind: ms::companion::Kind::Alert,
         show: false,
         speak: true,
@@ -1365,9 +1372,10 @@ gone, so keep hitting the arms until they drop."
                 .into(),
     });
     // The attitude's voice (blunt, the usual) in each; then how this line
-    // goes: a warning urgent, a reply at the usual pace, a long explanation
-    // a touch slower.
-    for text in [&alert, &reply, &long] {
+    // goes: a warning urgent, news (a death) told at the usual pace — not
+    // shouted: the character is dead, there is nothing to shout about — a
+    // reply at the usual pace, a long explanation a touch slower.
+    for text in [&alert, &news, &reply, &long] {
         assert!(
             text.contains("a cocky gamer friend on voice chat"),
             "{text}"
@@ -1375,9 +1383,20 @@ gone, so keep hitting the arms until they drop."
     }
     assert!(alert.contains("This line is a warning"), "{alert}");
     assert!(alert.contains("urgent, faster and sharper"), "{alert}");
+    assert!(news.contains("This line is news"), "{news}");
+    assert!(
+        news.contains("your usual pace, said like it matters"),
+        "{news}"
+    );
+    assert!(
+        !news.contains("warning") && !news.contains("urgent"),
+        "{news}"
+    );
     assert!(!reply.contains("warning"), "{reply}");
     assert!(reply.contains("your usual pace"), "{reply}");
     assert!(long.contains("a touch slower and steadier"), "{long}");
+    assert_ne!(alert, news);
+    assert_ne!(news, reply);
     assert_ne!(alert, reply);
     assert_ne!(reply, long);
 }

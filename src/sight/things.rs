@@ -103,6 +103,15 @@ pub struct Alert {
     pub say: String,
 }
 
+impl Alert {
+    /// Whether it fires as a warning (a value past the mark they set: "the
+    /// boss under 20%" — danger right now, said sharper) rather than as
+    /// news (a thing that showed up, went, or changed).
+    pub fn is_warning(&self) -> bool {
+        matches!(self.when, When::Below | When::Above)
+    }
+}
+
 /// What a thing shows now.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -319,6 +328,9 @@ pub struct Fired {
     pub id: String,
     pub name: String,
     pub say: String,
+    /// A warning (a value past their mark), to be shouted; else news (a
+    /// thing seen), to be told. See [`Alert::is_warning`].
+    pub warning: bool,
     /// How long this alert now waits before firing again, when that has
     /// grown past the usual (it keeps firing): a note for the log.
     pub waits: Option<Duration>,
@@ -1011,6 +1023,7 @@ impl Things {
                     id: thing.id.clone(),
                     name: thing.name.clone(),
                     say,
+                    warning: thing.alert.as_ref().is_some_and(Alert::is_warning),
                     waits: thing.live.cooldown.filter(|c| *c > ALERT_COOLDOWN),
                 });
             }
@@ -1250,6 +1263,8 @@ mod tests {
         }
         assert_eq!(fired.len(), 1, "{fired:?}");
         assert_eq!(fired[0].say, "An Orange Mushroom!");
+        // A thing showing up is news, told; not a warning, shouted.
+        assert!(!fired[0].warning, "{fired:?}");
         assert!(
             again.describe()[0].starts_with("Orange Mushroom: 2 on screen (left, right)"),
             "{:?}",
@@ -1441,6 +1456,9 @@ mod tests {
             fired.iter().map(|f| f.say.as_str()).collect::<Vec<_>>(),
             ["Boss under 20%!"]
         );
+        // A value past the mark they set is a warning: shouted, like a
+        // low bar of their own.
+        assert!(fired[0].warning, "{fired:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

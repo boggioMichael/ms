@@ -380,6 +380,13 @@ fn a_warning_is_asked_for_faster_and_sharper_than_a_reply() {
     let alert = || Job::Speak {
         text: "Pot now, you're at 20.".into(),
         language: None,
+        kind: Kind::Warning,
+        show: false,
+        speak: true,
+    };
+    let news = || Job::Speak {
+        text: "You died. Revive and get back in there.".into(),
+        language: None,
         kind: Kind::Alert,
         show: false,
         speak: true,
@@ -418,6 +425,10 @@ fn a_warning_is_asked_for_faster_and_sharper_than_a_reply() {
         number(&alert, "style") > number(&reply, "style"),
         "{alert} {reply}"
     );
+    // News of its own (a death): told as a reply is, not shouted.
+    let from = seen.lock().unwrap().len();
+    worker_speaks(&worker, news());
+    assert_eq!(last_settings(&seen, from), reply);
     // A long explanation: a touch slower and steadier than a reply.
     let from = seen.lock().unwrap().len();
     worker_says(

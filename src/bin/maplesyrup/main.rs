@@ -1355,10 +1355,18 @@ fn workshop_ask(workshop: &ms::workshop::Workshop, task: ms::workshop::Task, out
     }
 }
 
+/// Whether a line of this kind outlives the player talking over it: a
+/// warning and news are still true after their words (the worker keeps
+/// their jobs too), chat and a note are not.
+fn kept(kind: Kind) -> bool {
+    matches!(kind, Kind::Warning | Kind::Alert)
+}
+
 /// How a line is labelled in the session log.
 fn kind_label(kind: Kind) -> &'static str {
     match kind {
         Kind::Heard => "heard",
+        Kind::Warning => "warning",
         Kind::Alert => "alert",
         Kind::Reply => "reply",
         Kind::Info => "info",
@@ -1366,12 +1374,14 @@ fn kind_label(kind: Kind) -> &'static str {
 }
 
 /// MapleSyrup's own lines on a live call, as the call gets them to say.
-/// The watcher's lines (an alert, the coach's, a look-up's) go at most
-/// once per [`RELAY_GAP`]: what comes meanwhile waits, the newest of each
-/// kind, and goes together when the gap is up. A death or a level-up goes
-/// at once. Every line handed over carries the reading behind it, so the
-/// call passes on a number rather than restating the watcher's mood in
-/// its own words every few seconds, which is what the player shouted at.
+/// The watcher's lines (a warning, news, the coach's, a look-up's) go at
+/// most once per [`RELAY_GAP`]: what comes meanwhile waits, the newest of
+/// each kind, and goes together when the gap is up. A death or a level-up
+/// goes at once. A warning handed over carries the reading behind it, so
+/// the call passes on a number rather than restating the watcher's mood
+/// in its own words every few seconds, which is what the player shouted
+/// at; the rest ("Rebuff.", "You died.") go without one, so the call does
+/// not say "HP's at 95, rebuff".
 #[derive(Default)]
 struct Relay {
     /// When lines last went to the call.
@@ -1554,7 +1564,8 @@ impl Outputs {
         self.session.line(kind_label(kind), text);
         if let Some(hub) = &self.phone {
             // The phone speaks a line itself only without a natural voice.
-            let phone_speaks = self.mouth.ai.is_none() && matches!(kind, Kind::Alert | Kind::Reply);
+            let phone_speaks = self.mouth.ai.is_none()
+                && matches!(kind, Kind::Warning | Kind::Alert | Kind::Reply);
             hub.post(kind, text, phone_speaks);
         }
         self.push(kind, text.to_string());
@@ -1598,8 +1609,9 @@ impl Outputs {
         let urgent = dead || companion.last_level_up() >= companion.progress().seconds;
         // What this line takes the place of: the line of its kind that
         // waited (the newest is the state of things), and, at a death,
-        // every alert that waited (about a bar that no longer matters).
-        let superseded = |k: Kind| k == kind || (dead && k == Kind::Alert);
+        // every warning that waited (about a bar that no longer matters)
+        // and every piece of news (about a fight that is over).
+        let superseded = |k: Kind| k == kind || (dead && matches!(k, Kind::Warning | Kind::Alert));
         for (_, old) in self.relay.waiting.iter().filter(|(k, _)| superseded(*k)) {
             self.session
                 .line("live", &format!("not said, a newer line came: {old}"));
@@ -1619,25 +1631,33 @@ impl Outputs {
         self.hand(lines, companion);
     }
 
-    /// Hand lines to the call, each with the reading behind it (shown
-    /// only, when muted meanwhile) and whether it is said however late it
-    /// comes (the page drops a line that waited too long behind the call's
-    /// own voice, and says so; an urgent one it says when the voice stops).
+    /// Hand lines to the call (shown only, when muted meanwhile), a
+    /// warning with the reading behind it — it is about the number, and
+    /// the call says the number — and the rest without (a death, a
+    /// correction, the coach's "Rebuff." are not about HP); each with
+    /// whether it is said however late it comes (the page drops a line
+    /// that waited too long behind the call's own voice, and says so; an
+    /// urgent one it says when the voice stops).
     fn hand(&mut self, lines: Vec<(Kind, String, bool)>, companion: &Companion) {
         let Some(hub) = &self.phone else {
             return;
         };
-        let fact = self.fact(companion);
+        let reading = self.fact(companion);
         for (kind, text, urgent) in lines {
+            let fact = reading.as_deref().filter(|_| kind == Kind::Warning);
             self.session.line(
                 "live",
                 &format!(
-                    "to the call{}: {text} [{}]",
+                    "to the call{}: {text}{}",
                     if urgent { ", urgent" } else { "" },
-                    fact.as_deref().unwrap_or("no reading")
+                    match (kind, &fact) {
+                        (_, Some(fact)) => format!(" [{fact}]"),
+                        (Kind::Warning, None) => " [no reading]".to_string(),
+                        _ => String::new(),
+                    }
                 ),
             );
-            hub.post_with_fact(kind, &text, !companion.muted(), fact.as_deref(), urgent);
+            hub.post_with_fact(kind, &text, !companion.muted(), fact, urgent);
         }
     }
 
@@ -1804,17 +1824,15 @@ impl Outputs {
     }
 
     /// Stop talking at once (the player talked over it), here and on the
-    /// phone, and drop what was still to come — except an alert's line: a
-    /// warning the player talked over (or that waited for their turn) is
-    /// still true, and goes after their turn as it would have.
+    /// phone, and drop what was still to come — except a warning's line or
+    /// news: a warning the player talked over (or that waited for their
+    /// turn) is still true, and goes after their turn as it would have.
     fn cut(&mut self) {
         self.mouth.hush();
-        if self.mouth.phone_line_kind != Kind::Alert {
+        if !kept(self.mouth.phone_line_kind) {
             self.mouth.phone_line.clear();
         }
-        self.mouth
-            .phone_held
-            .retain(|clip| clip.kind == Kind::Alert);
+        self.mouth.phone_held.retain(|clip| kept(clip.kind));
         self.mouth.phone_until = Instant::now();
         self.mouth.phone_end = Instant::now();
         if let Some(hub) = &self.phone {
@@ -1859,7 +1877,7 @@ impl Outputs {
         if self.plain {
             let who = match kind {
                 Kind::Heard => "you",
-                Kind::Alert => "syrup!",
+                Kind::Warning | Kind::Alert => "syrup!",
                 Kind::Reply => "syrup",
                 Kind::Info => "·",
             };
@@ -2617,11 +2635,19 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             }
             // The things the player taught: their alerts (held with the
             // companion's own while nothing the player does answers them).
+            // One past the mark they set ("the boss under 20%") is a
+            // warning, shouted; a thing that showed up is news, told.
             for fired in tick.fired {
-                if companion.alerts_held(now) {
-                    out.session.line("alert", &format!("(held) {}", fired.say));
+                let kind = if fired.warning {
+                    Kind::Warning
                 } else {
-                    out.tell(Kind::Alert, &fired.say, true, &mut companion);
+                    Kind::Alert
+                };
+                if companion.alerts_held(now) {
+                    out.session
+                        .line(kind_label(kind), &format!("(held) {}", fired.say));
+                } else {
+                    out.tell(kind, &fired.say, true, &mut companion);
                 }
                 if let Some(waits) = fired.waits {
                     out.session.line(
@@ -3505,7 +3531,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             .log
                             .iter()
                             .rev()
-                            .find(|l| matches!(l.kind, Kind::Reply | Kind::Alert))
+                            .find(|l| matches!(l.kind, Kind::Reply | Kind::Warning | Kind::Alert))
                             .filter(|l| l.at.elapsed() < Duration::from_secs(15))
                             .map(|l| l.text.as_str());
                         let summary = out.phone.as_ref().map(|h| h.summary());
@@ -4051,7 +4077,7 @@ mod tests {
         // Six beatings in a few seconds: the first goes, with the reading
         // behind it; the rest wait, and only the newest of them.
         for i in 0..6 {
-            out.tell(Kind::Alert, &format!("beating {i}"), true, &mut companion);
+            out.tell(Kind::Warning, &format!("beating {i}"), true, &mut companion);
         }
         assert_eq!(
             said(&out),
@@ -4060,7 +4086,7 @@ mod tests {
                 Some("HP 11% (read 0 s ago), MP about 40% (estimated 0 s ago)".to_string())
             )]
         );
-        // A correction from a look-up waits alongside: an alert does not
+        // A correction from a look-up waits alongside: a warning does not
         // push it out. Nothing goes before the gap is up.
         out.tell(
             Kind::Info,
@@ -4068,14 +4094,16 @@ mod tests {
             true,
             &mut companion,
         );
-        out.tell(Kind::Alert, "beating 6", true, &mut companion);
+        out.tell(Kind::Warning, "beating 6", true, &mut companion);
         out.relay_due(&companion);
         assert_eq!(said(&out).len(), 1);
         // The answer to a button is theirs at once, gap or no gap.
         out.tell(Kind::Reply, "Marked.", true, &mut companion);
         assert_eq!(said(&out).len(), 2);
         // The gap up: what waited goes together (one turn for the call),
-        // each line with the reading as it is now.
+        // the warning with the reading as it is now — and only the
+        // warning: a correction is not about HP, and a call handed "HP
+        // 62%" with it said "HP's at 62, and Zakum is level 110".
         out.relay.sent = Some(earlier(RELAY_GAP));
         companion.observe(now(&out), frame(62.0, true, 165));
         out.relay_due(&companion);
@@ -4089,17 +4117,27 @@ mod tests {
                 "beating 6"
             ]
         );
+        assert_eq!(said(&out)[1].1, None);
+        assert_eq!(said(&out)[2].1, None);
         assert_eq!(
             said(&out)[3].1.as_deref(),
             Some("HP 62% (read 0 s ago), MP about 40% (estimated 0 s ago)")
         );
         assert!(out.relay.waiting.is_empty());
-        // The gap is closed again: a low-HP line parks, and is still parked
-        // when the death comes. The death goes at once, alone: the parked
-        // line was about a bar that no longer matters, and the log says it
-        // was not said.
-        out.tell(Kind::Alert, "HP 20 percent. Pot now!", true, &mut companion);
-        assert_eq!(out.relay.waiting.len(), 1);
+        // The gap is closed again: a low-HP line and the coach's word
+        // park, and are still parked when the death comes. The death goes
+        // at once, alone, and with no reading ("You died" is not about a
+        // number): the parked warning was about a bar that no longer
+        // matters, the parked news about a fight that is over, and the
+        // log says neither was said.
+        out.tell(
+            Kind::Warning,
+            "HP 20 percent. Pot now!",
+            true,
+            &mut companion,
+        );
+        out.tell(Kind::Alert, "Rebuff.", true, &mut companion);
+        assert_eq!(out.relay.waiting.len(), 2);
         let before = said(&out).len();
         for _ in 0..3 {
             let actions = companion.observe(now(&out), frame(0.0, true, 165));
@@ -4110,18 +4148,23 @@ mod tests {
         assert_eq!(lines.len(), before + 1, "{lines:?}");
         let death = lines.last().unwrap().0.clone();
         assert!(death.starts_with("Your HP hit zero"), "{death}");
+        assert_eq!(lines.last().unwrap().1, None, "{lines:?}");
         assert!(!lines.iter().any(|(t, _)| t.contains("HP 20 percent")));
+        assert!(!lines.iter().any(|(t, _)| t == "Rebuff."));
         assert!(out.relay.waiting.is_empty());
-        assert!(
-            log(&out).contains("[live] not said, a newer line came: HP 20 percent. Pot now!"),
-            "{}",
-            log(&out)
-        );
+        for dropped in ["HP 20 percent. Pot now!", "Rebuff."] {
+            assert!(
+                log(&out).contains(&format!("[live] not said, a newer line came: {dropped}")),
+                "{}",
+                log(&out)
+            );
+        }
         // The page is told the death is said however late it comes; the
         // warnings before it were not.
         assert_eq!(urgent(&out), std::slice::from_ref(&death));
-        assert!(log(&out).contains(&format!("[live] to the call, urgent: {death}")));
-        // So does a level-up (the number held for a moment, one up).
+        assert!(log(&out).contains(&format!("[live] to the call, urgent: {death}\n")));
+        // So does a level-up (the number held for a moment, one up), and
+        // it carries no reading either.
         let t = now(&out) + 100.0;
         for at in [t, t + 3.5, t + 10.0, t + 13.5] {
             let level = if at < t + 10.0 { 165 } else { 166 };
@@ -4129,13 +4172,13 @@ mod tests {
             out.apply(actions, &mut companion, None);
         }
         assert_eq!(said(&out).last().unwrap().0, "Level up! You're level 166.");
-        assert!(said(&out).last().unwrap().1.is_some());
+        assert_eq!(said(&out).last().unwrap().1, None);
         assert_eq!(urgent(&out), [death, "Level up! You're level 166.".into()]);
         // Muted: shown, not said, and nothing waits for the gap.
         let actions = companion.command(t + 20.0, Command::Mute);
         out.apply(actions, &mut companion, None);
         let before = said(&out).len();
-        out.tell(Kind::Alert, "beating 7", true, &mut companion);
+        out.tell(Kind::Warning, "beating 7", true, &mut companion);
         assert_eq!((said(&out).len(), out.relay.waiting.len()), (before, 0));
     }
 
@@ -4186,12 +4229,13 @@ mod tests {
         out.cut();
         assert!(out.mouth.phone_held.is_empty());
         // A warning's clip, held for their turn, is not dropped by their
-        // next sentence: the warning is still true. It goes after their
-        // turn, as it would have; the line held with it is dropped.
-        out.speak(Kind::Alert, "HP 20 percent. Pot now!", &mut companion);
+        // next sentence: the warning is still true. Nor is news (a death,
+        // a level-up). They go after their turn, as they would have; the
+        // note held with them is dropped.
+        out.speak(Kind::Warning, "HP 20 percent. Pot now!", &mut companion);
         let (warning, kind) = *out.mouth.kinds.back().unwrap();
-        assert_eq!(kind, Kind::Alert);
-        assert_eq!(out.mouth.kind_of(warning), Kind::Alert);
+        assert_eq!(kind, Kind::Warning);
+        assert_eq!(out.mouth.kind_of(warning), Kind::Warning);
         assert_eq!(out.mouth.kind_of(warning + 1), Kind::Reply);
         out.play_piece(
             &samples,
@@ -4201,24 +4245,29 @@ mod tests {
             out.mouth.kind_of(warning),
             &companion,
         );
+        out.play_piece(&samples, true, true, true, Kind::Alert, &companion);
         out.play_piece(&samples, true, true, true, Kind::Info, &companion);
-        assert_eq!(out.mouth.phone_held.len(), 2);
+        assert_eq!(out.mouth.phone_held.len(), 3);
         out.cut();
         assert_eq!(
-            out.mouth.phone_held.len(),
-            1,
-            "the warning's clip must survive the cut"
+            out.mouth
+                .phone_held
+                .iter()
+                .map(|clip| clip.kind)
+                .collect::<Vec<_>>(),
+            [Kind::Warning, Kind::Alert],
+            "the warning's clip and the news must survive the cut"
         );
         assert_eq!(cuts(&out), 2);
         out.release_clips(true);
-        assert_eq!((clip(&out), out.mouth.phone_held.len()), (4, 0));
+        assert_eq!((clip(&out), out.mouth.phone_held.len()), (5, 0));
         // A warning still being made when the cut comes keeps what was
         // made of it: the clip is whole, not its second half.
-        out.play_piece(&samples, true, false, false, Kind::Alert, &companion);
+        out.play_piece(&samples, true, false, false, Kind::Warning, &companion);
         out.cut();
-        out.play_piece(&samples, false, true, false, Kind::Alert, &companion);
-        assert_eq!(clip(&out), 5);
-        assert_eq!(clip_bytes(&out, 5), 44 + 2 * 2 * samples.len());
+        out.play_piece(&samples, false, true, false, Kind::Warning, &companion);
+        assert_eq!(clip(&out), 6);
+        assert_eq!(clip_bytes(&out, 6), 44 + 2 * 2 * samples.len());
     }
 
     #[test]

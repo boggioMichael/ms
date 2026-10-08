@@ -10,8 +10,9 @@ greeted twice, and on a call MapleSyrup's own lines
 are said by the call, never by the phone's own voice: handed over with the
 reading behind them and the game as read now, never while the call is
 answering (one turn asked for at a time), a warning dropped once stale
-(and the PC told), a death or a level-up said however late, and a change
-of attitude retunes the call in place. Needs `pip install playwright &&
+(and the PC told), a death or a level-up said however late, a warning's
+row shown like news's, and a change of attitude retunes the call in
+place. Needs `pip install playwright &&
 playwright install chromium`; run from the repository root: `python3
 tools/phone_ui_check.py` (or with some of `ui`, `recognition`, `live`,
 `loudness` to run those alone; PHONE_PAGE=path checks another copy of the
@@ -402,7 +403,7 @@ def live_checks(browser):
     # A watcher line goes with the reading the PC sent behind it and the
     # game as read right now (the call's own picture is older), as one
     # message not from the player, and one turn is asked for after it.
-    line(2, "alert", "Back off, you're getting shredded.", "HP 11% (read 0 s ago), MP about 40% (estimated 0 s ago)")
+    line(2, "warning", "Back off, you're getting shredded.", "HP 11% (read 0 s ago), MP about 40% (estimated 0 s ago)")
     wait_for(lambda: items_with("shredded"), 4, "the call was not handed the warning")
     text = items_with("shredded")[-1]["item"]["content"][0]["text"]
     assert "not the player" in text and "HP 11% (read 0 s ago)" in text, text
@@ -411,7 +412,7 @@ def live_checks(browser):
     # A response under way (the call answering the player): the next line
     # waits, and no second turn is asked for until the response is done.
     event({"type": "response.created"})
-    line(3, "alert", "Pot now, HP's at 9%.", "HP 9.0% (read 0 s ago)")
+    line(3, "warning", "Pot now, HP's at 9%.", "HP 9.0% (read 0 s ago)")
     page.wait_for_timeout(1500)
     assert not items_with("Pot now") and len(sent("response.create")) == 3, "a turn was asked for while one was under way"
     event({"type": "response.done", "response": {"output": []}})
@@ -424,7 +425,7 @@ def live_checks(browser):
     # and says how late.
     t_late = time.time()
     event({"type": "response.created"}); event({"type": "output_audio_buffer.started"})
-    line(4, "alert", "Move, you're melting.", "HP 40% (read 0 s ago)")
+    line(4, "warning", "Move, you're melting.", "HP 40% (read 0 s ago)")
     line(5, "alert", "Level 153! Nice.", urgent=True)
     page.wait_for_timeout(6500)
     assert not items_with("Level 153") and len(sent("response.create")) == 4, "a line was said over the call's own voice"
@@ -434,6 +435,13 @@ def live_checks(browser):
     assert "melting" not in text, text
     assert re.search(r"not the player, \d+ s ago: Level 153", text), text
     assert len(sent("response.create")) == 5, sent("response.create")
+    # A warning's row (a beating, a low bar) is shown like news's row (a
+    # level-up): MapleSyrup's own lines, in its colour.
+    rows = page.evaluate("""() => {
+      const look = (sel) => { const el = document.querySelector(sel); return el && getComputedStyle(el).borderColor + " " + getComputedStyle(el).color; };
+      return { warning: look("#log li.warning"), alert: look("#log li.alert") };
+    }""")
+    assert rows["warning"] and rows["warning"] == rows["alert"], rows
     wait_for(lambda: any(r["body"] == {"what": "dropped", "text": "Move, you're melting."} for r in requests_since(t_late, "/api/turn")), 2, "the PC was not told of the line that was not said")
     assert not any((r["body"] or {}).get("text") == "Level 153! Nice." for r in requests_since(t_late, "/api/turn")), "the level-up was reported as not said"
     event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})

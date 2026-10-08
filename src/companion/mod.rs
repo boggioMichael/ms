@@ -68,11 +68,19 @@ impl Default for Settings {
     }
 }
 
-/// Why a line is said: the phone and the console colour them differently.
+/// Why a line is said: the phone and the console colour them differently,
+/// and the voice says a warning sharper than news. "Aw, you died" in the
+/// voice of "POT NOW" is a machine with one setting for important.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// The companion noticed something on its own (low HP, a level-up).
+    /// Danger right now — a beating, a low bar, a thing the player asked
+    /// to be warned of past its mark: shouted (said sharper and sooner),
+    /// and on a call handed over with the reading behind it.
+    Warning,
+    /// News the companion noticed on its own — a death, a level-up, a
+    /// thing seen, the coach's word, "still there?": told, at the usual
+    /// pace.
     Alert,
     /// An answer to something the player asked.
     Reply,
@@ -92,6 +100,13 @@ pub struct Say {
 }
 
 impl Say {
+    fn warning(text: impl Into<String>) -> Self {
+        Self {
+            kind: Kind::Warning,
+            text: text.into(),
+            speak: true,
+        }
+    }
     fn alert(text: impl Into<String>) -> Self {
         Self {
             kind: Kind::Alert,
@@ -1044,7 +1059,8 @@ enum Alert {
 
 impl Alert {
     /// News (a death, a level-up) rather than a warning: said whatever
-    /// answered the warnings, and counted against nothing.
+    /// answered the warnings, counted against nothing, and told rather
+    /// than shouted ([`Kind::Alert`], not [`Kind::Warning`]).
     fn is_news(&self) -> bool {
         matches!(self, Alert::Death { .. } | Alert::LevelUp(_))
     }
@@ -1556,9 +1572,16 @@ impl Companion {
         }
         // The line is dealt only for an alert that is said: one held is no
         // line, and the next the player hears is still the next of the deck.
+        // A warning (a beating, a low bar) is shouted; news (a death, a
+        // level-up) is told.
         for alert in self.pace(now, &obs, alerts, &mut out) {
+            let news = alert.is_news();
             let line = self.line(alert);
-            out.push(Action::Say(Say::alert(line)));
+            out.push(Action::Say(if news {
+                Say::alert(line)
+            } else {
+                Say::warning(line)
+            }));
         }
         if obs.game.is_seen() {
             self.still_there(now, &mut out);
@@ -2243,11 +2266,14 @@ mod tests {
             .collect()
     }
 
+    /// The lines it spoke up with on its own: warnings and news both.
     fn alerts(actions: &[Action]) -> Vec<String> {
         actions
             .iter()
             .filter_map(|a| match a {
-                Action::Say(s) if s.kind == Kind::Alert => Some(s.text.clone()),
+                Action::Say(s) if matches!(s.kind, Kind::Warning | Kind::Alert) => {
+                    Some(s.text.clone())
+                }
                 _ => None,
             })
             .collect()
@@ -2571,6 +2597,74 @@ mod tests {
         assert_eq!(
             said(&c.observe(0.7, frame(90.0, 3.1, 10.0))),
             ["Your MP's down to about 3 percent."]
+        );
+    }
+
+    #[test]
+    fn a_beating_and_a_low_bar_are_warnings_and_a_death_and_a_level_up_are_news() {
+        // A warning is shouted; news is told. The kind says which, and the
+        // voice, the phone and the call all go by it: "Aw, you died" in the
+        // voice of "POT NOW" was a machine with one setting for important.
+        let kinds = |actions: &[Action]| -> Vec<Kind> {
+            actions
+                .iter()
+                .filter_map(|a| match a {
+                    Action::Say(s) if s.speak => Some(s.kind),
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.observe(0.0, frame(95.0, 90.0, 10.0));
+        for i in 1..10 {
+            c.observe(i as f64 * 0.1, frame(95.0, 90.0, 10.0));
+        }
+        // A beating, then the low warning behind it, then MP: warnings.
+        c.observe(1.5, frame(65.0, 90.0, 10.0));
+        assert_eq!(
+            kinds(&c.observe(1.6, frame(64.0, 90.0, 10.0))),
+            [Kind::Warning]
+        );
+        for t in [3.0, 3.3, 3.7, 6.5] {
+            c.observe(t, frame(25.0, 90.0, 10.0));
+        }
+        assert_eq!(
+            kinds(&c.observe(6.7, frame(25.0, 90.0, 10.0))),
+            [Kind::Warning]
+        );
+        c.observe(7.0, frame(25.0, 3.0, 10.0));
+        c.observe(7.3, frame(25.0, 3.0, 10.0));
+        assert_eq!(
+            kinds(&c.observe(7.7, frame(25.0, 3.0, 10.0))),
+            [Kind::Warning]
+        );
+        // A death (the number read as zero): news.
+        let mut dead = frame(0.0, 3.0, 10.0);
+        dead.hp = Some(Gauge {
+            percent: 0.0,
+            current: Some(0),
+            max: Some(9795),
+            read: true,
+        });
+        let mut told = Vec::new();
+        for i in 0..5 {
+            told.extend(kinds(&c.observe(8.0 + i as f64 * 0.1, dead.clone())));
+        }
+        assert_eq!(told, [Kind::Alert]);
+        // Revived, then a level (the number held three seconds): news.
+        c.observe(12.0, frame(90.0, 90.0, 99.0));
+        let mut told = Vec::new();
+        for i in 0..40 {
+            let mut next = frame(90.0, 90.0, 0.5);
+            next.level = Some(58);
+            told.extend(kinds(&c.observe(13.0 + i as f64 * 0.1, next)));
+        }
+        assert_eq!(told, [Kind::Alert]);
+        // Half an hour without a word while the game went on: news too.
+        c.observe(1700.0, frame(90.0, 90.0, 20.0));
+        assert_eq!(
+            kinds(&c.observe(1800.0, frame(90.0, 90.0, 20.0))),
+            [Kind::Alert]
         );
     }
 
@@ -2906,7 +3000,7 @@ mod tests {
         let alerts = |actions: &[Action]| {
             actions
                 .iter()
-                .filter(|a| matches!(a, Action::Say(s) if s.kind == Kind::Alert))
+                .filter(|a| matches!(a, Action::Say(s) if s.kind == Kind::Warning))
                 .count()
         };
         for fight in 0..12 {

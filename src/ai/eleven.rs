@@ -234,12 +234,13 @@ pub const SPEED_RANGE: std::ops::RangeInclusive<f64> = 0.7..=1.2;
 /// How like the picked voice it stays, whatever the delivery.
 const SIMILARITY: f64 = 0.8;
 
-/// The settings for a delivery. A chat reply goes at the attitude's pace;
-/// a warning at the top of the range, less steady (more expression) and
-/// with more style; a long explanation a touch slower and steadier.
-/// Friendly is warmer and steadier (higher stability, less style), blunt
-/// punchy (1.1, moderate style), savage loud and expressive (lower
-/// stability, more style).
+/// The settings for a delivery. A chat reply goes at the attitude's pace,
+/// and so does news (a death, a level-up: told, not shouted); a warning at
+/// the top of the range, less steady (more expression) and with more
+/// style; a long explanation a touch slower and steadier. Friendly is
+/// warmer and steadier (higher stability, less style), blunt punchy (1.1,
+/// moderate style), savage loud and expressive (lower stability, more
+/// style).
 pub fn settings(delivery: Delivery) -> Settings {
     let (stability, style, speed) = match (delivery.attitude, delivery.urgent(), delivery.long) {
         (Attitude::Friendly, true, _) => (0.45, 0.35, 1.2),
@@ -373,7 +374,7 @@ mod tests {
     #[test]
     fn a_warning_is_faster_and_sharper_than_a_reply_and_an_explanation_steadier() {
         for attitude in Attitude::ALL {
-            let alert = asked(attitude, Kind::Alert, false);
+            let alert = asked(attitude, Kind::Warning, false);
             let reply = asked(attitude, Kind::Reply, false);
             let long = asked(attitude, Kind::Reply, true);
             // A warning: the top of the range, less steady, more style.
@@ -385,14 +386,16 @@ mod tests {
             assert!(long.speed < reply.speed, "{attitude:?}");
             assert!(long.stability > reply.stability, "{attitude:?}");
             assert!(long.style < reply.style, "{attitude:?}");
-            // News about itself goes like a reply; a warning is never long.
+            // News (a death, a level-up) and word about itself go like a
+            // reply, not shouted; a warning is never long.
+            assert_eq!(asked(attitude, Kind::Alert, false), reply);
             assert_eq!(asked(attitude, Kind::Info, false), reply);
-            assert_eq!(asked(attitude, Kind::Alert, true), alert);
+            assert_eq!(asked(attitude, Kind::Warning, true), alert);
         }
         // Friendly warmer and steadier, blunt punchy, savage loud and
         // expressive: style up and stability down from one to the next.
         let reply = |a| settings(delivery(a, Kind::Reply, false));
-        let alert = |a| settings(delivery(a, Kind::Alert, false));
+        let alert = |a| settings(delivery(a, Kind::Warning, false));
         let (friendly, blunt, savage) = (
             reply(Attitude::Friendly),
             reply(Attitude::Blunt),
@@ -429,17 +432,18 @@ mod tests {
             stability
         };
         for attitude in Attitude::ALL {
-            let alert = step(attitude, Kind::Alert, false);
+            let alert = step(attitude, Kind::Warning, false);
             let reply = step(attitude, Kind::Reply, false);
             let long = step(attitude, Kind::Reply, true);
             step(attitude, Kind::Info, false);
             // A warning is never steadier than a reply, nor a reply than
-            // an explanation.
+            // an explanation; news goes as a reply.
             assert!(alert <= reply && reply <= long, "{attitude:?}");
+            assert_eq!(step(attitude, Kind::Alert, false), reply, "{attitude:?}");
         }
         // The usual chat is the natural step; savage's warning the creative one.
         assert_eq!(step(Attitude::Blunt, Kind::Reply, false), 0.5);
-        assert_eq!(step(Attitude::Savage, Kind::Alert, false), 0.0);
+        assert_eq!(step(Attitude::Savage, Kind::Warning, false), 0.0);
         assert_eq!(v4_stability(0.74), 0.5);
         assert_eq!(v4_stability(0.76), 1.0);
         assert_eq!(v4_stability(0.24), 0.0);
@@ -452,7 +456,7 @@ mod tests {
                 "Pot now!",
                 model,
                 true,
-                delivery(Attitude::Savage, Kind::Alert, false),
+                delivery(Attitude::Savage, Kind::Warning, false),
             );
             assert!(body.get("voice_settings").is_none(), "{model}");
             assert_eq!(body["text"], "Pot now!");

@@ -203,11 +203,12 @@ pub enum Job {
     /// Say one of MapleSyrup's own lines (a warning, a greeting) in the
     /// natural voice, translated first when the player's language is not
     /// English. With `show`, the line has not been shown yet: it comes back
-    /// as `Shown`, in the player's language, to be shown. An alert's line
-    /// (`kind`) is not called off with the rest: a warning must not vanish
-    /// because the player spoke over something else. Said on the mouth
-    /// lane, it never waits for a reply or a look; said aloud, it joins
-    /// the conversation (the next reply knows its own last words).
+    /// as `Shown`, in the player's language, to be shown. A warning's line
+    /// and news (`kind`) are not called off with the rest: a warning must
+    /// not vanish because the player spoke over something else. Said on
+    /// the mouth lane, it never waits for a reply or a look; said aloud,
+    /// it joins the conversation (the next reply knows its own last
+    /// words).
     Speak {
         text: String,
         language: Option<String>,
@@ -310,12 +311,13 @@ pub enum Done {
 }
 
 impl Job {
-    /// Whether no call-off stops it: an alert's own line.
+    /// Whether no call-off stops it: a warning's own line, or news (a
+    /// death, a level-up) — what is still true after the player's words.
     fn kept(&self) -> bool {
         matches!(
             self,
             Job::Speak {
-                kind: crate::companion::Kind::Alert,
+                kind: Kind::Warning | Kind::Alert,
                 ..
             }
         )
@@ -820,7 +822,8 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
 /// conversation (`Brain::watched`).
 fn label_of(kind: Kind) -> &'static str {
     match kind {
-        Kind::Alert => "an alert",
+        Kind::Warning => "a warning",
+        Kind::Alert => "news",
         Kind::Info => "a note",
         Kind::Reply | Kind::Heard => "a line",
     }

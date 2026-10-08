@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::memory::Learning;
 use super::openai::{Delivery, Turn};
 use super::style::{self, Attitude};
-use crate::companion::{GameView, Gauge, Observation, Progress, SoFar};
+use crate::companion::{GameView, Gauge, Kind, Observation, Progress, SoFar};
 
 /// Turns of conversation kept (a turn is one sentence each way).
 const KEEP_TURNS: usize = 16;
@@ -237,8 +237,9 @@ pub fn sentences_of(text: &str) -> Vec<String> {
 
 /// How the voice should sound (OpenAI's voice takes it as its
 /// instructions): the attitude the player picked, and how this line is
-/// to be delivered — a warning faster and sharper than talk, a reply at
-/// the attitude's pace, a long explanation a touch slower and steadier.
+/// to be delivered — a warning faster and sharper than talk, news (a
+/// death, a level-up) at the usual pace but said like it matters, a reply
+/// at the attitude's pace, a long explanation a touch slower and steadier.
 pub fn voice_style(delivery: Delivery) -> String {
     let voice = match delivery.attitude {
         Attitude::Friendly => {
@@ -255,8 +256,11 @@ punchy, no pauses. Tone: mocking, cocky, energetic, laughing at them. Never an a
         }
     };
     let pace = if delivery.urgent() {
-        "This line is a warning (a beating, low HP, a death): urgent, faster and sharper than your usual talk, \
+        "This line is a warning (a beating, low HP or MP): urgent, faster and sharper than your usual talk, \
 like shouting a heads-up to a teammate mid-fight. No lead-in; the first word hits."
+    } else if delivery.kind == Kind::Alert {
+        "This line is news (a death, a level-up, something you noticed): your usual pace, said like it \
+matters, the way a friend tells you what just happened. No lead-in, no announcer."
     } else if delivery.long {
         "This line is a longer explanation: a touch slower and steadier than your usual chat, so every word \
 lands, still without pauses."
@@ -2111,7 +2115,6 @@ just now). Lowest HP in the last minute: 8%."
 
     #[test]
     fn the_voice_is_told_the_attitude_and_how_this_line_is_delivered() {
-        use crate::companion::Kind;
         let style = |attitude, kind, long| {
             voice_style(Delivery {
                 attitude,
@@ -2120,27 +2123,45 @@ just now). Lowest HP in the last minute: 8%."
             })
         };
         for attitude in Attitude::ALL {
-            let alert = style(attitude, Kind::Alert, false);
+            let warning = style(attitude, Kind::Warning, false);
+            let news = style(attitude, Kind::Alert, false);
             let reply = style(attitude, Kind::Reply, false);
             let long = style(attitude, Kind::Reply, true);
             // The attitude's voice, whatever the line.
-            for text in [&alert, &reply, &long] {
+            for text in [&warning, &news, &reply, &long] {
                 assert!(text.starts_with("Voice: "), "{text}");
                 assert!(text.contains("Never an announcer or a robot."), "{text}");
             }
-            // A warning is urgent, a reply at the usual pace, a long
-            // explanation a touch slower: three different deliveries.
-            assert!(alert.contains("This line is a warning"), "{alert}");
-            assert!(alert.contains("urgent, faster and sharper"), "{alert}");
+            // A warning is urgent; news (a death, a level-up) is told at
+            // the usual pace, not shouted; a reply at the usual pace; a
+            // long explanation a touch slower: four different deliveries.
+            assert!(warning.contains("This line is a warning"), "{warning}");
+            assert!(warning.contains("urgent, faster and sharper"), "{warning}");
+            assert!(news.contains("This line is news"), "{news}");
+            assert!(
+                news.contains("your usual pace, said like it matters"),
+                "{news}"
+            );
+            assert!(
+                !news.contains("warning") && !news.contains("urgent"),
+                "{news}"
+            );
             assert!(
                 reply.contains("This line is a reply in the chat"),
                 "{reply}"
             );
             assert!(long.contains("a touch slower and steadier"), "{long}");
-            assert!(alert != reply && reply != long && alert != long);
-            // News about itself goes like a reply; a warning is never long.
+            let four = [&warning, &news, &reply, &long];
+            for (i, a) in four.iter().enumerate() {
+                for b in &four[i + 1..] {
+                    assert_ne!(a, b);
+                }
+            }
+            // Word about itself goes like a reply; a warning and news are
+            // never long.
             assert_eq!(style(attitude, Kind::Info, false), reply);
-            assert_eq!(style(attitude, Kind::Alert, true), alert);
+            assert_eq!(style(attitude, Kind::Warning, true), warning);
+            assert_eq!(style(attitude, Kind::Alert, true), news);
         }
         assert!(style(Attitude::Friendly, Kind::Reply, false).contains("a warm, upbeat friend"));
         assert!(style(Attitude::Blunt, Kind::Reply, false).contains("a cocky gamer friend"));

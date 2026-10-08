@@ -1725,7 +1725,7 @@ mod tests {
         let hub = hub();
         hub.post(Kind::Reply, "Marked.", true);
         hub.post_with_fact(
-            Kind::Alert,
+            Kind::Warning,
             "Back off, you're getting shredded.",
             true,
             Some("HP 11% (read 0 s ago), MP 40% (read 0 s ago)"),
@@ -1735,7 +1735,7 @@ mod tests {
             Kind::Alert,
             "You died. Revive and get back in there.",
             true,
-            Some("HP 0% (read 0 s ago)"),
+            None,
             true,
         );
         let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
@@ -1745,17 +1745,21 @@ mod tests {
         // even a null or a false).
         assert!(messages[0].get("fact").is_none(), "{}", messages[0]);
         assert!(messages[0].get("urgent").is_none(), "{}", messages[0]);
+        // A warning carries the reading, and the page knows it for one.
         assert_eq!(
             messages[1]["fact"],
             "HP 11% (read 0 s ago), MP 40% (read 0 s ago)"
         );
         assert_eq!(
             (messages[1]["kind"].as_str(), messages[1]["speak"].as_bool()),
-            (Some("alert"), Some(true))
+            (Some("warning"), Some(true))
         );
-        // A warning waits its turn like any; a death is said however late.
+        // A warning waits its turn like any; a death is news, said however
+        // late, and with no reading.
         assert!(messages[1].get("urgent").is_none(), "{}", messages[1]);
+        assert_eq!(messages[2]["kind"], "alert");
         assert_eq!(messages[2]["urgent"], true);
+        assert!(messages[2].get("fact").is_none(), "{}", messages[2]);
         // The page says when a line it was handed was never said.
         assert_eq!(
             hub.handle(&request(

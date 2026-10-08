@@ -74,8 +74,9 @@
   #log { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
   #log li { max-width: 86%; padding: 9px 12px; border-radius: 16px; font-size: 15px; line-height: 1.35; }
   #log li.heard { align-self: flex-end; background: #3b2f20; border-bottom-right-radius: 5px; }
-  #log li.reply, #log li.alert { align-self: flex-start; background: var(--card2); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
-  #log li.alert { border-color: #8a5a1a; color: #ffd59a; }
+  #log li.reply, #log li.alert, #log li.warning { align-self: flex-start; background: var(--card2); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+  /* A warning (a low bar, a beating) and news (a death, a level-up): its own lines, in its colour. */
+  #log li.alert, #log li.warning { border-color: #8a5a1a; color: #ffd59a; }
   #log li.info { align-self: center; background: none; color: var(--faint); font-size: 13px; padding: 2px 6px; }
   #log time { display: block; color: var(--faint); font-size: 11px; margin-top: 2px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 0 0 10px; }
@@ -1236,8 +1237,11 @@
     log.prepend(li);
     $("convCard").hidden = false;
     while (log.children.length > 60) log.lastChild.remove();
-    if (live && m.kind === "alert") dogAlert();
-    if (m.kind === "reply" || m.kind === "alert") {
+    // Its own lines: a warning (a low bar, a beating) and news (a death, a
+    // level-up) alike — the dog reacts, the bubble shows them.
+    const own = m.kind === "warning" || m.kind === "alert";
+    if (live && own) dogAlert();
+    if (m.kind === "reply" || own) {
       lastReply = m.text;
       if (!status.thinking) $("bubbleText").textContent = m.text;
     }

@@ -66,10 +66,11 @@ impl Delivery {
         }
     }
 
-    /// A warning (a beating, low HP, a death): said faster and sharper than
-    /// talk.
+    /// A warning (a beating, a low bar): said faster and sharper than
+    /// talk. News (a death, a level-up, the coach's word) is not: there is
+    /// nothing to shout about once the character is dead.
     pub fn urgent(self) -> bool {
-        self.kind == Kind::Alert
+        self.kind == Kind::Warning
     }
 }
 
@@ -1158,7 +1159,7 @@ mod tests {
     }
 
     #[test]
-    fn a_long_reply_is_an_explanation_and_a_warning_is_urgent() {
+    fn a_long_reply_is_an_explanation_and_a_warning_alone_is_urgent() {
         let short = "Pot now, you're at 20.";
         let long = "Zakum's arms go down in order, left first, and the body only once all eight \
 arms are gone, so keep hitting the arms until they drop.";
@@ -1166,9 +1167,17 @@ arms are gone, so keep hitting the arms until they drop.";
         assert!(!Delivery::of(Attitude::Blunt, Kind::Reply, short).long);
         assert!(Delivery::of(Attitude::Blunt, Kind::Reply, long).long);
         // A warning is never long, however many words; neither is news.
+        assert!(!Delivery::of(Attitude::Blunt, Kind::Warning, long).long);
         assert!(!Delivery::of(Attitude::Blunt, Kind::Alert, long).long);
         assert!(!Delivery::of(Attitude::Blunt, Kind::Info, long).long);
-        assert!(Delivery::of(Attitude::Savage, Kind::Alert, short).urgent());
+        // Urgency goes by the situation, not by its being a line of its
+        // own: a warning is shouted; a death, a level-up, the coach's word
+        // are told.
+        assert!(Delivery::of(Attitude::Savage, Kind::Warning, short).urgent());
+        let death = "You died. Revive and get back in there.";
+        assert!(!Delivery::of(Attitude::Savage, Kind::Alert, death).urgent());
+        assert!(!Delivery::of(Attitude::Savage, Kind::Alert, "Level 166! Nice.").urgent());
+        assert!(!Delivery::of(Attitude::Savage, Kind::Alert, "Rebuff.").urgent());
         assert!(!Delivery::of(Attitude::Savage, Kind::Reply, short).urgent());
         assert!(!Delivery::of(Attitude::Savage, Kind::Info, short).urgent());
     }

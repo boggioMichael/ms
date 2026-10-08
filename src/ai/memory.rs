@@ -462,7 +462,8 @@ pub fn read_logs(base: &Path, from: &ReadTo) -> Read {
                         read.counts.replies += 1;
                     }
                 }
-                "alert" => read.talk.push(format!("MapleSyrup (game watcher): {text}")),
+                // (A warning and news both: what the watcher said.)
+                "warning" | "alert" => read.talk.push(format!("MapleSyrup (game watcher): {text}")),
                 "turn" if text.starts_with("talked over") => read.counts.talked_over += 1,
                 "turn" if text.starts_with("still talking") => read.counts.continued += 1,
                 "turn" if text.starts_with("jumped in") => read.counts.jumped_in += 1,
@@ -876,7 +877,8 @@ mod tests {
                 "20:00:06  [reply] You're level 61!",
                 "20:00:09  [turn] still talking: what's my level and",
                 "20:00:10  [turn] talked over: wait",
-                "20:00:12  [alert] Careful, your HP's down to 25%.",
+                "20:00:12  [warning] Careful, your HP's down to 25%.",
+                "20:00:40  [alert] Aw, you died. Revive and get back in there.",
             ],
         );
         session(
@@ -896,6 +898,7 @@ mod tests {
                 "Player: what's my level",
                 "MapleSyrup: You're level 61!",
                 "MapleSyrup (game watcher): Careful, your HP's down to 25%.",
+                "MapleSyrup (game watcher): Aw, you died. Revive and get back in there.",
                 "Player: מה הרמה שלי",
                 "MapleSyrup: רמה 62!",
             ]
