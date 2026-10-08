@@ -578,7 +578,8 @@ fn its_own_lines_are_translated_shown_and_spoken() {
     worker.send(Job::Speak {
         text: "Level up! Nice.".into(),
         language: Some("he-IL".into()),
-        show: Some(ms::companion::Kind::Alert),
+        kind: ms::companion::Kind::Alert,
+        show: true,
         speak: true,
     });
     let mut shown = None;
@@ -621,7 +622,8 @@ fn its_own_lines_are_translated_shown_and_spoken() {
     worker.send(Job::Speak {
         text: "Level up! Nice.".into(),
         language: Some("en-US".into()),
-        show: None,
+        kind: ms::companion::Kind::Alert,
+        show: false,
         speak: true,
     });
     loop {
@@ -639,6 +641,77 @@ fn its_own_lines_are_translated_shown_and_spoken() {
             .iter()
             .all(|r| r["path"] == "/v1/audio/speech")
     );
+}
+
+#[test]
+fn an_alerts_line_is_not_called_off_with_the_rest() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A reply under way, then a warning behind it, then the player talks
+    // over the reply: everything is called off, but the warning (its
+    // translation not even started) still comes back shown, and spoken.
+    let slow = worker.send(Job::Converse {
+        heard: "think about this forever".into(),
+        snapshot: String::new(),
+        speak: true,
+        eyes: None,
+        language: None,
+    });
+    std::thread::sleep(Duration::from_millis(400));
+    let alert = worker.send(Job::Speak {
+        text: "Pot now, your HP is at 20 percent.".into(),
+        language: Some("he-IL".into()),
+        kind: ms::companion::Kind::Alert,
+        show: true,
+        speak: true,
+    });
+    let hello = worker.send(Job::Speak {
+        text: "Hey! I'm here.".into(),
+        language: Some("he-IL".into()),
+        kind: ms::companion::Kind::Info,
+        show: true,
+        speak: true,
+    });
+    worker.cancel_all();
+    assert!(worker.cancelled(slow) && worker.cancelled(hello));
+    assert!(!worker.cancelled(alert));
+    let (mut shown, mut spoken) = (None, None);
+    while shown.is_none() || spoken.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, kind }) => {
+                assert_eq!(kind, ms::companion::Kind::Alert);
+                shown = Some(text);
+            }
+            Ok(Done::Audio {
+                id,
+                text,
+                start: true,
+                ..
+            }) => {
+                assert_eq!(id, alert);
+                spoken = Some(text);
+            }
+            Ok(Done::Audio { .. }) => {}
+            other => panic!("{}", describe(other)),
+        }
+    }
+    assert_eq!(
+        shown.as_deref(),
+        Some("(gpt-6.1-sol) you said: Pot now, your HP is at 20 percent.")
+    );
+    assert_eq!(spoken, shown);
+    // The other line of its own went with the call-off: nothing of it comes.
+    while let Ok(done) = worker.done.recv_timeout(Duration::from_millis(500)) {
+        match done {
+            Done::Audio { id, .. } => assert_eq!(id, alert),
+            Done::Failed { id, .. } => assert_eq!(id, slow),
+            other => panic!("{}", describe(Ok(other))),
+        }
+    }
 }
 
 #[test]

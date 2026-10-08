@@ -194,11 +194,14 @@ pub enum Job {
     /// Say one of MapleSyrup's own lines (a warning, a greeting) in the
     /// natural voice, translated first when the player's language is not
     /// English. With `show`, the line has not been shown yet: it comes back
-    /// as `Shown`, in the player's language, to be shown.
+    /// as `Shown`, in the player's language, to be shown. An alert's line
+    /// (`kind`) is not called off with the rest: a warning must not vanish
+    /// because the player spoke over something else.
     Speak {
         text: String,
         language: Option<String>,
-        show: Option<crate::companion::Kind>,
+        kind: crate::companion::Kind,
+        show: bool,
         /// Whether to say it aloud too (a line can be only shown).
         speak: bool,
     },
@@ -295,6 +298,24 @@ pub enum Done {
     },
 }
 
+impl Job {
+    /// Whether no call-off stops it: an alert's own line.
+    fn kept(&self) -> bool {
+        matches!(
+            self,
+            Job::Speak {
+                kind: crate::companion::Kind::Alert,
+                ..
+            }
+        )
+    }
+}
+
+/// How many of the jobs no call-off stops are remembered by number: an
+/// alert's voice is over within seconds of its job, so the last few are
+/// all that can still be asked about.
+const KEPT_REMEMBERED: usize = 64;
+
 pub struct Worker {
     jobs: Sender<(u64, Job)>,
     pub done: Receiver<Done>,
@@ -304,18 +325,29 @@ pub struct Worker {
     next: AtomicU64,
     /// Jobs numbered up to this are called off.
     mark: Arc<AtomicU64>,
+    /// The jobs the mark does not stop (`Job::kept`), by number.
+    kept: Arc<std::sync::Mutex<Vec<u64>>>,
 }
 
 impl Worker {
     /// Hand it a job. Returns the job's number, which its `Done`s carry.
     pub fn send(&self, job: Job) -> u64 {
         let id = self.next.fetch_add(1, Ordering::SeqCst);
+        if job.kept()
+            && let Ok(mut kept) = self.kept.lock()
+        {
+            kept.push(id);
+            if kept.len() > KEPT_REMEMBERED {
+                kept.remove(0);
+            }
+        }
         let _ = self.jobs.send((id, job));
         id
     }
 
     /// Call off job `id` and every job before it: a request in flight is
-    /// stopped, speech being made stops, what waits is skipped.
+    /// stopped, speech being made stops, what waits is skipped. (An
+    /// alert's line goes on regardless.)
     pub fn cancel(&self, id: u64) {
         self.mark.fetch_max(id, Ordering::SeqCst);
     }
@@ -328,13 +360,18 @@ impl Worker {
 
     /// Whether job `id` was called off.
     pub fn cancelled(&self, id: u64) -> bool {
-        self.mark.load(Ordering::SeqCst) >= id
+        self.mark.load(Ordering::SeqCst) >= id && !is_kept(&self.kept, id)
     }
 
     /// Whether it is working on something (the phone shows "thinking").
     pub fn busy(&self) -> bool {
         self.busy.load(Ordering::Relaxed)
     }
+}
+
+/// Whether job `id` is one no call-off stops.
+fn is_kept(kept: &std::sync::Mutex<Vec<u64>>, id: u64) -> bool {
+    kept.lock().is_ok_and(|kept| kept.contains(&id))
 }
 
 /// After this many failures in a row, the fast brain is given up on.
@@ -395,7 +432,13 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
     let busy = Arc::new(AtomicBool::new(false));
     let model = Arc::new(std::sync::Mutex::new(None));
     let mark = Arc::new(AtomicU64::new(0));
-    let (busy_flag, model_slot, marks) = (Arc::clone(&busy), Arc::clone(&model), Arc::clone(&mark));
+    let kept = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (busy_flag, model_slot, marks, kept_jobs) = (
+        Arc::clone(&busy),
+        Arc::clone(&model),
+        Arc::clone(&mark),
+        Arc::clone(&kept),
+    );
     let _ = std::thread::Builder::new()
         .name("ai".into())
         .spawn(move || {
@@ -420,7 +463,11 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                     .iter()
                     .rposition(|(_, job)| matches!(job, Job::Converse { .. }));
                 for (i, (id, job)) in queue.into_iter().enumerate() {
-                    let stop = Stop::new(Arc::clone(&marks), id);
+                    let stop = if is_kept(&kept_jobs, id) {
+                        Stop::never()
+                    } else {
+                        Stop::new(Arc::clone(&marks), id)
+                    };
                     if stop.stopped() {
                         // (The coach waits to hear back from every look.)
                         if let Job::Coach { label, .. } = job {
@@ -445,6 +492,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                         Job::Speak {
                             text,
                             language,
+                            kind,
                             show,
                             speak,
                         } => say_line(
@@ -454,7 +502,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             Line {
                                 text: &text,
                                 language: language.as_deref(),
-                                show,
+                                show: show.then_some(kind),
                                 aloud: speak,
                                 style: brain::voice_style(brain.attitude()),
                             },
@@ -472,21 +520,32 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             &tx,
                         ),
                         Job::Say { heard, text } => {
+                            let asked = Instant::now();
                             let text = brain::for_speech(&text);
                             if text.is_empty() {
                                 continue;
                             }
-                            if let Some(heard) = heard {
-                                brain.heard(&heard);
+                            if let Some(heard) = &heard {
+                                brain.heard(heard);
                             }
                             brain.said(&text);
                             // Said now: the model saying it again would be twice.
                             for sentence in brain::sentences_of(&text) {
                                 brain.recent.fresh(&sentence);
                             }
-                            let _ = tx.send(Done::Shown {
-                                kind: crate::companion::Kind::Reply,
-                                text: text.clone(),
+                            // An answer is a reply like the model's (its turn
+                            // ends when it is done); a line of its own is shown.
+                            let _ = tx.send(match heard {
+                                Some(heard) => Done::Reply {
+                                    id,
+                                    heard,
+                                    text: text.clone(),
+                                    took: asked.elapsed(),
+                                },
+                                None => Done::Shown {
+                                    kind: crate::companion::Kind::Reply,
+                                    text: text.clone(),
+                                },
                             });
                             let style = brain::voice_style(brain.attitude());
                             if let Err(error) =
@@ -614,6 +673,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
         model,
         next: AtomicU64::new(1),
         mark,
+        kept,
     }
 }
 

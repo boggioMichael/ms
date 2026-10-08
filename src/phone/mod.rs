@@ -301,6 +301,11 @@ const CLIPS_KEPT: usize = 8;
 pub struct Hub {
     key: String,
     started: Instant,
+    /// This run of the program: a page open across a restart (the
+    /// self-updater's) sees it change and starts over with it, since the
+    /// new program numbers its lines and clips from one again and has
+    /// not heard the page's hello.
+    boot: String,
     state: Mutex<State>,
     /// Told when there is something new for the phone.
     changed: Condvar,
@@ -316,6 +321,7 @@ impl Hub {
         Arc::new(Hub {
             key,
             started: Instant::now(),
+            boot: tls::random_hex(4),
             state: Mutex::new(State {
                 status: json!({}),
                 messages: VecDeque::new(),
@@ -565,6 +571,7 @@ impl Hub {
                         "messages": messages,
                         "last_id": state.next_id - 1,
                         "uptime": self.started.elapsed().as_secs_f64(),
+                        "boot": self.boot,
                         "clip": state.last_clip,
                         "cut": state.cut,
                     }),
@@ -1578,6 +1585,22 @@ mod tests {
                 Inbound::Hello("iPhone".into())
             ]
         );
+    }
+
+    #[test]
+    fn a_page_can_tell_a_restarted_pc_by_its_boot() {
+        // The same page state against two runs of the program in turn.
+        let before = hub();
+        let after = hub();
+        let state = |hub: &Hub| body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        let (first, second) = (
+            state(&before)["boot"].clone(),
+            state(&after)["boot"].clone(),
+        );
+        assert!(first.as_str().is_some_and(|b| b.len() == 8), "{first}");
+        assert_ne!(first, second);
+        // One run keeps its boot from poll to poll.
+        assert_eq!(state(&before)["boot"], first);
     }
 
     #[test]

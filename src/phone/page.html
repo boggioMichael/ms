@@ -1237,16 +1237,18 @@
       lastReply = m.text;
       if (!status.thinking) $("bubbleText").textContent = m.text;
     }
-    // On a live call, MapleSyrup's own lines (a warning, a level-up) are
-    // handed to the call to say. Without a natural voice, the phone speaks
-    // them with its own.
-    if (live && m.speak && !status.muted && liveCall.on && (m.kind === "alert" || m.kind === "info")) sayLive(m.text);
+    // On a live call, MapleSyrup's own lines (a warning, a level-up, the
+    // answer to a button) are handed to the call to say, every one of them:
+    // the phone's own voice over the call's would be a second voice.
+    // Without a natural voice, the phone speaks them with its own.
+    if (live && m.speak && !status.muted && liveCall.on) sayLive(m.text);
     else if (live && m.speak && !status.muted && (voiceOn === "phone" || voiceOn === "both")) speakHere(m.text);
   }
 
   // ---- the natural voice, when it speaks on this phone --------------------------
   const player = new Audio();
   player.preload = "auto";
+  window.msVoice = player; // (to look at it from the console)
   let lastClip = null;
   function silentWav() {
     const samples = 800, buf = new ArrayBuffer(44 + samples * 2), v = new DataView(buf);
@@ -1271,7 +1273,7 @@
     playNextClip();
   }
   function playNextClip() {
-    if (!player.paused || nextClip === null || nextClip > lastClip) return;
+    if (!player.paused || pausedFor || nextClip === null || nextClip > lastClip) return;
     // Far behind (the phone slept): only the latest.
     if (lastClip - nextClip > 3) nextClip = lastClip;
     const seq = nextClip++;
@@ -1290,6 +1292,7 @@
   });
   // Talked over: stop now and skip what was still to come.
   function stopClips() {
+    clearTimeout(pausedFor); pausedFor = 0;
     if (lastClip !== null) nextClip = lastClip + 1;
     if (!player.paused && clipsForRecording()) postJson("/api/playing", { on: false, age: halfTrip() }).catch(() => {});
     if (!player.paused) { try { player.pause(); } catch (e) {} }
@@ -1311,7 +1314,7 @@
   // ---- polling ---------------------------------------------------------------
   // The PC answers at once when there is something new (a line, a clip, a
   // reply cut short), else after a moment with the latest figures.
-  let since = 0, first = true, failures = 0, lastCut = null, uptimeAt = { uptime: 0, at: Date.now() };
+  let since = 0, first = true, failures = 0, lastCut = null, uptimeAt = { uptime: 0, at: Date.now() }, boot = null;
   async function poll() {
     if (!KEY) return;
     try {
@@ -1326,6 +1329,15 @@
       const state = await r.json();
       failures = 0;
       if (typeof state.uptime === "number") uptimeAt = { uptime: state.uptime, at: Date.now() };
+      // The PC was started again (it updates itself): its lines and clips
+      // are numbered from one again, and it has not heard this page.
+      if (state.boot && boot && state.boot !== boot) {
+        boot = state.boot;
+        startOver(state);
+        setTimeout(poll, 30);
+        return;
+      }
+      if (state.boot) boot = state.boot;
       banner("");
       setPc(true, state.status && state.status.ai ? "PC · " + state.status.ai : t("pc_connected"));
       render(state);
@@ -1345,6 +1357,20 @@
   function setPc(ok, text) {
     $("pcDot").className = "dot " + (ok ? "on" : "bad");
     $("pcText").textContent = text;
+  }
+  // The PC is a new program: this page says hello again (its language with
+  // it, and the call it is on), keeps its choice of where replies are
+  // spoken, and takes the PC's lines and clips from the start, as a page
+  // just opened does.
+  function startOver(state) {
+    since = 0; first = true;
+    lastClip = null; nextClip = null; lastCut = null;
+    hello();
+    if (state.voice_on && state.voice_on !== voiceOn) postJson("/api/voice", { on: voiceOn }).catch(() => {});
+    if (liveCall.on) postJson("/api/mode", { live: true }).catch(() => {});
+  }
+  function hello() {
+    postJson("/api/hello", { agent: navigator.userAgent, lang: locale }).catch(() => {});
   }
 
   // ---- buttons and settings ------------------------------------------------------
@@ -1587,8 +1613,11 @@
       note(window.isSecureContext ? t("no_mic") : t("need_https"));
       return false;
     }
+    // (The gain is left to the browser: this one stream is also the live
+    // call's microphone, and a quieter one would be the worse for it. The
+    // talk-over detector takes each clip's own first moments as its floor.)
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false,
+      audio: { echoCancellation: true, noiseSuppression: true }, video: false,
     });
     const Ctx = window.AudioContext || window.webkitAudioContext;
     const ctx = new Ctx();
@@ -1710,23 +1739,29 @@
   // pause (status.settle_ms).
   let settleMs = 550;
 
-  function sendHeard(text) {
+  // `before`: the words were heard before this phone started speaking (a
+  // sentence cut off by a clip is still the player's).
+  function sendHeard(text, before) {
     text = (text || "").trim();
     if (!text) return;
     // While this phone speaks, its microphone mostly hears itself.
-    if (held) return;
+    if (held && !before) return;
     const now = Date.now(), p = plain(text);
     if (!p) return;
     // Safari sometimes hands the same words over twice, or a piece of them again.
     if (now - lastSentAt < 5000 && (" " + lastSent + " ").includes(" " + p + " ")) return;
     lastSent = p; lastSentAt = now;
+    // The words so far, throttled, must not land after the sentence: the
+    // PC would take them for more talking and hold the answer.
+    clearTimeout(hearingTimer);
+    hearingSent = text;
     $("heard").textContent = "“" + text + "”";
     postJson("/api/heard", { text }).catch(() => {});
   }
 
   // The sentence being said: which result it is, how many of its words were
-  // sent already, and the words since.
-  let current = -1, sentWords = 0, sentAll = "", settleTimer = 0, pending = "";
+  // sent already, the words since, and the whole of it as last written.
+  let current = -1, sentWords = 0, sentAll = "", settleTimer = 0, pending = "", said = "";
   let hearingSent = "", hearingAt = 0, hearingTimer = 0, pcSpokeAt = 0;
   const squash = (s) => plain(s).replace(/ /g, "");
   function restOf(index, transcript) {
@@ -1745,8 +1780,12 @@
     postJson("/api/hearing", { text }).catch(() => {});
   }
   function interim(index, transcript) {
+    // While this phone speaks, only the sentence it was already writing
+    // counts: anything started since is mostly its own voice.
+    if (held && index !== heldIndex) return;
     heardAt = Date.now();
     if (index !== current) { current = index; sentWords = 0; sentAll = ""; }
+    said = transcript;
     const rest = restOf(index, transcript);
     pending = rest;
     if (!rest) return;
@@ -1758,26 +1797,39 @@
       // out whose words they are).
       if (status.speaking_pc || Date.now() - pcSpokeAt < 1200) return;
       if (index !== current || pending !== rest) return;
-      sendHeard(rest);
+      sendHeard(rest, index === heldIndex);
       sentWords = wordsOf(transcript).length;
       sentAll = squash(transcript);
       pending = "";
     }, settleMs);
   }
   function final(index, transcript) {
+    if (held && index !== heldIndex) return;
     clearTimeout(settleTimer);
+    clearTimeout(hearingTimer);
     const rest = restOf(index, transcript);
     if (index === current) { current = -1; sentWords = 0; sentAll = ""; }
     pending = "";
     hearingSent = "";
-    if (rest) sendHeard(rest);
+    if (rest) sendHeard(rest, index === heldIndex);
+  }
+  // The words waiting for the rest of their sentence, sent as they are:
+  // the phone stopped writing (a clip starts, recognition ended), and the
+  // PC has seen them already (/api/hearing), so it would answer the start
+  // of the sentence alone otherwise.
+  function sendPending() {
+    if (!pending) return;
+    sendHeard(pending, true);
+    sentWords = wordsOf(said).length;
+    sentAll = squash(said);
+    pending = "";
   }
 
   // While MapleSyrup speaks on this phone, recognition is stopped (the
   // phone would hear itself) and started again right after; the player can
   // still talk over it: a loud voice (the phone's echo cancelling takes its
   // own sound out) stops it.
-  let held = false, holdTimer = 0;
+  let held = false, holdTimer = 0, heldIndex = -1;
   function speakingNow() { return !player.paused; }
   function updateHold() {
     clearTimeout(holdTimer);
@@ -1793,6 +1845,10 @@
   function setHeld(hold) {
     if (held === hold) return;
     held = hold;
+    // The sentence being written as the clip starts was heard before it:
+    // what waits of it goes now, and the rest of it may still come.
+    heldIndex = hold ? current : -1;
+    if (hold) sendPending();
     if (listening && Recognition) $("micStatus").textContent = hold ? t("mic_talking") : t("mic_listening");
     if (!rec || !wantRec || !listening) return;
     if (hold) { try { rec.abort(); } catch (e) {} }
@@ -1803,16 +1859,44 @@
     try { recStarted = Date.now(); rec.start(); }
     catch (e) { if (tries < 8) setTimeout(() => restartRecognition(tries + 1), 250); }
   }
-  // The player's voice over the phone's own: loud for almost half a second.
-  let floorDb = -60, loudFor = 0;
+  // The player's voice over the phone's own: loud for almost half a second,
+  // well over what the microphone hears in the first moments of the clip
+  // (what is left of the phone's own voice, the game). The clip pauses and
+  // the PC is told; it cuts the reply only once the player's words follow
+  // (status.cut). Otherwise, after a moment, the clip goes on from where it
+  // was, and that loudness no longer counts for it.
+  let floorDb = -60, loudFor = 0, clipFloor = -100, clipAt = 0, measured = null, pausedFor = 0, loudDb = -100;
+  const MEASURE_MS = 300, PAUSE_MS = 1500;
+  player.addEventListener("playing", () => {
+    if (measured !== playingClip) { measured = playingClip; clipFloor = -100; }
+    clipAt = Date.now();
+    loudFor = 0;
+  });
   function talkingOver(db) {
+    if (pausedFor) return;
     if (!speakingNow()) { floorDb = 0.95 * floorDb + 0.05 * db; loudFor = 0; return; }
-    loudFor = db > Math.max(-27, floorDb + 14) ? loudFor + 1 : 0;
+    if (Date.now() - clipAt < MEASURE_MS) { clipFloor = Math.max(clipFloor, db); loudFor = 0; return; }
+    loudFor = db > Math.max(-27, floorDb + 14, clipFloor + 10) ? loudFor + 1 : 0;
     if (loudFor >= 5) {
       loudFor = 0;
-      stopClips();
-      postJson("/api/interrupt", {}).catch(() => {});
+      loudDb = db;
+      pauseClip();
     }
+  }
+  function pauseClip() {
+    if (pausedFor) return;
+    try { player.pause(); } catch (e) {}
+    postJson("/api/interrupt", {}).catch(() => {});
+    // Recognition starts again at once: the PC waits for the words.
+    quietUntil = 0;
+    updateHold();
+    pausedFor = setTimeout(resumeClip, PAUSE_MS);
+  }
+  function resumeClip() {
+    pausedFor = 0;
+    if (!player.getAttribute("src") || !player.paused) return;
+    clipFloor = Math.max(clipFloor, loudDb);
+    player.play().catch(() => {});
   }
 
   function startRecognition() {
@@ -1850,7 +1934,7 @@
     rec.onend = () => {
       // Words still waiting when recognition stopped are sent as they are.
       clearTimeout(settleTimer);
-      if (pending && !held) sendHeard(pending);
+      sendPending();
       current = -1; sentWords = 0; sentAll = ""; pending = "";
       // While held, it is started again when MapleSyrup stops talking.
       if (!wantRec || !listening || held) return;
@@ -2188,7 +2272,7 @@
   });
 
   $("listen").textContent = t("start");
-  if (KEY) postJson("/api/hello", { agent: navigator.userAgent, lang: locale }).catch(() => {});
+  if (KEY) hello();
   poll();
 })();
 </script>

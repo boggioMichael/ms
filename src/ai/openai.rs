@@ -125,6 +125,14 @@ impl Stop {
         Stop { mark, id }
     }
 
+    /// Work nothing calls off (a mark of its own that nothing raises).
+    pub fn never() -> Stop {
+        Stop {
+            mark: Arc::new(AtomicU64::new(0)),
+            id: 1,
+        }
+    }
+
     pub fn stopped(&self) -> bool {
         self.mark.load(Ordering::SeqCst) >= self.id
     }
