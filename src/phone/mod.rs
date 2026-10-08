@@ -22,7 +22,9 @@
 //! it tells the PC what was said (`/api/said`) and when MapleSyrup's voice
 //! is playing (`/api/talking`, to turn the game down). MapleSyrup's own
 //! lines for the call come as messages with `speak` and, behind a
-//! watcher's line, the reading (`fact`).
+//! watcher's line, the reading (`fact`) and whether it is said however
+//! late (`urgent`: a death, a level-up); a line the call never said (it
+//! waited too long, or the call ended) is reported back (`/api/turn`).
 //!
 //! While the session is recorded ([`Recording`]), the phone's sound goes
 //! into the recording too: its microphone and what it plays (a live call's
@@ -123,8 +125,15 @@ pub enum Inbound {
     Interrupt,
     /// A button: a command's word.
     Command(String),
-    /// The page opened, from this browser.
-    Hello(String),
+    /// The page opened, from this browser (`agent`), with its live-call
+    /// toggle on or off (`live`: whether it will open a call once the
+    /// player taps Listen), after the phone had been gone this long
+    /// (`away`; None: the link had not seen a phone before).
+    Hello {
+        agent: String,
+        live: bool,
+        away: Option<Duration>,
+    },
     /// Where replies should be spoken now.
     Voice(VoiceOn),
     /// Answer everything said (true), or only after "syrup" (false).
@@ -154,6 +163,10 @@ pub enum Inbound {
     /// How a turn went on a live call ("jumped in": MapleSyrup answered
     /// before the player had finished), for the log it learns from.
     Turn(String),
+    /// A line handed to the call that the call never said: it waited too
+    /// long behind the call's own voice, or the call ended. For the log,
+    /// which must not say it was said.
+    NotSaid(String),
     /// How MapleSyrup should talk to the player from now on.
     Attitude(crate::companion::Attitude),
     /// The voice to speak in: an ElevenLabs voice's id, or "openai".
@@ -262,6 +275,11 @@ pub struct Message {
     /// the number on, and knows it is newer than any picture it has.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fact: Option<String>,
+    /// On a live call, the one line that matters (a death, a level-up):
+    /// the call says it however long it waited behind the call's own
+    /// voice, where a warning that waited too long is dropped as stale.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub urgent: bool,
 }
 
 /// What the console shows about the phone.
@@ -376,12 +394,20 @@ impl Hub {
 
     /// Add a line to the phone's screen; returns its id.
     pub fn post(&self, kind: Kind, text: &str, speak: bool) -> u64 {
-        self.post_with_fact(kind, text, speak, None)
+        self.post_with_fact(kind, text, speak, None, false)
     }
 
     /// Add a line of MapleSyrup's own for a live call to say, with the
-    /// reading behind it (`fact`, when there is one).
-    pub fn post_with_fact(&self, kind: Kind, text: &str, speak: bool, fact: Option<&str>) -> u64 {
+    /// reading behind it (`fact`, when there is one), and whether it is
+    /// said however late it comes (`urgent`: a death, a level-up).
+    pub fn post_with_fact(
+        &self,
+        kind: Kind,
+        text: &str,
+        speak: bool,
+        fact: Option<&str>,
+        urgent: bool,
+    ) -> u64 {
         let t = self.started.elapsed().as_secs_f64();
         let mut state = self.lock();
         let id = state.next_id;
@@ -393,6 +419,7 @@ impl Hub {
             text: text.to_string(),
             speak,
             fact: fact.map(str::to_string),
+            urgent,
         });
         while state.messages.len() > KEEP_MESSAGES {
             state.messages.pop_front();
@@ -524,18 +551,22 @@ impl Hub {
                         &json!({"error": "This link is out of date. Scan the code on the PC again."}),
                     );
                 }
-                {
+                // (When the phone was last seen before this request: a
+                // hello tells how long it had been gone.)
+                let seen = {
                     let mut state = self.lock();
+                    let seen = state.phone_seen;
                     state.phone_seen = Some(Instant::now());
                     state.requests += 1;
-                }
-                self.api(method, path, request)
+                    seen
+                };
+                self.api(method, path, request, seen)
             }
             _ => Response::text(404, "not found"),
         }
     }
 
-    fn api(&self, method: &str, path: &str, request: &Request) -> Response {
+    fn api(&self, method: &str, path: &str, request: &Request, seen: Option<Instant>) -> Response {
         let body = || serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
         let text_field = |name: &str| {
             body()
@@ -888,12 +919,22 @@ impl Hub {
                 }
                 _ => Response::json(400, &json!({"error": "no text"})),
             },
-            ("POST", "/api/turn") => match text_field("what").as_deref() {
-                Some(what @ "jumped in") => {
+            ("POST", "/api/turn") => match (text_field("what").as_deref(), text_field("text")) {
+                (Some(what @ "jumped in"), _) => {
                     self.lock().inbox.push(Inbound::Turn(what.to_string()));
                     Response::json(200, &json!({"ok": true}))
                 }
-                _ => Response::json(400, &json!({"error": "what is \"jumped in\""})),
+                // A line the call was handed and never said.
+                (Some("dropped"), Some(text)) if !text.trim().is_empty() => {
+                    self.lock()
+                        .inbox
+                        .push(Inbound::NotSaid(text.trim().to_string()));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                _ => Response::json(
+                    400,
+                    &json!({"error": "what is \"jumped in\", or \"dropped\" with the line's text"}),
+                ),
             },
             ("POST", "/api/attitude") => match text_field("attitude")
                 .as_deref()
@@ -937,15 +978,24 @@ impl Hub {
                 None => Response::json(400, &json!({"error": "no command"})),
             },
             ("POST", "/api/hello") => {
+                let body = body();
                 let browser = text_field("agent").unwrap_or_else(|| "a browser".into());
                 let lang = text_field("lang").filter(|l| plausible_locale(l));
+                // (A page that does not say — one from before the toggle
+                // came with the hello — is taken as the toggle on, its default.)
+                let live = body.get("live").and_then(Value::as_bool).unwrap_or(true);
+                let away = seen.map(|at| at.elapsed());
                 let mut state = self.lock();
                 state.browser = Some(browser.clone());
                 // The language first, so the greeting is in it.
                 if let Some(lang) = lang {
                     state.inbox.push(Inbound::Language(lang));
                 }
-                state.inbox.push(Inbound::Hello(browser));
+                state.inbox.push(Inbound::Hello {
+                    agent: browser,
+                    live,
+                    away,
+                });
                 Response::json(200, &json!({"ok": true}))
             }
             ("POST", "/api/lang") => match text_field("lang").filter(|l| plausible_locale(l)) {
@@ -1388,7 +1438,7 @@ mod tests {
         hub.handle(&request(
             "POST",
             "/api/hello?k=k1",
-            r#"{"agent":"iPhone Safari"}"#,
+            r#"{"agent":"iPhone Safari", "live": true}"#,
         ));
         hub.handle(&request(
             "POST",
@@ -1408,7 +1458,12 @@ mod tests {
         assert_eq!(
             hub.take_inbox(),
             vec![
-                Inbound::Hello("iPhone Safari".into()),
+                // (The first hello: the link had not seen a phone before.)
+                Inbound::Hello {
+                    agent: "iPhone Safari".into(),
+                    live: true,
+                    away: None
+                },
                 Inbound::Heard("syrup status".into()),
                 Inbound::Command("mark".into()),
             ]
@@ -1417,6 +1472,27 @@ mod tests {
         let summary = hub.summary();
         assert!(summary.connected);
         assert_eq!(summary.browser.as_deref(), Some("iPhone Safari"));
+        // The page opened again (a reload): how long the phone was gone
+        // comes with the hello, and the toggle as it is (on when unsaid:
+        // the page's default).
+        hub.handle(&request(
+            "POST",
+            "/api/hello?k=k1",
+            r#"{"agent":"iPhone Safari", "live": false}"#,
+        ));
+        match hub.take_inbox().as_slice() {
+            [
+                Inbound::Hello {
+                    agent,
+                    live: false,
+                    away: Some(away),
+                },
+            ] => {
+                assert_eq!(agent, "iPhone Safari");
+                assert!(*away < Duration::from_secs(5), "{away:?}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -1631,13 +1707,17 @@ mod tests {
             "/api/hello?k=k1",
             r#"{"agent":"iPhone","lang":"ko-KR"}"#,
         ));
-        assert_eq!(
-            hub.take_inbox(),
-            vec![
-                Inbound::Language("ko-KR".into()),
-                Inbound::Hello("iPhone".into())
-            ]
-        );
+        match hub.take_inbox().as_slice() {
+            [
+                Inbound::Language(lang),
+                Inbound::Hello {
+                    agent,
+                    live: true,
+                    away: Some(_),
+                },
+            ] => assert_eq!((lang.as_str(), agent.as_str()), ("ko-KR", "iPhone")),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -1649,12 +1729,22 @@ mod tests {
             "Back off, you're getting shredded.",
             true,
             Some("HP 11% (read 0 s ago), MP 40% (read 0 s ago)"),
+            false,
+        );
+        hub.post_with_fact(
+            Kind::Alert,
+            "You died. Revive and get back in there.",
+            true,
+            Some("HP 0% (read 0 s ago)"),
+            true,
         );
         let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
         let messages = state["messages"].as_array().unwrap();
-        assert_eq!(messages.len(), 2);
-        // An ordinary line carries no reading at all (not even a null).
+        assert_eq!(messages.len(), 3);
+        // An ordinary line carries no reading and no urgency at all (not
+        // even a null or a false).
         assert!(messages[0].get("fact").is_none(), "{}", messages[0]);
+        assert!(messages[0].get("urgent").is_none(), "{}", messages[0]);
         assert_eq!(
             messages[1]["fact"],
             "HP 11% (read 0 s ago), MP 40% (read 0 s ago)"
@@ -1662,6 +1752,30 @@ mod tests {
         assert_eq!(
             (messages[1]["kind"].as_str(), messages[1]["speak"].as_bool()),
             (Some("alert"), Some(true))
+        );
+        // A warning waits its turn like any; a death is said however late.
+        assert!(messages[1].get("urgent").is_none(), "{}", messages[1]);
+        assert_eq!(messages[2]["urgent"], true);
+        // The page says when a line it was handed was never said.
+        assert_eq!(
+            hub.handle(&request(
+                "POST",
+                "/api/turn?k=k1",
+                r#"{"what": "dropped", "text": "Back off, you're getting shredded."}"#
+            ))
+            .status,
+            200
+        );
+        assert_eq!(
+            hub.handle(&request("POST", "/api/turn?k=k1", r#"{"what": "dropped"}"#))
+                .status,
+            400
+        );
+        assert_eq!(
+            hub.take_inbox(),
+            vec![Inbound::NotSaid(
+                "Back off, you're getting shredded.".into()
+            )]
         );
     }
 

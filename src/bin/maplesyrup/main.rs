@@ -796,12 +796,17 @@ struct Mouth {
     phone_until: Instant,
     /// When the phone is expected to finish the clips it was handed.
     phone_end: Instant,
-    /// The line being made for the phone (it gets a line at a time).
+    /// The line being made for the phone (it gets a line at a time), and
+    /// what kind of line it is.
     phone_line: Vec<i16>,
+    phone_line_kind: Kind,
     /// Lines of its own (a warning, a hello) made while the player was
-    /// talking or their answer was being made: as WAVs, each with how long
-    /// it plays and since when it waits, handed over once there is room.
-    phone_held: Vec<(Instant, Vec<u8>, Duration)>,
+    /// talking or their answer was being made, handed over once there is
+    /// room.
+    phone_held: Vec<HeldClip>,
+    /// What kind of line each of its own lines being made is, by job: an
+    /// alert's clip is the one a cut keeps.
+    kinds: std::collections::VecDeque<(u64, Kind)>,
     /// When it was last heard speaking (the phone may still hand its last
     /// words back for a moment); None: not yet.
     last_voice: Option<Instant>,
@@ -811,10 +816,42 @@ struct Mouth {
     game_pid: Option<u32>,
 }
 
+/// A line of its own as a WAV, waiting for room on the phone: what kind of
+/// line it is, how long it plays, and since when it waits.
+struct HeldClip {
+    since: Instant,
+    kind: Kind,
+    wav: Vec<u8>,
+    length: Duration,
+}
+
+/// How many of its own lines' kinds are remembered by job: a line's voice
+/// is over within seconds of its job, so the last few are all that can
+/// still be asked about.
+const KINDS_REMEMBERED: usize = 64;
+
 impl Mouth {
     fn speaking(&self) -> bool {
         let now = Instant::now();
         self.player.speaking() || now < self.sapi_until || now < self.phone_until
+    }
+
+    /// Job `id` makes a line of this kind.
+    fn making(&mut self, id: u64, kind: Kind) {
+        self.kinds.push_back((id, kind));
+        while self.kinds.len() > KINDS_REMEMBERED {
+            self.kinds.pop_front();
+        }
+    }
+
+    /// What kind of line job `id` makes, when it is one of its own lines
+    /// (a reply's, a hello's: a reply).
+    fn kind_of(&self, id: u64) -> Kind {
+        self.kinds
+            .iter()
+            .find(|(job, _)| *job == id)
+            .map(|(_, kind)| *kind)
+            .unwrap_or(Kind::Reply)
     }
 
     /// Speaking on the PC's speakers (not on the phone).
@@ -1355,26 +1392,37 @@ impl Relay {
     }
 
     /// A line for the call: the lines to hand over now (this one with
-    /// those that waited), or none while it waits for the gap.
-    fn offer(&mut self, kind: Kind, text: &str, urgent: bool) -> Vec<(Kind, String)> {
+    /// those that waited, each with whether it is said however late it
+    /// comes: only an urgent one is), or none while it waits for the gap.
+    /// Parked or going, it takes the place of the line of its kind that
+    /// waited: the newest is the state of things.
+    fn offer(&mut self, kind: Kind, text: &str, urgent: bool) -> Vec<(Kind, String, bool)> {
+        self.waiting.retain(|(k, _)| *k != kind);
         if !urgent && !self.open() {
-            self.waiting.retain(|(k, _)| *k != kind);
             self.waiting.push((kind, text.to_string()));
             return Vec::new();
         }
         self.sent = Some(Instant::now());
-        let mut lines = std::mem::take(&mut self.waiting);
-        lines.push((kind, text.to_string()));
+        let mut lines = self.take_waiting();
+        lines.push((kind, text.to_string(), urgent));
         lines
     }
 
     /// What waited, once the gap is up.
-    fn due(&mut self) -> Vec<(Kind, String)> {
+    fn due(&mut self) -> Vec<(Kind, String, bool)> {
         if self.waiting.is_empty() || !self.open() {
             return Vec::new();
         }
         self.sent = Some(Instant::now());
+        self.take_waiting()
+    }
+
+    /// The lines that waited (none of them urgent: an urgent line never waits).
+    fn take_waiting(&mut self) -> Vec<(Kind, String, bool)> {
         std::mem::take(&mut self.waiting)
+            .into_iter()
+            .map(|(kind, text)| (kind, text, false))
+            .collect()
     }
 }
 
@@ -1397,6 +1445,27 @@ struct Outputs {
     live: bool,
     /// How they are handed over.
     relay: Relay,
+    /// When the phone was last said hello to (None: not yet).
+    greeted: Option<Instant>,
+    /// The hello was left to the call the page is about to open: the call
+    /// says hi when it opens (the page reads it off the status).
+    call_greets: bool,
+}
+
+/// How long the phone must be gone before it is said hello to again: a
+/// page reloaded sooner (iOS Safari does that on its own) is the same
+/// visit, and a hello on every reload is a bot's tic.
+const HELLO_AGAIN: Duration = Duration::from_secs(30 * 60);
+
+/// Who said hello to the phone that just connected.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Hello {
+    /// The call the page is about to open, when it opens.
+    Call,
+    /// A line of MapleSyrup's own, as a clip.
+    Clip,
+    /// Nobody: the phone is back from a reload, greeted already.
+    Quiet,
 }
 
 impl Outputs {
@@ -1405,6 +1474,79 @@ impl Outputs {
             .as_ref()
             .map(|h| h.voice_on())
             .unwrap_or(self.replies)
+    }
+
+    /// The phone's page opened (`agent`: its browser; `live`: its live-call
+    /// toggle is on; `away`: how long the phone had been gone, None the
+    /// first time): "Connected" on its screen, and a hello in its ear once
+    /// per visit, like a person's — the call's own when the page is about
+    /// to open one (it reads that off the status), else a clip of
+    /// MapleSyrup's own (`knows_player`: picking up from last time). A
+    /// reload within [`HELLO_AGAIN`] is the same visit: no second hello.
+    fn hello(
+        &mut self,
+        companion: &mut Companion,
+        knows_player: bool,
+        agent: &str,
+        live: bool,
+        away: Option<Duration>,
+        language: Option<String>,
+    ) -> Hello {
+        let device = device_of(agent);
+        self.push(Kind::Info, format!("{device} connected"));
+        // (In another language the page says it itself.)
+        if self.language.is_none()
+            && let Some(hub) = &self.phone
+        {
+            hub.post(
+                Kind::Info,
+                &format!("Connected to MapleSyrup on this {device}."),
+                false,
+            );
+        }
+        let back = self.greeted.is_some() && away.is_some_and(|gone| gone < HELLO_AGAIN);
+        let hello = if back {
+            Hello::Quiet
+        } else if self.live_ok
+            && self.voice_on().phone()
+            && live
+            && companion.settings.always_listen
+        {
+            Hello::Call
+        } else {
+            Hello::Clip
+        };
+        self.session.line(
+            "info",
+            &format!(
+                "{device} connected: {}",
+                match hello {
+                    Hello::Call => "the call says hello when it opens",
+                    Hello::Clip => "saying hello",
+                    Hello::Quiet => "back from a reload, no second hello",
+                }
+            ),
+        );
+        match hello {
+            Hello::Quiet => {}
+            Hello::Call => {
+                self.greeted = Some(Instant::now());
+                self.call_greets = true;
+            }
+            Hello::Clip => {
+                self.greeted = Some(Instant::now());
+                match &self.mouth.ai {
+                    // Knowing the player: a hello of its own, picking up
+                    // from last time.
+                    Some(worker) if knows_player && !companion.muted() => {
+                        worker.send(Job::Greet { language });
+                    }
+                    Some(_) => self.speak(Kind::Info, "Hey! I'm here. Just talk to me.", companion),
+                    None => self.speak(Kind::Info, "Phone connected.", companion),
+                }
+            }
+        }
+        hello
     }
 
     /// Show a line everywhere (console, phone, session log).
@@ -1452,14 +1594,17 @@ impl Outputs {
     /// character is dead the only alert is the death's; a level-up is the
     /// one announced from the frame being acted on.)
     fn relay(&mut self, kind: Kind, text: &str, companion: &Companion) {
-        let urgent = companion.dead() || companion.last_level_up() >= companion.progress().seconds;
-        if let Some((_, old)) = self.relay.waiting.iter().find(|(k, _)| *k == kind)
-            && !urgent
-            && !self.relay.open()
-        {
+        let dead = companion.dead();
+        let urgent = dead || companion.last_level_up() >= companion.progress().seconds;
+        // What this line takes the place of: the line of its kind that
+        // waited (the newest is the state of things), and, at a death,
+        // every alert that waited (about a bar that no longer matters).
+        let superseded = |k: Kind| k == kind || (dead && k == Kind::Alert);
+        for (_, old) in self.relay.waiting.iter().filter(|(k, _)| superseded(*k)) {
             self.session
                 .line("live", &format!("not said, a newer line came: {old}"));
         }
+        self.relay.waiting.retain(|(k, _)| !superseded(*k));
         let lines = self.relay.offer(kind, text, urgent);
         if lines.is_empty() {
             self.session
@@ -1475,21 +1620,24 @@ impl Outputs {
     }
 
     /// Hand lines to the call, each with the reading behind it (shown
-    /// only, when muted meanwhile).
-    fn hand(&mut self, lines: Vec<(Kind, String)>, companion: &Companion) {
+    /// only, when muted meanwhile) and whether it is said however late it
+    /// comes (the page drops a line that waited too long behind the call's
+    /// own voice, and says so; an urgent one it says when the voice stops).
+    fn hand(&mut self, lines: Vec<(Kind, String, bool)>, companion: &Companion) {
         let Some(hub) = &self.phone else {
             return;
         };
         let fact = self.fact(companion);
-        for (kind, text) in lines {
+        for (kind, text, urgent) in lines {
             self.session.line(
                 "live",
                 &format!(
-                    "to the call: {text} [{}]",
+                    "to the call{}: {text} [{}]",
+                    if urgent { ", urgent" } else { "" },
                     fact.as_deref().unwrap_or("no reading")
                 ),
             );
-            hub.post_with_fact(kind, &text, !companion.muted(), fact.as_deref());
+            hub.post_with_fact(kind, &text, !companion.muted(), fact.as_deref(), urgent);
         }
     }
 
@@ -1533,13 +1681,14 @@ impl Outputs {
         companion.remember_spoken(now, text);
         match &self.mouth.ai {
             Some(worker) => {
-                worker.send(Job::Speak {
+                let id = worker.send(Job::Speak {
                     text: text.to_string(),
                     language: self.language.clone(),
                     kind,
                     show: false,
                     speak: true,
                 });
+                self.mouth.making(id, kind);
             }
             None => {
                 if self.voice_on().pc()
@@ -1552,17 +1701,19 @@ impl Outputs {
         }
     }
 
-    /// A piece of natural-voice speech, played as it comes where replies
-    /// are spoken: on the PC at once (a new line after a short pause), on
-    /// the phone a line at a time, once the line is complete — or, with
-    /// `hold`, once the player has stopped talking (`release_clips`): a
-    /// clip starting on the phone stops its recognition.
+    /// A piece of natural-voice speech (of a line of this `kind`), played
+    /// as it comes where replies are spoken: on the PC at once (a new line
+    /// after a short pause), on the phone a line at a time, once the line
+    /// is complete — or, with `hold`, once the player has stopped talking
+    /// (`release_clips`): a clip starting on the phone stops its
+    /// recognition.
     fn play_piece(
         &mut self,
         samples: &[i16],
         start: bool,
         end: bool,
         hold: bool,
+        kind: Kind,
         companion: &Companion,
     ) {
         if companion.muted() {
@@ -1583,6 +1734,7 @@ impl Outputs {
         if voice_on.phone() && self.phone.is_some() {
             if start {
                 self.mouth.phone_line.clear();
+                self.mouth.phone_line_kind = kind;
             }
             self.mouth.phone_line.extend_from_slice(samples);
             if end && !self.mouth.phone_line.is_empty() {
@@ -1590,7 +1742,12 @@ impl Outputs {
                 let length = Duration::from_secs_f64(line.len() as f64 / rate as f64);
                 let wav = ai::wav_bytes(&line, rate);
                 if hold {
-                    self.mouth.phone_held.push((Instant::now(), wav, length));
+                    self.mouth.phone_held.push(HeldClip {
+                        since: Instant::now(),
+                        kind,
+                        wav,
+                        length,
+                    });
                 } else {
                     self.hand_clip(wav, length);
                 }
@@ -1617,11 +1774,11 @@ impl Outputs {
     /// that it is `quiet`, or once one has waited long enough (a warning
     /// cannot wait out a long story).
     fn release_clips(&mut self, quiet: bool) {
-        while let Some((since, _, _)) = self.mouth.phone_held.first() {
-            if !quiet && since.elapsed() < CLIP_WAITS {
+        while let Some(clip) = self.mouth.phone_held.first() {
+            if !quiet && clip.since.elapsed() < CLIP_WAITS {
                 return;
             }
-            let (_, wav, length) = self.mouth.phone_held.remove(0);
+            let HeldClip { wav, length, .. } = self.mouth.phone_held.remove(0);
             self.hand_clip(wav, length);
         }
     }
@@ -1647,11 +1804,17 @@ impl Outputs {
     }
 
     /// Stop talking at once (the player talked over it), here and on the
-    /// phone, and drop what was still to come.
+    /// phone, and drop what was still to come — except an alert's line: a
+    /// warning the player talked over (or that waited for their turn) is
+    /// still true, and goes after their turn as it would have.
     fn cut(&mut self) {
         self.mouth.hush();
-        self.mouth.phone_line.clear();
-        self.mouth.phone_held.clear();
+        if self.mouth.phone_line_kind != Kind::Alert {
+            self.mouth.phone_line.clear();
+        }
+        self.mouth
+            .phone_held
+            .retain(|clip| clip.kind == Kind::Alert);
         self.mouth.phone_until = Instant::now();
         self.mouth.phone_end = Instant::now();
         if let Some(hub) = &self.phone {
@@ -2241,7 +2404,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             phone_until: Instant::now(),
             phone_end: Instant::now(),
             phone_line: Vec::new(),
+            phone_line_kind: Kind::Reply,
             phone_held: Vec::new(),
+            kinds: std::collections::VecDeque::new(),
             last_voice: None,
             phone_ducked: false,
             game_pid: None,
@@ -2256,6 +2421,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         live_ok: live_service.is_some(),
         live: false,
         relay: Relay::default(),
+        greeted: None,
+        call_greets: false,
     };
     let hello = companion.hello();
     out.apply(hello, &mut companion, None);
@@ -2411,9 +2578,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             .as_ref()
                             .and_then(|l| l.status)
                     });
+                    // (A reaction — a close call, a streak — goes without
+                    // the picture: it is about what just happened, and a
+                    // second sooner.)
                     let eyes = latest_image
                         .clone()
-                        .filter(|_| in_view)
+                        .filter(|_| in_view && reason.wants_picture())
                         .map(|frame| Eyes { frame, status });
                     out.session.line(
                         "coach",
@@ -2698,6 +2868,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                     }
                     Inbound::Live(on) => {
+                        // (The call that opens says the hello left to it.)
+                        if on {
+                            out.call_greets = false;
+                        }
                         if on != out.live {
                             out.live = on;
                             // (Lines waiting for the old call are not for the new.)
@@ -2733,6 +2907,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     }
                     // (The learner reads it from the log.)
                     Inbound::Turn(what) => out.session.line("turn", &what),
+                    // A line the call was handed and never said: the log
+                    // must not say it was.
+                    Inbound::NotSaid(text) => out
+                        .session
+                        .line("live", &format!("not said, too late: {text}")),
                     Inbound::Speaker(id) => {
                         let openai = id == "openai";
                         let known = openai
@@ -2840,35 +3019,15 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             out.apply(actions, &mut companion, latest_image.clone());
                         }
                     }
-                    Inbound::Hello(agent) => {
-                        let device = device_of(&agent);
-                        out.push(Kind::Info, format!("{device} connected"));
-                        // (In another language the page says it itself.)
-                        if out.language.is_none() {
-                            hub.post(
-                                Kind::Info,
-                                &format!("Connected to MapleSyrup on this {device}."),
-                                false,
-                            );
-                        }
-                        // (On a live call the call itself says hello.)
-                        if !(out.live_ok && out.voice_on().phone()) {
-                            match &out.mouth.ai {
-                                // Knowing the player: a hello of its own,
-                                // picking up from last time.
-                                Some(worker) if learning.knows_player() && !companion.muted() => {
-                                    worker.send(Job::Greet {
-                                        language: player_language.clone(),
-                                    });
-                                }
-                                Some(_) => out.speak(
-                                    Kind::Info,
-                                    "Hey! I'm here. Just talk to me.",
-                                    &mut companion,
-                                ),
-                                None => out.speak(Kind::Info, "Phone connected.", &mut companion),
-                            }
-                        }
+                    Inbound::Hello { agent, live, away } => {
+                        out.hello(
+                            &mut companion,
+                            learning.knows_player(),
+                            &agent,
+                            live,
+                            away,
+                            player_language.clone(),
+                        );
                     }
                     Inbound::Voice(on) => {
                         let place = match on {
@@ -3200,7 +3359,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     // sentence it is writing down.
                     let own = turns.reply_id() != Some(id);
                     let hold = own && !player_quiet(player_heard, &turns);
-                    out.play_piece(&samples, start, end, hold, &companion);
+                    let kind = out.mouth.kind_of(id);
+                    out.play_piece(&samples, start, end, hold, kind, &companion);
                 }
                 Done::Silent { id, heard } => {
                     turns.finished(id);
@@ -3416,8 +3576,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     "thinking": out.mouth.ai.as_ref().is_some_and(|w| w.busy()),
                     "ai": out.mouth.ai.as_ref().map(|w| w.model.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "OpenAI".into())),
                     "learned": learned_status(sight.as_ref(), hub),
-                    // Live calls can be made.
+                    // Live calls can be made; and the next call to open says
+                    // hello (the phone's hello was left to it).
                     "live": out.live_ok,
+                    "call_greets": out.call_greets,
                     "recording": recording.status(),
                     // How it talks, and who answers.
                     "attitude": companion.settings.attitude,
@@ -3561,6 +3723,15 @@ mod tests {
         assert_eq!(heard_of(line, Duration::ZERO), "");
     }
 
+    /// An instant `d` ago. (`Instant - Duration` panics when the monotonic
+    /// clock is younger than `d`, as on a runner that just booted; every
+    /// `d` here is seconds, and no runner is that young.)
+    fn earlier(d: Duration) -> Instant {
+        Instant::now()
+            .checked_sub(d)
+            .unwrap_or_else(|| panic!("the clock is younger than {d:?}: too soon for this test"))
+    }
+
     fn held(words: &str, since: Instant) -> Held {
         Held {
             words: words.into(),
@@ -3587,7 +3758,7 @@ mod tests {
             ..Default::default()
         };
         assert!(turns.overdue().is_none());
-        turns.held = Some(held("hello", Instant::now() - HOLD_FOR));
+        turns.held = Some(held("hello", earlier(HOLD_FOR)));
         assert_eq!(turns.overdue().as_deref(), Some("hello"));
         assert!(turns.held.is_none());
     }
@@ -3602,6 +3773,15 @@ mod tests {
             Brain::new(),
         );
         let now = Instant::now();
+        // (A session folder of this fixture's own, with a fresh log.)
+        static FIXTURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let session_dir = std::env::temp_dir().join(format!(
+            "ms-turns-{}-{:?}-{}",
+            std::process::id(),
+            std::thread::current().id(),
+            FIXTURES.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&session_dir);
         Outputs {
             mouth: Mouth {
                 ai: Some(worker),
@@ -3611,17 +3791,15 @@ mod tests {
                 phone_until: now,
                 phone_end: now,
                 phone_line: Vec::new(),
+                phone_line_kind: Kind::Reply,
                 phone_held: Vec::new(),
+                kinds: std::collections::VecDeque::new(),
                 last_voice: None,
                 phone_ducked: false,
                 game_pid: None,
             },
             phone: Some(hub),
-            session: Session::open(std::env::temp_dir().join(format!(
-                "ms-turns-{}-{:?}",
-                std::process::id(),
-                std::thread::current().id()
-            ))),
+            session: Session::open(session_dir),
             log: Vec::new(),
             plain: true,
             start: now,
@@ -3630,7 +3808,14 @@ mod tests {
             live_ok: false,
             live: false,
             relay: Relay::default(),
+            greeted: None,
+            call_greets: false,
         }
+    }
+
+    /// The session log so far.
+    fn log(out: &Outputs) -> String {
+        std::fs::read_to_string(out.session.dir.join("log.txt")).unwrap_or_default()
     }
 
     /// A job the worker has nothing to do for, numbered like any.
@@ -3708,7 +3893,7 @@ mod tests {
                 .is_some()
         );
         // Still at it after the answer was called off: the wait starts over.
-        turns.held.as_mut().unwrap().since = Instant::now() - HOLD_FOR;
+        turns.held.as_mut().unwrap().since = earlier(HOLD_FOR);
         assert_eq!(
             turns
                 .hearing(
@@ -3721,7 +3906,7 @@ mod tests {
             Some("still talking: at yourself where am I right now")
         );
         assert!(turns.overdue().is_none());
-        turns.held.as_mut().unwrap().since = Instant::now() - HOLD_FOR;
+        turns.held.as_mut().unwrap().since = earlier(HOLD_FOR);
         assert_eq!(
             turns.overdue().as_deref(),
             Some("No take a look at yourself where am I right now")
@@ -3785,7 +3970,7 @@ mod tests {
         playing(&mut out, &mut turns, id, "You're level 165.");
         turns.loud(&mut out);
         // Too late to be about that sound: the clip ended meanwhile.
-        turns.loud = Some(Instant::now() - CORROBORATE_FOR);
+        turns.loud = Some(earlier(CORROBORATE_FOR));
         out.mouth.phone_until = Instant::now();
         assert!(!turns.loud_lately());
         assert_eq!(turns.hearing(&mut out, &companion, 5.0, "wait stop"), None);
@@ -3815,6 +4000,26 @@ mod tests {
                     m["fact"].as_str().map(str::to_string),
                 )
             })
+            .collect()
+    }
+
+    /// The lines on the phone's screen the call is to say however late
+    /// they come (a death, a level-up).
+    fn urgent(out: &Outputs) -> Vec<String> {
+        let hub = out.phone.as_ref().unwrap();
+        let state = hub.handle(&phone::http::Request {
+            method: "GET".into(),
+            path: "/api/state".into(),
+            query: vec![("k".into(), "k1".into())],
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["urgent"] == true)
+            .map(|m| m["text"].as_str().unwrap().to_string())
             .collect()
     }
 
@@ -3871,7 +4076,7 @@ mod tests {
         assert_eq!(said(&out).len(), 2);
         // The gap up: what waited goes together (one turn for the call),
         // each line with the reading as it is now.
-        out.relay.sent = Some(Instant::now() - RELAY_GAP);
+        out.relay.sent = Some(earlier(RELAY_GAP));
         companion.observe(now(&out), frame(62.0, true, 165));
         out.relay_due(&companion);
         let lines: Vec<String> = said(&out).into_iter().map(|(t, _)| t).collect();
@@ -3889,14 +4094,33 @@ mod tests {
             Some("HP 62% (read 0 s ago), MP about 40% (estimated 0 s ago)")
         );
         assert!(out.relay.waiting.is_empty());
-        // A death goes at once, whatever went before.
+        // The gap is closed again: a low-HP line parks, and is still parked
+        // when the death comes. The death goes at once, alone: the parked
+        // line was about a bar that no longer matters, and the log says it
+        // was not said.
+        out.tell(Kind::Alert, "HP 20 percent. Pot now!", true, &mut companion);
+        assert_eq!(out.relay.waiting.len(), 1);
+        let before = said(&out).len();
         for _ in 0..3 {
             let actions = companion.observe(now(&out), frame(0.0, true, 165));
             out.apply(actions, &mut companion, None);
         }
         assert!(companion.dead());
-        let death = said(&out).last().unwrap().0.clone();
+        let lines = said(&out);
+        assert_eq!(lines.len(), before + 1, "{lines:?}");
+        let death = lines.last().unwrap().0.clone();
         assert!(death.starts_with("Your HP hit zero"), "{death}");
+        assert!(!lines.iter().any(|(t, _)| t.contains("HP 20 percent")));
+        assert!(out.relay.waiting.is_empty());
+        assert!(
+            log(&out).contains("[live] not said, a newer line came: HP 20 percent. Pot now!"),
+            "{}",
+            log(&out)
+        );
+        // The page is told the death is said however late it comes; the
+        // warnings before it were not.
+        assert_eq!(urgent(&out), std::slice::from_ref(&death));
+        assert!(log(&out).contains(&format!("[live] to the call, urgent: {death}")));
         // So does a level-up (the number held for a moment, one up).
         let t = now(&out) + 100.0;
         for at in [t, t + 3.5, t + 10.0, t + 13.5] {
@@ -3906,6 +4130,7 @@ mod tests {
         }
         assert_eq!(said(&out).last().unwrap().0, "Level up! You're level 166.");
         assert!(said(&out).last().unwrap().1.is_some());
+        assert_eq!(urgent(&out), [death, "Level up! You're level 166.".into()]);
         // Muted: shown, not said, and nothing waits for the gap.
         let actions = companion.command(t + 20.0, Command::Mute);
         out.apply(actions, &mut companion, None);
@@ -3917,7 +4142,7 @@ mod tests {
     #[test]
     fn a_line_of_its_own_waits_while_the_player_talks() {
         let mut out = outputs();
-        let companion = Companion::new(Settings::default());
+        let mut companion = Companion::new(Settings::default());
         let mut turns = Turns::default();
         let samples = vec![100i16; 2400];
         // The answer they are waiting for goes at once.
@@ -3925,7 +4150,7 @@ mod tests {
         turns.asked(answer, "what's my level");
         let own = turns.reply_id() != Some(answer);
         assert!(!own);
-        out.play_piece(&samples, true, true, false, &companion);
+        out.play_piece(&samples, true, true, false, Kind::Reply, &companion);
         let clip = |out: &Outputs| {
             let hub = out.phone.as_ref().unwrap();
             let state = hub.handle(&phone::http::Request {
@@ -3940,25 +4165,189 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(clip(&out), 1);
-        // A warning while they talk (or while the answer is made): held.
+        // A line of its own while they talk (or while the answer is made): held.
         let heard = Some(Instant::now());
         assert!(!player_quiet(heard, &turns));
-        out.play_piece(&samples, true, true, true, &companion);
+        out.play_piece(&samples, true, true, true, Kind::Info, &companion);
         out.release_clips(player_quiet(heard, &turns));
         assert_eq!((clip(&out), out.mouth.phone_held.len()), (1, 1));
         // Once they are quiet and answered, it goes.
         turns.finished(answer);
-        let quiet = Some(Instant::now() - Duration::from_secs(1));
+        let quiet = Some(earlier(Duration::from_secs(1)));
         assert!(player_quiet(quiet, &turns));
         out.release_clips(player_quiet(quiet, &turns));
         assert_eq!((clip(&out), out.mouth.phone_held.len()), (2, 0));
         // Held too long, it goes anyway; cut, it is dropped.
-        out.play_piece(&samples, true, true, true, &companion);
-        out.mouth.phone_held[0].0 = Instant::now() - CLIP_WAITS;
+        out.play_piece(&samples, true, true, true, Kind::Info, &companion);
+        out.mouth.phone_held[0].since = earlier(CLIP_WAITS);
         out.release_clips(false);
         assert_eq!(clip(&out), 3);
-        out.play_piece(&samples, true, true, true, &companion);
+        out.play_piece(&samples, true, true, true, Kind::Info, &companion);
         out.cut();
         assert!(out.mouth.phone_held.is_empty());
+        // A warning's clip, held for their turn, is not dropped by their
+        // next sentence: the warning is still true. It goes after their
+        // turn, as it would have; the line held with it is dropped.
+        out.speak(Kind::Alert, "HP 20 percent. Pot now!", &mut companion);
+        let (warning, kind) = *out.mouth.kinds.back().unwrap();
+        assert_eq!(kind, Kind::Alert);
+        assert_eq!(out.mouth.kind_of(warning), Kind::Alert);
+        assert_eq!(out.mouth.kind_of(warning + 1), Kind::Reply);
+        out.play_piece(
+            &samples,
+            true,
+            true,
+            true,
+            out.mouth.kind_of(warning),
+            &companion,
+        );
+        out.play_piece(&samples, true, true, true, Kind::Info, &companion);
+        assert_eq!(out.mouth.phone_held.len(), 2);
+        out.cut();
+        assert_eq!(
+            out.mouth.phone_held.len(),
+            1,
+            "the warning's clip must survive the cut"
+        );
+        assert_eq!(cuts(&out), 2);
+        out.release_clips(true);
+        assert_eq!((clip(&out), out.mouth.phone_held.len()), (4, 0));
+        // A warning still being made when the cut comes keeps what was
+        // made of it: the clip is whole, not its second half.
+        out.play_piece(&samples, true, false, false, Kind::Alert, &companion);
+        out.cut();
+        out.play_piece(&samples, false, true, false, Kind::Alert, &companion);
+        assert_eq!(clip(&out), 5);
+        assert_eq!(clip_bytes(&out, 5), 44 + 2 * 2 * samples.len());
+    }
+
+    #[test]
+    fn the_phone_is_said_hello_to_once_per_visit_by_whoever_will_talk() {
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let hello =
+            |out: &mut Outputs, companion: &mut Companion, live: bool, away: Option<Duration>| {
+                out.hello(companion, false, "iPhone Safari", live, away, None)
+            };
+        let shown = |out: &Outputs| {
+            let hub = out.phone.as_ref().unwrap();
+            let state = hub.handle(&phone::http::Request {
+                method: "GET".into(),
+                path: "/api/state".into(),
+                query: vec![("k".into(), "k1".into())],
+                headers: Vec::new(),
+                body: Vec::new(),
+            });
+            serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["text"] == "Connected to MapleSyrup on this iPhone.")
+                .count()
+        };
+        // No key (no call to come): a hello of its own, said as a clip.
+        let first = job(&out);
+        assert_eq!(hello(&mut out, &mut companion, true, None), Hello::Clip);
+        assert_eq!(shown(&out), 1);
+        let said = *out.mouth.kinds.back().unwrap();
+        assert_eq!(said, (first + 1, Kind::Info));
+        assert!(
+            companion
+                .own_words(1.0, "hey I'm here just talk to me", 0)
+                .is_none(),
+            "the hello was not said"
+        );
+        // The page reloaded a moment later (the same visit): "Connected"
+        // on the screen, no second hello.
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(Duration::from_secs(2))),
+            Hello::Quiet
+        );
+        assert_eq!(shown(&out), 2);
+        assert_eq!(*out.mouth.kinds.back().unwrap(), said);
+        assert_eq!(job(&out), first + 2);
+        // Gone for half an hour: a visit of its own, hello again.
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Clip
+        );
+        assert_eq!(out.mouth.kinds.back().unwrap().1, Kind::Info);
+        assert!(out.mouth.kinds.back().unwrap().0 > said.0);
+        // Knowing the player, the hello picks up from last time (a job of
+        // its own, not a line of this kind).
+        let before = job(&out);
+        assert_eq!(
+            out.hello(
+                &mut companion,
+                true,
+                "iPhone",
+                true,
+                Some(HELLO_AGAIN),
+                None
+            ),
+            Hello::Clip
+        );
+        assert_eq!(job(&out), before + 2);
+        assert_eq!(out.mouth.kinds.back().unwrap().0, said.0 + 2);
+        // With a key, and the page's toggle on: the call about to open says
+        // hello, and nothing is said meanwhile; the page is told so.
+        out.live_ok = true;
+        let before = job(&out);
+        assert!(!out.call_greets);
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Call
+        );
+        assert!(out.call_greets);
+        assert_eq!(job(&out), before + 1);
+        // The toggle off (the owner's phone connected to silence): a clip.
+        out.call_greets = false;
+        assert_eq!(
+            hello(&mut out, &mut companion, false, Some(HELLO_AGAIN)),
+            Hello::Clip
+        );
+        assert!(!out.call_greets);
+        // Replies on the PC: no call will open, whatever the toggle.
+        out.phone.as_ref().unwrap().set_voice_on(VoiceOn::Pc);
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Clip
+        );
+        out.phone.as_ref().unwrap().set_voice_on(VoiceOn::Phone);
+        // Only after "syrup": the page opens no call either.
+        companion.set_always_listen(false);
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Clip
+        );
+        companion.set_always_listen(true);
+        // A new session (the PC started again) says hello even though the
+        // link saw the phone a moment ago.
+        let mut fresh = outputs();
+        assert_eq!(
+            hello(
+                &mut fresh,
+                &mut companion,
+                true,
+                Some(Duration::from_millis(30))
+            ),
+            Hello::Clip
+        );
+        assert!(log(&out).contains("[info] iPhone connected: back from a reload, no second hello"));
+        assert!(log(&out).contains("[info] iPhone connected: the call says hello when it opens"));
+    }
+
+    /// The size of the phone's clip `seq`, as it would fetch it.
+    fn clip_bytes(out: &Outputs, seq: u64) -> usize {
+        let hub = out.phone.as_ref().unwrap();
+        let clip = hub.handle(&phone::http::Request {
+            method: "GET".into(),
+            path: "/api/clip".into(),
+            query: vec![("k".into(), "k1".into()), ("seq".into(), seq.to_string())],
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        assert_eq!(clip.status, 200);
+        clip.body.len()
     }
 }

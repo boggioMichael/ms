@@ -19,10 +19,11 @@
 //! stops and answers when talked over. MapleSyrup's own lines (low HP, a
 //! level-up) are handed to it to say, so they come in the same voice and
 //! language: the watcher's at most once per 20 s and with the reading
-//! behind them (the PC's `Relay`), so the call passes a number on instead
-//! of restating the watcher every few seconds. When the attitude changes
-//! mid-call the phone fetches the instructions again (`/api/instructions`)
-//! and hands them to the call (`session.update`).
+//! behind them (the PC's `Relay`), so the call passes a number on for HP
+//! and MP, and the thing itself for anything else, instead of restating
+//! the watcher every few seconds. When the attitude changes mid-call the
+//! phone fetches the instructions again (`/api/instructions`) and hands
+//! them to the call (`session.update`).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -68,10 +69,12 @@ clearly disagrees with what you see, say what you see.
 - Now and then a message comes from MapleSyrup's game watcher, never from the player: a line it wants said (low \
 HP or MP, a death, a level-up, something they asked you to watch for, a tip, a correction from a look-up), with \
 its reading of HP and MP at that moment and the game as read right then. That reading is newer than any picture \
-you have: pass it on in one short clause, in the language you're speaking with them and in your attitude, with \
-the number (\"HP's at 11, pot now\") rather than the watcher's words. Never restate the whole line, never argue \
-with it, never answer it with what your side shows. If the player was talking, their words come first: answer \
-them, then the watcher in a few words.
+you have. Pass the line on in one short clause, in the language you're speaking with them and in your attitude: \
+when the line is about HP or MP, say the number (\"HP's at 11, pot now\"), not the watcher's words; otherwise say \
+the thing, in your words, short (\"Rebuff.\" is \"rebuff\", not \"HP's at 96, rebuff\"), and leave the numbers \
+out. Never both. Never restate the whole line, never argue with it, never answer it with what your side shows. \
+A line that comes late (\"N s ago\") is still said, as late news (\"you died a moment ago\"). If the player was \
+talking, their words come first: answer them, then the watcher in a few words.
 - Presence: greet once per session, the first time they talk to you; \"welcome back\" at most once, after 20 \
 minutes or more without a word from them; ask whether they're still there once at most. The session facts you \
 get (how long, deaths, level-ups, when they last spoke, the lowest HP) are for you, not for them: never recite \
@@ -404,8 +407,19 @@ mod tests {
         assert!(text.contains("MapleSyrup's rules"));
         assert!(text.contains("Your attitude: savage"));
         assert!(text.contains("look_it_up never makes them wait"));
-        // The watcher's line: its number, passed on, never argued with.
+        // The watcher's line: the number when it is about HP or MP, the
+        // thing itself otherwise (never both), never argued with; late is
+        // still said.
         assert!(text.contains("newer than any picture you have"));
+        assert!(text.contains("when the line is about HP or MP, say the number"));
+        assert!(text.contains("otherwise say the thing, in your words, short"));
+        assert!(text.contains("Never both."));
+        assert!(
+            !text.contains(
+                "with the number (\"HP's at 11, pot now\") rather than the watcher's words"
+            )
+        );
+        assert!(text.contains("A line that comes late (\"N s ago\") is still said"));
         assert!(text.contains("never argue with it"));
         assert!(text.contains("their words come first"));
         assert!(!text.contains("say it right away"));

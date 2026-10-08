@@ -5,17 +5,19 @@ right to left; then the turn-taking, with a stand-in speech recognizer, a
 stand-in call and a microphone fed from a file: the words so far never
 land after the sentence, a sentence cut off by a clip is still sent, a
 loud sound over a clip pauses it until the PC's word, a PC started again
-is greeted again and its clips play, and on a call MapleSyrup's own lines
+is greeted again and its clips play, a page reloaded mid-visit is not
+greeted twice, and on a call MapleSyrup's own lines
 are said by the call, never by the phone's own voice: handed over with the
 reading behind them and the game as read now, never while the call is
-answering (one turn asked for at a time), dropped once stale, and a change
+answering (one turn asked for at a time), a warning dropped once stale
+(and the PC told), a death or a level-up said however late, and a change
 of attitude retunes the call in place. Needs `pip install playwright &&
 playwright install chromium`; run from the repository root: `python3
 tools/phone_ui_check.py` (or with some of `ui`, `recognition`, `live`,
 `loudness` to run those alone; PHONE_PAGE=path checks another copy of the
 page, to see a check fail against the page as it was). Screenshots land in
 `target/phone-ui/`."""
-import json, os, struct, sys, threading, time, http.server, socketserver
+import json, os, re, struct, sys, threading, time, http.server, socketserver
 from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import sync_playwright
 
@@ -39,7 +41,7 @@ STATUS = {
     "workshop": {"on": True, "coder": "Claude Code", "coders": ["Claude Code", "Codex"], "repo": "C:\\Users\\me\\GitHub\\ms", "working": "building", "working_secs": 95, "queued": 0, "last": None},
     "speaking": False, "speaking_pc": False, "thinking": False, "ai": "grok-4.3",
     "learned": {"things": [], "hud": True, "level": 152, "level_from": "screen"},
-    "live": True, "recording": {"state": "off"}, "attitude": "savage",
+    "live": True, "call_greets": True, "recording": {"state": "off"}, "attitude": "savage",
     "voices": [
         {"id": "v1", "name": "Rachel", "about": "female · calm · american"},
         {"id": "v2", "name": "Adam", "about": "male · deep · american"},
@@ -382,9 +384,10 @@ def live_checks(browser):
     def sent(kind): return [e for e in page.evaluate("window.__dcSent") if e["type"] == kind]
     def items_with(text): return [e for e in sent("conversation.item.create") if text in json.dumps(e)]
     def event(ev): page.evaluate("(ev) => window.__dc.onmessage({ data: JSON.stringify(ev) })", ev)
-    def line(id, kind, text, fact=None):
+    def line(id, kind, text, fact=None, urgent=False):
         m = {"id": id, "t": 100.0 + id, "kind": kind, "text": text, "speak": True}
         if fact: m["fact"] = fact
+        if urgent: m["urgent"] = True
         with LOCK: STATE["messages"].append(m)
     # The greeting asks for a turn; the call takes it and is done.
     wait_for(lambda: len(sent("response.create")) == 1, 4, "the greeting asked for no turn")
@@ -414,14 +417,26 @@ def live_checks(browser):
     event({"type": "response.done", "response": {"output": []}})
     wait_for(lambda: items_with("Pot now") and len(sent("response.create")) == 4, 4, "the line did not go once the response was done")
     assert items_with("Pot now")[-1]["item"]["content"][0]["text"].count("Its reading") == 1
-    # A line that waited too long (the call talked on for a while) is not
-    # said as news when the talking stops.
+    # The call talks on for a while. A warning that waited behind its voice
+    # that long is not news any more: not said when the talking stops, and
+    # the PC is told it was not. The one line that matters (a level-up, a
+    # death: urgent) waits for the voice to stop, then is said however late,
+    # and says how late.
+    t_late = time.time()
     event({"type": "response.created"}); event({"type": "output_audio_buffer.started"})
-    line(4, "alert", "Level 153! Nice.")
+    line(4, "alert", "Move, you're melting.", "HP 40% (read 0 s ago)")
+    line(5, "alert", "Level 153! Nice.", urgent=True)
     page.wait_for_timeout(6500)
+    assert not items_with("Level 153") and len(sent("response.create")) == 4, "a line was said over the call's own voice"
     event({"type": "output_audio_buffer.stopped"}); event({"type": "response.done", "response": {"output": []}})
-    page.wait_for_timeout(1500)
-    assert not items_with("Level 153") and len(sent("response.create")) == 4, "a stale line was said as news"
+    wait_for(lambda: items_with("Level 153"), 4, "the level-up was not said once the talking stopped")
+    text = items_with("Level 153")[-1]["item"]["content"][0]["text"]
+    assert "melting" not in text, text
+    assert re.search(r"not the player, \d+ s ago: Level 153", text), text
+    assert len(sent("response.create")) == 5, sent("response.create")
+    wait_for(lambda: any(r["body"] == {"what": "dropped", "text": "Move, you're melting."} for r in requests_since(t_late, "/api/turn")), 2, "the PC was not told of the line that was not said")
+    assert not any((r["body"] or {}).get("text") == "Level 153! Nice." for r in requests_since(t_late, "/api/turn")), "the level-up was reported as not said"
+    event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
     # The attitude changed on the PC (the picker here, or the player
     # objecting to the tone): the call gets its instructions again and goes
     # on, not started over.
@@ -437,8 +452,30 @@ def live_checks(browser):
     t2 = time.time()
     with LOCK: STATE.update({"boot": "b2", "clip": 0, "messages": []})
     wait_for(lambda: any(r["body"] == {"live": True} for r in requests_since(t2, "/api/mode")), 4, "the restarted PC was not told of the call")
-    assert requests_since(t2, "/api/hello"), "no hello to the restarted PC"
+    hellos = requests_since(t2, "/api/hello")
+    assert hellos, "no hello to the restarted PC"
+    # The hello carries the live-call toggle: the PC leaves the hello to
+    # the call when one is coming, and says it itself when not.
+    assert hellos[0]["body"].get("live") is True, hellos[0]["body"]
     STATUS["attitude"] = "savage"
+    page.close()
+    # A page reloaded mid-visit: the PC says no second hello, and the call
+    # it opens says none either (status.call_greets is false).
+    STATUS["call_greets"] = False
+    reset_pc()
+    with LOCK: STATE["voice_on"] = "phone"
+    page = browser.new_page(viewport={"width": 390, "height": 844})
+    watch(page)
+    page.add_init_script(FAKES)
+    page.goto(f"http://127.0.0.1:{port}/?k=test")
+    page.wait_for_timeout(800)
+    t3 = time.time()
+    page.click("#listen")
+    wait_for(lambda: any(r["body"] == {"live": True} for r in requests_since(t3, "/api/mode")), 5, "the reloaded page's call did not open")
+    page.wait_for_timeout(600)
+    sent_now = page.evaluate("window.__dcSent")
+    assert not [e for e in sent_now if e["type"] == "response.create" or "opened the call" in json.dumps(e)], "a reloaded page's call said hello again"
+    STATUS["call_greets"] = True
     page.close()
 
 def browser_args(mic_file):

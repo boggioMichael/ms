@@ -1245,7 +1245,7 @@
     // answer to a button) are handed to the call to say, every one of them:
     // the phone's own voice over the call's would be a second voice.
     // Without a natural voice, the phone speaks them with its own.
-    if (live && m.speak && !status.muted && liveCall.on) sayLive(m.text, m.fact);
+    if (live && m.speak && !status.muted && liveCall.on) sayLive(m.text, m.fact, m.urgent);
     else if (live && m.speak && !status.muted && (voiceOn === "phone" || voiceOn === "both")) speakHere(m.text);
   }
 
@@ -1373,8 +1373,10 @@
     if (state.voice_on && state.voice_on !== voiceOn) postJson("/api/voice", { on: voiceOn }).catch(() => {});
     if (liveCall.on) postJson("/api/mode", { live: true }).catch(() => {});
   }
+  // (With the live-call toggle: the PC leaves the hello to the call when
+  // one is coming, and says it itself when not.)
   function hello() {
-    postJson("/api/hello", { agent: navigator.userAgent, lang: locale }).catch(() => {});
+    postJson("/api/hello", { agent: navigator.userAgent, lang: locale, live: liveWanted }).catch(() => {});
   }
 
   // ---- buttons and settings ------------------------------------------------------
@@ -2039,11 +2041,16 @@
     liveCall.retries = 0;
     $("micStatus").textContent = t("mic_live");
     postJson("/api/mode", { live: true }).catch(() => {});
+    // The call says hello once, when the PC left the phone's hello to it
+    // (status.call_greets): not again on a reconnect, and not at all on a
+    // page reloaded mid-visit, which the PC does not greet twice either.
     if (!liveCall.greeted) {
       liveCall.greeted = true;
-      liveSend({ type: "conversation.item.create", item: { type: "message", role: "system",
-        content: [{ type: "input_text", text: "[The player just opened the call. Say hi in one short line; if you know what they were up to lately, you may pick up from there.]" }] } });
-      respond();
+      if (status.call_greets !== false) {
+        liveSend({ type: "conversation.item.create", item: { type: "message", role: "system",
+          content: [{ type: "input_text", text: "[The player just opened the call. Say hi in one short line; if you know what they were up to lately, you may pick up from there.]" }] } });
+        respond();
+      }
     }
     flushSay();
   }
@@ -2211,18 +2218,27 @@
   // MapleSyrup's own lines, said by the call at the next quiet moment:
   // nobody talking, no answer under way. A line that waited longer than
   // SAY_STALE_MS is not news any more ("you're taking a beating" half a
-  // minute late is noise) and is dropped. What goes carries the reading
-  // the PC sent with it and the game as read right now, so the call's
-  // picture is as new as the watcher's and it passes a number on.
+  // minute late is noise) and is dropped — and the PC is told, so its log
+  // never says a line was said when it was not. The one line that matters
+  // (urgent: a death, a level-up) is said however long it waited, and the
+  // item says how late it is. What goes carries the reading the PC sent
+  // with it and the game as read right now, so the call's picture is as
+  // new as the watcher's and it passes a number on.
   const SAY_STALE_MS = 6000;
-  function sayLive(text, fact) {
-    liveCall.pending.push({ text, fact: fact || "", at: Date.now() });
+  function sayLive(text, fact, urgent) {
+    liveCall.pending.push({ text, fact: fact || "", urgent: !!urgent, at: Date.now() });
     flushSay();
+  }
+  // Lines handed to the call that it never said.
+  function notSaid(lines) {
+    for (const l of lines) postJson("/api/turn", { what: "dropped", text: l.text }).catch(() => {});
   }
   async function flushSay() {
     if (!liveCall.on || liveCall.flushing || liveCall.userTalking || liveCall.talking || responding()) return;
     const now = Date.now();
-    liveCall.pending = liveCall.pending.filter((p) => now - p.at < SAY_STALE_MS);
+    const stale = (p) => !p.urgent && now - p.at >= SAY_STALE_MS;
+    notSaid(liveCall.pending.filter(stale));
+    liveCall.pending = liveCall.pending.filter((p) => !stale(p));
     if (!liveCall.pending.length) return;
     const lines = liveCall.pending.splice(0);
     liveCall.flushing = true;
@@ -2232,7 +2248,7 @@
       if (r.ok) snapshot = ((await r.json()).snapshot || "").trim();
     } catch (x) {}
     liveCall.flushing = false;
-    if (!liveCall.on) return;
+    if (!liveCall.on) { notSaid(lines); return; }
     const age = Math.round((Date.now() - lines[0].at) / 1000);
     const fact = lines.map((l) => l.fact).filter(Boolean).pop();
     let text = "[MapleSyrup's game watcher, not the player" + (age >= 2 ? ", " + age + " s ago" : "") + ": " +
@@ -2296,6 +2312,8 @@
     liveCall.responding = 0;
     liveCall.respondWanted = false;
     liveCall.flushing = false;
+    // (The lines waiting for the call went nowhere.)
+    notSaid(liveCall.pending.splice(0));
     if (liveCall.talking) liveTalking(false);
     if (liveCall.audio) liveCall.audio.srcObject = null;
     disconnectPlayed();
