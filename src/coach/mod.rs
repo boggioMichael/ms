@@ -119,41 +119,48 @@ pub mod examples {
         ],
     ];
 
-    /// A new scene.
+    /// A new scene. Only what the reason carries — they went somewhere
+    /// new — and nothing a 640×400 picture cannot support: no portal
+    /// direction, no "wrong map", no boss at the end, no gear or buffs.
+    /// ("That's the long way round. Portal's left." taught the model to
+    /// assert a portal it could not see, and the player caught it at
+    /// once.)
     pub const NEW_SCENE: [&[&str]; 3] = [
         &[
             "Ooh, new map. Buff up before you jump in.",
-            "The portal you want is top right.",
-            "Careful, this one's got a boss at the end.",
+            "Somewhere new. Check the map name before you go in.",
+            "New map! Take a second and look around first.",
         ],
         &[
-            "Wrong map. Back through the portal.",
+            "New map. Buff up.",
             "Rebuff before you go in.",
-            "That's the long way round. Portal's left.",
+            "New map. Check the name.",
         ],
         &[
-            "You walked into the wrong map, genius. Back.",
-            "Buff first, you're naked.",
-            "Here, with that gear. Bold.",
+            "New map. Try not to die in the first minute.",
+            "Buff first, then walk in.",
+            "Somewhere new. Look before you leap, genius.",
         ],
     ];
 
-    /// A level-up.
+    /// A level-up: the points, and nothing about quests, maps by name or
+    /// job advancements — a level number cannot support them ("Fourth job
+    /// quest's up. Go." is false at 150).
     pub const LEVEL_UP: [&[&str]; 3] = [
         &[
             "Put the new points in your main attack.",
-            "Monster Park's worth it from here.",
-            "That opens the fourth job quest. Go see the instructor.",
+            "A level stronger. Push a bit harder now.",
+            "Points first, then back to it. Nice one.",
         ],
         &[
             "Points in the main attack. Don't spread them.",
-            "Move maps, this one's under you now.",
-            "Fourth job quest's up. Go.",
+            "Points first, then back to it.",
+            "One level stronger. Hit something harder.",
         ],
         &[
             "Put the points somewhere useful for once.",
-            "This map's beneath you now. Even you'll outgrind it.",
-            "Fourth job quest. Try not to die on the way.",
+            "One level up. Still can't dodge, I bet.",
+            "Points in the main attack, not wherever you usually dump them.",
         ],
     ];
 
@@ -287,8 +294,10 @@ line: a breather, an easier map, or what keeps killing them; [silent] only if yo
                 ordinal(*deaths)
             ),
             Reason::NewScene => "The picture just changed and settled: they went somewhere new, or something \
-big is on screen (a portal, a cutscene, a dialog, a boss). React, don't narrate: one thing about where they \
-just landed or what to do there, only if it's worth saying; else [silent]. Never say what the screen shows."
+big is on screen (a portal, a cutscene, a dialog, a boss). React, don't narrate: one thing worth saying on \
+arriving somewhere new (buff up, check the map name, look around), only if it's worth saying; else [silent]. \
+Never say what the screen shows, and never name a portal, a quest, an NPC or a map you can't see in the \
+picture."
                 .to_string(),
             Reason::LevelUp { level } => {
                 let level = level
@@ -296,8 +305,8 @@ just landed or what to do there, only if it's worth saying; else [silent]. Never
                     .unwrap_or_else(|| "a new level".to_string());
                 format!(
                     "They just hit {level}; the cheer was said already, don't repeat it. One line on the one \
-thing that changes now, if anything — a skill to put points in, a map that's better from here, a quest that \
-just opened; else [silent]."
+thing that changes now, if anything — a skill to put points in, pushing a bit harder; else [silent]. A level \
+number tells you nothing else: never name a portal, a quest, an NPC or a map you can't see in the picture."
                 )
             }
             Reason::ExpStalled { minutes } => format!(
@@ -1680,7 +1689,7 @@ line: a breather, an easier map, or what keeps killing them"
         let scene = blunt(&reasons[2]);
         assert!(scene.contains("React, don't narrate"), "{scene}");
         assert!(
-            scene.contains("Never say what the screen shows."),
+            scene.contains("Never say what the screen shows, and never name"),
             "{scene}"
         );
         assert!(
@@ -1717,6 +1726,47 @@ line: a breather, an easier map, or what keeps killing them"
                 let lower = line.to_lowercase();
                 for unseen in ["loot", "rune", "buff"] {
                     assert!(!lower.contains(unseen), "{line:?}");
+                }
+            }
+        }
+        // A new scene and a level-up: the examples use only what the
+        // reason carries — somewhere new, a level gained — and never a
+        // portal, a quest, an NPC, a named map or the player's gear, which
+        // a 640×400 picture and a level number cannot support ("That's
+        // the long way round. Portal's left.", "Fourth job quest's up.
+        // Go." — false at 150); and the model is told so in words.
+        for reason in [&reasons[2], &reasons[3]] {
+            for attitude in Attitude::ALL {
+                assert!(
+                    reason.describe(attitude).contains(
+                        "never name a portal, a quest, an NPC or a map you can't see in the picture"
+                    ),
+                    "{}",
+                    reason.describe(attitude)
+                );
+            }
+        }
+        for lists in [examples::NEW_SCENE, examples::LEVEL_UP] {
+            for attitude in Attitude::ALL {
+                for line in attitude.lines(lists) {
+                    let lower = line.to_lowercase();
+                    for unseen in [
+                        "portal",
+                        "quest",
+                        "instructor",
+                        "job",
+                        "monster park",
+                        "wrong map",
+                        "boss at the end",
+                        "gear",
+                        "naked",
+                        "under you",
+                        "beneath you",
+                        "left",
+                        "right",
+                    ] {
+                        assert!(!lower.contains(unseen), "{line:?} names {unseen:?}");
+                    }
                 }
             }
         }

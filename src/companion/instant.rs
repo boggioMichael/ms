@@ -177,8 +177,9 @@ pub fn asks(sentence: &str) -> Option<Ask> {
 }
 
 /// The answers, one list per attitude (friendly, blunt, savage); the first
-/// of each list is the plainest, and leads. `{n}` is the bar's name, `{v}`
-/// the value.
+/// of each list is the plainest, and leads — never one that presumes an
+/// earlier answer ("Still level 165."): those come later in their list,
+/// after one of the same kind. `{n}` is the bar's name, `{v}` the value.
 pub mod lines {
     /// HP or MP asked about, and low (under 30%).
     pub const BAR_LOW_EN: [&[&str]; 3] = [
@@ -356,9 +357,9 @@ pub mod lines {
             "Still level {v}.",
         ],
         &[
-            "Level {v}. Still.",
-            "{v}. Forgot already?",
             "Level {v}. It's on your screen, genius.",
+            "{v}. Forgot already?",
+            "Level {v}. Still.",
             "{v}. Same as five minutes ago.",
             "Level {v}. Not changing while you ask.",
             "{v}. Go level instead of asking.",
@@ -382,9 +383,9 @@ pub mod lines {
             "עדיין רמה {v}.",
         ],
         &[
-            "רמה {v}. עדיין.",
-            "{v}. כבר שכחת?",
             "רמה {v}. זה על המסך שלך, גאון.",
+            "{v}. כבר שכחת?",
+            "רמה {v}. עדיין.",
             "{v}. כמו לפני חמש דקות.",
             "רמה {v}. לא משתנה בזמן שאתה שואל.",
             "{v}. לך תעלה רמה במקום לשאול.",
@@ -481,34 +482,78 @@ fn duration(seconds: f64, hebrew: bool) -> String {
     }
 }
 
+/// A [`Deck`] per list in [`lines`], so that each kind of answer is dealt
+/// on its own: the first "what level am I" of a night is the level list's
+/// lead, whatever was asked before it, and a card that presumes an
+/// earlier answer ("Still level 165.", "Forgot already?") comes only after
+/// one of the same kind. (One deck shared by the ten lists had the first
+/// level question of a night answered "Still level 165.": the shared count
+/// had moved on past the lead.) The lead stays first on every night: an
+/// answer is an answer, and the plain one is the right first one.
+#[derive(Debug)]
+pub struct Decks {
+    bar_low_en: Deck,
+    bar_ok_en: Deck,
+    bar_low_he: Deck,
+    bar_ok_he: Deck,
+    exp_en: Deck,
+    exp_he: Deck,
+    level_en: Deck,
+    level_he: Deck,
+    next_en: Deck,
+    next_he: Deck,
+}
+
+impl Decks {
+    /// Every deck shuffled by the session's `seed` (and by its own lines,
+    /// so none are dealt in step).
+    pub fn seeded(seed: u64) -> Self {
+        Self {
+            bar_low_en: Deck::seeded(seed),
+            bar_ok_en: Deck::seeded(seed),
+            bar_low_he: Deck::seeded(seed),
+            bar_ok_he: Deck::seeded(seed),
+            exp_en: Deck::seeded(seed),
+            exp_he: Deck::seeded(seed),
+            level_en: Deck::seeded(seed),
+            level_he: Deck::seeded(seed),
+            next_en: Deck::seeded(seed),
+            next_he: Deck::seeded(seed),
+        }
+    }
+
+    /// The next card of the bar list for `he`/`low`, in `attitude`'s
+    /// voice.
+    fn bar(&mut self, attitude: Attitude, he: bool, low: bool) -> &'static str {
+        match (he, low) {
+            (false, true) => self.bar_low_en.deal(attitude, lines::BAR_LOW_EN),
+            (false, false) => self.bar_ok_en.deal(attitude, lines::BAR_OK_EN),
+            (true, true) => self.bar_low_he.deal(attitude, lines::BAR_LOW_HE),
+            (true, false) => self.bar_ok_he.deal(attitude, lines::BAR_OK_HE),
+        }
+    }
+}
+
 /// The answer, in the language of the question and the attitude picked.
-/// The lines are dealt from `deck` — one deck for every question, as the
-/// caller keeps it, shuffled by the session's seed: the plainest first,
-/// every one before any again, as far as a deck shared by every question
-/// allows, and in another order each night. A card is dealt only for an
-/// answer given. `None` when the number isn't known right now: the model
-/// answers then.
+/// The lines are dealt from `decks` — one per list, as the caller keeps
+/// them, shuffled by the session's seed: the plainest first, every one
+/// before any again, and in another order each night. A card is dealt
+/// only for an answer given. `None` when the number isn't known right
+/// now: the model answers then.
 pub fn answer(
     ask: Ask,
     sentence: &str,
     obs: Option<&Observation>,
     progress: &Progress,
     attitude: Attitude,
-    deck: &mut Deck,
+    decks: &mut Decks,
 ) -> Option<String> {
     let obs = obs.filter(|o| o.game.is_seen())?;
     let he = is_hebrew(sentence);
-    let mut pick = |lines: [&[&'static str]; 3]| deck.deal(attitude, lines);
     let mut gauge_line = |gauge: Option<Gauge>, name: &str| -> Option<String> {
         let gauge = gauge?;
         let value = percent(gauge, he);
-        let low = gauge.percent < 30.0;
-        let line = match (he, low) {
-            (false, true) => pick(lines::BAR_LOW_EN),
-            (false, false) => pick(lines::BAR_OK_EN),
-            (true, true) => pick(lines::BAR_LOW_HE),
-            (true, false) => pick(lines::BAR_OK_HE),
-        };
+        let line = decks.bar(attitude, he, gauge.percent < 30.0);
         Some(line.replace("{v}", &value).replace("{n}", name))
     };
     match ask {
@@ -516,17 +561,29 @@ pub fn answer(
         Ask::Mp => gauge_line(obs.mp, "MP"),
         Ask::Exp => {
             let value = percent(obs.exp?, he);
-            let line = pick(if he { lines::EXP_HE } else { lines::EXP_EN });
+            let line = if he {
+                decks.exp_he.deal(attitude, lines::EXP_HE)
+            } else {
+                decks.exp_en.deal(attitude, lines::EXP_EN)
+            };
             Some(line.replace("{v}", &value))
         }
         Ask::Level => {
             let level = obs.level?;
-            let line = pick(if he { lines::LEVEL_HE } else { lines::LEVEL_EN });
+            let line = if he {
+                decks.level_he.deal(attitude, lines::LEVEL_HE)
+            } else {
+                decks.level_en.deal(attitude, lines::LEVEL_EN)
+            };
             Some(line.replace("{v}", &level.to_string()))
         }
         Ask::NextLevel => {
             let left = duration(progress.seconds_to_level?, he);
-            let line = pick(if he { lines::NEXT_HE } else { lines::NEXT_EN });
+            let line = if he {
+                decks.next_he.deal(attitude, lines::NEXT_HE)
+            } else {
+                decks.next_en.deal(attitude, lines::NEXT_EN)
+            };
             Some(line.replace("{v}", &left))
         }
     }
@@ -607,10 +664,10 @@ mod tests {
             seconds_to_level: Some(2.0 * 3600.0 + 20.0 * 60.0),
             ..Default::default()
         };
-        // (A fresh deck each: the first answer is the lead.)
+        // (Fresh decks each: the first answer is the lead.)
         let say = |ask, sentence: &str, attitude| {
-            let mut deck = Deck::seeded(SEED);
-            answer(ask, sentence, Some(&obs), &progress, attitude, &mut deck).unwrap()
+            let mut decks = Decks::seeded(SEED);
+            answer(ask, sentence, Some(&obs), &progress, attitude, &mut decks).unwrap()
         };
         assert_eq!(say(Ask::Hp, "what's my hp", Attitude::Blunt), "HP 76%.");
         assert_eq!(say(Ask::Hp, "כמה HP יש לי", Attitude::Blunt), "76% HP.");
@@ -633,7 +690,7 @@ mod tests {
         );
         // Not known right now: the model answers — and no card is dealt
         // for it: the next answer is still the lead.
-        let mut deck = Deck::seeded(SEED);
+        let mut decks = Decks::seeded(SEED);
         assert!(
             answer(
                 Ask::NextLevel,
@@ -641,11 +698,11 @@ mod tests {
                 Some(&obs),
                 &Progress::default(),
                 Attitude::Blunt,
-                &mut deck
+                &mut decks
             )
             .is_none()
         );
-        assert!(answer(Ask::Hp, "x", None, &progress, Attitude::Blunt, &mut deck).is_none());
+        assert!(answer(Ask::Hp, "x", None, &progress, Attitude::Blunt, &mut decks).is_none());
         assert_eq!(
             answer(
                 Ask::Hp,
@@ -653,7 +710,7 @@ mod tests {
                 Some(&obs),
                 &progress,
                 Attitude::Blunt,
-                &mut deck
+                &mut decks
             ),
             Some("HP 76%.".into())
         );
@@ -681,10 +738,10 @@ mod tests {
             ] {
                 // Asked twelve times running: six different answers, then
                 // six again in another order, never one twice in a row.
-                let mut deck = Deck::seeded(SEED);
+                let mut decks = Decks::seeded(SEED);
                 let answers: Vec<String> = (0..12)
                     .map(|_| {
-                        answer(ask, sentence, Some(&obs), &progress, attitude, &mut deck).unwrap()
+                        answer(ask, sentence, Some(&obs), &progress, attitude, &mut decks).unwrap()
                     })
                     .collect();
                 for round in answers.chunks(6) {
@@ -718,7 +775,7 @@ mod tests {
         let obs = seen();
         let progress = Progress::default();
         let night = |seed: u64| -> Vec<String> {
-            let mut deck = Deck::seeded(seed);
+            let mut decks = Decks::seeded(seed);
             (0..12)
                 .map(|_| {
                     answer(
@@ -727,7 +784,7 @@ mod tests {
                         Some(&obs),
                         &progress,
                         Attitude::Blunt,
-                        &mut deck,
+                        &mut decks,
                     )
                     .unwrap()
                 })
@@ -738,31 +795,79 @@ mod tests {
         assert_eq!(two[0], "HP 76%.");
         assert_ne!(one, two);
         assert_eq!(night(1), one);
-        // Every question's deck is one with the companion's: the answers
-        // go on from where the last left off, whichever the question.
-        let mut deck = Deck::seeded(1);
-        let hp = answer(
-            Ask::Hp,
-            "what's my hp",
-            Some(&obs),
-            &progress,
-            Attitude::Blunt,
-            &mut deck,
-        );
-        assert_eq!(hp.as_deref(), Some("HP 76%."));
-        let level = answer(
-            Ask::Level,
-            "what level am I",
-            Some(&obs),
-            &progress,
-            Attitude::Blunt,
-            &mut deck,
-        );
-        assert_ne!(
-            level.as_deref(),
-            Some("Level 109."),
-            "the lead again: the deck did not move"
-        );
+    }
+
+    #[test]
+    fn each_kind_of_answer_is_dealt_from_its_own_deck() {
+        // "How's my HP", then "what level am I": the level answer is the
+        // level list's lead, on any night — one deck shared by the ten
+        // lists had it "Still level 109." (the shared count had moved
+        // past the lead) for both of these seeds. And twelve HP answers
+        // are every card once before any twice, whatever else was asked
+        // between them.
+        let obs = seen();
+        let progress = Progress::default();
+        let ask = |decks: &mut Decks, ask: Ask, q: &str, attitude: Attitude| {
+            answer(ask, q, Some(&obs), &progress, attitude, decks).unwrap()
+        };
+        for seed in [7u64, 20261008] {
+            for attitude in Attitude::ALL {
+                let mut decks = Decks::seeded(seed);
+                let hp = ask(&mut decks, Ask::Hp, "how's my HP", attitude);
+                assert_eq!(
+                    hp,
+                    attitude.lines(lines::BAR_OK_EN)[0]
+                        .replace("{v}", "76%")
+                        .replace("{n}", "HP"),
+                    "seed {seed}"
+                );
+                let level = ask(&mut decks, Ask::Level, "what level am I", attitude);
+                assert_eq!(
+                    level,
+                    attitude.lines(lines::LEVEL_EN)[0].replace("{v}", "109"),
+                    "seed {seed}"
+                );
+                let mut answers = vec![hp];
+                for n in 0..11 {
+                    // (Other questions between: they move other decks.)
+                    ask(&mut decks, Ask::Exp, "exp?", attitude);
+                    if n % 2 == 0 {
+                        ask(&mut decks, Ask::Level, "level?", attitude);
+                    }
+                    answers.push(ask(&mut decks, Ask::Hp, "hp?", attitude));
+                }
+                for round in answers.chunks(6) {
+                    let mut seen: Vec<&String> = round.iter().collect();
+                    seen.sort();
+                    seen.dedup();
+                    assert_eq!(seen.len(), 6, "seed {seed}: {answers:?}");
+                }
+                for pair in answers.windows(2) {
+                    assert_ne!(pair[0], pair[1], "seed {seed}: {answers:?}");
+                }
+            }
+        }
+        // No list leads with a card that presumes an earlier answer.
+        for (name, list) in lines::ALL {
+            for attitude in Attitude::ALL {
+                let lead = attitude.lines(*list)[0].to_lowercase();
+                for word in [
+                    "still",
+                    "again",
+                    "forgot",
+                    "same as",
+                    "עדיין",
+                    "שוב",
+                    "שכחת",
+                ] {
+                    assert!(
+                        !lead.contains(word),
+                        "{name} ({}): {lead:?}",
+                        attitude.word()
+                    );
+                }
+            }
+        }
     }
 
     #[test]

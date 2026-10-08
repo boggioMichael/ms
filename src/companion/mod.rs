@@ -8,8 +8,8 @@
 //!
 //! It speaks up on its own for little: HP or MP running low, a level-up, a
 //! death, the game window coming and going, and — once a night — to ask
-//! whether the player is still there after half an hour without a word.
-//! Everything else waits to be asked.
+//! whether the player is still there when the game has sat idle for twenty
+//! minutes without a word from them. Everything else waits to be asked.
 
 pub mod attitude;
 pub mod chat;
@@ -165,7 +165,7 @@ pub struct SoFar {
     /// when it was a minute or more — for the one reply to it (the main
     /// loop notes their words before it builds the reply's snapshot, so
     /// `since_player_spoke` is 0 by then, and "welcome back" had nothing
-    /// to go on). `None` once 30 s have passed, or they speak again.
+    /// to go on). `None` once 10 s have passed, or they speak again.
     pub quiet_before: Option<f64>,
     /// Deaths so far, and since the last.
     pub deaths: u32,
@@ -191,12 +191,20 @@ const QUIET_EXP_BAR: f32 = 0.5;
 /// HP readings are kept this long for the lowest lately, in seconds.
 const LOWEST_HP_SECS: f64 = 60.0;
 /// A silence of the player's this long is worth a word when they end it,
-/// and is reported for this long after (one reply's worth), in seconds.
+/// and is reported for this long after, in seconds: one reply's worth —
+/// the reply's snapshot is taken within a second or two of the sentence,
+/// and a call fetches it as the player starts speaking. (Kept 30 s, the
+/// next sentence's reply carried "they had been quiet for 32 min until
+/// just now" again.)
 const QUIET_BEFORE_SECS: f64 = 60.0;
-const QUIET_BEFORE_KEPT_SECS: f64 = 30.0;
-/// Not a word from the player for this long, while the game went on: it
-/// asks whether they are still there, once a session.
-const STILL_THERE_SECS: f64 = 1800.0;
+const QUIET_BEFORE_KEPT_SECS: f64 = 10.0;
+/// The game idle — HP and EXP unmoved, in view — for this long, and not
+/// a word from the player in that time: it asks whether they are still
+/// there, once a session…
+const STILL_THERE_SECS: f64 = 1200.0;
+/// …and never this soon after a warning of its own (one the player
+/// answered with a potion was a sign of life two minutes ago).
+const STILL_THERE_AFTER_WARNING_SECS: f64 = 300.0;
 
 /// A bar's low warning, bound to the fight the way the beating is. A
 /// fight begins when the bar goes under the mark and is over
@@ -209,6 +217,16 @@ const STILL_THERE_SECS: f64 = 1800.0;
 /// grind of hit, pot, hit, every 8 s, had the line at every hit: 75 "pot
 /// now" in ten minutes, in seven wordings — the beating's nag, one rule
 /// down.
+///
+/// A bar that reads low for minutes while EXP comes in is a bar read
+/// wrong — a character does not live at 20% through ten minutes of
+/// killing things — and after [`DOUBT_AFTER_LINES`] unanswered lines of
+/// one fight with EXP gained since the first, it is not believed: the
+/// player is told so once, its warnings are held, and it is believed
+/// again once it has read above the mark for [`BELIEVE_AGAIN_SECS`]. (The
+/// hold in `pace` is for the case where nothing moves; a misread bar on a
+/// night of grinding got past it on the EXP, one line every two minutes
+/// for hours.)
 #[derive(Debug, Clone, Copy)]
 struct Low {
     /// Frames in a row under the mark, and since when (a frame or two can
@@ -218,11 +236,30 @@ struct Low {
     /// When the bar was last under the mark.
     low_at: f64,
     /// When the line was last said, the reading then, how many lines this
-    /// fight, and whether a potion has answered the last.
+    /// fight, and whether a potion has answered the last — frames in a
+    /// row with the bar back up by a potion's worth: one is a misread
+    /// (see [`HELD_FRAMES`]).
     told: f64,
     told_at: f32,
     lines: u32,
     answered: bool,
+    up_frames: u32,
+    /// EXP when the fight's first line was said.
+    exp_at_first: Option<f32>,
+    /// The bar is not believed, and since when it has read above the mark
+    /// (never: minus infinity).
+    doubted: bool,
+    above_since: f64,
+}
+
+/// What a reading of a low bar calls for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Due {
+    Nothing,
+    /// The warning.
+    Line,
+    /// The bar is not to be believed, as of now: say so, once.
+    Misread,
 }
 
 impl Low {
@@ -235,13 +272,17 @@ impl Low {
             told_at: f32::INFINITY,
             lines: 0,
             answered: false,
+            up_frames: 0,
+            exp_at_first: None,
+            doubted: false,
+            above_since: f64::NEG_INFINITY,
         }
     }
 
-    /// Takes a reading; whether the warning is due now. `fought_at` is
-    /// when the fight was last seen going on some other way (HP falling
-    /// fast; never, for MP).
-    fn due(&mut self, now: f64, percent: f32, mark: f32, fought_at: f64) -> bool {
+    /// Takes a reading (and EXP as read with it); what it calls for.
+    /// `fought_at` is when the fight was last seen going on some other way
+    /// (HP falling fast; never, for MP).
+    fn due(&mut self, now: f64, percent: f32, mark: f32, fought_at: f64, exp: Option<f32>) -> Due {
         if now - self.low_at.max(fought_at) > FIGHT_OVER_SECS {
             self.lines = 0;
         }
@@ -255,30 +296,84 @@ impl Low {
             self.frames = 0;
         }
         if percent >= self.told_at + POTTED {
-            self.answered = true;
+            self.up_frames += 1;
+            if self.up_frames >= HELD_FRAMES {
+                self.answered = true;
+            }
+        } else {
+            self.up_frames = 0;
+        }
+        if self.doubted {
+            // Believed again once it has read above the mark for a while;
+            // the next time it is low is a new fight.
+            if percent >= mark {
+                if !self.above_since.is_finite() {
+                    self.above_since = now;
+                }
+                if now - self.above_since >= BELIEVE_AGAIN_SECS {
+                    self.doubted = false;
+                    self.lines = 0;
+                    self.answered = false;
+                }
+            } else {
+                self.above_since = f64::NEG_INFINITY;
+            }
+            return Due::Nothing;
         }
         let held = self.frames >= 3 && now - self.since >= LOW_HOLD_SECS;
-        held && match self.lines {
-            0 => true,
-            _ if self.answered => percent < self.told_at - QUIET_HP_POINTS,
+        if !held {
+            return Due::Nothing;
+        }
+        match self.lines {
+            0 => Due::Line,
+            _ if self.answered => {
+                if percent < self.told_at - QUIET_HP_POINTS {
+                    Due::Line
+                } else {
+                    Due::Nothing
+                }
+            }
             said => {
                 let wait = FALL_COOLDOWNS[(said as usize - 1).min(FALL_COOLDOWNS.len() - 1)];
-                now - self.told >= wait
+                if now - self.told < wait {
+                    Due::Nothing
+                } else if said >= DOUBT_AFTER_LINES && exp_gained(self.exp_at_first, exp) {
+                    self.doubted = true;
+                    self.above_since = f64::NEG_INFINITY;
+                    Due::Misread
+                } else {
+                    Due::Line
+                }
             }
         }
     }
 
-    /// The line is said now, at `percent`.
-    fn said(&mut self, now: f64, percent: f32) {
+    /// The line is said now, at `percent`, with EXP read at `exp`.
+    fn said(&mut self, now: f64, percent: f32, exp: Option<f32>) {
+        if self.lines == 0 {
+            self.exp_at_first = exp;
+        }
         self.told = now;
         self.told_at = percent;
         self.lines += 1;
         self.answered = false;
+        self.up_frames = 0;
     }
 
-    /// Whether the line came within the last `secs`.
-    fn told_within(&self, now: f64, secs: f64) -> bool {
-        now - self.told <= secs
+    /// Whether a line due now would repeat one of this fight's that went
+    /// unanswered (the card may say "still"); a first line, or one more
+    /// because the bar went lower after a potion, stands on its own.
+    fn repeating(&self) -> bool {
+        self.lines > 0 && !self.answered
+    }
+
+    /// Whether the line was said in this fight — the one still going on
+    /// at `now` (see `due` for when a fight is over; `fought_at` as there).
+    /// The death line goes by this: "told you to pot" when it did, this
+    /// fight, however long ago; a window of seconds had it deny a warning
+    /// said 17 s before, the second line of the cadence being 30 s off.
+    fn warned_this_fight(&self, now: f64, fought_at: f64) -> bool {
+        self.lines > 0 && now - self.low_at.max(fought_at) <= FIGHT_OVER_SECS
     }
 }
 
@@ -305,11 +400,21 @@ pub struct Companion {
     fall_told: f64,
     /// The fight: when HP last fell fast (it is over a minute after), how
     /// many times the beating has been said in it, HP when it last was,
-    /// and whether a potion has answered it since.
+    /// and whether a potion has answered it since (frames in a row with
+    /// HP back up by a potion's worth: one is a misread).
     fall_at: f64,
     fight_lines: u32,
     fall_hp: f32,
     fall_answered: bool,
+    fall_up_frames: u32,
+    /// Trust in the player with a beating: fights in a row they handled
+    /// (a potion within [`TRUST_POT_SECS`], no deeper than the ones
+    /// before), the lowest HP of those, the lowest of the fight under way,
+    /// and a fall being watched instead of shouted — since when.
+    trust: u32,
+    trust_floor: f32,
+    fight_low: f32,
+    watch: Option<f64>,
     listening_until: f64,
     muted: bool,
     exp: ExpTracker,
@@ -366,9 +471,11 @@ pub struct Companion {
     changed_at: f64,
     hp_at_change: Option<f32>,
     exp_at_change: Option<f32>,
-    /// When the first frame came, and whether "still there?" was asked
-    /// this session.
+    /// When the first frame came, since when the game has been in view
+    /// (the last time it was found, or found again), and whether "still
+    /// there?" was asked this session.
     started_at: Option<f64>,
+    view_since: f64,
     asked_still_there: bool,
 }
 
@@ -469,6 +576,25 @@ fn reversals(readings: impl IntoIterator<Item = f32>, swing: f32) -> u32 {
     turns
 }
 
+/// The readings among `readings` (when, percent; oldest first) that held:
+/// all but a one-frame spike — a reading higher than both the frame
+/// before and the frame after by more than the bar's flicker, which is a
+/// misread (HP does not go 20, 60, 20 in three frames). A reading at
+/// either end has one neighbour and is taken as it comes: the first frame
+/// of a fall is where the fall is measured from.
+fn held_readings(
+    readings: &std::collections::VecDeque<(f64, f32)>,
+) -> impl Iterator<Item = (f64, f32)> + '_ {
+    let above = |a: f32, b: f32| a - b > QUIET_HP_POINTS;
+    readings.iter().enumerate().filter_map(move |(i, &(t, p))| {
+        let before = i.checked_sub(1).and_then(|j| readings.get(j));
+        let after = readings.get(i + 1);
+        let spike =
+            before.is_some_and(|&(_, q)| above(p, q)) && after.is_some_and(|&(_, q)| above(p, q));
+        (!spike).then_some((t, p))
+    })
+}
+
 /// A death read from the bar's fill (not the printed number) must last
 /// this long: a dialog over the bar reads as an empty bar too.
 const ZERO_HOLD_SECS: f64 = 2.0;
@@ -486,6 +612,26 @@ const HOLD_TOLD_EVERY: f64 = 1800.0;
 const POTTED: f32 = 10.0;
 /// EXP up by this much since the last alert is play going on.
 const EXP_GAINED: f32 = 0.2;
+/// A bar's unanswered lines in one fight (more than 100 s under the mark)
+/// after which, with EXP gained since the first, the bar is not believed
+/// ([`Low`])…
+const DOUBT_AFTER_LINES: u32 = 4;
+/// …until it has read above the mark for this long, in seconds.
+const BELIEVE_AGAIN_SECS: f64 = 3.0;
+
+/// Whether EXP went from `then` to `now` by [`EXP_GAINED`] or more (a
+/// level-up wraps it: 99 to 1 is a gain).
+fn exp_gained(then: Option<f32>, now: Option<f32>) -> bool {
+    let (Some(then), Some(now)) = (then, now) else {
+        return false;
+    };
+    let gained = if now < then - 50.0 {
+        now + 100.0 - then
+    } else {
+        now - then
+    };
+    gained >= EXP_GAINED
+}
 
 /// How long a new level reading must hold before it is believed, in
 /// seconds; one below the highest seen for the character must hold ten
@@ -498,17 +644,24 @@ const LOWER_LEVEL_HOLDS: f64 = 10.0;
 const LOW_HOLD_SECS: f64 = 0.6;
 
 /// HP warnings move sooner after deaths no warning came before, up to here.
+/// (A warning came before a death when a low line was said in the fight
+/// the death ends — [`Low::warned_this_fight`]: the warning moves sooner
+/// only when none did, and the death line may say "told you" only when
+/// one did.)
 const SOONEST_WARNING: f32 = 50.0;
-/// A low warning this long before a death counts as having come before it
-/// (the warning moves sooner only when none did, and the death line may
-/// say "told you" only when one did).
-const WARNED_BEFORE_DEATH_SECS: f64 = 15.0;
 
 /// HP down this many points within [`FALL_SECS`] is a beating, said at
 /// once (after a second frame says so: a dialog half over the bar does not
 /// last) — before it is low, while backing off still helps.
 const FALL_POINTS: f32 = 25.0;
 const FALL_SECS: f64 = 3.0;
+/// A reading counts only when it holds: this many frames in a row (one
+/// frame is a misread as often as not). The fall is measured from
+/// readings that held ([`held_readings`]), and a potion's worth of HP
+/// back answers a warning only once it has held — a bar read 20, 20, 60,
+/// 20, 20 shouted a beating for a bar that did not move, and the one
+/// frame of 60 counted as the potion that answered the fight's warnings.
+const HELD_FRAMES: u32 = 2;
 /// A beating is said once per fight — a fight begins at the first fall
 /// and is over after this long without one — unless no potion answers it
 /// (HP not back up by [`POTTED`] since): then it is said again, each time
@@ -516,6 +669,17 @@ const FALL_SECS: f64 = 3.0;
 /// for an hour, and "Shut up" was the answer.
 const FIGHT_OVER_SECS: f64 = 60.0;
 const FALL_COOLDOWNS: [f64; 4] = [12.0, 30.0, 60.0, 120.0];
+/// A player who handles the beating is trusted with it: after this many
+/// fights in a row with a potion within [`TRUST_POT_SECS`] of the line and
+/// none deeper than the ones before, the next fall is watched instead of
+/// shouted, and shouted after all only when HP goes under their usual
+/// floor (the lowest of those fights) by [`TRUST_MARGIN`], or no potion
+/// comes within the same time of the fall; either, or a death, ends the
+/// trust. A friend stops saying "back off" the fourth time you handle it
+/// (34 beatings in 65 min for a player who potted within 3 s every time).
+const TRUST_FIGHTS: u32 = 3;
+const TRUST_POT_SECS: f64 = 3.0;
+const TRUST_MARGIN: f32 = 5.0;
 
 /// How long after a line was said the phone may still hand it back as heard,
 /// in seconds: the line, its playing, and the phone's recognition finishing.
@@ -658,7 +822,12 @@ pub mod lines {
         ],
     ];
 
-    /// HP under the threshold.
+    /// HP under the threshold: the first line of a fight. Every card
+    /// stands alone — nothing here says "still", "again" or "twice", which
+    /// presume a line before it; those are [`HP_LOW_AGAIN`]'s, for the
+    /// unanswered cadence. (One line per fight makes nearly every line a
+    /// first; a revive 6 s before had "Still at 25 percent? Pot already."
+    /// open the new life.)
     pub const HP_LOW: [&[&str]; 3] = [
         &[
             "Careful, your HP's down to {}. Drink a potion!",
@@ -675,21 +844,50 @@ pub mod lines {
             "{} HP. Drink!",
             "You're at {}. That's not a lot. Pot.",
             "Low HP, {}. Fix it.",
-            "Drink. You're at {} and still swinging.",
-            "Still at {}? Pot already.",
+            "Drink. You're at {} and swinging like it's full.",
         ],
         &[
             "{} HP. Drink, you idiot!",
             "Pot NOW, you're at {}, genius.",
             "{} HP. Are you trying to die?",
-            "Your HP's at {} and you're still attacking. Bold. Stupid, but bold.",
+            "Your HP's at {} and you're attacking. Bold. Stupid, but bold.",
             "Is {} a flex? Drink the damn potion.",
             "{} HP. Your gravestone's loading.",
             "Red bar, {}, no potion. Incredible. Pot.",
         ],
     ];
 
-    /// MP under the threshold.
+    /// HP still under the threshold, the last line of this fight
+    /// unanswered: said again, and the card may say so. Not "still at
+    /// {}": the bar may have gone lower since.
+    pub const HP_LOW_AGAIN: [&[&str]; 3] = [
+        &[
+            "Still low, {}. Please drink something.",
+            "I said potion! {} HP. Drink.",
+            "Hey, {} HP is still scary. Pot!",
+            "That bar's still red, {}. Drink up.",
+            "Didn't you hear me? {} HP. Potion, now.",
+            "Calling it again: {} HP. Drink before the next hit.",
+        ],
+        &[
+            "Still low, {}. Pot already.",
+            "I said pot. {}.",
+            "{} HP. Didn't I just say drink?",
+            "Again: {} HP. Drink.",
+            "You heard me. {}. Pot.",
+            "{}. Same bar, same answer: pot.",
+        ],
+        &[
+            "Still low, {}. Was I unclear? Pot.",
+            "I said drink, genius. {}.",
+            "{} HP, still. Your ears work? Pot.",
+            "Again? {} HP. Drink, clown.",
+            "I keep saying it: {}. Pot.",
+            "{}. Pot, or die and prove me right.",
+        ],
+    ];
+
+    /// MP under the threshold: the first line of a fight (see [`HP_LOW`]).
     pub const MP_LOW: [&[&str]; 3] = [
         &[
             "Your MP's down to {}.",
@@ -706,24 +904,51 @@ pub mod lines {
             "{} MP left. Drink.",
             "You're about to run dry, {}. Blue pot.",
             "No mana, no skills. {}. Drink.",
-            "{} MP. Don't make me say it twice.",
             "Mana's at {}. Why is it always mana with you?",
         ],
         &[
             "{} MP. Drink before you're useless.",
-            "Out of mana again? {}. Pot, genius.",
             "{} MP. Drink something, clown.",
             "{} MP. Gonna auto-attack the boss to death, are we?",
             "Mana's at {}. Your skills are about to be decorative.",
-            "You ran your mana down to {} again. Learn. Drink.",
             "{} MP. Even the mage mules manage better than this.",
+            "{} MP. Drink the blue one, genius.",
+        ],
+    ];
+
+    /// MP still under the threshold, the last line unanswered (see
+    /// [`HP_LOW_AGAIN`]).
+    pub const MP_LOW_AGAIN: [&[&str]; 3] = [
+        &[
+            "Still low on mana, {}. Blue potion!",
+            "MP's still low, {}. Drink a blue one.",
+            "Mana check again: {}. Top it up.",
+            "I did say mana, {}. Pot when you can.",
+            "Only {} MP, still. Drink.",
+            "Mana again: {}. Blue pot, please.",
+        ],
+        &[
+            "Still low on mana, {}. Drink.",
+            "{} MP. I'm saying it twice now. Drink.",
+            "I said mana. {}.",
+            "Mana still low, {}. Why is it always mana with you?",
+            "Again: {} MP. Blue pot.",
+            "{} MP. You heard me the first time. Drink.",
+        ],
+        &[
+            "Still out of mana? {}. Pot, genius.",
+            "You're still sitting at {} mana. Learn. Drink.",
+            "I said blue pot. {} MP. Clown.",
+            "Still {} MP. Your skills are decorative and so are your ears.",
+            "Mana, again. {}. Drink.",
+            "{} MP. I said it once already. Pot.",
         ],
     ];
 
     /// HP at zero, with no warning said just before: nothing here claims
-    /// one came (see [`DEATH_WARNED`]). A card that speaks of an earlier
-    /// death ("Dead again") never leads a list: a night's first death is
-    /// dealt the lead, whatever the seed.
+    /// one came (see [`DEATH_WARNED`]), and nothing speaks of an earlier
+    /// death ("Dead again"): for a player who knows it, any card may open
+    /// a night's deaths (see [`super::Companion::settled`]).
     pub const DEATH: [&[&str]; 3] = [
         &[
             "Your HP hit zero. Time to revive and head back.",
@@ -746,14 +971,15 @@ pub mod lines {
             "Dead. Wow. Revive and try not to suck this time.",
             "You died, genius. Revive and get back in.",
             "Congrats, you found the floor. Respawn.",
-            "Dead again. The mobs are starting to feel bad for you.",
+            "Dead. The mobs are starting to feel bad for you.",
             "HP zero. Skill zero. Revive, idiot.",
             "That was embarrassing. Revive before anyone sees.",
         ],
     ];
 
-    /// HP at zero within seconds of a low warning: it did say to pot, and
-    /// the line may say so.
+    /// HP at zero in a fight a low warning was said in: it did say to
+    /// pot, and the line may say so (how long ago it said it, it may not:
+    /// the warning can be most of a minute old).
     pub const DEATH_WARNED: [&[&str]; 3] = [
         &[
             "Aw, I did say pot. Revive and we go again.",
@@ -768,7 +994,7 @@ pub mod lines {
             "Dead. Next time pot when I say pot.",
             "I said pot. You didn't. Revive.",
             "Called it. Respawn, and listen next time.",
-            "Warned you ten seconds ago. Revive and do better.",
+            "I warned you. Revive and do better.",
             "You heard me and died anyway. Go again.",
         ],
         &[
@@ -778,6 +1004,29 @@ pub mod lines {
             "I literally told you. Revive and pretend you listen.",
             "Dead with a potion in your bag and my voice in your ear. Respawn.",
             "Next time I say pot, try pressing it instead of dying. Revive.",
+        ],
+    ];
+
+    /// Said after a death no warning came before, when the HP warning
+    /// moves sooner: `{}` is the new mark, in percent. One sentence after
+    /// the death line, in the same voice — not a settings dialog spliced
+    /// onto it ("…try not to suck this time. I'll warn you sooner from now
+    /// on, under 35%.").
+    pub const SOONER: [&[&str]; 3] = [
+        &[
+            "I'll shout earlier next time, from {}.",
+            "Next time I'll say something sooner, at {} percent.",
+            "I'll give you a heads-up earlier from now on, at {}.",
+        ],
+        &[
+            "New rule: I yell at {}.",
+            "I'll call it sooner next time. {} percent.",
+            "From now on I shout at {}. Listen for it.",
+        ],
+        &[
+            "Fine. I scream at {} from now on. Try to hear it.",
+            "I'll start yelling at {} percent next time. Not that you'll listen.",
+            "New rule: {} and I'm screaming. Maybe that gets through.",
         ],
     ];
 
@@ -998,32 +1247,54 @@ pub mod lines {
         ],
     ];
 
-    /// Half an hour without a word from the player while the game goes on:
-    /// what a friend in the room says, once.
+    /// The game idle for twenty minutes with not a word from the player:
+    /// what a friend in the room says, once. All it knows is that nothing
+    /// has moved on the screen: no card says they are grinding, or asleep
+    /// at a keyboard that is moving, or how long it has been.
     pub const STILL_THERE: [&[&str]; 3] = [
         &[
-            "You still there? You've gone quiet on me.",
-            "Hey, you alive over there? Haven't heard a peep in a while.",
-            "Quiet half hour. Everything okay over there?",
-            "Still with me? You've been grinding in silence for ages.",
-            "Just checking you're still there. Blink, or say something.",
-            "Still around? It's been a while since you said anything.",
+            "You still there? It's gone quiet over here.",
+            "Still with me? Nothing's moved in a while.",
+            "Hey, you around? The game's been sitting still for a bit.",
+            "Just checking in. You there?",
+            "Went quiet in here. Everything okay?",
+            "Still there? Say something if you're back.",
         ],
         &[
-            "You alive over there?",
-            "Still there? You've gone quiet.",
-            "Half an hour of silence. Blink twice if you're okay.",
-            "Oi. Still breathing?",
-            "Quiet in here. You still with me?",
-            "Thirty minutes, not a word. You there?",
+            "You still there?",
+            "Went quiet over here. Still with me?",
+            "Nothing's moved in a while. You there?",
+            "Oi. Still around?",
+            "Game's just sitting there. You still here?",
+            "A while now with nothing moving. You there?",
         ],
         &[
-            "You still alive, or did the grind finally finish you?",
-            "Thirty minutes of silence. Did you fall asleep on the keyboard?",
-            "Hello? Anyone home, or is the chair playing for you?",
-            "You've gone very quiet. Lost the ability to speak, or just to play?",
-            "Still there? Not that the mobs would notice the difference.",
-            "Quiet for half an hour. Either you're AFK or finally concentrating.",
+            "Hello? The mobs are getting bored.",
+            "You still there, or did the chair take over? Nothing's moving.",
+            "Your character's been standing there a while. You alive?",
+            "Nothing's moved in ages. Blink if you're there.",
+            "Standing still this long is a skill. You there?",
+            "Did you leave? The game's just sitting there.",
+        ],
+    ];
+
+    /// A bar read low for minutes while EXP came in: it is not believed,
+    /// and its warnings are held (see [`super::Low`]). `{}` is the bar.
+    pub const MISREAD: [&[&str]; 3] = [
+        &[
+            "I think I'm reading your {} wrong — holding the {} warnings for now.",
+            "Your {} bar's read low for ages while you keep leveling: I'm probably misreading it. Holding the {} warnings.",
+            "That {} reading can't be right. I'll hold the {} warnings until it looks sane again.",
+        ],
+        &[
+            "I'm reading your {} wrong. Holding the {} warnings.",
+            "{} says low, EXP says you're fine. I'll shut up about {} until it reads right.",
+            "That {} bar's lying to me. No more {} warnings till it comes back up.",
+        ],
+        &[
+            "Either your {} bar's broken or you're immortal. Holding the {} warnings.",
+            "Four warnings and you kept killing things. I'm reading your {} wrong, so I'll shut up about it.",
+            "Your {} reads dead and you're leveling. Fine, I'll stop trusting it.",
         ],
     ];
 
@@ -1031,9 +1302,12 @@ pub mod lines {
     pub const ALL: &[(&str, [&[&str]; 3])] = &[
         ("beating", BEATING),
         ("HP low", HP_LOW),
+        ("HP low, again", HP_LOW_AGAIN),
         ("MP low", MP_LOW),
+        ("MP low, again", MP_LOW_AGAIN),
         ("death", DEATH),
         ("death, warned", DEATH_WARNED),
+        ("sooner", SOONER),
         ("level up", LEVEL_UP),
         ("game seen", SEEN),
         ("game lost", LOST),
@@ -1042,7 +1316,14 @@ pub mod lines {
         ("unmuted", UNMUTED),
         ("warnings held", HOLD),
         ("still there", STILL_THERE),
+        ("misread", MISREAD),
     ];
+
+    /// The decks in [`ALL`] that are dealt a few times a night at most
+    /// (the mark moves up four times and no more; a bar is doubted once a
+    /// fight, after four lines): three ways to say it is plenty, where the
+    /// others have six.
+    pub const SHORT: &[&str] = &["sooner", "misread"];
 }
 
 /// Something worth speaking up about, seen in a frame; its line is dealt
@@ -1050,8 +1331,16 @@ pub mod lines {
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Alert {
     Beating(Gauge),
-    HpLow(Gauge),
-    MpLow(Gauge),
+    /// A low bar, and whether the fight's last line went unanswered (the
+    /// card may then say "still").
+    HpLow {
+        hp: Gauge,
+        again: bool,
+    },
+    MpLow {
+        mp: Gauge,
+        again: bool,
+    },
     /// Whether a warning came just before (a card may say "told you" only
     /// then), and the threshold the HP warning moves to, when it does.
     Death {
@@ -1075,9 +1364,12 @@ impl Alert {
 struct Decks {
     beating: Deck,
     hp_low: Deck,
+    hp_low_again: Deck,
     mp_low: Deck,
+    mp_low_again: Deck,
     death: Deck,
     death_warned: Deck,
+    sooner: Deck,
     level_up: Deck,
     seen: Deck,
     lost: Deck,
@@ -1086,8 +1378,9 @@ struct Decks {
     unmuted: Deck,
     hold: Deck,
     still_there: Deck,
-    /// The instant answers ("HP 76%."): one deck for all of them.
-    instant: Deck,
+    misread: Deck,
+    /// The instant answers ("HP 76%."): a deck per kind of answer.
+    instant: instant::Decks,
 }
 
 impl Decks {
@@ -1097,9 +1390,12 @@ impl Decks {
         Self {
             beating: Deck::seeded(seed),
             hp_low: Deck::seeded(seed),
+            hp_low_again: Deck::seeded(seed),
             mp_low: Deck::seeded(seed),
+            mp_low_again: Deck::seeded(seed),
             death: Deck::seeded(seed),
             death_warned: Deck::seeded(seed),
+            sooner: Deck::seeded(seed),
             level_up: Deck::seeded(seed),
             seen: Deck::seeded(seed),
             lost: Deck::seeded(seed),
@@ -1108,7 +1404,37 @@ impl Decks {
             unmuted: Deck::seeded(seed),
             hold: Deck::seeded(seed),
             still_there: Deck::seeded(seed),
-            instant: Deck::seeded(seed),
+            misread: Deck::seeded(seed),
+            instant: instant::Decks::seeded(seed),
+        }
+    }
+
+    /// Whether each deck's first round opens with its lead (see
+    /// [`Deck::lead_first`]). The instant answers are not among them: an
+    /// answer is an answer, the plain one is the right first one, and
+    /// their lists keep cards that presume an earlier answer ("Still
+    /// level 165.") off the lead.
+    fn lead_first(&mut self, lead_first: bool) {
+        for deck in [
+            &mut self.beating,
+            &mut self.hp_low,
+            &mut self.hp_low_again,
+            &mut self.mp_low,
+            &mut self.mp_low_again,
+            &mut self.death,
+            &mut self.death_warned,
+            &mut self.sooner,
+            &mut self.level_up,
+            &mut self.seen,
+            &mut self.lost,
+            &mut self.again,
+            &mut self.muted,
+            &mut self.unmuted,
+            &mut self.hold,
+            &mut self.still_there,
+            &mut self.misread,
+        ] {
+            deck.lead_first(lead_first);
         }
     }
 }
@@ -1163,6 +1489,11 @@ impl Companion {
             fight_lines: 0,
             fall_hp: f32::INFINITY,
             fall_answered: false,
+            fall_up_frames: 0,
+            trust: 0,
+            trust_floor: f32::INFINITY,
+            fight_low: f32::INFINITY,
+            watch: None,
             listening_until: f64::NEG_INFINITY,
             muted: false,
             exp: ExpTracker::new(),
@@ -1196,8 +1527,21 @@ impl Companion {
             hp_at_change: None,
             exp_at_change: None,
             started_at: None,
+            view_since: f64::NEG_INFINITY,
             asked_still_there: false,
         }
+    }
+
+    /// Whether the player is `known` — not on their first sessions with
+    /// it. A new player hears each deck's lead first (the most informative
+    /// line, the one with the number); a known one has heard the leads
+    /// enough, and gets the first beating, death and level-up of the
+    /// night in another order every night, like the rest (the lead-first
+    /// rule had them the same three lines night after night). To be
+    /// called before the first line is dealt: a deck in play keeps its
+    /// order.
+    pub fn settled(&mut self, known: bool) {
+        self.decks.lead_first(!known);
     }
 
     /// The player said something (to MapleSyrup or near it): a sign of
@@ -1597,27 +1941,30 @@ impl Companion {
         out
     }
 
-    /// Half an hour without a word from the player while the game went on
-    /// (HP or EXP moved in that time): "you still there?", once a session
-    /// — what a friend in the room says, and what the persona was told to
-    /// say with no way to. Not while dead, not during a hold (the warnings
-    /// are held because nothing answers them: this would be one more line
-    /// to the same empty room), and a word from the player puts it off by
-    /// another half hour.
+    /// The game idle for twenty minutes — nothing moved on a screen it can
+    /// see, not a word from the player — "you still there?", once a
+    /// session: what a friend in the room says to someone who has gone
+    /// quiet, and never to someone they are watching play (it was asked
+    /// of a player grinding in silence, two minutes after a beating they
+    /// potted: the opposite of when a friend would ask). Not while dead,
+    /// not during a hold (the warnings are held because nothing answers
+    /// them: this would be one more line to the same empty room), not
+    /// within minutes of a warning of its own; a word from the player, or
+    /// anything moving, starts the twenty minutes over.
     fn still_there(&mut self, now: f64, out: &mut Vec<Action>) {
         if self.asked_still_there || self.dead || now < self.hold_until {
             return;
         }
-        let started = self.started_at.unwrap_or(now);
-        let quiet_since = if self.spoke_at.is_finite() {
-            self.spoke_at
-        } else {
-            started
-        };
-        // (The first frame's readings count as a change to `track_change`;
-        // not here.)
-        let moved = self.changed_at > started && now - self.changed_at <= STILL_THERE_SECS;
-        if now - quiet_since >= STILL_THERE_SECS && moved {
+        // (The first frame's readings count as a change to `track_change`:
+        // a session that starts idle is idle from its first frame.)
+        let idle_since = self
+            .changed_at
+            .max(self.spoke_at)
+            .max(self.view_since)
+            .max(self.started_at.unwrap_or(now));
+        if now - idle_since >= STILL_THERE_SECS
+            && now - self.alert_at >= STILL_THERE_AFTER_WARNING_SECS
+        {
             self.asked_still_there = true;
             let line = self
                 .decks
@@ -1636,16 +1983,20 @@ impl Companion {
                 .beating
                 .deal(attitude, lines::BEATING)
                 .replace("{}", &low_words(hp)),
-            Alert::HpLow(hp) => self
-                .decks
-                .hp_low
-                .deal(attitude, lines::HP_LOW)
-                .replace("{}", &low_words(hp)),
-            Alert::MpLow(mp) => self
-                .decks
-                .mp_low
-                .deal(attitude, lines::MP_LOW)
-                .replace("{}", &low_words(mp)),
+            // A fight's first line stands alone; one that repeats an
+            // unanswered line may say "still".
+            Alert::HpLow { hp, again } => if again {
+                self.decks.hp_low_again.deal(attitude, lines::HP_LOW_AGAIN)
+            } else {
+                self.decks.hp_low.deal(attitude, lines::HP_LOW)
+            }
+            .replace("{}", &low_words(hp)),
+            Alert::MpLow { mp, again } => if again {
+                self.decks.mp_low_again.deal(attitude, lines::MP_LOW_AGAIN)
+            } else {
+                self.decks.mp_low.deal(attitude, lines::MP_LOW)
+            }
+            .replace("{}", &low_words(mp)),
             Alert::Death { warned, sooner } => {
                 // "Told you to pot" only when it did: a death with no
                 // warning before it is dealt from the deck that makes no
@@ -1657,10 +2008,15 @@ impl Companion {
                     self.decks.death.deal(attitude, lines::DEATH)
                 }
                 .to_string();
+                // The mark moving, in the same voice.
                 if let Some(sooner) = sooner {
-                    line.push_str(&format!(
-                        " I'll warn you sooner from now on, under {sooner:.0}%."
-                    ));
+                    let card = self
+                        .decks
+                        .sooner
+                        .deal(attitude, lines::SOONER)
+                        .replace("{}", &format!("{sooner:.0}"));
+                    line.push(' ');
+                    line.push_str(&card);
                 }
                 line
             }
@@ -1743,6 +2099,9 @@ impl Companion {
     fn track_window(&mut self, now: f64, obs: &Observation, out: &mut Vec<Action>) {
         let attitude = self.settings.attitude;
         if let GameView::Seen(title) = &obs.game {
+            if !self.ever_seen || self.announced_lost {
+                self.view_since = now;
+            }
             if !self.ever_seen {
                 self.ever_seen = true;
                 // The window's title, when it is not plainly the game's: a
@@ -1815,8 +2174,11 @@ impl Companion {
                 self.dead = true;
                 self.deaths += 1;
                 self.last_death = now;
-                // Whether it told them to pot just before.
-                let warned = self.low_hp.told_within(now, WARNED_BEFORE_DEATH_SECS);
+                // (A death is the end of trusting them with a beating.)
+                self.trust = 0;
+                self.watch = None;
+                // Whether it told them to pot in this fight.
+                let warned = self.low_hp.warned_this_fight(now, self.fall_at);
                 let sooner = self.sooner_warning(now, warned);
                 if let Some(sooner) = sooner {
                     self.settings.hp_low = sooner;
@@ -1849,12 +2211,12 @@ impl Companion {
         // fight, though: a player who pots after it has handled it, and
         // the next hit is their business (the low warning still comes);
         // one who does not hears it again, after longer and longer waits.
-        // Not at all when they have asked for no HP warnings.
-        let highest_lately = self
-            .hp_lately
-            .iter()
+        // Not at all when they have asked for no HP warnings. The fall is
+        // measured from readings that held (`HELD_FRAMES`): one frame of
+        // 60 in a run of 20s is a misread, not a potion to fall from.
+        let highest_lately = held_readings(&self.hp_lately)
             .filter(|(t, _)| now - t <= FALL_SECS)
-            .map(|(_, p)| *p)
+            .map(|(_, p)| p)
             .fold(0.0, f32::max);
         if highest_lately - hp.percent >= FALL_POINTS && hp.percent < 70.0 {
             self.falling_frames += 1;
@@ -1862,10 +2224,46 @@ impl Companion {
             self.falling_frames = 0;
         }
         if now - self.fall_at > FIGHT_OVER_SECS {
+            // (A fight over with its beating unanswered: no trust.)
+            if self.fight_lines > 0 && !self.fall_answered {
+                self.trust = 0;
+            }
             self.fight_lines = 0;
         }
+        // (A potion's worth back, once it holds, answers the beating — or
+        // the fall being watched in its place.)
+        let was_answered = self.fall_answered;
         if hp.percent >= self.fall_hp + POTTED {
-            self.fall_answered = true;
+            self.fall_up_frames += 1;
+            if self.fall_up_frames >= HELD_FRAMES {
+                self.fall_answered = true;
+            }
+        } else {
+            self.fall_up_frames = 0;
+        }
+        if !self.fall_answered && (self.fight_lines > 0 || self.watch.is_some()) {
+            self.fight_low = self.fight_low.min(hp.percent);
+        }
+        if self.fall_answered && !was_answered {
+            // Handled: a potion within seconds of the beating (or of the
+            // fall watched in its place), no deeper than the fights
+            // before (the bar's flicker allowed). Three in a row and the
+            // player is trusted with it; from then on the floor is theirs
+            // and stays (a watched fall under it by the margin was
+            // shouted, and ended the trust, before it was answered).
+            let since = self.watch.take().unwrap_or(self.fall_told);
+            let quick = now - since <= TRUST_POT_SECS;
+            let trusted = self.trust >= TRUST_FIGHTS;
+            let deeper = !trusted && self.fight_low < self.trust_floor - QUIET_HP_POINTS;
+            if quick && !deeper {
+                self.trust += 1;
+                if !trusted {
+                    self.trust_floor = self.trust_floor.min(self.fight_low);
+                }
+            } else {
+                self.trust = u32::from(quick);
+                self.trust_floor = self.fight_low;
+            }
         }
         let falling = self.falling_frames >= 2;
         if falling {
@@ -1878,26 +2276,76 @@ impl Companion {
                 !self.fall_answered && now - self.fall_told >= wait
             }
         };
-        if falling && due && !self.dead && self.settings.hp_low > 0.0 {
-            self.fall_told = now;
-            self.fight_lines += 1;
-            self.fall_hp = hp.percent;
-            self.fall_answered = false;
-            // It said to pot: the low warning would only say so again.
-            if hp.percent < self.settings.hp_low {
-                self.low_hp.said(now, hp.percent);
+        let exp = obs.exp.map(|g| g.percent);
+        // (Nor while the bar is not believed: see `Low`.)
+        let wanted = !self.dead && self.settings.hp_low > 0.0 && !self.low_hp.doubted;
+        if falling && due && wanted && self.watch.is_none() {
+            if self.trust >= TRUST_FIGHTS {
+                // A player who handles it: watched, not shouted.
+                self.watch = Some(now);
+                self.fall_hp = hp.percent;
+                self.fall_answered = false;
+                self.fall_up_frames = 0;
+                self.fight_low = hp.percent;
+            } else {
+                self.shout_beating(now, hp, exp, alerts);
             }
-            alerts.push(Alert::Beating(hp));
+        }
+        // A fall watched: shouted after all when HP goes under their usual
+        // floor, or no potion has come in the time they usually take —
+        // and the trust is gone.
+        if let Some(since) = self.watch {
+            let under_floor = hp.percent < self.trust_floor - TRUST_MARGIN;
+            let late = now - since > TRUST_POT_SECS;
+            if wanted && (under_floor || late) {
+                self.watch = None;
+                self.trust = 0;
+                self.trust_floor = self.fight_low;
+                self.shout_beating(now, hp, exp, alerts);
+            }
         }
         // The low warning: once per fight (see `Low`), and not right after
-        // the beating was called: that said to pot.
-        let due = self
+        // the beating was called (that said to pot), nor while a fall is
+        // being watched in its place.
+        match self
             .low_hp
-            .due(now, hp.percent, self.settings.hp_low, self.fall_at);
-        if due && now - self.fall_told >= 5.0 {
-            self.low_hp.said(now, hp.percent);
-            alerts.push(Alert::HpLow(hp));
+            .due(now, hp.percent, self.settings.hp_low, self.fall_at, exp)
+        {
+            Due::Line if now - self.fall_told >= 5.0 && self.watch.is_none() => {
+                let again = self.low_hp.repeating();
+                self.low_hp.said(now, hp.percent, exp);
+                alerts.push(Alert::HpLow { hp, again });
+            }
+            Due::Misread => out.push(Action::Say(self.misread("HP"))),
+            _ => {}
         }
+    }
+
+    /// The beating, said now at `hp`: the fight's bookkeeping, and the
+    /// low warning counted as said when HP is already under the mark (it
+    /// would only say to pot again).
+    fn shout_beating(&mut self, now: f64, hp: Gauge, exp: Option<f32>, alerts: &mut Vec<Alert>) {
+        self.fall_told = now;
+        self.fight_lines += 1;
+        self.fall_hp = hp.percent;
+        self.fall_answered = false;
+        self.fall_up_frames = 0;
+        self.fight_low = hp.percent;
+        if hp.percent < self.settings.hp_low {
+            self.low_hp.said(now, hp.percent, exp);
+        }
+        alerts.push(Alert::Beating(hp));
+    }
+
+    /// The bar is not believed from now on (see [`Low`]): said once, in
+    /// the attitude's voice, as a note about itself.
+    fn misread(&mut self, bar: &str) -> Say {
+        let line = self
+            .decks
+            .misread
+            .deal(self.settings.attitude, lines::MISREAD)
+            .replace("{}", bar);
+        Say::info(line, true)
     }
 
     /// Died without a warning, though HP went down through where a sooner
@@ -1940,13 +2388,23 @@ impl Companion {
             }
             return;
         }
-        // Once per fight, as the HP one (a pet pots MP too).
-        let due = self
-            .low_mp
-            .due(now, mp.percent, self.settings.mp_low, f64::NEG_INFINITY);
-        if due && !self.dead {
-            self.low_mp.said(now, mp.percent);
-            alerts.push(Alert::MpLow(mp));
+        // Once per fight, as the HP one (a pet pots MP too), and not
+        // believed past four unanswered lines with EXP coming in, as it.
+        let exp = obs.exp.map(|g| g.percent);
+        match self.low_mp.due(
+            now,
+            mp.percent,
+            self.settings.mp_low,
+            f64::NEG_INFINITY,
+            exp,
+        ) {
+            Due::Line if !self.dead => {
+                let again = self.low_mp.repeating();
+                self.low_mp.said(now, mp.percent, exp);
+                alerts.push(Alert::MpLow { mp, again });
+            }
+            Due::Misread => out.push(Action::Say(self.misread("MP"))),
+            _ => {}
         }
     }
 
@@ -2072,8 +2530,8 @@ impl Companion {
 
     /// An answer it knows without a model, when `sentence` asks for one of
     /// the player's own numbers ([`instant::asks`]): dealt from the
-    /// session's deck, like its other lines. `None` when it does not, or
-    /// the number isn't known right now.
+    /// session's decks (one per kind of answer), like its other lines.
+    /// `None` when it does not, or the number isn't known right now.
     pub fn instant(&mut self, sentence: &str) -> Option<String> {
         let ask = instant::asks(sentence)?;
         instant::answer(
@@ -2338,6 +2796,17 @@ mod tests {
             .collect()
     }
 
+    /// `line` with the "I'll warn you sooner" card for `mark` taken off
+    /// its end (in any voice), or `None` when it ends with no such card.
+    fn without_sooner(line: &str, mark: u32) -> Option<&str> {
+        Attitude::ALL.iter().find_map(|a| {
+            a.lines(lines::SOONER).iter().find_map(|card| {
+                let tail = format!(" {}", card.replace("{}", &mark.to_string()));
+                line.strip_suffix(tail.as_str())
+            })
+        })
+    }
+
     /// Whether `line` is one of `deck`'s and, when it is one with the
     /// amount in it, says `amount`.
     fn says(deck: [&[&str]; 3], line: &str, amount: &str) -> bool {
@@ -2406,11 +2875,11 @@ mod tests {
         for i in 0..11 {
             assert!(said(&c.observe(21.8 + i as f64, frame(18.0, 90.0, 10.0))).is_empty());
         }
-        // …then said again, put another way (and again after longer waits:
-        // see the beating's).
+        // …then said again, put another way — from the deck that may say
+        // "still" (and again after longer waits: see the beating's).
         let nagged = said(&c.observe(33.8, frame(18.0, 90.0, 10.0)));
         assert_eq!(nagged.len(), 1, "{nagged:?}");
-        assert!(from(lines::HP_LOW, &nagged[0]), "{nagged:?}");
+        assert!(from(lines::HP_LOW_AGAIN, &nagged[0]), "{nagged:?}");
         assert_ne!(nagged, first);
         // A potion answers it. Worn down again in the same fight (a minute
         // since HP was last low has not passed): the player handled it, and
@@ -2423,7 +2892,8 @@ mod tests {
         assert!(said(&c.observe(52.7, frame(20.0, 90.0, 10.0))).is_empty());
         assert!(said(&c.observe(55.0, frame(20.0, 90.0, 10.0))).is_empty());
         // Lower than it was at the last line, though: once more, at once
-        // (the bar has been low a while: no wait for a misread to pass).
+        // (the bar has been low a while: no wait for a misread to pass) —
+        // a line that stands on its own: the last one was answered.
         let lower = said(&c.observe(56.0, frame(9.0, 90.0, 10.0)));
         assert_eq!(lower.len(), 1, "{lower:?}");
         assert!(
@@ -2587,6 +3057,235 @@ mod tests {
     }
 
     #[test]
+    fn one_frame_read_high_is_neither_a_potion_nor_a_bar_to_fall_from() {
+        // HP read at 20 for five minutes with one frame of 60 at 20 s (a
+        // misread): no beating — the bar did not move — and the one frame
+        // is no potion either: the unanswered cadence goes on as if it
+        // had not been (0.6, 12.6, 42.6, 102.6, 222.6). One night this was
+        // "Back off, you're getting shredded. 20 percent and falling"
+        // at 20.2 s, and the next low line 38 s late. The same with a
+        // frame of 52 every 15 s at 25%, which had the fight go quiet
+        // for 285 s after the beating.
+        let cadence = |glitch: &dyn Fn(f64) -> Option<f32>, low: f32| -> Vec<(f64, String)> {
+            let mut c = Companion::seeded(Settings::default(), SEED);
+            let mut lines: Vec<(f64, String)> = Vec::new();
+            for i in 0..3000 {
+                let t = i as f64 * 0.1;
+                let hp = glitch(t).unwrap_or(low);
+                for line in alerts(&c.observe(t, read(hp))) {
+                    lines.push((t, line));
+                }
+            }
+            lines
+        };
+        let steady = cadence(&|_| None, 20.0);
+        let expected = [0.6, 12.6, 42.6, 102.6, 222.6];
+        assert_eq!(steady.len(), expected.len(), "{steady:?}");
+        for (shape, lines) in [
+            (
+                "one frame of 60 at 20 s",
+                cadence(&|t| ((t - 20.0).abs() < 0.05).then_some(60.0), 20.0),
+            ),
+            (
+                "a frame of 52 every 15 s",
+                cadence(&|t| (t > 1.0 && t % 15.0 < 0.05).then_some(52.0), 25.0),
+            ),
+        ] {
+            assert_eq!(lines.len(), expected.len(), "{shape}: {lines:?}");
+            for ((at, line), want) in lines.iter().zip(expected) {
+                assert!((at - want).abs() < 0.15, "{shape}: {lines:?}");
+                assert!(!from(lines::BEATING, line), "{shape}: {lines:?}");
+            }
+        }
+        // A potion that holds (HP read at 100 from the second frame on)
+        // answers at once: worn down slowly to 20 again in the same
+        // fight, nothing more is said until the bar goes lower than at
+        // the line. One frame at 100 answers nothing: the cadence goes on.
+        for answered in [true, false] {
+            let mut c = Companion::seeded(Settings::default(), SEED);
+            let mut lines: Vec<(f64, String)> = Vec::new();
+            for i in 0..600 {
+                let t = i as f64 * 0.1;
+                let hp = match i {
+                    0..50 => 20.0,
+                    50 => 100.0,
+                    51..110 if answered => 100.0,
+                    110..210 if answered => 100.0 - (i - 110) as f32 * 0.8,
+                    _ => 20.0,
+                };
+                for line in alerts(&c.observe(t, read(hp))) {
+                    lines.push((t, line));
+                }
+            }
+            if answered {
+                assert_eq!(lines.len(), 1, "{lines:?}");
+                let lower = alerts(&c.observe(60.0, read(15.0)));
+                assert_eq!(lower.len(), 1, "{lower:?}");
+                assert!(says(lines::HP_LOW, &lower[0], "15 percent"), "{lower:?}");
+            } else {
+                assert_eq!(lines.len(), 3, "{lines:?}");
+                assert!((lines[1].0 - 12.6).abs() < 0.15, "{lines:?}");
+            }
+        }
+        // The beating's answer is the same. Hit from 100 to 60 at 1 s,
+        // and the next hit 13 s on: after a potion that held, the next
+        // hit is their business; after one frame of 100, the beating is
+        // unanswered and the next hit has it said again.
+        for (frames, answered) in [(2, true), (1, false)] {
+            let mut c = Companion::seeded(Settings::default(), SEED);
+            let mut beatings = Vec::new();
+            for i in 0..300 {
+                let t = i as f64 * 0.1;
+                let hp = if i < 10 {
+                    100.0
+                } else if i < 50 {
+                    60.0
+                } else if i < 50 + frames || (i < 140 && answered) {
+                    100.0
+                } else if i < 140 || answered {
+                    60.0
+                } else {
+                    32.0
+                };
+                for line in alerts(&c.observe(t, read(hp))) {
+                    if from(lines::BEATING, &line) {
+                        beatings.push(t);
+                    }
+                }
+            }
+            assert_eq!(beatings.len(), if answered { 1 } else { 2 }, "{beatings:?}");
+        }
+    }
+
+    #[test]
+    fn a_player_who_always_pots_is_not_shouted_at_for_every_beating() {
+        // A fight every two minutes for 65 min: hit from 100 to 25 over
+        // 1.5 s, 1.5 s there, and potted — within 3 s of the beating,
+        // every time, never deeper. Three beatings, then the player is
+        // trusted with it: nothing for the thirty fights after (no low
+        // line either, in the seconds the potion takes). One night this
+        // was 34 beatings in 65 min, one per fight.
+        let fight = |phase: f64, floor: f32| -> f32 {
+            if phase < 1.5 {
+                100.0 - (phase / 1.5) as f32 * (100.0 - floor)
+            } else if phase < 3.0 {
+                floor
+            } else {
+                100.0
+            }
+        };
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..39_000 {
+            let t = i as f64 * 0.1;
+            for line in dealt(&c.observe(t, read(fight(t % 120.0, 25.0)))) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        for (n, (at, line)) in lines.iter().enumerate() {
+            assert!(from(lines::BEATING, line), "{lines:?}");
+            assert!((at - (n as f64 * 120.0 + 0.8)).abs() < 0.15, "{lines:?}");
+        }
+        // They stop potting: the fall is watched for the time they usually
+        // take, then shouted after all — in that fight, not a later one —
+        // and the next fights are shouted again until trusted anew.
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..6000 {
+            let t = i as f64 * 0.1;
+            let phase = t % 120.0;
+            let hp = if t < 120.0 {
+                // (The first fight of this stretch: no potion for 20 s.)
+                if phase < 1.5 {
+                    fight(phase, 25.0)
+                } else if phase < 20.0 {
+                    25.0
+                } else {
+                    100.0
+                }
+            } else {
+                fight(phase, 25.0)
+            };
+            for line in dealt(&c.observe(3900.0 + t, read(hp))) {
+                lines.push((t, line));
+            }
+        }
+        assert!(from(lines::BEATING, &lines[0].1), "{lines:?}");
+        assert!((lines[0].0 - 3.9).abs() < 0.15, "{lines:?}");
+        // (Unanswered, the low line follows the beating's cadence.)
+        assert!(from(lines::HP_LOW_AGAIN, &lines[1].1), "{lines:?}");
+        assert!((lines[1].0 - 15.9).abs() < 0.15, "{lines:?}");
+        let later: Vec<&(f64, String)> = lines.iter().filter(|(t, _)| *t >= 120.0).collect();
+        assert_eq!(later.len(), 3, "{lines:?}");
+        for (n, (at, line)) in later.iter().enumerate() {
+            assert!(from(lines::BEATING, line), "{lines:?}");
+            assert!(
+                (at - ((n + 1) as f64 * 120.0 + 0.8)).abs() < 0.15,
+                "{lines:?}"
+            );
+        }
+        // Trusted again (three more handled); then a fight deeper than
+        // their usual floor by more than the margin: shouted the moment
+        // HP goes under it, and the trust is gone.
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..2400 {
+            let t = i as f64 * 0.1;
+            let floor = if t < 120.0 { 25.0 } else { 15.0 };
+            for line in dealt(&c.observe(9900.0 + t, read(fight(t % 120.0, floor)))) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(from(lines::BEATING, &lines[0].1), "{lines:?}");
+        // (Under 20 at 1.4 s into the fall: 100 to 15 over 1.5 s.)
+        assert!((lines[0].0 - 121.5).abs() < 0.15, "{lines:?}");
+        // (Said with the reading, when the card carries one: under 20.)
+        assert!(
+            !lines[0].1.contains("percent")
+                || (15..20).any(|n| lines[0].1.contains(&format!("{n} percent"))),
+            "{lines:?}"
+        );
+        // A fight within the margin of the floor is handled like the rest.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..6000 {
+            let t = i as f64 * 0.1;
+            let floor = if t < 360.0 { 25.0 } else { 22.0 };
+            for line in dealt(&c.observe(t, read(fight(t % 120.0, floor)))) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        // A death ends the trust: the next fight is shouted.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..6000 {
+            let t = i as f64 * 0.1;
+            let hp = if (400.0..405.0).contains(&t) {
+                0.0
+            } else {
+                fight(t % 120.0, 25.0)
+            };
+            for line in dealt(&c.observe(t, read(hp))) {
+                lines.push((t, line));
+            }
+        }
+        let beatings: Vec<f64> = lines
+            .iter()
+            .filter(|(_, l)| from(lines::BEATING, l))
+            .map(|(t, _)| *t)
+            .collect();
+        // (Three shouted, the fourth fight watched, the death, and the
+        // fifth fight shouted.)
+        assert_eq!(beatings.len(), 4, "{lines:?}");
+        assert!((beatings[3] - 480.8).abs() < 0.15, "{beatings:?}");
+        assert!(
+            lines.iter().any(|(_, l)| from(lines::DEATH, l)),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
     fn staying_low_with_no_potion_is_said_again_after_longer_and_longer_waits() {
         // HP at 20% and nothing done about it: said, then again 12 s on,
         // 30 s after that, then 60, then 120 — the beating's waits — and
@@ -2596,7 +3295,14 @@ mod tests {
         for i in 0..4000 {
             let t = i as f64 * 0.1;
             for line in alerts(&c.observe(t, frame(20.0, 90.0, 10.0))) {
-                assert!(from(lines::HP_LOW, &line), "{line:?}");
+                // (The first stands alone; the rest repeat it, and may
+                // say so.)
+                let deck = if told.is_empty() {
+                    lines::HP_LOW
+                } else {
+                    lines::HP_LOW_AGAIN
+                };
+                assert!(from(deck, &line), "{line:?}");
                 told.push(t);
             }
         }
@@ -2681,10 +3387,9 @@ mod tests {
             told.extend(kinds(&c.observe(13.0 + i as f64 * 0.1, next)));
         }
         assert_eq!(told, [Kind::Alert]);
-        // Half an hour without a word while the game went on: news too.
-        c.observe(1700.0, frame(90.0, 90.0, 20.0));
+        // Twenty minutes with nothing moving and not a word: news too.
         assert_eq!(
-            kinds(&c.observe(1800.0, frame(90.0, 90.0, 20.0))),
+            kinds(&c.observe(1700.0, frame(90.0, 90.0, 0.5))),
             [Kind::Alert]
         );
     }
@@ -2946,8 +3651,9 @@ mod tests {
         }
         let texts: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
         assert_eq!(texts.len(), 9, "{lines:?}");
+        assert!(from(lines::HP_LOW, texts[0]), "{texts:?}");
         assert!(
-            texts[..6].iter().all(|l| from(lines::HP_LOW, l)),
+            texts[1..6].iter().all(|l| from(lines::HP_LOW_AGAIN, l)),
             "{texts:?}"
         );
         // The first time, the hold is explained in full.
@@ -2955,7 +3661,7 @@ mod tests {
         // Six warnings over 342 s, then the hold ends ten minutes later.
         assert!((lines[5].0 - lines[0].0 - 342.0).abs() < 0.5, "{lines:?}");
         assert!(lines[7].0 - lines[6].0 >= 600.0, "{lines:?}");
-        assert!(from(lines::HP_LOW, texts[7]) && from(lines::HP_LOW, texts[8]));
+        assert!(from(lines::HP_LOW_AGAIN, texts[7]) && from(lines::HP_LOW_AGAIN, texts[8]));
         // (The hold is not announced again so soon.)
         assert!(c.alerts_held(1860.0));
         // The player says something: the warnings come again.
@@ -2968,6 +3674,105 @@ mod tests {
             ));
         }
         assert_eq!(after.len(), 1, "{after:?}");
+    }
+
+    #[test]
+    fn a_bar_read_low_while_exp_comes_in_is_not_believed() {
+        // HP read at 20% for an hour while EXP rises 0.3% a minute: the
+        // player is grinding and fine, and the bar is read wrong. Four
+        // unanswered lines (0.6, 12.6, 42.6, 102.6 s), then, where the
+        // fifth would come, one note in its own voice that it is holding
+        // the HP warnings — and nothing more all hour. (The hold for
+        // warnings nobody answers never engaged: EXP answered them, every
+        // minute. 34 lines in the hour; six hours of it was ~200.)
+        type Lines = Vec<(f64, String)>;
+        let hour = |hp: f32, exp_per_min: f32| -> (Lines, Lines) {
+            let mut c = Companion::seeded(Settings::default(), SEED);
+            let mut warnings: Lines = Vec::new();
+            let mut notes: Lines = Vec::new();
+            for i in 0..36_000 {
+                let t = i as f64 * 0.1;
+                let mut obs = read(hp);
+                obs.exp = gauge(10.0 + (t / 60.0) as f32 * exp_per_min, true);
+                for action in c.observe(t, obs) {
+                    let Action::Say(say) = action else { continue };
+                    match say.kind {
+                        Kind::Warning => warnings.push((t, say.text)),
+                        Kind::Info if !from(lines::SEEN, &say.text) => {
+                            assert!(say.speak, "{say:?}");
+                            notes.push((t, say.text));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            (warnings, notes)
+        };
+        let (warnings, notes) = hour(20.0, 0.3);
+        assert_eq!(warnings.len(), 4, "{warnings:?}");
+        for ((at, _), want) in warnings.iter().zip([0.6, 12.6, 42.6, 102.6]) {
+            assert!((at - want).abs() < 0.15, "{warnings:?}");
+        }
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!((notes[0].0 - 222.6).abs() < 0.15, "{notes:?}");
+        assert_eq!(
+            variant(lines::MISREAD, &notes[0].1.replace("HP", "{}")),
+            Some(0),
+            "{notes:?}"
+        );
+        assert!(!notes[0].1.contains("MP"), "{notes:?}");
+        // EXP flat: nobody is playing (or nothing answers), and the old
+        // rule stands — the cadence to six lines, then the hold.
+        let (warnings, notes) = hour(20.0, 0.0);
+        assert!(warnings.len() >= 6, "{warnings:?}");
+        assert!((warnings[5].0 - 342.6).abs() < 0.15, "{warnings:?}");
+        assert!(notes.iter().all(|(_, n)| from(lines::HOLD, n)), "{notes:?}");
+        // Believed again once it has read above the mark for three
+        // seconds (2.9 s is not enough — and the drop back to 20 after
+        // those is no beating either: the bar is not believed): worn down
+        // slowly to 20 after that, it is a new fight, said at once.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..3300 {
+            let t = i as f64 * 0.1;
+            let hp = match i {
+                0..3000 => 20.0,
+                3000..3029 => 90.0,
+                3029..3100 => 20.0,
+                3100..3131 => 90.0,
+                _ => (90.0 - (i - 3131) as f32 * 0.7).max(20.0),
+            };
+            let mut obs = read(hp);
+            obs.exp = gauge(10.0 + (t / 60.0) as f32 * 0.3, true);
+            for line in dealt(&c.observe(t, obs)) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(lines.len(), 5, "{lines:?}");
+        assert!((lines[4].0 - 322.3).abs() < 0.15, "{lines:?}");
+        assert!(from(lines::HP_LOW, &lines[4].1), "{lines:?}");
+        // MP, the same shape.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut warnings = Vec::new();
+        let mut notes = Vec::new();
+        for i in 0..6000 {
+            let t = i as f64 * 0.1;
+            let mut obs = read(90.0);
+            obs.mp = gauge(10.0, true);
+            obs.exp = gauge(10.0 + (t / 60.0) as f32 * 0.3, true);
+            for action in c.observe(t, obs) {
+                let Action::Say(say) = action else { continue };
+                match say.kind {
+                    Kind::Warning => warnings.push(say.text),
+                    Kind::Info if from(lines::MISREAD, &say.text.replace("MP", "{}")) => {
+                        notes.push(say.text);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(warnings.len(), 4, "{warnings:?}");
+        assert_eq!(notes.len(), 1, "{notes:?}");
     }
 
     #[test]
@@ -2989,7 +3794,8 @@ mod tests {
             death.extend(alerts(&c.observe(500.0 + i as f64 * 0.1, read(0.0))));
         }
         assert_eq!(death.len(), 1, "{death:?}");
-        assert!(from(lines::DEATH, &death[0]), "{death:?}");
+        // (A warned death: it said to pot six times in this fight.)
+        assert!(from(lines::DEATH_WARNED, &death[0]), "{death:?}");
         assert_eq!(c.so_far().deaths, 1);
         assert!(c.alerts_held(501.0));
         // Revived, still at 20%: the warnings are still held…
@@ -3168,6 +3974,112 @@ mod tests {
         assert_eq!(warnings.len(), 60, "{warnings:?}");
         dealt_like_a_deck(lines::MP_LOW, &warnings);
         assert!(warnings[0].contains("about 10 percent"), "{warnings:?}");
+    }
+
+    #[test]
+    fn the_first_line_of_a_fight_never_says_still_or_again() {
+        // Thirty fights two minutes apart, each worn down to 20% and
+        // potted: one line each, every one the first of its fight, in
+        // every voice — and not one says "still", "again" or "twice",
+        // which presume a line before it. (A revive 6 s before had "Still
+        // at 25 percent? Pot already." open the new life; one line per
+        // fight makes nearly every line a first.) MP the same.
+        let presumes = |line: &str| {
+            let lower = line.to_lowercase();
+            [
+                "still",
+                "again",
+                "twice",
+                "keep saying",
+                "heard me",
+                "i said",
+            ]
+            .iter()
+            .any(|w| lower.contains(w))
+        };
+        // Whether `line` is a card of `deck` in `attitude`'s voice.
+        let card_of = |attitude: Attitude, deck: [&[&str]; 3], line: &str| {
+            attitude.lines(deck).iter().any(|card| {
+                let (head, tail) = card.split_once("{}").unwrap_or((card, ""));
+                line.len() >= head.len() + tail.len()
+                    && line.starts_with(head)
+                    && line.ends_with(tail)
+            })
+        };
+        for attitude in Attitude::ALL {
+            let mut c = Companion::seeded(
+                Settings {
+                    attitude,
+                    ..Settings::default()
+                },
+                SEED,
+            );
+            let mut hp_lines = Vec::new();
+            let mut mp_lines = Vec::new();
+            for fight in 0..30 {
+                let t = fight as f64 * 120.0;
+                for (dt, hp, mp) in [
+                    (0.0, 90.0, 90.0),
+                    (5.0, 70.0, 90.0),
+                    (10.0, 50.0, 90.0),
+                    (15.0, 35.0, 90.0),
+                    (21.0, 20.0, 10.0),
+                    (21.1, 20.0, 10.0),
+                    (21.3, 20.0, 10.0),
+                    (21.7, 20.0, 10.0),
+                    (30.0, 90.0, 90.0),
+                ] {
+                    for line in dealt(&c.observe(t + dt, frame(hp, mp, 10.0))) {
+                        if card_of(attitude, lines::HP_LOW, &line) {
+                            hp_lines.push(line);
+                        } else if card_of(attitude, lines::MP_LOW, &line) {
+                            mp_lines.push(line);
+                        } else {
+                            panic!("{}: not a first line: {line:?}", attitude.word());
+                        }
+                    }
+                }
+                c.player_spoke(t + 40.0);
+            }
+            assert_eq!(hp_lines.len(), 30, "{}: {hp_lines:?}", attitude.word());
+            assert_eq!(mp_lines.len(), 30, "{}: {mp_lines:?}", attitude.word());
+            for line in hp_lines.iter().chain(&mp_lines) {
+                assert!(!presumes(line), "{}: {line:?}", attitude.word());
+            }
+            // An unanswered fight: the second line repeats the first, and
+            // may say so.
+            let mut c = Companion::seeded(
+                Settings {
+                    attitude,
+                    ..Settings::default()
+                },
+                SEED,
+            );
+            let mut again = Vec::new();
+            for i in 0..=140 {
+                again.extend(dealt(&c.observe(i as f64 * 0.1, frame(20.0, 90.0, 10.0))));
+            }
+            assert_eq!(again.len(), 2, "{}: {again:?}", attitude.word());
+            assert!(
+                card_of(attitude, lines::HP_LOW, &again[0]),
+                "{}: {again:?}",
+                attitude.word()
+            );
+            assert!(
+                card_of(attitude, lines::HP_LOW_AGAIN, &again[1]),
+                "{}: {again:?}",
+                attitude.word()
+            );
+        }
+        // Every repeat card is one that could follow an unanswered line,
+        // and none says "still at" the number (the bar may have moved).
+        for deck in [lines::HP_LOW_AGAIN, lines::MP_LOW_AGAIN] {
+            for attitude in Attitude::ALL {
+                for card in attitude.lines(deck) {
+                    assert!(!card.to_lowercase().contains("still at {}"), "{card:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -3359,10 +4271,12 @@ mod tests {
             "kill yourself",
         ];
         for (name, deck) in lines::ALL {
+            // (A deck dealt a few times a night at most has three.)
+            let least = if lines::SHORT.contains(name) { 3 } else { 6 };
             for attitude in Attitude::ALL {
                 let list = attitude.lines(*deck);
                 assert!(
-                    list.len() >= 6,
+                    list.len() >= least,
                     "{name} ({}): {} lines",
                     attitude.word(),
                     list.len()
@@ -3390,12 +4304,14 @@ mod tests {
                 }
             }
         }
-        // Where there is a number, the lead says it.
+        // Where there is a number, the lead says it (and every card of
+        // the mark moving).
         for deck in [
             lines::BEATING,
             lines::HP_LOW,
             lines::MP_LOW,
             lines::LEVEL_UP,
+            lines::SOONER,
         ] {
             for attitude in Attitude::ALL {
                 assert!(
@@ -3403,6 +4319,11 @@ mod tests {
                     "{}",
                     attitude.word()
                 );
+            }
+        }
+        for attitude in Attitude::ALL {
+            for card in attitude.lines(lines::SOONER) {
+                assert!(card.contains("{}"), "{card:?}");
             }
         }
     }
@@ -3431,10 +4352,7 @@ mod tests {
         // death line, with the change after it.
         let death = step(&mut c, 0.0, 25);
         assert_eq!(death.len(), 1, "{death:?}");
-        let sooner = " I'll warn you sooner from now on, under 35%.";
-        let line = death[0]
-            .strip_suffix(sooner)
-            .unwrap_or_else(|| panic!("{death:?}"));
+        let line = without_sooner(&death[0], 35).unwrap_or_else(|| panic!("{death:?}"));
         assert!(from(lines::DEATH, line), "{death:?}");
         assert_eq!(c.settings.hp_low, 35.0);
         // A sudden death from full HP: no warning would have helped.
@@ -3465,18 +4383,27 @@ mod tests {
     }
 
     #[test]
-    fn the_first_death_of_a_night_is_never_dead_again() {
-        // A card that speaks of an earlier death ("Dead again. The mobs are
-        // starting to feel bad for you.") is for the second death on: the
-        // first of a night, in every voice, whatever the night's seed,
-        // sudden or warned, never says it. (The lead of a death deck makes
-        // no such claim, and a fresh deck deals its lead first.)
+    fn no_death_card_speaks_of_an_earlier_death_and_a_known_player_gets_another_opening_each_night()
+    {
+        // No card of either death deck speaks of an earlier death ("Dead
+        // again"): for a player who knows it (`settled`), any card may
+        // open a night's deaths, so none may presume one before it. And
+        // then, in every voice, for the first death of twenty nights,
+        // sudden or warned, fresh or settled: a card of the right deck,
+        // and never one that says "again".
         let again = |line: &str| {
             let lower = line.to_lowercase();
-            ["dead again", "died again", "starting to feel bad"]
+            ["dead again", "died again", "another death", "once again"]
                 .iter()
                 .any(|c| lower.contains(c))
         };
+        for deck in [lines::DEATH, lines::DEATH_WARNED] {
+            for attitude in Attitude::ALL {
+                for card in attitude.lines(deck) {
+                    assert!(!again(card), "{card:?}");
+                }
+            }
+        }
         let sudden: [(f64, f32); 7] = [
             (0.0, 100.0),
             (0.1, 100.0),
@@ -3498,50 +4425,120 @@ mod tests {
         ];
         for seed in 1..=20 {
             for attitude in Attitude::ALL {
-                for frames in [&sudden[..], &warned[..]] {
-                    let mut c = Companion::seeded(
-                        Settings {
-                            attitude,
-                            ..Settings::default()
-                        },
-                        seed,
-                    );
-                    let mut lines = Vec::new();
-                    for (t, hp) in frames {
-                        lines.extend(dealt(&c.observe(*t, read(*hp))));
+                for known in [false, true] {
+                    for (frames, deck) in [
+                        (&sudden[..], lines::DEATH),
+                        (&warned[..], lines::DEATH_WARNED),
+                    ] {
+                        let mut c = Companion::seeded(
+                            Settings {
+                                attitude,
+                                ..Settings::default()
+                            },
+                            seed,
+                        );
+                        c.settled(known);
+                        let mut lines = Vec::new();
+                        for (t, hp) in frames {
+                            lines.extend(dealt(&c.observe(*t, read(*hp))));
+                        }
+                        let death = lines.last().unwrap().as_str();
+                        assert!(
+                            attitude.lines(deck).contains(&death),
+                            "seed {seed}, {}: {lines:?}",
+                            attitude.word()
+                        );
+                        assert!(!again(death), "seed {seed}, {}: {death:?}", attitude.word());
                     }
-                    let death = lines.last().unwrap().as_str();
-                    assert!(
-                        attitude.lines(lines::DEATH).contains(&death)
-                            || attitude.lines(lines::DEATH_WARNED).contains(&death),
-                        "{}: {lines:?}",
-                        attitude.word()
-                    );
-                    assert!(!again(death), "seed {seed}, {}: {death:?}", attitude.word());
                 }
             }
         }
-        // The second death may be "again" (savage has such a card), and
-        // is, some night: the card is dealt, not shelved.
-        let mut dealt_again = false;
-        for seed in 1..=20 {
-            let mut c = Companion::seeded(
-                Settings {
-                    attitude: Attitude::Savage,
-                    ..Settings::default()
-                },
-                seed,
+    }
+
+    #[test]
+    fn a_known_player_does_not_hear_the_same_opening_line_every_night() {
+        // Twenty nights, two companions each (seeded apart, as two nights
+        // are): for a player who knows it, the night's first death is not
+        // the lead on most nights (one in seven, give or take), the
+        // deaths are still every card once before any again and never the
+        // same card twice running — and a new player still hears the lead
+        // first, every night. (The lead-first rule had "You died. Revive
+        // and get back in there." open the deaths of every night.)
+        let deaths = |seed: u64, known: bool| -> Vec<String> {
+            let mut c = Companion::seeded(Settings::default(), seed);
+            c.settled(known);
+            let mut deaths = Vec::new();
+            for minute in 0..14 {
+                let t = minute as f64 * 60.0;
+                for (dt, hp) in [
+                    (0.0, 100.0),
+                    (1.0, 0.0),
+                    (1.1, 0.0),
+                    (1.2, 0.0),
+                    (2.0, 100.0),
+                ] {
+                    deaths.extend(dealt(&c.observe(t + dt, read(hp))));
+                }
+            }
+            deaths
+        };
+        let lead = Attitude::Friendly.lines(lines::DEATH)[0];
+        let mut not_led = 0;
+        for night in 1..=20u64 {
+            let (one, two) = (
+                deaths(night * 1000 + 1, true),
+                deaths(night * 1000 + 2, true),
             );
-            let mut lines = Vec::new();
-            for minute in 0..2 {
-                for (t, hp) in &sudden {
-                    lines.extend(dealt(&c.observe(minute as f64 * 60.0 + t, read(*hp))));
+            assert_ne!(one, two, "night {night}");
+            for dealt in [&one, &two] {
+                assert_eq!(dealt.len(), 14, "{dealt:?}");
+                for round in dealt.chunks(7) {
+                    let mut seen: Vec<&String> = round.iter().collect();
+                    seen.sort();
+                    seen.dedup();
+                    assert_eq!(seen.len(), 7, "{dealt:?}");
                 }
+                for pair in dealt.windows(2) {
+                    assert_ne!(pair[0], pair[1], "{dealt:?}");
+                }
+                not_led += usize::from(dealt[0] != lead);
             }
-            assert_eq!(lines.len(), 2, "{lines:?}");
-            dealt_again |= again(&lines[1]);
+            // The same seeds, a new player: the lead, both nights.
+            assert_eq!(deaths(night * 1000 + 1, false)[0], lead);
+            assert_eq!(deaths(night * 1000 + 2, false)[0], lead);
         }
-        assert!(dealt_again);
+        assert!(
+            not_led >= 24,
+            "the lead opened {} of 40 nights",
+            40 - not_led
+        );
+        // Settled after a line was dealt: the deck in play keeps its order.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut d = Vec::new();
+        for (t, hp) in [
+            (0.0, 100.0),
+            (1.0, 0.0),
+            (1.1, 0.0),
+            (1.2, 0.0),
+            (2.0, 100.0),
+        ] {
+            d.extend(dealt(&c.observe(t, read(hp))));
+        }
+        assert_eq!(d, [lead]);
+        c.settled(true);
+        for minute in 1..7 {
+            let t = minute as f64 * 60.0;
+            for (dt, hp) in [
+                (0.0, 100.0),
+                (1.0, 0.0),
+                (1.1, 0.0),
+                (1.2, 0.0),
+                (2.0, 100.0),
+            ] {
+                d.extend(dealt(&c.observe(t + dt, read(hp))));
+            }
+        }
+        assert_eq!(d, deaths(SEED, false)[..7]);
     }
 
     #[test]
@@ -3551,7 +4548,6 @@ mod tests {
             let lower = line.to_lowercase();
             CLAIMS.iter().any(|c| lower.contains(c))
         };
-        let sooner = " I'll warn you sooner from now on, under 35%.";
         // Down through 40% and dead, with no warning (the mark is 30): the
         // warning moves sooner, and the line says so — and nothing else.
         // One night this was "Dead. Told you to pot. I'll warn you sooner
@@ -3577,7 +4573,7 @@ mod tests {
             death.extend(dealt(&c.observe(t, read(hp))));
         }
         assert_eq!(death.len(), 1, "{death:?}");
-        let line = death[0].strip_suffix(sooner).unwrap_or(&death[0]);
+        let line = without_sooner(&death[0], 35).unwrap_or_else(|| panic!("{death:?}"));
         assert!(
             Attitude::Blunt.lines(lines::DEATH).contains(&line),
             "{death:?}"
@@ -3657,10 +4653,138 @@ mod tests {
                     "{}: {line:?}",
                     attitude.word()
                 );
-                assert!(!line.contains("I'll warn you sooner"), "{line:?}");
+                assert!(without_sooner(line, 35).is_none(), "{line:?}");
             }
             assert!(deaths.iter().any(|l| claims(l)), "{deaths:?}");
         }
+    }
+
+    #[test]
+    fn the_mark_moving_is_said_in_the_attitudes_voice_from_a_small_deck() {
+        // Four deaths no warning came before, each through where a sooner
+        // warning would have come: the mark moves 30, 35, 40, 45, 50, and
+        // each death line ends with a card of the voice that says so,
+        // with the new mark in it — a different card each time, and never
+        // the one sentence in every voice ("…try not to suck this time.
+        // I'll warn you sooner from now on, under 35%." was a settings
+        // dialog spliced onto a savage card).
+        for attitude in Attitude::ALL {
+            let mut c = Companion::seeded(
+                Settings {
+                    attitude,
+                    ..Settings::default()
+                },
+                SEED,
+            );
+            let mut cards = Vec::new();
+            for (n, mark) in [35u32, 40, 45, 50].into_iter().enumerate() {
+                let t = n as f64 * 120.0;
+                let mut death = Vec::new();
+                for (dt, hp) in [
+                    (0.0, 100.0),
+                    (0.1, 100.0),
+                    (5.0, 40.0),
+                    (5.1, 40.0),
+                    (5.2, 40.0),
+                    (6.0, 0.0),
+                    (6.1, 0.0),
+                    (6.2, 0.0),
+                ] {
+                    death.extend(dealt(&c.observe(t + dt, read(hp))));
+                }
+                assert_eq!(death.len(), 1, "{}: {death:?}", attitude.word());
+                assert_eq!(c.settings.hp_low, mark as f32);
+                let head = without_sooner(&death[0], mark)
+                    .unwrap_or_else(|| panic!("{}: {death:?}", attitude.word()));
+                assert!(
+                    attitude.lines(lines::DEATH).contains(&head),
+                    "{}: {death:?}",
+                    attitude.word()
+                );
+                let card = &death[0][head.len() + 1..];
+                assert!(
+                    attitude
+                        .lines(lines::SOONER)
+                        .iter()
+                        .any(|c| c.replace("{}", &mark.to_string()) == card),
+                    "{}: {card:?}",
+                    attitude.word()
+                );
+                assert!(!death[0].contains("from now on, under"), "{death:?}");
+                cards.push(card.to_string());
+            }
+            for pair in cards.windows(2) {
+                assert_ne!(pair[0], pair[1], "{cards:?}");
+            }
+            // At the half-way mark the warning moves no further, and the
+            // line says nothing about it.
+            let mut death = Vec::new();
+            for (dt, hp) in [
+                (0.0, 100.0),
+                (0.1, 100.0),
+                (5.0, 60.0),
+                (5.1, 60.0),
+                (5.2, 60.0),
+                (6.0, 0.0),
+                (6.1, 0.0),
+                (6.2, 0.0),
+            ] {
+                death.extend(dealt(&c.observe(600.0 + dt, read(hp))));
+            }
+            assert_eq!(death.len(), 1, "{death:?}");
+            assert!(
+                attitude.lines(lines::DEATH).contains(&death[0].as_str()),
+                "{death:?}"
+            );
+            assert_eq!(c.settings.hp_low, 50.0);
+        }
+    }
+
+    #[test]
+    fn a_death_in_a_fight_it_warned_in_is_a_warned_death_however_long_ago_the_warning() {
+        // Hit from 100 to 25 at 1 s (the beating, with HP already low:
+        // it said to pot), the low line 12 s on, and dead at 30 s — 17 s
+        // after the last line, with the next not due for 13 s more. It
+        // warned, twice, in this fight: the death is a warned one, nothing
+        // about warning sooner, and the mark stays. (A window of 15 s had
+        // it say "I'll warn you sooner from now on, under 35%" here, and
+        // the mark crept up a night at a time for deaths it had called.)
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..=302 {
+            let t = i as f64 * 0.1;
+            let hp = if t < 1.0 {
+                100.0
+            } else if t < 30.0 {
+                25.0
+            } else {
+                0.0
+            };
+            for line in dealt(&c.observe(t, read(hp))) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(from(lines::BEATING, &lines[0].1), "{lines:?}");
+        assert!(from(lines::HP_LOW_AGAIN, &lines[1].1), "{lines:?}");
+        assert!((lines[1].0 - 13.2).abs() < 0.15, "{lines:?}");
+        let (at, death) = &lines[2];
+        assert!((at - 30.2).abs() < 0.05, "{lines:?}");
+        assert!(from(lines::DEATH_WARNED, death), "{death:?}");
+        assert!(without_sooner(death, 35).is_none(), "{death:?}");
+        assert_eq!(c.settings.hp_low, 30.0);
+        // A minute on with HP back and never low again, then a sudden
+        // death: that fight is over, and this death was not warned of.
+        for i in 0..=700 {
+            let t = 31.0 + i as f64 * 0.1;
+            let hp = if t < 100.0 { 100.0 } else { 0.0 };
+            for line in dealt(&c.observe(t, read(hp))) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert!(from(lines::DEATH, &lines[3].1), "{lines:?}");
+        assert_eq!(c.settings.hp_low, 30.0);
     }
 
     #[test]
@@ -4179,84 +5303,177 @@ mod tests {
     }
 
     #[test]
-    fn after_half_an_hour_of_silence_it_asks_once_whether_the_player_is_there() {
-        // A silent grind (HP moving: hits and potions, EXP still), not a
-        // word from the player: at the half hour, one line, and not again
-        // in the hour after it.
-        let grind = |i: usize| read(90.0 + (i / 10 % 5) as f32);
+    fn it_asks_whether_the_player_is_there_only_when_the_game_has_sat_idle() {
+        // A player it can see playing is never asked: a fight every two
+        // minutes answered by a potion, EXP creeping up, one word at
+        // minute 2 and not another all evening — ninety minutes, not a
+        // line. (It was asked at minute 32, two minutes after a beating
+        // they potted: "You alive over there?" to someone it was watching
+        // play.)
         let asked = |actions: &[Action]| -> Vec<String> {
             alerts(actions)
                 .into_iter()
                 .filter(|l| from(lines::STILL_THERE, l))
                 .collect()
         };
+        let fight = |t: f64| -> f32 {
+            let phase = t % 120.0;
+            if phase < 1.5 {
+                100.0 - (phase / 1.5) as f32 * 75.0
+            } else if phase < 3.0 {
+                25.0
+            } else {
+                100.0
+            }
+        };
+        let playing = |t: f64| {
+            let mut obs = read(fight(t));
+            obs.exp = gauge(10.0 + (t / 60.0) as f32 * 0.3, true);
+            obs
+        };
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines: Vec<(f64, String)> = Vec::new();
         for i in 0..54_000 {
             let t = i as f64 * 0.1;
-            for line in asked(&c.observe(t, grind(i))) {
-                lines.push((t, line));
-            }
-        }
-        assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!((lines[0].0 - STILL_THERE_SECS).abs() < 0.2, "{lines:?}");
-        assert_eq!(variant(lines::STILL_THERE, &lines[0].1), Some(0));
-        // A word from the player at twenty minutes: the half hour counts
-        // from there.
-        let mut c = Companion::seeded(Settings::default(), SEED);
-        let mut lines = Vec::new();
-        for i in 0..36_000 {
-            let t = i as f64 * 0.1;
-            if i == 12_000 {
+            if i == 1200 {
                 c.player_spoke(t);
             }
-            for line in asked(&c.observe(t, grind(i))) {
+            for line in asked(&c.observe(t, playing(t))) {
+                lines.push((t, line));
+            }
+        }
+        assert!(lines.is_empty(), "{lines:?}");
+        // Playing until minute 10 (HP moving every second), then nothing
+        // moves and nobody speaks: asked once, twenty minutes on, at
+        // minute 30 — and not again in the hour after.
+        let grind = |i: usize| read(90.0 + (i / 10 % 5) as f32);
+        let idle_from = |i: usize, from: usize| if i < from { grind(i) } else { read(90.0) };
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..54_000 {
+            let t = i as f64 * 0.1;
+            for line in asked(&c.observe(t, idle_from(i, 6000))) {
                 lines.push((t, line));
             }
         }
         assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!((lines[0].0 - 3000.0).abs() < 0.2, "{lines:?}");
-        // Nothing moved in the half hour (HP and EXP flat: nobody is
-        // playing, and nobody would hear it): not asked.
-        let mut c = Companion::seeded(Settings::default(), SEED);
-        let mut lines = Vec::new();
-        for i in 0..36_000 {
-            lines.extend(asked(&c.observe(i as f64 * 0.1, read(90.0))));
-        }
-        assert!(lines.is_empty(), "{lines:?}");
-        // Dead at the half hour: not then; once revived, yes.
+        assert!((lines[0].0 - 1800.0).abs() < 0.2, "{lines:?}");
+        assert_eq!(variant(lines::STILL_THERE, &lines[0].1), Some(0));
+        // A word at minute 25: not before minute 45.
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines: Vec<(f64, String)> = Vec::new();
-        for i in 0..19_000 {
+        for i in 0..36_000 {
             let t = i as f64 * 0.1;
-            let obs = if (17_950..18_100).contains(&i) {
-                read(0.0)
+            if i == 15_000 {
+                c.player_spoke(t);
+            }
+            for line in asked(&c.observe(t, idle_from(i, 6000))) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!((lines[0].0 - 2700.0).abs() < 0.2, "{lines:?}");
+        // A session that starts idle is idle from its first frame.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..15_000 {
+            let t = i as f64 * 0.1;
+            for line in asked(&c.observe(t, read(90.0))) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!((lines[0].0 - 1200.0).abs() < 0.2, "{lines:?}");
+        // The game out of view from 100 s and back at 1000 s: the twenty
+        // minutes count from when it is back on screen.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..25_000 {
+            let t = i as f64 * 0.1;
+            let obs = if (1000..10_000).contains(&i) {
+                Observation::unseen(GameView::NotFound)
             } else {
-                grind(i)
+                read(90.0)
             };
             for line in asked(&c.observe(t, obs)) {
                 lines.push((t, line));
             }
         }
         assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!((lines[0].0 - 1810.0).abs() < 0.2, "{lines:?}");
-        // During a hold (warnings nobody answers, HP moving a little under
-        // the mark): not then; when the hold ends, yes.
+        assert!((lines[0].0 - 2200.0).abs() < 0.2, "{lines:?}");
+        // Not within five minutes of a warning of its own: MP low at
+        // 1000 s (MP moving is not the game going on) puts it off to 1300.
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines: Vec<(f64, String)> = Vec::new();
-        let mut held_at_the_half_hour = false;
-        for i in 0..21_000 {
+        for i in 0..15_000 {
             let t = i as f64 * 0.1;
-            for line in asked(&c.observe(t, read(20.0 + (i / 10 % 2) as f32 * 3.0))) {
+            let mut obs = read(90.0);
+            obs.mp = gauge(
+                if (10_000..10_050).contains(&i) {
+                    10.0
+                } else {
+                    80.0
+                },
+                true,
+            );
+            for line in asked(&c.observe(t, obs)) {
                 lines.push((t, line));
             }
-            if i == 18_000 {
-                held_at_the_half_hour = c.alerts_held(t);
+        }
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!((lines[0].0 - 1300.6).abs() < 0.2, "{lines:?}");
+        // Dead at the mark: not then (a death moves HP, and so does the
+        // revive: twenty minutes from that).
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..31_000 {
+            let t = i as f64 * 0.1;
+            let obs = if (11_950..12_100).contains(&i) {
+                read(0.0)
+            } else {
+                read(90.0)
+            };
+            for line in asked(&c.observe(t, obs)) {
+                lines.push((t, line));
             }
         }
-        assert!(held_at_the_half_hour);
         assert_eq!(lines.len(), 1, "{lines:?}");
-        assert!(lines[0].0 > 1900.0, "{lines:?}");
+        assert!((lines[0].0 - 2410.0).abs() < 0.2, "{lines:?}");
+        // Warnings nobody answers (the bar flat under the mark): the hold
+        // comes and goes, two lines through between one and the next —
+        // held, or within minutes of a line of its own, the whole time:
+        // never asked.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        let mut held_at_twenty_five_minutes = false;
+        for i in 0..24_000 {
+            let t = i as f64 * 0.1;
+            for line in asked(&c.observe(t, read(20.0))) {
+                lines.push((t, line));
+            }
+            if i == 15_000 {
+                held_at_twenty_five_minutes = c.alerts_held(t);
+            }
+        }
+        assert!(held_at_twenty_five_minutes);
+        assert!(lines.is_empty(), "{lines:?}");
+        // No card claims to know what they are doing: not that they are
+        // grinding, not that they are asleep, not how long it has been.
+        for attitude in Attitude::ALL {
+            for card in attitude.lines(lines::STILL_THERE) {
+                let lower = card.to_lowercase();
+                for claim in [
+                    "grind",
+                    "asleep",
+                    "keyboard",
+                    "minute",
+                    "half an hour",
+                    "afk",
+                ] {
+                    assert!(!lower.contains(claim), "{card:?}");
+                }
+            }
+        }
     }
 
     #[test]
@@ -4287,7 +5504,7 @@ mod tests {
         // The snapshot the model gets says so, once, in place of when they
         // last spoke (the coach reads the same `so_far`: reading it does
         // not use it up).
-        let text = crate::ai::brain::snapshot(c.last(), &c.progress(), &c.so_far());
+        let text = crate::ai::brain::snapshot_with_view(c.last(), true, &c.progress(), &c.so_far());
         assert_eq!(
             text.matches("They had been quiet for 32 min until just now.")
                 .count(),
@@ -4304,9 +5521,11 @@ mod tests {
         }
         c.player_spoke(t);
         assert_eq!(c.so_far().quiet_before, None);
-        let text = crate::ai::brain::snapshot(c.last(), &c.progress(), &c.so_far());
+        let text = crate::ai::brain::snapshot_with_view(c.last(), true, &c.progress(), &c.so_far());
         assert!(!text.contains("had been quiet"), "{text}");
-        // …and half a minute after a sentence that did, it is old news.
+        // …and ten seconds after a sentence that did, it is old news: the
+        // reply to it has its snapshot by then, and the next sentence's
+        // reply is not to say "welcome back" again (kept 30 s, it could).
         let from = t;
         while t < from + 120.0 {
             c.observe(t, read(90.0));
@@ -4315,7 +5534,12 @@ mod tests {
         c.player_spoke(t);
         assert!(c.so_far().quiet_before.is_some());
         let from = t;
-        while t < from + 31.0 {
+        while t < from + 9.0 {
+            c.observe(t, read(90.0));
+            t += 0.1;
+        }
+        assert!(c.so_far().quiet_before.is_some());
+        while t < from + 11.0 {
             c.observe(t, read(90.0));
             t += 0.1;
         }
