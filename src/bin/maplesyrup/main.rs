@@ -2398,6 +2398,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     in_view,
                     talking,
                     muted: companion.muted(),
+                    dead: companion.dead(),
                 };
                 if let Some(reason) = coach.observe(&glance) {
                     let snapshot = snapshot_text(&companion, sight.as_ref());

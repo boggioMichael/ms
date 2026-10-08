@@ -87,6 +87,11 @@ pub struct Facts {
     pub level_from: Option<String>,
     pub name: Option<String>,
     pub job: Option<String>,
+    /// The map's name as last read (or told), this session only: it is
+    /// where they were when it was read, and the player moves on, so it
+    /// is never kept between runs and is said with its age
+    /// ([`Sight::map_at`]) while it is young enough to be worth saying.
+    #[serde(skip)]
     pub map: Option<String>,
     pub hp_max: Option<u64>,
     pub mp_max: Option<u64>,
@@ -166,6 +171,8 @@ pub struct Sight {
     exp_trail: VecDeque<(Instant, f32)>,
     /// The EXP percent as last read from the numbers, and when.
     exp_read_at: Option<(Instant, f32)>,
+    /// When the map's name (`facts.map`) was read or told.
+    map_at: Option<Instant>,
     /// Since when the bars could not be found though the game is seen.
     lost_since: Option<Instant>,
     /// Readings in a row that disagreed with the bars by a lot.
@@ -206,6 +213,13 @@ const DEBUG_EVERY: Duration = Duration::from_secs(60);
 
 /// How long the bars may be missing before the HUD is looked for again.
 const LOST_FOR: Duration = Duration::from_secs(20);
+/// A map name read longer ago than this is not said any more: a map is
+/// where they were, not where they are, and the regular check reads the
+/// status strip alone (the name is on the minimap), so a read seldom
+/// refreshes it. Ten minutes is a grinding session on one map; past that
+/// the name is more likely wrong than right, and the model would present
+/// it as fact.
+const MAP_FOR: Duration = Duration::from_secs(600);
 
 fn now_text() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
@@ -347,6 +361,7 @@ impl Sight {
             want: None,
             exp_trail: VecDeque::new(),
             exp_read_at: None,
+            map_at: None,
             lost_since: None,
             disagreements: 0,
             last: Seen::default(),
@@ -947,6 +962,7 @@ impl Sight {
         }
         if v.map.is_some() {
             self.facts.map = v.map.clone();
+            self.map_at = Some(Instant::now());
         }
         if let Some((_, max)) = v.hp {
             self.facts.hp_max = Some(max);
@@ -1267,6 +1283,7 @@ impl Sight {
             }
             "map" => {
                 self.facts.map = Some(value.to_string());
+                self.map_at = Some(Instant::now());
                 format!("map set to {value}")
             }
             "hp" | "mp" | "exp" => {
@@ -1313,8 +1330,18 @@ impl Sight {
         if let Some(n) = &f.name {
             who.push(format!("named {n}"));
         }
-        if let Some(m) = &f.map {
-            who.push(format!("last seen on the map {m}"));
+        // The map with its age, while it is young enough to be worth
+        // saying: where they were, not where they are.
+        if let (Some(m), Some(at)) = (&f.map, self.map_at) {
+            let age = at.elapsed();
+            if age <= MAP_FOR {
+                let ago = match age.as_secs() / 60 {
+                    0 => "less than a minute ago".to_string(),
+                    1 => "a minute ago".to_string(),
+                    minutes => format!("{minutes} min ago"),
+                };
+                who.push(format!("map {m}, as read {ago} (it may have changed)"));
+            }
         }
         if !who.is_empty() {
             lines.push(format!("Character: {}.", who.join(", ")));
@@ -1477,6 +1504,58 @@ mod tests {
         // Asked, and not again until the backoff has run.
         again.asking();
         assert_eq!(again.wants(1920, 800), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_map_name_is_said_with_its_age_and_not_after_ten_minutes_nor_next_run() {
+        let dir = temp_dir("map");
+        let mut sight = Sight::load(&dir);
+        let frame = status_bar(60.0, 100.0);
+        sight.calibrated(&frame, &calibration()).unwrap();
+        // A read with the map: said with its age, and that it may have
+        // changed (a map is where they were, not where they are).
+        let with_map = HudValues {
+            hp: Some((3000, 5000)),
+            map: Some("Gate of the Future".into()),
+            ..Default::default()
+        };
+        sight.verified(&frame, &with_map);
+        let text = sight.describe().join("\n");
+        assert!(
+            text.contains(
+                "map Gate of the Future, as read less than a minute ago (it may have changed)"
+            ),
+            "{text}"
+        );
+        sight.map_at = Some(Instant::now() - Duration::from_secs(5 * 60));
+        let text = sight.describe().join("\n");
+        assert!(
+            text.contains("map Gate of the Future, as read 5 min ago (it may have changed)"),
+            "{text}"
+        );
+        // A quarter of an hour on, a read without a map (the regular check
+        // reads the status strip, where the name is not): the name is not
+        // said any more.
+        sight.map_at = Some(Instant::now() - Duration::from_secs(15 * 60));
+        let without_map = HudValues {
+            hp: Some((3000, 5000)),
+            ..Default::default()
+        };
+        sight.verified(&frame, &without_map);
+        let text = sight.describe().join("\n");
+        assert!(!text.contains("Gate of the Future"), "{text}");
+        // The player says where they are: as good as a read, and as fresh.
+        sight.correct("map", "Henesys").unwrap();
+        let text = sight.describe().join("\n");
+        assert!(
+            text.contains("map Henesys, as read less than a minute ago"),
+            "{text}"
+        );
+        // Never kept for the next run.
+        let again = Sight::load(&dir);
+        assert_eq!(again.facts.map, None);
+        assert!(!again.describe().join("\n").contains("Henesys"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

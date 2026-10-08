@@ -8,7 +8,9 @@
 //! question, and never interrupts without a reason.
 //!
 //! Reasons, in order of urgency:
-//! - they just arrived somewhere new (the scene cut and settled);
+//! - the picture cut and settled (a portal, a cutscene, a dialog, a
+//!   death: the pixels cannot tell which), at most once in a couple of
+//!   minutes, and not around a death or a level-up;
 //! - they just went up a level (a moment after the companion's cheer);
 //! - their EXP has not moved for minutes while the game goes on;
 //! - nothing in particular: a look now and then, less often each time the
@@ -37,12 +39,16 @@ pub struct Glance<'a> {
     /// or said).
     pub talking: bool,
     pub muted: bool,
+    /// The character is dead (HP at zero), until it comes back: the
+    /// companion has said so, and the death screen is no new scene.
+    pub dead: bool,
 }
 
 /// Why the model is consulted.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reason {
-    /// They just arrived somewhere new.
+    /// The picture changed a lot and settled: a portal, a cutscene, a
+    /// dialog, a death — the pixels cannot tell which.
     NewScene,
     /// They just reached this level (None when the number is not known).
     LevelUp { level: Option<u32> },
@@ -66,8 +72,9 @@ impl Reason {
     /// What happened, for the model.
     pub fn describe(&self) -> String {
         match self {
-            Reason::NewScene => "They just arrived somewhere new (a different map or screen). If you know \
-what to do here, or what to watch out for, say it in one line; else [silent]."
+            Reason::NewScene => "The picture changed a lot and settled — a portal, a cutscene, a dialog, a \
+death. Only if you can tell what they should do now, say it in one line; never describe what you see. Otherwise \
+[silent]."
                 .to_string(),
             Reason::LevelUp { level: Some(level) } => format!(
                 "They just reached level {level}. Anything to do now (a new skill to put points in, a better \
@@ -117,6 +124,16 @@ pub const STALL_AFTER: f64 = 180.0;
 pub const STALL_AGAIN: f64 = 600.0;
 /// The companion cheers a level-up first; the coach's word comes after.
 pub const LEVEL_UP_AFTER: f64 = 6.0;
+/// A new scene is looked at no sooner than this after the last one, in
+/// seconds: the picture cuts and settles at every dialog box, death
+/// screen and full-screen effect, not only at a portal, and a player who
+/// stays on one map would otherwise be told about it at every cut.
+pub const NEW_SCENE_AGAIN: f64 = 120.0;
+/// No new scene while the character is dead, nor within this long of a
+/// death or a level-up, in seconds: the death screen, the revive and the
+/// level-up's flash each cut and settle, and the companion has already
+/// said what there is to say about them.
+pub const NEW_SCENE_HUSH: f64 = 10.0;
 /// Below this much going on, nobody is playing: no looks (the player is
 /// away, or reading).
 pub const IDLE_ACTIVITY: f32 = 0.002;
@@ -136,6 +153,12 @@ pub struct Coach {
     /// When anyone last said anything.
     quiet_since: f64,
     last_consult: f64,
+    /// When the model was last consulted about a new scene.
+    last_new_scene: f64,
+    /// When the character was last seen dead, and when the companion last
+    /// cheered a level-up: no new scene around either.
+    last_dead: f64,
+    last_level_alert: f64,
     look_every: f64,
     silent_in_a_row: u32,
     /// A consult is under way.
@@ -165,6 +188,9 @@ impl Coach {
             on,
             quiet_since: f64::NEG_INFINITY,
             last_consult: f64::NEG_INFINITY,
+            last_new_scene: f64::NEG_INFINITY,
+            last_dead: f64::NEG_INFINITY,
+            last_level_alert: f64::NEG_INFINITY,
             look_every: LOOK_EVERY,
             silent_in_a_row: 0,
             consulting: false,
@@ -197,8 +223,20 @@ impl Coach {
         if now - since < SETTLE_IN {
             return None;
         }
-        // What came up this frame.
-        if g.scene.is_some_and(|s| s.new_scene) {
+        // What came up this frame. A new scene is not worth a look around
+        // a death or a level-up (the companion spoke; the screen cut for
+        // that), nor again within a couple of minutes of the last: a cut
+        // is as often a dialog box as a portal.
+        let hushed = g.dead
+            || now - self.last_dead < NEW_SCENE_HUSH
+            || now - self.last_level_alert < NEW_SCENE_HUSH;
+        if hushed && matches!(self.pending, Some((Reason::NewScene, _))) {
+            self.pending = None;
+        }
+        if g.scene.is_some_and(|s| s.new_scene)
+            && !hushed
+            && now - self.last_new_scene >= NEW_SCENE_AGAIN
+        {
             self.propose(Reason::NewScene, now);
         }
         if let Some((at, level)) = self.level_up
@@ -248,6 +286,9 @@ impl Coach {
         if let Some(scene) = g.scene {
             self.activity = scene.activity;
         }
+        if g.dead {
+            self.last_dead = now;
+        }
         if let Some(level) = g.obs.level {
             if let Some(before) = self.level
                 && level == before + 1
@@ -279,6 +320,9 @@ impl Coach {
     fn consult(&mut self, reason: Reason, now: f64) -> Reason {
         self.consulting = true;
         self.last_consult = now;
+        if reason == Reason::NewScene {
+            self.last_new_scene = now;
+        }
         self.consults += 1;
         reason
     }
@@ -286,6 +330,7 @@ impl Coach {
     /// A level-up (from the companion, which sees it first): the coach's
     /// word comes a moment after the cheer.
     pub fn leveled(&mut self, now: f64, level: Option<u32>) {
+        self.last_level_alert = now;
         self.level_up = match self.level_up {
             None => Some((now + LEVEL_UP_AFTER, level)),
             // The number came after the cheer.
@@ -406,6 +451,7 @@ mod tests {
                 in_view: true,
                 talking: false,
                 muted: false,
+                dead: false,
             };
             if let Some(reason) = coach.observe(&g) {
                 consults.push((now, reason));
@@ -467,6 +513,7 @@ mod tests {
                 in_view: true,
                 talking: false,
                 muted: true,
+                dead: false,
             };
             assert_eq!(muted.observe(&g), None);
         }
@@ -489,6 +536,7 @@ mod tests {
             in_view: true,
             talking: false,
             muted: false,
+            dead: false,
         };
         assert_eq!(coach.observe(&g), Some(Reason::NewScene));
         let said_at = now;
@@ -561,6 +609,7 @@ mod tests {
                 in_view: true,
                 talking: true,
                 muted: false,
+                dead: false,
             };
             assert_eq!(coach.observe(&g), None);
             now += 0.1;
@@ -578,6 +627,7 @@ mod tests {
                 in_view: true,
                 talking: false,
                 muted: false,
+                dead: false,
             };
             asked = coach.observe(&g).map(|r| (now, r));
             now += 0.1;
@@ -593,11 +643,14 @@ mod tests {
             in_view: true,
             talking: false,
             muted: false,
+            dead: false,
         };
         assert!(coach.consulting());
         assert_eq!(coach.observe(&g), None);
-        // A reason that waited too long is dropped.
+        // A reason that waited too long is dropped (a couple of minutes
+        // on, so that a new scene is looked at again at all).
         coach.answered(now, None);
+        now += NEW_SCENE_AGAIN;
         let stale = verdict(0.1, true);
         let g = Glance {
             now,
@@ -606,8 +659,10 @@ mod tests {
             in_view: true,
             talking: true,
             muted: false,
+            dead: false,
         };
         assert_eq!(coach.observe(&g), None);
+        assert!(matches!(coach.pending, Some((Reason::NewScene, _))));
         now += STALE_AFTER + 1.0;
         let g = Glance {
             now,
@@ -616,7 +671,111 @@ mod tests {
             in_view: true,
             talking: false,
             muted: false,
+            dead: false,
         };
         assert_ne!(coach.observe(&g), Some(Reason::NewScene));
+    }
+
+    /// Play `seconds` of frames (ten a second), the scene cut and settled
+    /// on the first when `cut`, the character `dead` throughout; every
+    /// consult is answered at once with nothing. Returns (when, reason)
+    /// of each consult.
+    fn frames(
+        coach: &mut Coach,
+        from: f64,
+        seconds: f64,
+        cut: bool,
+        dead: bool,
+    ) -> Vec<(f64, Reason)> {
+        let mut consults = Vec::new();
+        let o = obs(18.99, 150);
+        for i in 0..(seconds * 10.0) as usize {
+            let now = from + i as f64 * 0.1;
+            let v = verdict(0.02, cut && i == 0);
+            let g = Glance {
+                now,
+                obs: &o,
+                scene: Some(&v),
+                in_view: true,
+                talking: false,
+                muted: false,
+                dead,
+            };
+            if let Some(reason) = coach.observe(&g) {
+                consults.push((now, reason));
+                coach.answered(now, None);
+            }
+        }
+        consults
+    }
+
+    fn new_scenes(consults: &[(f64, Reason)]) -> Vec<f64> {
+        consults
+            .iter()
+            .filter(|(_, r)| *r == Reason::NewScene)
+            .map(|(t, _)| *t)
+            .collect()
+    }
+
+    #[test]
+    fn a_new_scene_is_looked_at_once_in_a_while_and_not_around_a_death_or_a_level_up() {
+        let mut coach = Coach::new(true);
+        play(&mut coach, 0.0, 20.0, 18.99, true, 0.02, None);
+        // A cut: looked at. Another forty seconds on (a dialog closing, a
+        // full-screen effect) is not: one look in a couple of minutes,
+        // whatever cuts. Two minutes after the look: again.
+        let first = frames(&mut coach, 20.0, 40.0, true, false);
+        assert_eq!(new_scenes(&first), vec![20.0], "{first:?}");
+        let second = frames(&mut coach, 60.0, 80.0, true, false);
+        assert!(new_scenes(&second).is_empty(), "{second:?}");
+        let third = frames(&mut coach, 140.0, 160.0, true, false);
+        assert_eq!(new_scenes(&third), vec![140.0], "{third:?}");
+        // They die: the death screen cuts and settles, and so does the
+        // revive. The companion said what there was to say: no look at
+        // either, nor for ten seconds after; then as usual.
+        let dead = frames(&mut coach, 300.0, 5.0, true, true);
+        assert!(new_scenes(&dead).is_empty(), "{dead:?}");
+        let revived = frames(&mut coach, 305.0, 9.0, true, false);
+        assert!(new_scenes(&revived).is_empty(), "{revived:?}");
+        let later = frames(&mut coach, 315.0, 20.0, true, false);
+        assert_eq!(new_scenes(&later), vec![315.0], "{later:?}");
+        // A level-up: the companion cheers, and its flash cuts the
+        // picture. The coach's word is about the level, not the scene.
+        let cheered = 500.0;
+        coach.someone_spoke(cheered);
+        coach.leveled(cheered, Some(151));
+        let mut around = frames(&mut coach, cheered, 3.0, false, false);
+        around.extend(frames(&mut coach, cheered + 3.0, 27.0, true, false));
+        assert!(new_scenes(&around).is_empty(), "{around:?}");
+        let level_ups: Vec<&(f64, Reason)> = around
+            .iter()
+            .filter(|(_, r)| matches!(r, Reason::LevelUp { .. }))
+            .collect();
+        assert_eq!(level_ups.len(), 1, "{around:?}");
+        assert!(
+            (level_ups[0].0 - cheered - MIN_GAP).abs() < 0.11,
+            "{around:?}"
+        );
+        let after = frames(&mut coach, cheered + 30.0, 10.0, true, false);
+        assert_eq!(new_scenes(&after), vec![cheered + 30.0], "{after:?}");
+        // A cut while they are talking waits for a quiet moment; they die
+        // before it comes: it is dropped, not looked at from the grave.
+        let o = obs(18.99, 150);
+        let v = verdict(0.1, true);
+        let g = Glance {
+            now: 700.0,
+            obs: &o,
+            scene: Some(&v),
+            in_view: true,
+            talking: true,
+            muted: false,
+            dead: false,
+        };
+        assert_eq!(coach.observe(&g), None);
+        assert!(matches!(coach.pending, Some((Reason::NewScene, _))));
+        let died = frames(&mut coach, 701.0, 3.0, false, true);
+        let back = frames(&mut coach, 704.0, 30.0, false, false);
+        assert!(new_scenes(&died).is_empty() && new_scenes(&back).is_empty());
+        assert_eq!(coach.pending, None);
     }
 }
