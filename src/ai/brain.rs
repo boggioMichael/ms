@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use super::memory::Learning;
 use super::openai::{Delivery, Turn};
 use super::style::{self, Attitude};
-use crate::companion::{GameView, Gauge, Kind, Observation, Progress, SoFar};
+use crate::companion::{Deck, GameView, Gauge, Kind, Observation, Progress, SoFar};
 
 /// Turns of conversation kept (a turn is one sentence each way).
 const KEEP_TURNS: usize = 16;
@@ -318,7 +318,7 @@ screen clearly shows something other than what they say, say what you see; never
 you — look closer instead.
 - When they correct you, take it in a word and keep it (note_correction); what they corrected you on before beats what you think you know.
 - Presence: greet only when your watcher says the phone just connected, never on your own; never ask whether \
-they're still there — your watcher does, when they go quiet. When the session facts say they had been quiet for \
+they're still there — your watcher does, when the game idles. When the session facts say they had been quiet for \
 a long while until just now, one short \"welcome back\" is fine, once. Those facts (how long, deaths, level-ups, \
 when they last spoke, the lowest HP) are for you, not for them: never recite them; one comes up only when it \
 changes what you'd say.
@@ -380,12 +380,51 @@ pub struct Brain {
     pub learning: Option<Learning>,
     /// How it talks, when there is no `learning` to keep it.
     pub attitude: Attitude,
+    /// The "same as before" lines, dealt like the companion's: every card
+    /// once before any again, in another order every session.
+    same_as_before: Deck,
 }
 
 impl Default for Brain {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// What it says when everything it had to say, it said lately (the player
+/// asked the same thing twice; the model is going round in circles): a word
+/// rather than nothing, so they know they were heard — in its attitude,
+/// and not the one flat phrase every time. One list per attitude
+/// (friendly, blunt, savage), the lead card first.
+const SAME_AS_BEFORE: [&[&str]; 3] = [
+    &[
+        "Still the same.",
+        "Same as before.",
+        "Nothing new since you asked.",
+        "No change yet.",
+    ],
+    &[
+        "Nothing's changed.",
+        "Same as before.",
+        "Still the same. Keep up.",
+        "Already told you.",
+    ],
+    &[
+        "I said. Twice.",
+        "Nothing's changed, genius.",
+        "Same answer. Still.",
+        "Ask a third time, I dare you.",
+    ],
+];
+
+/// A seed for a session's decks: the clock and the process, so that no two
+/// sessions deal them alike.
+pub fn session_seed() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    nanos ^ (std::process::id() as u64).rotate_left(32)
 }
 
 impl Brain {
@@ -396,7 +435,15 @@ impl Brain {
             about_player: String::new(),
             learning: None,
             attitude: Attitude::default(),
+            same_as_before: Deck::seeded(session_seed()),
         }
+    }
+
+    /// The next "same as before" line, in its attitude: a card of the deck
+    /// (every one once before any again, never the same twice running).
+    pub fn same_as_before(&mut self) -> &'static str {
+        let attitude = self.attitude();
+        self.same_as_before.deal(attitude, SAME_AS_BEFORE)
     }
 
     pub fn heard(&mut self, text: &str) {
@@ -655,7 +702,15 @@ fn presence(so_far: &SoFar) -> Option<String> {
 
 /// What the companion sees, as a few plain lines for the model, and what
 /// a friend in the room would know of the session so far (`so_far`).
-pub fn snapshot(obs: Option<&Observation>, progress: &Progress, so_far: &SoFar) -> String {
+/// `in_front`: whether the game is the window in front — behind another
+/// window it is still read, but the picture is withheld, and the model is
+/// told so rather than told the game is in view and given no picture.
+pub fn snapshot_with_view(
+    obs: Option<&Observation>,
+    in_front: bool,
+    progress: &Progress,
+    so_far: &SoFar,
+) -> String {
     let mut lines = Vec::new();
     let unseen = so_far
         .unseen_for
@@ -663,9 +718,14 @@ pub fn snapshot(obs: Option<&Observation>, progress: &Progress, so_far: &SoFar) 
         .map(|u| format!(" (for {})", short(u)))
         .unwrap_or_default();
     match obs.map(|o| &o.game) {
-        Some(GameView::Seen(_)) => {
+        Some(GameView::Seen(_)) if in_front => {
             lines.push("The MapleStory window is open and in view.".to_string())
         }
+        Some(GameView::Seen(_)) => lines.push(
+            "The MapleStory window is open, behind another window (you get no picture of it \
+until it is in front)."
+                .to_string(),
+        ),
         Some(GameView::Unavailable(why)) => lines.push(format!(
             "MapleStory can't be seen right now{unseen}: {why}."
         )),
@@ -1909,6 +1969,12 @@ fn without_closing_offer(kept: &mut Vec<String>, said_before: bool) {
 mod tests {
     use super::*;
 
+    /// [`snapshot_with_view`] with the game in front (most of these tests
+    /// have no window to ask).
+    fn snapshot(obs: Option<&Observation>, progress: &Progress, so_far: &SoFar) -> String {
+        snapshot_with_view(obs, true, progress, so_far)
+    }
+
     #[test]
     fn nothing_said_lately_is_said_again() {
         let mut recent = Recent::default();
@@ -2025,6 +2091,31 @@ Pot now, you're at 20.",
     }
 
     #[test]
+    fn same_as_before_is_a_card_in_its_attitude_and_never_the_same_twice_running() {
+        let mut brain = Brain::new();
+        for (attitude, lines) in Attitude::ALL.into_iter().zip(SAME_AS_BEFORE) {
+            brain.attitude = attitude;
+            assert!(lines.len() >= 3, "{attitude:?}");
+            let round: Vec<&str> = (0..lines.len()).map(|_| brain.same_as_before()).collect();
+            let mut sorted = round.clone();
+            sorted.sort_unstable();
+            let mut all = lines.to_vec();
+            all.sort_unstable();
+            assert_eq!(
+                sorted, all,
+                "{attitude:?}: every card once before any again"
+            );
+            let next = brain.same_as_before();
+            assert!(lines.contains(&next));
+            assert_ne!(next, *round.last().unwrap(), "{attitude:?}");
+        }
+        // The lead card says it plainly in each voice.
+        assert_eq!(SAME_AS_BEFORE[0][0], "Still the same.");
+        assert_eq!(SAME_AS_BEFORE[1][0], "Nothing's changed.");
+        assert_eq!(SAME_AS_BEFORE[2][0], "I said. Twice.");
+    }
+
+    #[test]
     fn the_snapshot_says_what_is_seen_and_what_is_estimated() {
         let obs = Observation {
             game: GameView::Seen("MapleStory".into()),
@@ -2058,6 +2149,7 @@ Pot now, you're at 20.",
             ..Default::default()
         };
         let text = snapshot(Some(&obs), &progress, &so_far);
+        assert!(text.starts_with("The MapleStory window is open and in view."));
         assert!(text.contains("Character: level 57, Assassin."));
         assert!(text.contains("HP 1291 of 1351 (82%), MP about 40%."));
         assert!(text.contains(
@@ -2068,6 +2160,25 @@ Pot now, you're at 20.",
         assert_eq!(text.lines().count(), 4, "{text}");
         assert!(
             snapshot(None, &Progress::default(), &SoFar::default())
+                .starts_with("No MapleStory window is open right now.")
+        );
+        // The game behind another window: still read (the bars, the
+        // level), but the picture is withheld, and the model is told so
+        // instead of being told it can see the game and given no picture.
+        let behind = snapshot_with_view(Some(&obs), false, &progress, &so_far);
+        assert!(
+            behind.starts_with("The MapleStory window is open, behind another window"),
+            "{behind}"
+        );
+        assert!(!behind.contains("in view"), "{behind}");
+        assert!(behind.contains("HP 1291 of 1351 (82%), MP about 40%."));
+        assert_eq!(
+            snapshot_with_view(Some(&obs), true, &progress, &so_far),
+            text
+        );
+        // No window at all is said as before, in front or not.
+        assert!(
+            snapshot_with_view(None, false, &Progress::default(), &SoFar::default())
                 .starts_with("No MapleStory window is open right now.")
         );
     }
@@ -2219,10 +2330,11 @@ just now). Lowest HP in the last minute: 8%."
     fn the_persona_says_how_to_be_present_and_how_to_use_what_it_knows() {
         let persona = Brain::new().persona();
         // Presence is the watcher's to manage (the hello once per phone,
-        // "still there?" once per session, the quiet spell in the
-        // snapshot); the model is told how to respond to it: greet when
-        // told the phone connected, welcome them back once after a long
-        // quiet, never ask after them — and never recite the session facts.
+        // "still there?" once a session when the game sits idle, the quiet
+        // spell in the snapshot); the model is told how to respond to it:
+        // greet when told the phone connected, welcome them back once after
+        // a long quiet, never ask after them — and never recite the
+        // session facts.
         assert!(
             persona.contains(
                 "greet only when your watcher says the phone just connected, never on your own"
@@ -2231,10 +2343,13 @@ just now). Lowest HP in the last minute: 8%."
         );
         assert!(
             persona.contains(
-                "never ask whether they're still there — your watcher does, when they go quiet"
+                "never ask whether they're still there — your watcher does, when the game idles"
             ),
             "{persona}"
         );
+        // (The watcher asks when the game sits idle, not when the player
+        // goes quiet while playing: the clause says which.)
+        assert!(!persona.contains("when they go quiet"), "{persona}");
         assert!(
             persona.contains(
                 "they had been quiet for a long while until just now, one short \"welcome back\" \

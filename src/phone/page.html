@@ -69,14 +69,19 @@
   #micStatus { color: var(--dim); font-size: 14px; min-height: 20px; }
   #heard { margin-top: 4px; font-size: 15px; min-height: 22px; font-style: italic; }
   #note { margin-top: 8px; font-size: 13px; color: var(--warn); display: none; text-align: left; }
+  /* The language, on the main screen: the recogniser's, and the page's. */
+  .mic label.lang { margin-top: 10px; font-size: 13px; }
+  .mic label.lang select { font-size: 13px; padding: 4px 6px; }
 
   /* The conversation */
   #log { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
   #log li { max-width: 86%; padding: 9px 12px; border-radius: 16px; font-size: 15px; line-height: 1.35; }
   #log li.heard { align-self: flex-end; background: #3b2f20; border-bottom-right-radius: 5px; }
   #log li.reply, #log li.alert, #log li.warning { align-self: flex-start; background: var(--card2); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
-  /* A warning (a low bar, a beating) and news (a death, a level-up): its own lines, in its colour. */
-  #log li.alert, #log li.warning { border-color: #8a5a1a; color: #ffd59a; }
+  /* Its own lines: news (a death, a level-up) in amber; a warning (a low bar,
+     a beating) in red — the eye tells a shout from news as the ear does. */
+  #log li.alert { border-color: #8a5a1a; color: #ffd59a; }
+  #log li.warning { border-color: #9b3a35; color: #ffb8b3; }
   #log li.info { align-self: center; background: none; color: var(--faint); font-size: 13px; padding: 2px 6px; }
   #log time { display: block; color: var(--faint); font-size: 11px; margin-top: 2px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 0 0 10px; }
@@ -193,6 +198,9 @@
   <div id="micStatus" data-t="mic_idle">Tap, allow the microphone, and talk to me like you would to a friend.</div>
   <div id="heard"></div>
   <div id="note"></div>
+  <label class="opt lang"><span data-t="language">Language</span>
+    <select id="lang"></select>
+  </label>
 </section>
 
 <button class="strip" id="strip">
@@ -245,10 +253,7 @@
     </section>
 
     <section class="card">
-      <label class="opt" style="margin-top:0"><span data-t="language">Language</span>
-        <select id="lang"></select>
-      </label>
-      <label class="opt"><span data-t="send_audio">Send the microphone's audio to the PC</span> <input type="checkbox" id="sendAudio" checked></label>
+      <label class="opt" style="margin-top:0"><span data-t="send_audio">Send the microphone's audio to the PC</span> <input type="checkbox" id="sendAudio" checked></label>
     </section>
 
     <section class="card" id="updateCard">
@@ -374,6 +379,7 @@
       rec_offline: "Speech recognition needs the phone to be online.", rec_error: "Speech recognition:", rec_cant_start: "Speech recognition could not start:",
       no_mic: "This browser has no microphone access.", need_https: "The microphone needs the secure (https) link from MapleSyrup's QR code.",
       mic_failed: "The microphone could not start:", mic_refused: "permission was refused. Allow the microphone for this page in the browser's settings, then try again.",
+      hearing_hebrew: "Hearing Hebrew now.",
     },
     he: {
       h_details: "פרטים", done: "סיום", voice_search: "חפש קול…", coach: "מדבר מעצמו בזמן שאתה משחק", coach_hint: "טיפים והערות בלי שתשאל: מפה חדשה, עליית רמה, EXP שלא זז. כבוי: עונה רק כששואלים (ועדיין מזהיר על HP או MP נמוכים).", ws_title: "סדנה", ws_on: "משכתב את עצמו על המחשב הזה כשמבקשים", ws_hint: "תגיד \"תשנה את עצמך: …\" או תכתוב כאן. סוכן קוד שמותקן על המחשב (Claude Code או Codex) משנה את הקוד, הוא נבנה ונבדק, והגרסה החדשה מותקנת בהפעלה הבאה של MapleSyrup. רק על המחשב הזה: שום דבר לא מתפרסם.", ws_coder: "סוכן", ws_ph: "מה לשנות…", ws_build: "בצע את השינוי", ws_undo: "בטל את השינוי האחרון", ws_working: "עובד: {s} ({t})", ws_idle: "פנוי", ws_queued: "{n} ממתינים", ws_none: "לא נמצא סוכן קוד על המחשב: התקן Claude Code או Codex CLI והפעל את MapleSyrup מחדש.", version: "גרסה", update_now: "עדכן עכשיו", auto_update: "מתעדכן לבד כשיוצאת גרסה חדשה", upd_ok: "מעודכן", upd_dl: "מוריד את {v}…", upd_ready: "{v} מוכנה: תותקן בהפעלה הבאה של MapleSyrup", upd_off: "כבוי", upd_blocked: "{v} יצאה, אבל לא עלתה בפעם הקודמת; מחכה לבאה", upd_failed: "הבדיקה נכשלה: {why}",
@@ -411,6 +417,7 @@
       rec_offline: "זיהוי הדיבור צריך שהטלפון יהיה מחובר לאינטרנט.", rec_error: "זיהוי דיבור:", rec_cant_start: "זיהוי הדיבור לא הצליח להתחיל:",
       no_mic: "לדפדפן הזה אין גישה למיקרופון.", need_https: "המיקרופון צריך את הקישור המאובטח (https) מקוד ה-QR של MapleSyrup.",
       mic_failed: "המיקרופון לא הצליח להתחיל:", mic_refused: "ההרשאה נדחתה. אשר את המיקרופון לדף הזה בהגדרות הדפדפן ונסה שוב.",
+      hearing_hebrew: "שומע עברית עכשיו.",
     },
     es: {
       h_details: "Detalles", done: "Listo", voice_search: "Buscar voces…", coach: "Habla por su cuenta mientras juegas", coach_hint: "Consejos y avisos sin que preguntes: un mapa nuevo, subir de nivel, EXP parada. Apagado: solo responde (y sigue avisando de HP o MP bajos).", version: "Versión", update_now: "Actualizar ahora", auto_update: "Se actualiza solo cuando sale una versión nueva", upd_ok: "al día", upd_dl: "descargando {v}…", upd_ready: "{v} está lista: se instala la próxima vez que inicie MapleSyrup", upd_off: "apagado", upd_blocked: "{v} salió, pero no arrancó la última vez; esperando la siguiente", upd_failed: "no se pudo comprobar: {why}",
@@ -948,7 +955,7 @@
     const b = $("bubble"), x = dog.anchor && dog.anchor[0];
     if (x) b.style.setProperty("--tail", Math.round(Math.max(22, Math.min(b.clientWidth - 22, x))) + "px");
   }, 200);
-  // A level up, a death: it joins in. A warning: it barks.
+  // A level up, a death: it joins in. A warning (dogAlert): it barks.
   function dogGame(status) {
     const gained = (status.progress || {}).levels_gained;
     if (prevGained != null && gained > prevGained) dog.react("levelup");
@@ -1237,10 +1244,12 @@
     log.prepend(li);
     $("convCard").hidden = false;
     while (log.children.length > 60) log.lastChild.remove();
-    // Its own lines: a warning (a low bar, a beating) and news (a death, a
-    // level-up) alike — the dog reacts, the bubble shows them.
+    // Its own lines, shown in the bubble: a warning (a low bar, a beating)
+    // the dog barks at, as the voice shouts it; news (a death, a level-up)
+    // it takes from the game itself (dogGame: a jump, playing dead), told
+    // at the usual pace — no bark for it.
     const own = m.kind === "warning" || m.kind === "alert";
-    if (live && own) dogAlert();
+    if (live && m.kind === "warning") dogAlert();
     if (m.kind === "reply" || own) {
       lastReply = m.text;
       if (!status.thinking) $("bubbleText").textContent = m.text;
@@ -1268,26 +1277,37 @@
   }
   function unlockAudio() {
     // iOS plays sound from a page only on an element a tap has started once.
-    if (player.dataset.unlocked) return;
+    // A clip refused before this tap (the hello) is tried again: by the
+    // silent clip's end, or now when the element is unlocked already.
+    blocked = false;
+    if (player.dataset.unlocked) { playNextClip(); return; }
     player.dataset.unlocked = "1";
     player.src = silentWav();
     player.play().catch(() => {});
   }
   // Replies come a sentence at a time: each is played after the one before.
   let nextClip = null;
+  // A clip the phone refused to play before a tap (the hello, made before
+  // the first tap): kept for the tap, and not fetched again every poll
+  // until then.
+  let blocked = false;
   function maybePlayClip(seq) {
     if (lastClip === null) { lastClip = seq; nextClip = seq + 1; return; }
     if (seq > lastClip) lastClip = seq;
     playNextClip();
   }
   function playNextClip() {
-    if (!player.paused || pausedFor || nextClip === null || nextClip > lastClip) return;
+    if (!player.paused || pausedFor || blocked || nextClip === null || nextClip > lastClip) return;
     // Far behind (the phone slept): only the latest.
     if (lastClip - nextClip > 3) nextClip = lastClip;
     const seq = nextClip++;
     playingClip = seq;
     player.src = "/api/clip?k=" + encodeURIComponent(KEY) + "&seq=" + seq;
-    player.play().catch(() => {});
+    player.play().catch((e) => {
+      // Refused for want of a tap (not a bad clip: the error listener
+      // moves on from those): this clip is still to play, after the tap.
+      if (e && e.name === "NotAllowedError" && nextClip === seq + 1) { nextClip = seq; blocked = true; }
+    });
   }
   // While the session is recorded, the PC is told when a line starts and
   // stops playing here (the microphone doesn't hear this phone's own voice).
@@ -1373,14 +1393,15 @@
   function startOver(state) {
     since = 0; first = true;
     lastClip = null; nextClip = null; lastCut = null;
-    hello();
+    // (The call after the hello: to the PC a page that says hello has no
+    // call until it says so, and the two must land in that order.)
+    hello().then(() => { if (liveCall.on) postJson("/api/mode", { live: true }).catch(() => {}); });
     if (state.voice_on && state.voice_on !== voiceOn) postJson("/api/voice", { on: voiceOn }).catch(() => {});
-    if (liveCall.on) postJson("/api/mode", { live: true }).catch(() => {});
   }
   // (With the live-call toggle: the PC leaves the hello to the call when
   // one is coming, and says it itself when not.)
   function hello() {
-    postJson("/api/hello", { agent: navigator.userAgent, lang: locale, live: liveWanted }).catch(() => {});
+    return postJson("/api/hello", { agent: navigator.userAgent, lang: locale, live: liveWanted }).catch(() => {});
   }
 
   // ---- buttons and settings ------------------------------------------------------
@@ -1562,6 +1583,10 @@
     liveWanted = liveBox.checked;
     remember("live", liveWanted ? "1" : "0");
     if (listening) restartListening();
+    // Flipped before Listen: the PC decided who says hello from the
+    // toggle as it was (the call about to open, or a clip of its own) —
+    // told again, it decides again.
+    else hello();
   });
   // How it talks: the PC keeps it, and a live call is retuned to it once
   // the PC reports it (render), the conversation kept.
@@ -1580,10 +1605,30 @@
     lang.append(option);
   }
   lang.value = locale;
+  // The recogniser's language when the player's own words say it (a call
+  // heard Hebrew), apart from the page's: the owner's phone is en-US and
+  // he speaks Hebrew, and an en-US recogniser makes word salad of that,
+  // a model call and a "didn't catch that" per sentence. Said once on the
+  // screen; kept for next time; the picker overrides it.
+  let recLang = recall("recLang") || "";
+  function recognitionLanguage() { return recLang || lang.value; }
+  function hearingLanguage(text) {
+    const hebrew = (text.match(/[\u05D0-\u05EA]/g) || []).length;
+    const latin = (text.match(/[A-Za-z]/g) || []).length;
+    if (hebrew < 4 || hebrew <= latin || recLang === "he-IL" || lang.value === "he-IL") return;
+    recLang = "he-IL";
+    remember("recLang", recLang);
+    note(t("hearing_hebrew"));
+    addMessage({ kind: "info", text: t("hearing_hebrew"), t: nowT() }, false);
+    if (rec && listening && !liveCall.on && !liveCall.starting) { stopRecognition(); startRecognition(); }
+  }
   lang.addEventListener("change", () => {
     setTimeout(() => { dog.bark = t("woof"); }, 0);
     locale = lang.value;
     remember("lang", locale);
+    // (Picked by hand: the recogniser follows the picker again.)
+    recLang = "";
+    remember("recLang", "");
     applyLanguage(locale);
     $("listen").textContent = listening ? t("stop") : t("start");
     $("micStatus").textContent = listening ? t("mic_listening") : t("mic_idle");
@@ -1916,7 +1961,7 @@
     }
     wantRec = true;
     rec = new Recognition();
-    rec.lang = lang.value;
+    rec.lang = recognitionLanguage();
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
@@ -2153,6 +2198,7 @@
     text = (text || "").trim();
     if (!text) return;
     if (who === "player" && isHintEcho(text)) return;
+    if (who === "player") hearingLanguage(text);
     liveCall.recent.push((who === "player" ? "Player: " : "MapleSyrup: ") + text);
     if (liveCall.recent.length > 30) liveCall.recent.splice(0, liveCall.recent.length - 30);
     addMessage({ kind: who === "player" ? "heard" : "reply", text, t: nowT() }, false);
@@ -2368,8 +2414,22 @@
   }
 
   $("listen").addEventListener("click", () => (listening ? stop() : start()));
+  // The phone pocketed, its screen locked, another app in front: the page
+  // is suspended and the call dies with it, with no word to the PC — which
+  // would hand every line of the night to a call nobody is on. The PC is
+  // told the call is off as the page goes (a beacon: a fetch may not run by
+  // then; best effort — the PC also notices on its own when the phone
+  // stops asking), and that it is on again when the page comes back with
+  // the call alive. A call that died meanwhile reconnects and says so.
+  function callHidden() {
+    if (!liveCall.on || !navigator.sendBeacon) return;
+    try { navigator.sendBeacon("/api/mode?k=" + encodeURIComponent(KEY), JSON.stringify({ live: false })); } catch (e) {}
+  }
+  window.addEventListener("pagehide", callHidden);
   document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") { callHidden(); return; }
     if (document.visibilityState !== "visible" || !listening) return;
+    if (liveCall.on) postJson("/api/mode", { live: true }).catch(() => {});
     keepAwake();
     if (audio && audio.ctx.state !== "running") audio.ctx.resume().catch(() => {});
     if (wantRec && rec && !held) { try { rec.start(); } catch (e) {} }

@@ -67,16 +67,17 @@ screen with rulers on its edges (0 to 1000 across and down, for pointing at thin
 at the same screen; never ask them to read the screen to you (look_closer reads small print). If what they say \
 clearly disagrees with what you see, say what you see.
 - Now and then a message comes from MapleSyrup's game watcher, never from the player: a line it wants said (low \
-HP or MP, a death, a level-up, something they asked you to watch for, a tip, a correction from a look-up), with \
-its reading of HP and MP at that moment and the game as read right then. That reading is newer than any picture \
-you have. Pass the line on in one short clause, in the language you're speaking with them and in your attitude: \
+HP or MP, a death, a level-up, something they asked you to watch for, a tip, a correction from a look-up) and \
+the game as read right then; a warning about HP or MP comes with its reading of them at that moment. That \
+reading is newer than any picture you have. Pass the line on in one short clause, in the language you're \
+speaking with them and in your attitude: \
 when the line is about HP or MP, say the number (\"HP's at 11, pot now\"), not the watcher's words; otherwise say \
 the thing, in your words, short (\"Rebuff.\" is \"rebuff\", not \"HP's at 96, rebuff\"), and leave the numbers \
 out. Never both. Never restate the whole line, never argue with it, never answer it with what your side shows. \
 A line that comes late (\"N s ago\") is still said, as late news (\"you died a moment ago\"). If the player was \
 talking, their words come first: answer them, then the watcher in a few words.
 - Presence: greet only when your watcher says the phone just connected, never on your own; never ask whether \
-they're still there — your watcher does, when they go quiet. When the session facts say they had been quiet for \
+they're still there — your watcher does, when the game idles. When the session facts say they had been quiet for \
 a long while until just now, one short \"welcome back\" is fine, once. Those facts (how long, deaths, level-ups, \
 when they last spoke, the lowest HP) are for you, not for them: never recite them; one comes up only when it \
 changes what you'd say.
@@ -410,8 +411,13 @@ mod tests {
         assert!(text.contains("look_it_up never makes them wait"));
         // The watcher's line: the number when it is about HP or MP, the
         // thing itself otherwise (never both), never argued with; late is
-        // still said.
+        // still said. Only a warning comes with the reading (a death,
+        // "Rebuff." come without).
         assert!(text.contains("newer than any picture you have"));
+        assert!(
+            text.contains("a warning about HP or MP comes with its reading of them at that moment")
+        );
+        assert!(!text.contains("with its reading of HP and MP at that moment and the game"));
         assert!(text.contains("when the line is about HP or MP, say the number"));
         assert!(text.contains("otherwise say the thing, in your words, short"));
         assert!(text.contains("Never both."));
@@ -466,7 +472,7 @@ mod tests {
                 "greet only when your watcher says the phone just connected, never on your own"
             ));
             assert!(text.contains(
-                "never ask whether they're still there — your watcher does, when they go quiet"
+                "never ask whether they're still there — your watcher does, when the game idles"
             ));
             assert!(text.contains(
                 "they had been quiet for a long while until just now, one short \"welcome back\" \

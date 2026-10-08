@@ -1282,11 +1282,6 @@ struct Talk<'a> {
     translations: &'a mut std::collections::HashMap<(String, String), String>,
 }
 
-/// What it says when everything it had to say, it said lately (the player
-/// asked the same thing twice; the model is going round in circles): a
-/// word rather than nothing, so they know they were heard.
-const SAME_AS_BEFORE: &str = "Same as before.";
-
 /// Answer the player. The reply is streamed and cut into sentences; they
 /// are turned into speech (on a second thread) as soon as they are complete:
 /// the first sentence alone, so it is heard soon, then whatever was written
@@ -1621,14 +1616,16 @@ words (\"probably\" if you're not sure)."
                 if text.is_empty() && dropped > 0 {
                     // Nothing new in it: not the same again, but not
                     // silence either — they asked, and hear that they were
-                    // heard. The conversation keeps none of what was
-                    // dropped, so the model has no loop of its own to
-                    // follow.
+                    // heard (a card in its attitude: "Same as before." the
+                    // third time is a machine's). The conversation keeps
+                    // none of what was dropped, so the model has no loop
+                    // of its own to follow.
+                    let card = brain.same_as_before();
                     let line = match language {
                         Some(l) if !language::is_english(l) => {
-                            translate(openai, SAME_AS_BEFORE, l, stop, translations)
+                            translate(openai, card, l, stop, translations)
                         }
-                        _ => SAME_AS_BEFORE.to_string(),
+                        _ => card.to_string(),
                     };
                     if !stop.stopped() {
                         brain.said(&line);

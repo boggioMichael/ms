@@ -1410,6 +1410,27 @@ mod tests {
         Hub::new("k1".into(), None, VoiceOn::Pc)
     }
 
+    #[test]
+    fn the_pages_last_word_as_it_goes_reaches_the_inbox() {
+        // The page says its call is off as it is suspended (the screen
+        // locks), with a beacon: the key in the query (a beacon sets no
+        // header), the JSON as a plain-text body.
+        let hub = hub();
+        let mut beacon = request("POST", "/api/mode?k=k1", r#"{"live":false}"#);
+        beacon
+            .headers
+            .push(("Content-Type".into(), "text/plain;charset=UTF-8".into()));
+        assert_eq!(hub.handle(&beacon).status, 200);
+        assert_eq!(hub.take_inbox(), vec![Inbound::Live(false)]);
+        // Without the key it is nobody's.
+        let mut stray = request("POST", "/api/mode", r#"{"live":false}"#);
+        stray
+            .headers
+            .push(("Content-Type".into(), "text/plain;charset=UTF-8".into()));
+        assert_eq!(hub.handle(&stray).status, 403);
+        assert!(hub.take_inbox().is_empty());
+    }
+
     fn body(response: &Response) -> Value {
         serde_json::from_slice(&response.body).unwrap()
     }

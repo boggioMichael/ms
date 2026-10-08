@@ -1,23 +1,28 @@
 """The phone page against a stand-in PC, in a headless browser: no console
-errors, the main screen shows only the essentials, the gear opens Settings,
-the voice search narrows the list, the game line opens Details, Hebrew is
-right to left; then the turn-taking, with a stand-in speech recognizer, a
-stand-in call and a microphone fed from a file: the words so far never
-land after the sentence, a sentence cut off by a clip is still sent, a
-loud sound over a clip pauses it until the PC's word, a PC started again
-is greeted again and its clips play, a page reloaded mid-visit is not
-greeted twice, and on a call MapleSyrup's own lines
-are said by the call, never by the phone's own voice: handed over with the
-reading behind them and the game as read now, never while the call is
-answering (one turn asked for at a time), a warning dropped once stale
-(and the PC told), a death or a level-up said however late, a warning's
-row shown like news's, and a change of attitude retunes the call in
-place. Needs `pip install playwright &&
+errors, the main screen shows only the essentials (the language picker
+among them), the gear opens Settings, the voice search narrows the list,
+the live-call toggle flipped before Listen says hello again, the game line
+opens Details, Hebrew is right to left; then the turn-taking, with a
+stand-in speech recognizer, a stand-in call and a microphone fed from a
+file: the words so far never land after the sentence, a sentence cut off
+by a clip is still sent, a loud sound over a clip pauses it until the PC's
+word, a PC started again is greeted again and its clips play, a page
+reloaded mid-visit is not greeted twice, and on a call MapleSyrup's own
+lines are said by the call, never by the phone's own voice: handed over
+with the reading behind them and the game as read now, never while the
+call is answering (one turn asked for at a time), a warning dropped once
+stale (and the PC told), a death or a level-up said however late, a
+warning's row red and news's amber (the dog barks at a warning only), a
+change of attitude retunes the call in place, Hebrew heard on the call
+sets the recogniser's language, the PC is told the call is off as the
+page is hidden or leaves and on again as it comes back; and, under the
+browser's own autoplay policy (a phone's: no clip before a tap), the hello
+clip made before the tap is kept for it. Needs `pip install playwright &&
 playwright install chromium`; run from the repository root: `python3
 tools/phone_ui_check.py` (or with some of `ui`, `recognition`, `live`,
-`loudness` to run those alone; PHONE_PAGE=path checks another copy of the
-page, to see a check fail against the page as it was). Screenshots land in
-`target/phone-ui/`."""
+`loudness`, `hello` to run those alone; PHONE_PAGE=path checks another
+copy of the page, to see a check fail against the page as it was).
+Screenshots land in `target/phone-ui/`."""
 import json, os, re, struct, sys, threading, time, http.server, socketserver
 from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import sync_playwright
@@ -204,7 +209,10 @@ def ui_checks(browser):
     assert page.is_hidden("#sheet"), "the sheet starts hidden"
     assert page.is_visible("#listen") and page.is_visible("#strip") and page.is_visible("#muteBtn")
     assert not page.is_visible("#game"), "the game card is in Details"
-    assert not page.is_visible("#recBtn") and not page.is_visible("#lang")
+    assert not page.is_visible("#recBtn")
+    # The language is on the main screen (the recogniser's language: a
+    # Hebrew speaker on an en-US phone must see where to say so).
+    assert page.is_visible("#lang"), "the language picker belongs on the main screen"
     strip = page.inner_text("#stripText")
     assert "Lv 152" in strip and "HP 100%" in strip and "EXP 19%" in strip, strip
     page.screenshot(path=os.path.join(SHOTS, "phone-main.png"), full_page=True)
@@ -233,6 +241,17 @@ def ui_checks(browser):
     # Picking a voice of its own leaves the live call on (it speaks in its
     # own voice; the picked one is for the PC's replies and alerts).
     assert page.is_checked("#liveCall")
+    # The live-call toggle flipped before Listen: the PC decided who says
+    # hello from the toggle as it was (the call about to open, or a clip
+    # of its own); the page says hello again with the new value, so that
+    # it decides again — else the hello left to a call turned off is never
+    # heard.
+    t_flip = time.time()
+    page.uncheck("#liveCall")
+    wait_for(lambda: any((r["body"] or {}).get("live") is False for r in requests_since(t_flip, "/api/hello")), 3, "the toggle flipped before Listen did not say hello again")
+    t_flip = time.time()
+    page.check("#liveCall")
+    wait_for(lambda: any((r["body"] or {}).get("live") is True for r in requests_since(t_flip, "/api/hello")), 3, "the toggle flipped back did not say hello again")
     page.click("#sheetDone")
     page.wait_for_timeout(100)
     assert page.is_hidden("#sheet")
@@ -249,11 +268,14 @@ def ui_checks(browser):
     assert page.is_disabled("#workshopBuild"), "no second job while one runs"
     page.locator("#workshopCard").screenshot(path=os.path.join(SHOTS, "phone-workshop-card.png"))
     page.screenshot(path=os.path.join(SHOTS, "phone-details.png"), full_page=True)
-    # Hebrew: right to left, the new words translated.
-    page.click("#tabSettings")
+    # Hebrew (picked on the main screen): right to left, the new words
+    # translated.
+    page.click("#sheetDone")
     page.select_option("#lang", "he-IL")
     page.wait_for_timeout(300)
     assert page.get_attribute("html", "dir") == "rtl"
+    page.click("#gear")
+    page.wait_for_timeout(200)
     assert page.inner_text("#tabDetails") == "פרטים" and page.inner_text("#sheetDone") == "סיום"
     assert page.get_attribute("#voiceSearch", "placeholder") == "חפש קול…"
     page.screenshot(path=os.path.join(SHOTS, "phone-settings-he.png"), full_page=True)
@@ -367,6 +389,18 @@ def loudness_checks(p):
     page.close()
     browser.close()
 
+# What the dog was told to react to, in order.
+DOG_SPY = """
+window.__reacts = [];
+const hookDog = setInterval(() => {
+  const d = window.msDog;
+  if (!d) return;
+  clearInterval(hookDog);
+  const react = d.react;
+  d.react = (kind, x) => { window.__reacts.push(kind); return react.call(d, kind, x); };
+}, 5);
+"""
+
 def live_checks(browser):
     STATUS["live"] = True
     STATUS["attitude"] = "savage"
@@ -375,6 +409,7 @@ def live_checks(browser):
     page = browser.new_page(viewport={"width": 390, "height": 844})
     watch(page)
     page.add_init_script(FAKES)
+    page.add_init_script(DOG_SPY)
     page.goto(f"http://127.0.0.1:{port}/?k=test")
     page.wait_for_timeout(800)
     t0 = time.time()
@@ -409,6 +444,8 @@ def live_checks(browser):
     assert "not the player" in text and "HP 11% (read 0 s ago)" in text, text
     assert "The game right now" in text and "Character: level 152." in text, text
     assert len(sent("response.create")) == 3, sent("response.create")
+    # The dog barks at a warning (as the voice shouts it).
+    assert page.evaluate("window.__reacts") == ["alert"], page.evaluate("window.__reacts")
     # A response under way (the call answering the player): the next line
     # waits, and no second turn is asked for until the response is done.
     event({"type": "response.created"})
@@ -435,13 +472,21 @@ def live_checks(browser):
     assert "melting" not in text, text
     assert re.search(r"not the player, \d+ s ago: Level 153", text), text
     assert len(sent("response.create")) == 5, sent("response.create")
-    # A warning's row (a beating, a low bar) is shown like news's row (a
-    # level-up): MapleSyrup's own lines, in its colour.
+    # News is told, not barked: the dog takes a level-up and a death from
+    # the game itself; the three warnings so far were three barks.
+    assert page.evaluate("window.__reacts") == ["alert"] * 3, page.evaluate("window.__reacts")
+    # A warning's row (a beating, a low bar) is red, news's row (a level-up)
+    # amber: the eye tells a shout from news as the ear does.
     rows = page.evaluate("""() => {
       const look = (sel) => { const el = document.querySelector(sel); return el && getComputedStyle(el).borderColor + " " + getComputedStyle(el).color; };
       return { warning: look("#log li.warning"), alert: look("#log li.alert") };
     }""")
-    assert rows["warning"] and rows["warning"] == rows["alert"], rows
+    assert rows["warning"] and rows["alert"] and rows["warning"] != rows["alert"], rows
+    def rgb(text): return [int(x) for x in re.search(r"rgb\((\d+), (\d+), (\d+)\)\s*$", text).groups()]
+    r, g, b = rgb(rows["warning"])
+    assert r > g and g - b < 30, ("a warning's text must be red", rows)
+    r, g, b = rgb(rows["alert"])
+    assert r > g > b and g - b > 30, ("news's text must be amber", rows)
     wait_for(lambda: any(r["body"] == {"what": "dropped", "text": "Move, you're melting."} for r in requests_since(t_late, "/api/turn")), 2, "the PC was not told of the line that was not said")
     assert not any((r["body"] or {}).get("text") == "Level 153! Nice." for r in requests_since(t_late, "/api/turn")), "the level-up was reported as not said"
     event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
@@ -456,16 +501,61 @@ def live_checks(browser):
     assert requests_since(t1, "/api/instructions") and not requests_since(t1, "/api/live"), "the call was started over"
     page.wait_for_timeout(600)
     assert len(sent("session.update")) == 1, "retuned more than once"
-    # The PC started again while the call is on: it hears of the call.
+    # The player speaks Hebrew on the call (the phone is set to en-US):
+    # the recogniser clip mode uses follows them, said once on the screen;
+    # a second Hebrew sentence says nothing more.
+    event({"type": "conversation.item.input_audio_transcription.completed", "transcript": "מה הרמה שלי עכשיו"})
+    page.wait_for_timeout(200)
+    assert page.inner_text("#note") == "Hearing Hebrew now.", page.inner_text("#note")
+    event({"type": "conversation.item.input_audio_transcription.completed", "transcript": "ואיפה אני"})
+    page.wait_for_timeout(200)
+    assert page.evaluate("""[...document.querySelectorAll("#log li.info")].filter((li) => li.textContent === "Hearing Hebrew now.").length""") == 1
+    t_clip = time.time()
+    page.click("#gear"); page.uncheck("#liveCall"); page.click("#sheetDone")
+    wait_for(lambda: any(r["body"] == {"live": False} for r in requests_since(t_clip, "/api/mode")), 4, "the call did not give way to clip mode")
+    wait_for(lambda: page.evaluate("!!window.__rec && window.__rec.running"), 5, "recognition did not start in clip mode")
+    assert page.evaluate("window.__rec.lang") == "he-IL", page.evaluate("window.__rec.lang")
+    # Picked by hand, the picker wins again.
+    page.select_option("#lang", "en-US")
+    wait_for(lambda: page.evaluate("!!window.__rec && window.__rec.running && window.__rec.lang === 'en-US'"), 5, "the picker did not take the recogniser back")
+    # Back on a call for the rest.
+    t_back = time.time()
+    page.click("#gear"); page.check("#liveCall"); page.click("#sheetDone")
+    wait_for(lambda: any(r["body"] == {"live": True} for r in requests_since(t_back, "/api/mode")), 5, "the call did not reopen")
+    # The phone pocketed (the page hidden; its call dies with it as often
+    # as not): the PC is told the call is off as the page goes, so its
+    # lines do not go to a call nobody is on; back in front with the call
+    # still alive, the PC is told it is on again.
+    def visibility(state):
+        page.evaluate("""(state) => {
+          Object.defineProperty(document, "visibilityState", { get: () => state, configurable: true });
+          document.dispatchEvent(new Event("visibilitychange"));
+        }""", state)
+    t_hide = time.time()
+    visibility("hidden")
+    wait_for(lambda: any(r["body"] == {"live": False} for r in requests_since(t_hide, "/api/mode")), 3, "the hidden page did not tell the PC its call is off")
+    t_show = time.time()
+    visibility("visible")
+    wait_for(lambda: any(r["body"] == {"live": True} for r in requests_since(t_show, "/api/mode")), 3, "the page back in front did not tell the PC its call is on")
+    # The PC started again while the call is on: it hears of the call —
+    # after the hello (to the PC a page that says hello has no call until
+    # it says so).
     t2 = time.time()
     with LOCK: STATE.update({"boot": "b2", "clip": 0, "messages": []})
     wait_for(lambda: any(r["body"] == {"live": True} for r in requests_since(t2, "/api/mode")), 4, "the restarted PC was not told of the call")
     hellos = requests_since(t2, "/api/hello")
     assert hellos, "no hello to the restarted PC"
+    modes = [r for r in requests_since(t2, "/api/mode") if r["body"] == {"live": True}]
+    assert modes[0]["t"] >= hellos[0]["t"], "the call was reported before the hello"
     # The hello carries the live-call toggle: the PC leaves the hello to
     # the call when one is coming, and says it itself when not.
     assert hellos[0]["body"].get("live") is True, hellos[0]["body"]
     STATUS["attitude"] = "savage"
+    # The page leaving (closed, navigated away): its last word is that the
+    # call is off — a beacon, since nothing else runs by then.
+    t_gone = time.time()
+    page.goto("about:blank")
+    wait_for(lambda: any(r["body"] == {"live": False} for r in requests_since(t_gone, "/api/mode")), 3, "the page leaving did not tell the PC its call is off")
     page.close()
     # A page reloaded mid-visit: the PC says no second hello, and the call
     # it opens says none either (status.call_greets is false).
@@ -486,13 +576,69 @@ def live_checks(browser):
     STATUS["call_greets"] = True
     page.close()
 
+# What the phone's voice element played, in order, from its `playing`
+# events: the silent clip a tap unlocks sound with ("unlock"), and the
+# PC's clips by number ("seq 1").
+PLAYED = """
+window.__played = [];
+const hook = setInterval(() => {
+  const v = window.msVoice;
+  if (!v) return;
+  clearInterval(hook);
+  v.addEventListener("playing", () => {
+    const s = (v.currentSrc || "").replace(/.*seq=/, "seq ").replace(/^blob:.*/, "unlock");
+    if (window.__played[window.__played.length - 1] !== s) window.__played.push(s);
+  });
+}, 5);
+"""
+
+def hello_checks(p):
+    """A phone will not play a clip before a tap (the browser's own autoplay
+    policy, as on iOS and Android; every other scenario here allows it). In
+    clip mode the PC's hello is made at page load, a second or so before
+    the player taps Listen: the clip is kept for the tap — not lost, and not
+    fetched again every poll meanwhile — and plays after the tap's silent
+    unlocking clip, before the next clip; whether the tap comes three
+    seconds or a moment after the clip."""
+    STATUS["live"] = False
+    browser = p.chromium.launch(args=["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
+    for tap_after_ms in (3000, 300):
+        reset_pc()
+        with LOCK: CLIP_SECONDS["default"] = 1
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        watch(page)
+        page.add_init_script(FAKES)
+        page.add_init_script(PLAYED)
+        t0 = time.time()
+        page.goto(f"http://127.0.0.1:{port}/?k=test")
+        wait_for(lambda: requests_since(t0, "/api/hello"), 5, "no hello")
+        # The PC's hello clip is ready about a second after the hello.
+        page.wait_for_timeout(1000)
+        with LOCK: STATE["clip"] = 1
+        page.wait_for_timeout(tap_after_ms)
+        fetched = [r["query"].get("seq") for r in requests_since(t0, "/api/clip")]
+        assert fetched == ["1"], f"the hello clip was fetched {len(fetched)} times before the tap: {fetched}"
+        assert page.evaluate("window.__played") == [], "a clip played before any tap"
+        page.click("#listen")
+        # (The tap's silent clip, then the hello, a second long.)
+        page.wait_for_timeout(2500)
+        # The next clip, after the tap, plays as any would.
+        with LOCK: STATE["clip"] = 2
+        wait_for(lambda: "seq 2" in page.evaluate("window.__played"), 5, "the clip after the tap did not play")
+        played = page.evaluate("window.__played")
+        assert played == ["unlock", "seq 1", "seq 2"], f"tap {tap_after_ms} ms after the hello clip: played {played}"
+        fetched = [r["query"].get("seq") for r in requests_since(t0, "/api/clip")]
+        assert fetched.count("1") <= 2 and fetched.count("2") == 1, fetched
+        page.close()
+    browser.close()
+
 def browser_args(mic_file):
     """A browser with a microphone fed from `mic_file`, and clips allowed to
     play without a tap."""
     return ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
             f"--use-file-for-fake-audio-capture={mic_file}", "--autoplay-policy=no-user-gesture-required"]
 
-chosen = set(sys.argv[1:]) or {"ui", "recognition", "live", "loudness"}
+chosen = set(sys.argv[1:]) or {"ui", "recognition", "live", "loudness", "hello"}
 with sync_playwright() as p:
     quiet = os.path.join(SHOTS, "mic-quiet.wav")
     with open(quiet, "wb") as f:
@@ -503,6 +649,7 @@ with sync_playwright() as p:
     if "live" in chosen: live_checks(browser)
     browser.close()
     if "loudness" in chosen: loudness_checks(p)
+    if "hello" in chosen: hello_checks(p)
 srv.shutdown()
 if errors:
     print("console errors:", *errors, sep="\n  "); sys.exit(1)

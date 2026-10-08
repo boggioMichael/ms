@@ -702,11 +702,22 @@ The quest marker is four maps to the left. Go!"
             Err(e) => panic!("{e}: {reply:?} {spoken:?}"),
         }
     }
-    assert_eq!(
-        reply.as_deref(),
-        Some("(gpt-6.1-sol) you said: Same as before.")
+    // (The word is a card in its attitude — blunt, the usual.)
+    let reply = reply.unwrap();
+    let card = reply
+        .strip_prefix("(gpt-6.1-sol) you said: ")
+        .unwrap_or_else(|| panic!("not translated: {reply}"));
+    assert!(
+        [
+            "Nothing's changed.",
+            "Same as before.",
+            "Still the same. Keep up.",
+            "Already told you.",
+        ]
+        .contains(&card),
+        "{reply}"
     );
-    assert_eq!(spoken, reply);
+    assert_eq!(spoken.as_deref(), Some(reply.as_str()));
 }
 
 #[test]
@@ -1997,19 +2008,15 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
     // The same lines for the next question are not said again — a word
     // says so, rather than silence; asked to hear it again, they are (as
     // they came, nothing left out).
-    let worker = ms::ai::spawn_hybrid(
-        OpenAi::with_models(key, &base, "cedar", vec!["grok-loop".into()]),
-        None,
-        Brain::new(),
-        None,
-    );
-    let once = "Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
-    let twice = format!("{once} {once}");
-    for (heard, expect) in [
-        ("where to", once),
-        ("where to now", "Same as before."),
-        ("say it again", twice.as_str()),
-    ] {
+    let looping = |brain: Brain| {
+        ms::ai::spawn_hybrid(
+            OpenAi::with_models(key, &base, "cedar", vec!["grok-loop".into()]),
+            None,
+            brain,
+            None,
+        )
+    };
+    let reply = |worker: &ms::ai::Worker, heard: &str| {
         worker.send(Job::Converse {
             heard: heard.into(),
             snapshot: String::new(),
@@ -2017,7 +2024,7 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
             eyes: None,
             language: None,
         });
-        let got = loop {
+        loop {
             match worker.done.recv_timeout(Duration::from_secs(30)) {
                 Ok(Done::Reply { text, .. }) => break text,
                 Ok(Done::Silent { heard, .. }) => panic!("silent: {heard}"),
@@ -2025,9 +2032,47 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
                 Ok(_) => {}
                 Err(e) => panic!("{e}"),
             }
-        };
-        assert_eq!(got, expect, "{heard}");
+        }
+    };
+    let worker = looping(Brain::new());
+    let once = "Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
+    let twice = format!("{once} {once}");
+    assert_eq!(reply(&worker, "where to"), once);
+    // The word is a card in its attitude (blunt, the usual), dealt like
+    // the companion's lines: asked three times over, three different
+    // ones, not "Same as before." three times.
+    let blunt = [
+        "Nothing's changed.",
+        "Same as before.",
+        "Still the same. Keep up.",
+        "Already told you.",
+    ];
+    let cards: Vec<String> = ["where to now", "and where to", "where then"]
+        .iter()
+        .map(|heard| reply(&worker, heard))
+        .collect();
+    for card in &cards {
+        assert!(blunt.contains(&card.as_str()), "{card}");
     }
+    assert_eq!(
+        cards.iter().collect::<std::collections::HashSet<_>>().len(),
+        3,
+        "{cards:?}"
+    );
+    assert_eq!(reply(&worker, "say it again"), twice);
+    // In another attitude, a card in that voice.
+    let mut brain = Brain::new();
+    brain.attitude = ms::companion::Attitude::Savage;
+    let worker = looping(brain);
+    assert_eq!(reply(&worker, "where to"), once);
+    let savage = [
+        "I said. Twice.",
+        "Nothing's changed, genius.",
+        "Same answer. Still.",
+        "Ask a third time, I dare you.",
+    ];
+    let card = reply(&worker, "where to now");
+    assert!(savage.contains(&card.as_str()), "{card}");
 }
 
 #[test]
