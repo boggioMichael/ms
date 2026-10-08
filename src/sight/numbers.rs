@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use syrup::geometry::{NormRect, Rect};
-use syrup::glyphs::{GlyphOptions, GlyphSet};
+use syrup::glyphs::{GlyphOptions, GlyphSet, LearnError};
 
 use crate::vision::hud_text::{parse_current_max, parse_percent};
 
@@ -170,7 +170,13 @@ pub struct Numbers {
     /// The line each field reads from, from the examples that worked.
     lines: HashMap<Field, Line>,
     state: HashMap<Field, FieldState>,
+    /// Crops of lines that could not be learned, saved under
+    /// `debug/` for a look: how many so far this run.
+    failures_kept: u32,
 }
+
+/// How many lines that could not be learned are kept as pictures per run.
+const FAILURES_KEPT: u32 = 6;
 
 /// How surely a glyph must match a character the font knows. The game
 /// draws its HUD font pixel for pixel the same every frame, so a known
@@ -317,6 +323,7 @@ impl Numbers {
             samples: Vec::new(),
             lines: HashMap::new(),
             state: HashMap::new(),
+            failures_kept: 0,
         };
         for sample in saved.samples {
             numbers.relearn(sample);
@@ -503,7 +510,14 @@ impl Numbers {
         // 8,954,288. The line decides, among the ways the value could be
         // printed; the glyph reader keeps only what reads back.
         let labels = spellings(field, &label);
-        let mut why = String::new();
+        // Of all the ways tried (three lines, each spelling), the failure
+        // reported is the most telling one: a line that split into as many
+        // glyphs as a spelling has characters and still would not learn
+        // says more than a spelling whose count did not fit — the last
+        // tried used to be reported, and read "the label has 16 characters
+        // but the region splits into 18" for a line the first spelling had
+        // matched glyph for glyph.
+        let mut why: Option<(u8, String)> = None;
         for line in lines {
             let region = line.region(band, fw, fh);
             if region.w < 8 || region.h < 6 {
@@ -531,11 +545,67 @@ impl Numbers {
                             self.glyphs()
                         ));
                     }
-                    Err(e) => why = e.to_string(),
+                    Err(e) => {
+                        let rank = match &e {
+                            LearnError::DoesNotReadBack { .. } => 3,
+                            LearnError::Inconsistent { .. } => 2,
+                            LearnError::GlyphCountMismatch { .. } => 1,
+                            LearnError::NoText => 0,
+                        };
+                        if why.as_ref().is_none_or(|(r, _)| rank > *r) {
+                            let said = if *spelling == label {
+                                String::new()
+                            } else {
+                                format!(" (as \"{spelling}\")")
+                            };
+                            why = Some((rank, format!("{e}{said}, {line:?} the bar")));
+                        }
+                    }
                 }
             }
         }
-        Err(format!("\"{label}\" could not be learned: {why}"))
+        let why = why
+            .map(|(_, w)| w)
+            .unwrap_or_else(|| "no line to learn from".into());
+        let kept = self.keep_failure(frame, field, band, &label);
+        Err(format!("\"{label}\" could not be learned: {why}{kept}"))
+    }
+
+    /// A line that could not be learned, as a picture under `debug/` with
+    /// the label in its name, a few per run: what the labeller said and
+    /// what the pixels showed can then be compared.
+    fn keep_failure(
+        &mut self,
+        frame: &RgbaImage,
+        field: Field,
+        band: &NormRect,
+        label: &str,
+    ) -> String {
+        if self.failures_kept >= FAILURES_KEPT {
+            return String::new();
+        }
+        let (fw, fh) = frame.dimensions();
+        let region = Line::Around.region(band, fw, fh);
+        if region.w < 8 || region.h < 6 {
+            return String::new();
+        }
+        self.failures_kept += 1;
+        let safe: String = label
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let name = format!(
+            "debug/unlearned-{}-{}-{safe}.png",
+            field.label().to_lowercase(),
+            self.failures_kept
+        );
+        let crop =
+            image::imageops::crop_imm(frame, region.x, region.y, region.w, region.h).to_image();
+        let _ = std::fs::create_dir_all(self.dir.join("debug"));
+        match crop.save(self.dir.join(&name)) {
+            Ok(()) => format!("; the line is kept as learned/{name}"),
+            Err(_) => String::new(),
+        }
     }
 
     /// Keep an example on disk; with too many for a field, the oldest goes
@@ -678,6 +748,33 @@ pub(crate) mod tests {
         let dir = std::env::temp_dir().join(format!("ms-numbers-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn a_line_that_will_not_learn_says_the_most_telling_reason_and_keeps_its_picture() {
+        let dir = temp_dir("unlearned");
+        let mut numbers = Numbers::load(&dir);
+        let now = Instant::now();
+        let (frame, bands) = hud((240, 400), (1291, 1351), 37.51);
+        // The line shows HP[240/400]; the labeller says HP[240/440]. As
+        // given, the glyph count fits and the two 4s do not look alike;
+        // the other spellings do not even fit the count. The reason
+        // reported is the first, not the last tried.
+        let why = numbers
+            .learn(&frame, Field::Hp, &bands[0], "HP [240/440]", "model", now)
+            .unwrap_err();
+        assert!(why.contains("look nothing alike"), "{why}");
+        assert!(!why.contains("splits into"), "{why}");
+        // The line is kept as a picture, named after the label.
+        let kept = dir.join("debug/unlearned-hp-1-HP_240_440_.png");
+        assert!(why.contains("unlearned-hp-1-HP_240_440_.png"), "{why}");
+        assert!(kept.exists());
+        // A label no spelling of which fits: the count mismatch it is.
+        let why = numbers
+            .learn(&frame, Field::Hp, &bands[0], "2400/400", "model", now)
+            .unwrap_err();
+        assert!(why.contains("splits into"), "{why}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
