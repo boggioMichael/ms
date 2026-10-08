@@ -26,20 +26,15 @@ pub use commands::{Command, Heard};
 pub use exp::{ExpTracker, spoken_duration};
 pub use observation::{GameView, Gauge, Observation};
 
-/// Thresholds and pacing.
+/// Thresholds and pacing. (How often a low bar is warned of is no
+/// setting: once per fight, again only unanswered or lower — see
+/// [`Low`].)
 #[derive(Debug, Clone)]
 pub struct Settings {
-    /// Warn when HP falls below this percent.
+    /// Warn when HP falls below this percent (0: never).
     pub hp_low: f32,
-    /// (No longer read: the warning is said once per fight, again only
-    /// unanswered or lower — see [`Low`]. Kept at `hp_low + 15` for the
-    /// callers that set it.)
-    pub hp_rearm: f32,
+    /// Warn when MP falls below this percent (0: never).
     pub mp_low: f32,
-    pub mp_rearm: f32,
-    /// (No longer read: an unanswered warning comes again after
-    /// [`FALL_COOLDOWNS`], as the beating does.)
-    pub warning_cooldown: f64,
     /// How long the game must be gone before saying so, in seconds.
     pub lost_after: f64,
     /// After the wake word alone, how long the next sentence counts as
@@ -56,10 +51,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             hp_low: 30.0,
-            hp_rearm: 45.0,
             mp_low: 15.0,
-            mp_rearm: 30.0,
-            warning_cooldown: 20.0,
             lost_after: 5.0,
             listen_for: 8.0,
             always_listen: true,
@@ -88,6 +80,16 @@ pub enum Kind {
     Info,
     /// What the phone heard the player say, shown for reference.
     Heard,
+}
+
+impl Kind {
+    /// Whether a line of this kind is still true after the player talks
+    /// over it — a warning, news — and so is not called off with the rest:
+    /// the worker keeps its job, the main loop keeps its clip and lets its
+    /// voice play out. Chat and a note are not.
+    pub fn kept(self) -> bool {
+        matches!(self, Kind::Warning | Kind::Alert)
+    }
 }
 
 /// One line for the player.
@@ -719,7 +721,9 @@ pub mod lines {
     ];
 
     /// HP at zero, with no warning said just before: nothing here claims
-    /// one came (see [`DEATH_WARNED`]).
+    /// one came (see [`DEATH_WARNED`]). A card that speaks of an earlier
+    /// death ("Dead again") never leads a list: a night's first death is
+    /// dealt the lead, whatever the seed.
     pub const DEATH: [&[&str]; 3] = [
         &[
             "Your HP hit zero. Time to revive and head back.",
@@ -1082,6 +1086,8 @@ struct Decks {
     unmuted: Deck,
     hold: Deck,
     still_there: Deck,
+    /// The instant answers ("HP 76%."): one deck for all of them.
+    instant: Deck,
 }
 
 impl Decks {
@@ -1102,6 +1108,7 @@ impl Decks {
             unmuted: Deck::seeded(seed),
             hold: Deck::seeded(seed),
             still_there: Deck::seeded(seed),
+            instant: Deck::seeded(seed),
         }
     }
 }
@@ -1813,7 +1820,6 @@ impl Companion {
                 let sooner = self.sooner_warning(now, warned);
                 if let Some(sooner) = sooner {
                     self.settings.hp_low = sooner;
-                    self.settings.hp_rearm = (sooner + 15.0).min(95.0);
                 }
                 alerts.push(Alert::Death { warned, sooner });
             }
@@ -2062,6 +2068,22 @@ impl Companion {
             }
         }
         out
+    }
+
+    /// An answer it knows without a model, when `sentence` asks for one of
+    /// the player's own numbers ([`instant::asks`]): dealt from the
+    /// session's deck, like its other lines. `None` when it does not, or
+    /// the number isn't known right now.
+    pub fn instant(&mut self, sentence: &str) -> Option<String> {
+        let ask = instant::asks(sentence)?;
+        instant::answer(
+            ask,
+            sentence,
+            self.last.as_ref(),
+            &self.progress(),
+            self.settings.attitude,
+            &mut self.decks.instant,
+        )
     }
 
     /// A command, from a sentence or a button.
@@ -2512,7 +2534,6 @@ mod tests {
         let mut quiet = Companion::seeded(
             Settings {
                 hp_low: 0.0,
-                hp_rearm: 15.0,
                 ..Settings::default()
             },
             SEED,
@@ -3044,7 +3065,6 @@ mod tests {
             let mut c = Companion::seeded(
                 Settings {
                     hp_low: low,
-                    hp_rearm: low + 15.0,
                     ..Settings::default()
                 },
                 SEED,
@@ -3246,6 +3266,24 @@ mod tests {
         dealt_like_a_deck(lines::DEATH, &one);
         dealt_like_a_deck(lines::DEATH, &two);
         assert_eq!(deaths(1), one);
+        // The instant answers ("HP 76%.") are dealt from the session's
+        // deck too: another order each night, the plainest first — and
+        // nothing for a question it has no number for.
+        let answers = |seed: u64| -> Vec<String> {
+            let mut c = Companion::seeded(Settings::default(), seed);
+            c.observe(0.0, read(76.0));
+            assert_eq!(c.instant("where am I"), None);
+            (0..12)
+                .map(|_| c.instant("what's my hp").unwrap())
+                .collect()
+        };
+        let (one, two) = (answers(1), answers(2));
+        assert_eq!(one[0], "Your HP's at 76%.");
+        assert_eq!(two[0], one[0]);
+        assert_ne!(one, two);
+        assert_eq!(answers(1), one);
+        let mut unseen = Companion::seeded(Settings::default(), 1);
+        assert_eq!(unseen.instant("what's my hp"), None);
     }
 
     #[test]
@@ -3398,7 +3436,7 @@ mod tests {
             .strip_suffix(sooner)
             .unwrap_or_else(|| panic!("{death:?}"));
         assert!(from(lines::DEATH, line), "{death:?}");
-        assert_eq!((c.settings.hp_low, c.settings.hp_rearm), (35.0, 50.0));
+        assert_eq!(c.settings.hp_low, 35.0);
         // A sudden death from full HP: no warning would have helped.
         step(&mut c, 100.0, 120);
         let death = step(&mut c, 0.0, 25);
@@ -3424,6 +3462,86 @@ mod tests {
         step(&mut c, 60.0, 3);
         step(&mut c, 0.0, 25);
         assert_eq!(c.settings.hp_low, 50.0);
+    }
+
+    #[test]
+    fn the_first_death_of_a_night_is_never_dead_again() {
+        // A card that speaks of an earlier death ("Dead again. The mobs are
+        // starting to feel bad for you.") is for the second death on: the
+        // first of a night, in every voice, whatever the night's seed,
+        // sudden or warned, never says it. (The lead of a death deck makes
+        // no such claim, and a fresh deck deals its lead first.)
+        let again = |line: &str| {
+            let lower = line.to_lowercase();
+            ["dead again", "died again", "starting to feel bad"]
+                .iter()
+                .any(|c| lower.contains(c))
+        };
+        let sudden: [(f64, f32); 7] = [
+            (0.0, 100.0),
+            (0.1, 100.0),
+            (0.2, 100.0),
+            (1.0, 0.0),
+            (1.1, 0.0),
+            (1.2, 0.0),
+            (2.0, 100.0),
+        ];
+        let warned: [(f64, f32); 8] = [
+            (0.0, 100.0),
+            (5.0, 100.0),
+            (10.0, 20.0),
+            (10.4, 20.0),
+            (10.7, 20.0),
+            (12.0, 0.0),
+            (12.1, 0.0),
+            (12.2, 0.0),
+        ];
+        for seed in 1..=20 {
+            for attitude in Attitude::ALL {
+                for frames in [&sudden[..], &warned[..]] {
+                    let mut c = Companion::seeded(
+                        Settings {
+                            attitude,
+                            ..Settings::default()
+                        },
+                        seed,
+                    );
+                    let mut lines = Vec::new();
+                    for (t, hp) in frames {
+                        lines.extend(dealt(&c.observe(*t, read(*hp))));
+                    }
+                    let death = lines.last().unwrap().as_str();
+                    assert!(
+                        attitude.lines(lines::DEATH).contains(&death)
+                            || attitude.lines(lines::DEATH_WARNED).contains(&death),
+                        "{}: {lines:?}",
+                        attitude.word()
+                    );
+                    assert!(!again(death), "seed {seed}, {}: {death:?}", attitude.word());
+                }
+            }
+        }
+        // The second death may be "again" (savage has such a card), and
+        // is, some night: the card is dealt, not shelved.
+        let mut dealt_again = false;
+        for seed in 1..=20 {
+            let mut c = Companion::seeded(
+                Settings {
+                    attitude: Attitude::Savage,
+                    ..Settings::default()
+                },
+                seed,
+            );
+            let mut lines = Vec::new();
+            for minute in 0..2 {
+                for (t, hp) in &sudden {
+                    lines.extend(dealt(&c.observe(minute as f64 * 60.0 + t, read(*hp))));
+                }
+            }
+            assert_eq!(lines.len(), 2, "{lines:?}");
+            dealt_again |= again(&lines[1]);
+        }
+        assert!(dealt_again);
     }
 
     #[test]

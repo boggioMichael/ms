@@ -1346,13 +1346,6 @@ fn workshop_ask(workshop: &ms::workshop::Workshop, task: ms::workshop::Task, out
     }
 }
 
-/// Whether a line of this kind outlives the player talking over it: a
-/// warning and news are still true after their words (the worker keeps
-/// their jobs too), chat and a note are not.
-fn kept(kind: Kind) -> bool {
-    matches!(kind, Kind::Warning | Kind::Alert)
-}
-
 /// How a line is labelled in the session log.
 fn kind_label(kind: Kind) -> &'static str {
     match kind {
@@ -1825,13 +1818,28 @@ impl Outputs {
     /// line under way is the last one started; a reply's tail still
     /// sounding when a warning starts behind it is let play out with it.)
     fn cut(&mut self) {
-        let line_kept = self.mouth.line.is_some_and(|(_, kind)| kept(kind));
+        let line_kept = self.mouth.line.is_some_and(|(_, kind)| kind.kept());
         if !line_kept {
             self.mouth.hush();
             self.mouth.phone_line.clear();
             self.mouth.hushed = self.mouth.line.map(|(id, _)| id);
         }
-        self.mouth.phone_held.retain(|clip| kept(clip.kind));
+        self.mouth.phone_held.retain(|clip| clip.kind.kept());
+        self.mouth.phone_until = Instant::now();
+        self.mouth.phone_end = Instant::now();
+        if let Some(hub) = &self.phone {
+            hub.cut();
+        }
+    }
+
+    /// Told to be quiet (muted): everything stops, here and on the phone,
+    /// a warning too — they asked for quiet, not for a word in — and
+    /// nothing waits to go on after.
+    fn silence(&mut self) {
+        self.mouth.hush();
+        self.mouth.hushed = self.mouth.line.map(|(id, _)| id);
+        self.mouth.phone_line.clear();
+        self.mouth.phone_held.clear();
         self.mouth.phone_until = Instant::now();
         self.mouth.phone_end = Instant::now();
         if let Some(hub) = &self.phone {
@@ -1865,7 +1873,7 @@ impl Outputs {
                     }
                 }
                 // (Here and on the phone, the clips queued there too.)
-                Action::SetMuted(true) => self.cut(),
+                Action::SetMuted(true) => self.silence(),
                 Action::SetMuted(false) => {}
             }
         }
@@ -1913,17 +1921,14 @@ fn set_warning(
         options.mp_low.unwrap_or(15.0)
     };
     let at = below.unwrap_or(usual);
-    let rearm = (at + 15.0).min(95.0);
     {
         let mut memory = learning.memory();
         if hp {
             companion.settings.hp_low = at;
-            companion.settings.hp_rearm = rearm;
             warn_at.0 = at;
             memory.adapt.hp_low = below;
         } else {
             companion.settings.mp_low = at;
-            companion.settings.mp_rearm = rearm;
             warn_at.1 = at;
             memory.adapt.mp_low = below;
         }
@@ -2397,17 +2402,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     };
     let mut companion = Companion::new(Settings {
         hp_low,
-        hp_rearm: (hp_low + 15.0).min(95.0),
         mp_low,
-        mp_rearm: (mp_low + 15.0).min(95.0),
         always_listen: !options.wake_word,
         ..Settings::default()
     });
     companion.settings.attitude = learning.memory().attitude;
     // The warnings as kept (a death no warning came before moves them).
     let mut warn_at = (hp_low, mp_low);
-    // Answers said at once (varied by how many there were).
-    let mut instant_count = 0u32;
     // What the phone shows of what it learned (looked at every few seconds;
     // None: at the next chance).
     let mut memory_status = serde_json::Value::Null;
@@ -2774,18 +2775,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 let text = turns.heard(&mut out, text);
                                 // Their own numbers: answered at once, without
                                 // a model.
-                                let instant = ms::companion::instant::asks(&text).and_then(|ask| {
-                                    ms::companion::instant::answer(
-                                        ask,
-                                        &text,
-                                        companion.last(),
-                                        &companion.progress(),
-                                        companion.settings.attitude,
-                                        instant_count,
-                                    )
-                                });
-                                if let Some(line) = instant {
-                                    instant_count += 1;
+                                if let Some(line) = companion.instant(&text) {
                                     out.session.line("timing", "instant answer");
                                     if let Some(worker) = &out.mouth.ai {
                                         let id = worker.send(Job::Say {
@@ -4338,6 +4328,12 @@ mod tests {
         out.cut();
         assert!(!out.mouth.player.speaking());
         assert_eq!(out.mouth.hushed, Some(4));
+        // Muted, a warning stops too: they asked for quiet.
+        out.mouth.player.stop();
+        out.play_piece(piece(7, Kind::Warning, true, false), false, &companion);
+        out.silence();
+        assert!(!out.mouth.player.speaking());
+        assert_eq!(out.mouth.hushed, Some(7));
         // On the phone the same: a reply hushed on its first half does
         // not come out as its second half once its last piece arrives.
         out.phone.as_ref().unwrap().set_voice_on(VoiceOn::Phone);
@@ -4353,6 +4349,12 @@ mod tests {
         // The next line is a new one: heard in full.
         out.play_piece(piece(6, Kind::Reply, true, true), false, &companion);
         assert_eq!(clip(&out), clips + 1);
+        // Muted, a warning's clip held for their turn is dropped with the
+        // rest: nothing plays on the phone after "mute".
+        out.play_piece(piece(8, Kind::Warning, true, true), true, &companion);
+        assert_eq!(out.mouth.phone_held.len(), 1);
+        out.silence();
+        assert!(out.mouth.phone_held.is_empty());
     }
 
     #[test]

@@ -235,6 +235,35 @@ pub fn sentences_of(text: &str) -> Vec<String> {
     out
 }
 
+/// The end of `text`, within `max` characters: its last whole sentences,
+/// with "…" for what went before them (the last sentence alone, cut from
+/// its front, when even that is too long).
+fn tail_of(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let sentences = sentences_of(text);
+    let mut kept: Vec<&str> = Vec::new();
+    // (The "…" counts.)
+    let mut length = 1;
+    for sentence in sentences.iter().rev() {
+        let more = sentence.chars().count() + usize::from(!kept.is_empty());
+        if length + more > max {
+            break;
+        }
+        length += more;
+        kept.push(sentence);
+    }
+    if kept.is_empty() {
+        let last = sentences.last().map(String::as_str).unwrap_or(text);
+        let skip = last.chars().count().saturating_sub(max.saturating_sub(1));
+        return format!("…{}", last.chars().skip(skip).collect::<String>());
+    }
+    kept.reverse();
+    format!("…{}", kept.join(" "))
+}
+
 /// How the voice should sound (OpenAI's voice takes it as its
 /// instructions): the attitude the player picked, and how this line is
 /// to be delivered — a warning faster and sharper than talk, news (a
@@ -401,11 +430,27 @@ impl Brain {
     }
 
     /// A line it said on its own — a warning, the coach's callout — into
-    /// the conversation, after the watcher's word for why (`label`: "an
-    /// alert", "new scene"), so that the next reply knows its own last
-    /// words ("yeah yeah, I'm potting" has an "it").
+    /// the conversation, after the watcher's word for why (`label`: "a
+    /// warning", "new scene"), so that the next reply knows its own last
+    /// words ("yeah yeah, I'm potting" has an "it"). Lines of its own in a
+    /// row fold into the one pair, the newest last and the oldest dropped
+    /// past [`REMEMBER_REPLY_CHARS`]: a grind of warnings is one turn of
+    /// the conversation, not sixteen, and the player's last sentence stays
+    /// in the window.
     pub fn watched(&mut self, label: &str, line: &str) {
-        self.heard(&format!("{WATCHER} {label}.]"));
+        let marker = format!("{WATCHER} {label}.]");
+        let n = self.turns.len();
+        if n >= 2
+            && self.turns[n - 1].role == "assistant"
+            && self.turns[n - 2].role == "user"
+            && self.turns[n - 2].text.starts_with(WATCHER)
+        {
+            let folded = format!("{} {}", self.turns[n - 1].text, line.trim());
+            self.turns[n - 2].text = marker;
+            self.turns[n - 1].text = tail_of(&folded, REMEMBER_REPLY_CHARS);
+            return;
+        }
+        self.heard(&marker);
         self.said(line);
     }
 
@@ -2274,6 +2319,58 @@ boss again?\""
         brain.watched("new scene", "Rebuff.");
         brain.cut_short("Reb");
         assert_eq!(brain.turns()[1].text, "Rebuff.");
+    }
+
+    #[test]
+    fn a_grind_of_warnings_in_a_row_is_one_turn_and_the_players_last_sentence_stays() {
+        // Twenty warnings with no word from the player between them: one
+        // pair in the conversation, the newest last, cut to the length a
+        // reply is kept at — and "what's my level" still in the window.
+        // (A pair each, they were twenty, and the window keeps sixteen.)
+        let mut brain = Brain::new();
+        brain.heard("what's my level");
+        brain.said("165.");
+        for i in 0..20 {
+            brain.watched("a warning", &format!("HP {} percent. Pot now!", 30 - i));
+        }
+        let turns = brain.turns();
+        assert_eq!(turns.len(), 4, "{turns:?}");
+        assert_eq!(turns[0].text, "what's my level");
+        assert_eq!(turns[1].text, "165.");
+        assert_eq!(
+            turns[2].text,
+            "[Your game watcher, not the player: a warning.]"
+        );
+        let folded = &turns[3].text;
+        assert!(folded.ends_with("HP 11 percent. Pot now!"), "{folded}");
+        assert!(folded.starts_with("…HP "), "{folded}");
+        assert!(folded.chars().count() <= REMEMBER_REPLY_CHARS, "{folded}");
+        assert!(!folded.contains("HP 30 percent"), "{folded}");
+        // A word from the player ends the run: the next line of its own is
+        // a pair of its own, labelled anew.
+        brain.heard("I know, I'm potting");
+        brain.said("Good.");
+        brain.watched("news", "Level 166! Nice.");
+        let turns = brain.turns();
+        assert_eq!(turns.len(), 8, "{turns:?}");
+        assert_eq!(turns[6].text, "[Your game watcher, not the player: news.]");
+        assert_eq!(turns[7].text, "Level 166! Nice.");
+        // Two lines of its own of different kinds fold too, under the
+        // newest's word.
+        brain.watched("a warning", "HP 20 percent. Pot now!");
+        let turns = brain.turns();
+        assert_eq!(turns.len(), 8, "{turns:?}");
+        assert_eq!(
+            turns[6].text,
+            "[Your game watcher, not the player: a warning.]"
+        );
+        assert_eq!(turns[7].text, "Level 166! Nice. HP 20 percent. Pot now!");
+        // The tail: whole sentences from the end, "…" for the rest; the
+        // last sentence alone, cut, when even that is too long.
+        assert_eq!(tail_of("One. Two. Three.", 20), "One. Two. Three.");
+        assert_eq!(tail_of("One one. Two two. Three.", 12), "…Three.");
+        assert_eq!(tail_of("One one. Two two. Three.", 18), "…Two two. Three.");
+        assert_eq!(tail_of("Abcdefghij.", 6), "…ghij.");
     }
 
     #[test]

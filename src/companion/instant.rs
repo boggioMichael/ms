@@ -4,7 +4,7 @@
 //! or more for the same few words). Anything else goes to the model.
 
 use super::commands::normalize;
-use super::{Attitude, Gauge, Observation, Progress};
+use super::{Attitude, Deck, Gauge, Observation, Progress};
 
 /// What a sentence asks about the player's own numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,22 +482,24 @@ fn duration(seconds: f64, hebrew: bool) -> String {
 }
 
 /// The answer, in the language of the question and the attitude picked.
-/// `n` is the caller's count of instant answers so far: the lines are
-/// dealt from it like a deck (the plainest first, every one before any
-/// again), as far as a count shared by every question allows. `None` when
-/// the number isn't known right now: the model answers then.
+/// The lines are dealt from `deck` — one deck for every question, as the
+/// caller keeps it, shuffled by the session's seed: the plainest first,
+/// every one before any again, as far as a deck shared by every question
+/// allows, and in another order each night. A card is dealt only for an
+/// answer given. `None` when the number isn't known right now: the model
+/// answers then.
 pub fn answer(
     ask: Ask,
     sentence: &str,
     obs: Option<&Observation>,
     progress: &Progress,
     attitude: Attitude,
-    n: u32,
+    deck: &mut Deck,
 ) -> Option<String> {
     let obs = obs.filter(|o| o.game.is_seen())?;
     let he = is_hebrew(sentence);
-    let pick = |lines: [&[&'static str]; 3]| attitude.pick(lines, n);
-    let gauge_line = |gauge: Option<Gauge>, name: &str| -> Option<String> {
+    let mut pick = |lines: [&[&'static str]; 3]| deck.deal(attitude, lines);
+    let mut gauge_line = |gauge: Option<Gauge>, name: &str| -> Option<String> {
         let gauge = gauge?;
         let value = percent(gauge, he);
         let low = gauge.percent < 30.0;
@@ -534,6 +536,9 @@ pub fn answer(
 mod tests {
     use super::*;
     use crate::companion::GameView;
+
+    /// The tests' session seed (the rules hold for every seed).
+    const SEED: u64 = 7;
 
     fn seen() -> Observation {
         Observation {
@@ -602,8 +607,10 @@ mod tests {
             seconds_to_level: Some(2.0 * 3600.0 + 20.0 * 60.0),
             ..Default::default()
         };
+        // (A fresh deck each: the first answer is the lead.)
         let say = |ask, sentence: &str, attitude| {
-            answer(ask, sentence, Some(&obs), &progress, attitude, 0).unwrap()
+            let mut deck = Deck::seeded(SEED);
+            answer(ask, sentence, Some(&obs), &progress, attitude, &mut deck).unwrap()
         };
         assert_eq!(say(Ask::Hp, "what's my hp", Attitude::Blunt), "HP 76%.");
         assert_eq!(say(Ask::Hp, "כמה HP יש לי", Attitude::Blunt), "76% HP.");
@@ -624,7 +631,9 @@ mod tests {
             say(Ask::NextLevel, "כמה זמן עד הרמה הבאה", Attitude::Friendly),
             "בערך 2 שעות ו-20 דקות לרמה הבאה."
         );
-        // Not known right now: the model answers.
+        // Not known right now: the model answers — and no card is dealt
+        // for it: the next answer is still the lead.
+        let mut deck = Deck::seeded(SEED);
         assert!(
             answer(
                 Ask::NextLevel,
@@ -632,11 +641,22 @@ mod tests {
                 Some(&obs),
                 &Progress::default(),
                 Attitude::Blunt,
-                0
+                &mut deck
             )
             .is_none()
         );
-        assert!(answer(Ask::Hp, "x", None, &progress, Attitude::Blunt, 0).is_none());
+        assert!(answer(Ask::Hp, "x", None, &progress, Attitude::Blunt, &mut deck).is_none());
+        assert_eq!(
+            answer(
+                Ask::Hp,
+                "what's my hp",
+                Some(&obs),
+                &progress,
+                Attitude::Blunt,
+                &mut deck
+            ),
+            Some("HP 76%.".into())
+        );
     }
 
     #[test]
@@ -661,8 +681,11 @@ mod tests {
             ] {
                 // Asked twelve times running: six different answers, then
                 // six again in another order, never one twice in a row.
+                let mut deck = Deck::seeded(SEED);
                 let answers: Vec<String> = (0..12)
-                    .map(|n| answer(ask, sentence, Some(&obs), &progress, attitude, n).unwrap())
+                    .map(|_| {
+                        answer(ask, sentence, Some(&obs), &progress, attitude, &mut deck).unwrap()
+                    })
                     .collect();
                 for round in answers.chunks(6) {
                     let mut seen: Vec<&String> = round.iter().collect();
@@ -685,6 +708,61 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn another_night_answers_in_another_order() {
+        // The same question twelve times on two nights (two seeds): the
+        // lead first on both, then another order — "76% HP. Play." was
+        // the second HP answer every night when the deck was a count.
+        let obs = seen();
+        let progress = Progress::default();
+        let night = |seed: u64| -> Vec<String> {
+            let mut deck = Deck::seeded(seed);
+            (0..12)
+                .map(|_| {
+                    answer(
+                        Ask::Hp,
+                        "what's my hp",
+                        Some(&obs),
+                        &progress,
+                        Attitude::Blunt,
+                        &mut deck,
+                    )
+                    .unwrap()
+                })
+                .collect()
+        };
+        let (one, two) = (night(1), night(2));
+        assert_eq!(one[0], "HP 76%.");
+        assert_eq!(two[0], "HP 76%.");
+        assert_ne!(one, two);
+        assert_eq!(night(1), one);
+        // Every question's deck is one with the companion's: the answers
+        // go on from where the last left off, whichever the question.
+        let mut deck = Deck::seeded(1);
+        let hp = answer(
+            Ask::Hp,
+            "what's my hp",
+            Some(&obs),
+            &progress,
+            Attitude::Blunt,
+            &mut deck,
+        );
+        assert_eq!(hp.as_deref(), Some("HP 76%."));
+        let level = answer(
+            Ask::Level,
+            "what level am I",
+            Some(&obs),
+            &progress,
+            Attitude::Blunt,
+            &mut deck,
+        );
+        assert_ne!(
+            level.as_deref(),
+            Some("Level 109."),
+            "the lead again: the deck did not move"
+        );
     }
 
     #[test]

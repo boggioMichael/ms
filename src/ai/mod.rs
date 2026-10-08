@@ -317,15 +317,10 @@ pub enum Done {
 
 impl Job {
     /// Whether no call-off stops it: a warning's own line, or news (a
-    /// death, a level-up) — what is still true after the player's words.
+    /// death, a level-up) — what is still true after the player's words
+    /// ([`Kind::kept`]).
     fn kept(&self) -> bool {
-        matches!(
-            self,
-            Job::Speak {
-                kind: Kind::Warning | Kind::Alert,
-                ..
-            }
-        )
+        matches!(self, Job::Speak { kind, .. } if kind.kept())
     }
 }
 
