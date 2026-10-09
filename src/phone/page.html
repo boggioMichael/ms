@@ -366,7 +366,7 @@
     <section class="card" id="sessionsCard">
       <h2 data-t="h_sessions">Your sessions</h2>
       <table id="sessionsTable" hidden>
-        <thead><tr><th data-t="col_day">Day</th><th data-t="col_min">Minutes</th><th data-t="col_levels">Levels</th><th data-t="col_deaths">Deaths</th><th data-t="col_warnings">Warnings</th></tr></thead>
+        <thead><tr><th data-t="col_day">Day</th><th data-t="col_min">Minutes</th><th data-t="col_levels">Levels up</th><th data-t="col_deaths">Deaths</th><th data-t="col_warnings">Warnings</th></tr></thead>
         <tbody id="sessionsBody"></tbody>
       </table>
       <div class="sub" id="sessionsEmpty" data-t="sessions_empty"></div>
@@ -429,8 +429,12 @@
       share_what: "Off unless you turn it on. On, MapleSyrup keeps a file ready on your PC with numbers for each session: minutes played, levels (as ranges like 61–100), deaths, warnings, close calls, your class, how many maps, the week (not the day), the app and Windows version, under a random id made when you turn it on. It may be sold to companies that study gamers. Nothing is sent yet.",
       share_never: "Never shared: your character's name, what you say or your voice, screenshots, what MapleSyrup learned about you or was taught, your files, your PC's name, your keys or your IP address.",
       share_see: "See what would be shared", share_delete: "Delete it", share_deleted: "Deleted: sharing is off, and the file and its id are gone.",
-      share_preview: "Sharing is off. If it were on, your last sessions would look like this:", share_failed: "Couldn't change it: {n}",
-      h_sessions: "Your sessions", col_day: "Day", col_min: "Minutes", col_levels: "Levels", col_deaths: "Deaths", col_warnings: "Warnings",
+      share_preview: "Sharing is off. If it were on, your last sessions would look like this:",
+      share_err: "Couldn't change it. Try again.", share_err_unreached: "Couldn't reach the PC. Try again.",
+      share_err_adult_only: "Tick “I'm 18 or older” first.", share_err_no_stats: "This PC keeps no play stats.",
+      share_err_no_id: "The PC couldn't make a random id, so sharing is still off.", share_err_not_saved: "The PC couldn't save your choice, so sharing is still off.",
+      share_err_not_deleted: "Not deleted: a file of it is still on the PC (another program may be holding it). Try again in a moment.",
+      h_sessions: "Your sessions", col_day: "Day", col_min: "Minutes", col_levels: "Levels up", col_deaths: "Deaths", col_warnings: "Warnings",
       sessions_empty: "No sessions yet: each one is added as it goes (every minute) and when it ends.", sessions_note: "Kept on this PC only.",
     },
     he: {
@@ -470,12 +474,16 @@
       no_mic: "לדפדפן הזה אין גישה למיקרופון.", need_https: "המיקרופון צריך את הקישור המאובטח (https) מקוד ה-QR של MapleSyrup.",
       mic_failed: "המיקרופון לא הצליח להתחיל:", mic_refused: "ההרשאה נדחתה. אשר את המיקרופון לדף הזה בהגדרות הדפדפן ונסה שוב.",
       hearing_hebrew: "שומע עברית עכשיו.", hearing_lang: "שומע: {n}",
-      share_title: "סטטיסטיקות משחק", share_on: "שתף את סטטיסטיקות המשחק שלי (בלי שם, דיבור, קול או מסך) עם השותפים של MapleSyrup", share_adult: "אני בן 18 ומעלה",
-      share_what: "כבוי אלא אם תדליק. כשהוא דלוק, MapleSyrup שומר במחשב קובץ מוכן עם מספרים לכל סשן: דקות משחק, רמות (בטווחים, כמו 61–100), מיתות, אזהרות, מצבים שכמעט מתת בהם, המקצוע שלך, כמה מפות, השבוע (לא היום), גרסת התוכנה וגרסת Windows, תחת מזהה אקראי שנוצר כשאתה מדליק. הקובץ עשוי להימכר לחברות שחוקרות גיימרים. כרגע שום דבר לא נשלח.",
+      share_title: "סטטיסטיקות משחק", share_on: "שתף את סטטיסטיקות המשחק שלי (בלי שם, דיבור, קול או מסך) עם השותפים של MapleSyrup", share_adult: "גילי 18 ומעלה",
+      share_what: "כבוי אלא אם תדליק. כשהוא דלוק, MapleSyrup שומר במחשב קובץ מוכן עם מספרים לכל סשן: דקות משחק, רמות (בטווחים, כמו 61–100), מיתות, אזהרות, מצבים שכמעט מתת בהם, הקלאס שלך, כמה מפות, השבוע (לא היום), גרסת התוכנה וגרסת Windows, תחת מזהה אקראי שנוצר כשאתה מדליק. הקובץ עשוי להימכר לחברות שחוקרות גיימרים. כרגע שום דבר לא נשלח.",
       share_never: "אף פעם לא משותף: שם הדמות, מה שאתה אומר או הקול שלך, צילומי מסך, מה ש-MapleSyrup למד עליך או מה שלימדת אותו, הקבצים שלך, שם המחשב, המפתחות שלך או כתובת ה-IP שלך.",
       share_see: "הצג מה ישותף", share_delete: "מחק את זה", share_deleted: "נמחק: השיתוף כבוי, והקובץ והמזהה שלו נמחקו.",
-      share_preview: "השיתוף כבוי. אילו היה דלוק, הסשנים האחרונים שלך היו נראים כך:", share_failed: "לא הצלחתי לשנות: {n}",
-      h_sessions: "הסשנים שלך", col_day: "יום", col_min: "דקות", col_levels: "רמות", col_deaths: "מיתות", col_warnings: "אזהרות",
+      share_preview: "השיתוף כבוי. אם הוא היה דלוק, הסשנים האחרונים שלך היו נראים כך:",
+      share_err: "לא הצלחתי לשנות. נסה שוב.", share_err_unreached: "לא הצלחתי להגיע למחשב. נסה שוב.",
+      share_err_adult_only: "קודם צריך לסמן „גילי 18 ומעלה”.", share_err_no_stats: "המחשב הזה לא שומר סטטיסטיקות משחק.",
+      share_err_no_id: "המחשב לא הצליח ליצור מזהה אקראי, אז השיתוף עדיין כבוי.", share_err_not_saved: "המחשב לא הצליח לשמור את הבחירה שלך, אז השיתוף עדיין כבוי.",
+      share_err_not_deleted: "לא נמחק: קובץ שלו עדיין נמצא במחשב (אולי תוכנה אחרת מחזיקה אותו). נסה שוב עוד רגע.",
+      h_sessions: "הסשנים שלך", col_day: "יום", col_min: "דקות", col_levels: "+רמות", col_deaths: "מיתות", col_warnings: "אזהרות",
       sessions_empty: "עדיין אין סשנים: כל סשן נשמר תוך כדי (כל דקה) וכשהוא נגמר.", sessions_note: "נשמר רק במחשב הזה.",
     },
     es: {
@@ -1711,28 +1719,47 @@
   // PC refuses an "on" without it.
   function shareGate() { $("shareBox").disabled = !$("adultBox").checked && !$("shareBox").checked; }
   $("adultBox").addEventListener("change", shareGate);
+  // What the PC answered to a change: its ok, or what went wrong as a code
+  // (also when it could not be reached), whose words are the page's, in
+  // its language — never the PC's own.
+  async function shareAnswer(path, body) {
+    try {
+      const r = await postJson(path, body);
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j.ok ? j : { error: j.error || "unknown" };
+    } catch (e) { return { error: "unreached" }; }
+  }
+  function shareFailed(code) { return t(WORDS.en["share_err_" + code] ? "share_err_" + code : "share_err"); }
+  // A change that failed: said so, and the toggle shows what the PC has.
+  async function shareRefused(code, was) {
+    $("shareState").textContent = shareFailed(code);
+    $("shareBox").checked = was;
+    shareHeldUntil = 0;
+    await loadShare();
+  }
   $("shareBox").addEventListener("change", async () => {
     shareHeldUntil = Date.now() + 3000;
     $("shareState").textContent = "";
-    try {
-      const r = await postJson("/api/share", { on: $("shareBox").checked, adult: $("adultBox").checked });
-      const j = await r.json().catch(() => ({}));
-      if (j.share) $("shareBox").checked = !!j.share.on;
-      else if (j.error) { $("shareBox").checked = false; $("shareState").textContent = t("share_failed", j.error); }
-      shareGate();
-      if (!$("shareView").hidden) showShare();
-    } catch (e) {}
+    const on = $("shareBox").checked;
+    const j = await shareAnswer("/api/share", { on, adult: $("adultBox").checked });
+    if (j.ok) $("shareBox").checked = !!(j.share && j.share.on);
+    else await shareRefused(j.error, !on);
+    shareGate();
+    if (!$("shareView").hidden) showShare();
   });
   $("shareSee").addEventListener("click", () => { if ($("shareView").hidden) showShare(); else hideShare(); });
+  // "Delete it": "Deleted" only when the PC says it is — nothing of it left.
   $("shareDelete").addEventListener("click", async () => {
     shareHeldUntil = Date.now() + 3000;
-    $("shareBox").checked = false;
-    shareGate();
+    $("shareState").textContent = "";
     hideShare();
-    try {
-      await postJson("/api/share/delete", {});
+    const was = $("shareBox").checked;
+    const j = await shareAnswer("/api/share/delete", {});
+    if (j.ok) {
+      $("shareBox").checked = false;
       $("shareState").textContent = t("share_deleted");
-    } catch (e) {}
+    } else await shareRefused(j.error, was);
+    shareGate();
   });
   // "9 Oct" (the day the session started, in the page's language).
   function dayLabel(day) {

@@ -1054,6 +1054,9 @@ impl Hub {
             // and sharing them with partners — off unless turned on, what
             // would be shared, and "Delete it". Nothing is sent anywhere.
             // (Serialized as they are, so the export keeps its fields' order.)
+            // What goes wrong is answered as a code (`no_stats`,
+            // `bad_request`, `adult_only`, `no_id`, `not_saved`,
+            // `not_deleted`): the page has the words, in its language.
             ("GET", "/api/stats") => match self.metrics() {
                 Some(store) => Response::new(
                     200,
@@ -1062,7 +1065,7 @@ impl Hub {
                         .unwrap_or_default(),
                 )
                 .with_header("Cache-Control", "no-store"),
-                None => Response::json(503, &json!({"error": "no stats on this PC"})),
+                None => Response::json(503, &json!({"error": "no_stats"})),
             },
             ("GET", "/api/share") => match self.metrics() {
                 Some(store) => Response::new(
@@ -1071,7 +1074,7 @@ impl Hub {
                     serde_json::to_vec(&store.share_view()).unwrap_or_default(),
                 )
                 .with_header("Cache-Control", "no-store"),
-                None => Response::json(503, &json!({"error": "no stats on this PC"})),
+                None => Response::json(503, &json!({"error": "no_stats"})),
             },
             ("POST", "/api/share") => {
                 let body = body();
@@ -1079,24 +1082,19 @@ impl Hub {
                 // player to say they are 18 or older.)
                 let adult = body.get("adult").and_then(Value::as_bool) == Some(true);
                 match (self.metrics(), body.get("on").and_then(Value::as_bool)) {
-                    (None, _) => Response::json(503, &json!({"error": "no stats on this PC"})),
-                    (_, None) => Response::json(400, &json!({"error": "on must be true or false"})),
+                    (None, _) => Response::json(503, &json!({"error": "no_stats"})),
+                    (_, None) => Response::json(400, &json!({"error": "bad_request"})),
                     (Some(_), Some(true)) if !adult => {
-                        Response::json(400, &json!({"error": "sharing is for players 18 or older"}))
+                        Response::json(400, &json!({"error": "adult_only"}))
                     }
                     (Some(store), Some(on)) => {
-                        match store.set_sharing(on, chrono::Local::now().date_naive()) {
-                            Ok(share) => Response::json(200, &json!({"ok": true, "share": share})),
-                            Err(why) => Response::json(500, &json!({"error": why})),
-                        }
+                        share_answer(store.set_sharing(on, chrono::Local::now().date_naive()))
                     }
                 }
             }
             ("POST", "/api/share/delete") => match self.metrics() {
-                Some(store) => {
-                    Response::json(200, &json!({"ok": true, "share": store.delete_shared()}))
-                }
-                None => Response::json(503, &json!({"error": "no stats on this PC"})),
+                Some(store) => share_answer(store.delete_shared()),
+                None => Response::json(503, &json!({"error": "no_stats"})),
             },
             ("POST", "/api/voice") => match text_field("on").as_deref().and_then(VoiceOn::parse) {
                 Some(on) => {
@@ -1112,6 +1110,20 @@ impl Hub {
             },
             _ => Response::json(404, &json!({"error": "no such call"})),
         }
+    }
+}
+
+/// The PC's answer to sharing turned on or off, or "Delete it": ok and the
+/// choice as it now stands — or 500 and what went wrong, as a code, with
+/// the files still on the PC when a deletion failed. Never ok while
+/// anything is left.
+fn share_answer(result: Result<crate::metrics::Consent, crate::metrics::ShareError>) -> Response {
+    match result {
+        Ok(share) => Response::json(200, &json!({"ok": true, "share": share})),
+        Err(crate::metrics::ShareError::NotDeleted(left)) => {
+            Response::json(500, &json!({"error": "not_deleted", "left": left}))
+        }
+        Err(e) => Response::json(500, &json!({"error": e.code()})),
     }
 }
 
@@ -1531,10 +1543,12 @@ mod tests {
     #[test]
     fn the_stats_and_the_sharing_choice_answer_from_the_pc_and_sharing_starts_off() {
         let hub = hub();
-        // No stats here (a link without them): said so.
+        // No stats here (a link without them): said so, as a code (the
+        // page has the words, in its language).
+        let none = hub.handle(&request("GET", "/api/stats?k=k1", ""));
         assert_eq!(
-            hub.handle(&request("GET", "/api/stats?k=k1", "")).status,
-            503
+            (none.status, body(&none)["error"].clone()),
+            (503, json!("no_stats"))
         );
         let dir = std::env::temp_dir().join(format!("ms-phone-share-{}", tls::random_hex(4)));
         let store = crate::metrics::Store::new(&dir);
@@ -1549,15 +1563,15 @@ mod tests {
             (json!(false), json!(true))
         );
         assert!(share["export"]["install_id"].is_null(), "{share}");
+        let odd = hub.handle(&request("POST", "/api/share?k=k1", r#"{"on":"yes"}"#));
         assert_eq!(
-            hub.handle(&request("POST", "/api/share?k=k1", r#"{"on":"yes"}"#))
-                .status,
-            400
+            (odd.status, body(&odd)["error"].clone()),
+            (400, json!("bad_request"))
         );
         // Only for a player who says they are 18 or older.
         let refused = hub.handle(&request("POST", "/api/share?k=k1", r#"{"on":true}"#));
         assert_eq!(refused.status, 400);
-        assert!(String::from_utf8_lossy(&refused.body).contains("18 or older"));
+        assert_eq!(body(&refused), json!({"error": "adult_only"}));
         assert_eq!(
             body(&hub.handle(&request("GET", "/api/share?k=k1", "")))["on"],
             false
@@ -1597,6 +1611,49 @@ mod tests {
             );
         }
         assert_eq!(store.consent(), crate::metrics::Consent::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_withdrawal_that_leaves_a_file_on_the_pc_is_answered_500_never_ok() {
+        // Turned off, or "Delete it", with the export still on the PC
+        // (held by another program; here a folder that is not empty in its
+        // place, which no deletion of a file takes): the PC answers 500,
+        // with the code the page has words for and what is left — never
+        // "ok", which the page shows as "Deleted".
+        let hub = hub();
+        let dir = std::env::temp_dir().join(format!("ms-phone-withdraw-{}", tls::random_hex(4)));
+        let store = crate::metrics::Store::new(&dir);
+        hub.set_metrics(Arc::clone(&store));
+        let on = hub.handle(&request(
+            "POST",
+            "/api/share?k=k1",
+            r#"{"on":true,"adult":true}"#,
+        ));
+        assert_eq!(on.status, 200);
+        let export = dir.join("metrics").join("share-export.json");
+        std::fs::remove_file(&export).unwrap();
+        std::fs::create_dir_all(export.join("held")).unwrap();
+        for (path, sent) in [
+            ("/api/share/delete?k=k1", ""),
+            ("/api/share?k=k1", r#"{"on":false}"#),
+        ] {
+            let answer = hub.handle(&request("POST", path, sent));
+            assert_eq!(answer.status, 500, "{path}");
+            assert_eq!(
+                body(&answer),
+                json!({"error": "not_deleted", "left": ["share-export.json"]}),
+                "{path}"
+            );
+        }
+        // Let go of, the next "Delete it" takes it: ok, and nothing left.
+        std::fs::remove_dir_all(&export).unwrap();
+        let gone = hub.handle(&request("POST", "/api/share/delete?k=k1", ""));
+        assert_eq!(
+            (gone.status, body(&gone)),
+            (200, json!({"ok": true, "share": {"on": false}}))
+        );
+        assert!(!export.exists() && !dir.join("metrics").join("share.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -7,12 +7,14 @@
 //! - **Stats** ([`SessionStats`]): one record per session in
 //!   `metrics/sessions.jsonl` under the settings folder
 //!   (`%APPDATA%\MapleSyrup`), the newest last, at most [`KEEP_RECORDS`].
-//!   The session under way is `metrics/current.json`, rewritten every
-//!   [`SNAPSHOT_EVERY`] seconds (a file of a kilobyte, written whole and
-//!   then put in place): it joins the others when the session ends — or,
-//!   after a crash or a console window closed with the X, when MapleSyrup
-//!   next starts — so no session is lost, and at most a minute of one.
-//!   Stats never leave the PC.
+//!   The session under way is `metrics/current-<session>.json` — its own
+//!   file, so that two copies of MapleSyrup at once never write over each
+//!   other's — rewritten every [`SNAPSHOT_EVERY`] seconds (a file of a
+//!   kilobyte, written whole and then put in place): it joins the others
+//!   when the session ends — or, after a crash or a console window closed
+//!   with the X, when MapleSyrup next starts — and is deleted only once it
+//!   has (a write that fails leaves it for the next start), so no session
+//!   is lost, and at most a minute of one. Stats never leave the PC.
 //! - **Sharing** ([`Consent`], [`Export`]): off unless the player turns it
 //!   on (Settings on the phone), apart from the stats. Turned on, it gets a
 //!   random install id (a UUID v4 from the operating system's randomness,
@@ -21,7 +23,9 @@
 //!   since the day it was turned on, coarsened: the week, not the day;
 //!   level bands, not levels; how many maps, not which; latencies rounded;
 //!   no commit, no session id. Turning it off, or "Delete it", deletes the
-//!   export and the id.
+//!   choice (`share.json`: no file is off), the export with the id, and
+//!   any half-written file — or says what is still on the PC
+//!   ([`ShareError`]): a withdrawal never fails silently.
 //!
 //! **Nothing is sent anywhere.** There is no endpoint: where an export
 //! would go, and to whom, is the owner's decision, with a lawyer (see
@@ -36,15 +40,16 @@
 //! size class — never the character's name, the player's words or voice,
 //! a transcript, a picture, the notebook, what was taught, a path, the
 //! PC's name, a key, an address or the browser. The hooks the main loop
-//! calls take no text of the player's; the words the game shows (the
-//! class, a map's name) are kept only when they look like the game's — no
-//! slashes, no `@`, not too long — and do not contain the character's
-//! name. [`RECORD_FIELDS`] and [`EXPORT_FIELDS`] are the allow-lists the
-//! tests hold every record and every export to.
+//! calls take no text of the player's. The class is a name from a closed
+//! list ([`CLASSES`]) or [`OTHER_CLASS`], never the words read or said; a
+//! map's name is kept (on this PC only) when it looks like the game's — no
+//! path, no `@`, no link, not too long — and does not contain the
+//! character's name. [`RECORD_FIELDS`] and [`EXPORT_FIELDS`] are the
+//! allow-lists the tests hold every record and every export to.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::{Datelike, NaiveDate};
@@ -58,8 +63,8 @@ use crate::sight::Sight;
 /// Records kept in `sessions.jsonl`: a year of a session a day. The
 /// oldest go first.
 pub const KEEP_RECORDS: usize = 365;
-/// How often the session under way is written (`current.json`), in
-/// seconds: a closed console window or a crash loses at most this much.
+/// How often the session under way is written (`current-<session>.json`),
+/// in seconds: a closed console window or a crash loses at most this much.
 pub const SNAPSHOT_EVERY: f64 = 60.0;
 /// The sessions the phone's table shows.
 pub const SHOWN_SESSIONS: usize = 10;
@@ -69,8 +74,11 @@ pub const PREVIEW_SESSIONS: usize = 3;
 pub const EXPORT_FORMAT: u32 = 1;
 /// Maps kept per session, at most (a session of portals is still one line).
 const MAX_MAPS: usize = 100;
-/// A class or a map's name longer than this is not one.
+/// A map's name longer than this is not one.
 const MAX_GAME_TEXT: usize = 48;
+/// The class of a record whose class was read, or said, as words that are
+/// no class's name in [`CLASSES`].
+pub const OTHER_CLASS: &str = "other";
 /// How often the sight is looked at for the map and the HUD's style.
 const LOOK_EVERY: Duration = Duration::from_secs(2);
 /// How often the companion's progress (levels gained, EXP per hour) is
@@ -92,6 +100,7 @@ pub const RECORD_FIELDS: &[&str] = &[
     "level_end",
     "level_start_band",
     "level_end_band",
+    "characters",
     "job",
     "hud",
     "deaths",
@@ -135,6 +144,7 @@ pub const EXPORT_FIELDS: &[&str] = &[
     "levels_gained",
     "level_start_band",
     "level_end_band",
+    "characters",
     "job",
     "hud",
     "deaths",
@@ -165,6 +175,218 @@ pub const EXPORT_FIELDS: &[&str] = &[
     "voice_errors",
 ];
 
+/// The classes of MapleStory and their advancements, modern and Classic
+/// World, by the name the game gives them, each with the other ways it is
+/// written or said: an older name, the elements spelled out, the players'
+/// short forms, Hebrew. Matched whole ([`class_of`]: case, spaces,
+/// hyphens and the kind of apostrophe aside), these names are the only
+/// words a record or an export ever holds for the class: anything else is
+/// [`OTHER_CLASS`].
+pub const CLASSES: &[(&str, &[&str])] = &[
+    // Explorers: the beginner, and the warriors.
+    ("Beginner", &["בגינר", "ביגינר", "מתחיל"]),
+    (
+        "Warrior",
+        &["Swordman", "Swordsman", "ווריור", "וריור", "לוחם"],
+    ),
+    ("Fighter", &["פייטר"]),
+    ("Crusader", &["קרוסיידר", "קרוסדר"]),
+    ("Hero", &["הירו"]),
+    ("Page", &["פייג'"]),
+    ("White Knight", &["וייט נייט", "ווייט נייט"]),
+    ("Paladin", &["Pally", "פלאדין", "פלדין"]),
+    ("Spearman", &["ספירמן"]),
+    ("Dragon Knight", &["דרגון נייט", "דראגון נייט"]),
+    ("Berserker", &["ברזרקר", "ברסרקר"]),
+    ("Dark Knight", &["DK", "דארק נייט", "דרק נייט"]),
+    // The magicians (F/P: fire and poison; I/L: ice and lightning).
+    ("Magician", &["מג'ישן", "קוסם"]),
+    ("Wizard", &["ויזארד", "וויזארד"]),
+    ("Mage", &["מייג'", "מאג'"]),
+    ("Arch Mage", &["ארצ' מייג'", "ארך מייג'"]),
+    (
+        "Wizard (F/P)",
+        &[
+            "Wizard (Fire, Poison)",
+            "Wizard (Fire/Poison)",
+            "F/P Wizard",
+            "Fire/Poison Wizard",
+        ],
+    ),
+    (
+        "Mage (F/P)",
+        &[
+            "Mage (Fire, Poison)",
+            "Mage (Fire/Poison)",
+            "F/P Mage",
+            "Fire/Poison Mage",
+        ],
+    ),
+    (
+        "Arch Mage (F/P)",
+        &[
+            "Arch Mage (Fire, Poison)",
+            "Arch Mage (Fire/Poison)",
+            "F/P Arch Mage",
+            "Fire/Poison Arch Mage",
+        ],
+    ),
+    (
+        "Wizard (I/L)",
+        &[
+            "Wizard (Ice, Lightning)",
+            "Wizard (Ice/Lightning)",
+            "I/L Wizard",
+            "Ice/Lightning Wizard",
+        ],
+    ),
+    (
+        "Mage (I/L)",
+        &[
+            "Mage (Ice, Lightning)",
+            "Mage (Ice/Lightning)",
+            "I/L Mage",
+            "Ice/Lightning Mage",
+        ],
+    ),
+    (
+        "Arch Mage (I/L)",
+        &[
+            "Arch Mage (Ice, Lightning)",
+            "Arch Mage (Ice/Lightning)",
+            "I/L Arch Mage",
+            "Ice/Lightning Arch Mage",
+        ],
+    ),
+    ("Cleric", &["קלריק"]),
+    ("Priest", &["פריסט"]),
+    ("Bishop", &["Bish", "בישופ", "בישוף"]),
+    // The bowmen.
+    ("Bowman", &["Archer", "באומן", "ארצ'ר", "קשת"]),
+    ("Hunter", &["האנטר"]),
+    ("Ranger", &["ריינג'ר"]),
+    ("Bowmaster", &["BM", "באומאסטר", "באו מאסטר", "בואו מאסטר"]),
+    ("Crossbowman", &["קרוסבואומן", "קרוסבומן"]),
+    ("Sniper", &["סנייפר"]),
+    ("Marksman", &["Crossbow Master", "MM", "מרקסמן"]),
+    ("Pathfinder", &["PF", "פאת'פיינדר"]),
+    // The thieves.
+    ("Thief", &["Rogue", "ת'יף", "גנב"]),
+    ("Assassin", &["Sin", "אססין", "אסאסין", "מתנקש"]),
+    ("Hermit", &["הרמיט"]),
+    ("Night Lord", &["NL", "נייט לורד", "ניט לורד"]),
+    ("Bandit", &["בנדיט"]),
+    ("Chief Bandit", &["CB", "צ'יף בנדיט"]),
+    ("Shadower", &["Shad", "שאדואר", "שדואר"]),
+    ("Dual Blade", &["DB", "Dual Blader", "דואל בלייד"]),
+    ("Blade Recruit", &[]),
+    ("Blade Acolyte", &[]),
+    ("Blade Specialist", &[]),
+    ("Blade Lord", &[]),
+    ("Blade Master", &[]),
+    // The pirates.
+    ("Pirate", &["פיראט"]),
+    ("Brawler", &["Infighter", "בראולר"]),
+    ("Marauder", &["מרודר"]),
+    ("Buccaneer", &["Bucc", "בוקנייר", "בוקניר"]),
+    ("Gunslinger", &["גאנסלינגר"]),
+    ("Outlaw", &["אאוטלו"]),
+    ("Corsair", &["Sair", "קורסייר", "קורסר"]),
+    ("Cannoneer", &["Cannon Shooter", "קנונייר"]),
+    ("Cannon Blaster", &[]),
+    ("Cannon Trooper", &[]),
+    ("Cannon Master", &[]),
+    ("Jett", &["ג'ט"]),
+    // Cygnus Knights.
+    ("Noblesse", &[]),
+    ("Dawn Warrior", &["DW"]),
+    ("Blaze Wizard", &["BW"]),
+    ("Wind Archer", &["WA"]),
+    ("Night Walker", &["NW"]),
+    ("Thunder Breaker", &["TB"]),
+    ("Mihile", &[]),
+    // Heroes.
+    ("Legend", &[]),
+    ("Aran", &["ארן"]),
+    ("Evan", &["אוון"]),
+    ("Mercedes", &["Merc", "מרצדס", "מרסדס"]),
+    ("Phantom", &["פנטום", "פאנטום"]),
+    ("Luminous", &["Lumi", "לומינוס"]),
+    ("Shade", &["Eunwol", "שייד"]),
+    // Resistance.
+    ("Citizen", &[]),
+    ("Blaster", &["בלאסטר"]),
+    ("Battle Mage", &["BaM", "באטל מייג'"]),
+    ("Wild Hunter", &["WH", "ווילד האנטר"]),
+    ("Mechanic", &["Mech", "מכניק"]),
+    ("Xenon", &["זנון"]),
+    ("Demon Slayer", &["DS", "דימון סלייר", "דמון סלייר"]),
+    ("Demon Avenger", &["DA", "דימון אוונג'ר", "דמון אוונג'ר"]),
+    // Nova.
+    ("Kaiser", &["קייזר"]),
+    ("Angelic Buster", &["AB", "אנג'ליק באסטר"]),
+    ("Cadena", &["קדנה", "קאדנה"]),
+    ("Kain", &["קיין"]),
+    // Flora.
+    ("Illium", &["איליום"]),
+    ("Ark", &["ארק"]),
+    ("Adele", &["אדל"]),
+    ("Khali", &["קאלי"]),
+    // Anima.
+    ("Hoyoung", &["הויונג"]),
+    ("Lara", &["לארה"]),
+    // And the rest.
+    ("Hayato", &["האיאטו"]),
+    ("Kanna", &["קאנה"]),
+    ("Zero", &["זירו"]),
+    ("Kinesis", &["קינסיס"]),
+    ("Beast Tamer", &["BT"]),
+    ("Lynn", &["לין"]),
+    ("Ren", &[]),
+    ("Mo Xuan", &[]),
+];
+
+/// The class `text` names — read off the screen, or said by the player —
+/// as [`CLASSES`] names it; None when it names none.
+pub fn class_of(text: &str) -> Option<&'static str> {
+    static NAMES: OnceLock<HashMap<String, &'static str>> = OnceLock::new();
+    let names = NAMES.get_or_init(|| {
+        CLASSES
+            .iter()
+            .flat_map(|&(name, also)| {
+                std::iter::once(name)
+                    .chain(also.iter().copied())
+                    .map(move |said| (class_key(said), name))
+            })
+            .collect()
+    });
+    names.get(&class_key(text)).copied()
+}
+
+/// What a record holds for the class read, or said, as `text`: its name
+/// ([`class_of`]), or [`OTHER_CLASS`] — never the words themselves.
+pub fn class_or_other(text: &str) -> String {
+    class_of(text).unwrap_or(OTHER_CLASS).to_string()
+}
+
+/// `text` as it is matched with the classes' names: in lower case, with
+/// no spaces, hyphens, underscores, dots or direction marks, and one kind
+/// of apostrophe ("Night-Lord", " NIGHT  LORD " and "Night Lord" are one;
+/// so are "פייג׳" and "פייג'").
+fn class_key(text: &str) -> String {
+    text.chars()
+        .filter(|&c| {
+            !c.is_whitespace()
+                && !matches!(c, '-' | '_' | '.' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+        .map(|c| match c {
+            '\u{5f3}' | '\u{2018}' | '\u{2019}' | '`' | '\u{b4}' => '\'',
+            c => c,
+        })
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 /// The warnings said in a session, by what they were about: HP or MP low,
 /// a beating (HP falling fast), a thing the player taught past the mark
 /// they set.
@@ -190,14 +412,23 @@ pub struct SessionStats {
     /// Minutes MapleSyrup ran, and minutes the game was seen.
     pub minutes: u32,
     pub game_minutes: u32,
+    /// Levels gained, the level at the start and at the end, and their
+    /// bands ([`level_band`]) — of the last character played (see
+    /// `characters`).
     pub levels_gained: u32,
-    /// The level at the start and at the end, and their bands
-    /// ([`level_band`]).
     pub level_start: Option<u32>,
     pub level_end: Option<u32>,
     pub level_start_band: Option<String>,
     pub level_end_band: Option<String>,
-    /// The class ("Night Lord"), as the game shows it.
+    /// How many characters the session's levels followed: another
+    /// character (a level taken with another name, or a lower level)
+    /// starts the levels and the class over, so that they are the last
+    /// one's — never "167 → 9" of two (0: no level was read, or a record
+    /// kept before there was this count).
+    pub characters: u32,
+    /// The class: a name from [`CLASSES`] ("Night Lord"), or
+    /// [`OTHER_CLASS`] when it was read or said as other words — never the
+    /// words themselves.
     pub job: Option<String>,
     /// The HUD the numbers were read on: "modern" or "classic".
     pub hud: Option<String>,
@@ -246,8 +477,20 @@ pub struct SessionStats {
     pub voice_errors: u32,
 }
 
+impl SessionStats {
+    /// The record as it may be kept: its class a name from [`CLASSES`] or
+    /// [`OTHER_CLASS`] — a record kept before there was a list holds the
+    /// class as it was read, and is shown, shared and written again only
+    /// so.
+    fn tidy(mut self) -> SessionStats {
+        self.job = self.job.as_deref().map(class_or_other);
+        self
+    }
+}
+
 /// Whether the player shares, since when, and the install id made when
-/// they turned it on (`metrics/share.json`). Off unless turned on.
+/// they turned it on (`metrics/share.json`, which exists only while it is
+/// on: no file is off). Off unless turned on.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Consent {
     #[serde(default)]
@@ -303,6 +546,8 @@ pub struct SharedSession {
     pub levels_gained: u32,
     pub level_start_band: Option<String>,
     pub level_end_band: Option<String>,
+    pub characters: u32,
+    /// A name from [`CLASSES`], or [`OTHER_CLASS`].
     pub job: Option<String>,
     pub hud: Option<String>,
     pub deaths: u32,
@@ -344,7 +589,8 @@ impl SharedSession {
             levels_gained: record.levels_gained,
             level_start_band: record.level_start.map(|l| level_band(l).to_string()),
             level_end_band: record.level_end.map(|l| level_band(l).to_string()),
-            job: record.job.clone(),
+            characters: record.characters,
+            job: record.job.as_deref().map(class_or_other),
             hud: record.hud.clone(),
             deaths: record.deaths,
             warnings: record.warnings,
@@ -530,22 +776,74 @@ fn minutes(seconds: f64) -> u32 {
     (seconds.max(0.0) / 60.0).round() as u32
 }
 
-/// The words the game shows (a class, a map's name) as kept: trimmed, and
-/// only when they look like the game's — not too long, no slash (a path),
-/// no `@` (an address), no link — and contain none of `names` (the
-/// character's names, lowercased).
+/// A map's name as kept: its words, trimmed, and only when they look like
+/// the game's — not too long, no path ([`looks_like_a_path`]: the game's
+/// own " / ", as in "Victoria Road / Ellinia", is no path), no `@` (an
+/// address), no link — and contain none of `names` (the character's
+/// names, lowercased).
 fn game_text(text: &str, names: &[String]) -> Option<String> {
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let length = text.chars().count();
     let lower = text.to_lowercase();
     let looks_like_the_games = (2..=MAX_GAME_TEXT).contains(&length)
+        && !looks_like_a_path(&text)
         && !text
             .chars()
-            .any(|c| matches!(c, '\\' | '/' | '@' | '=' | '\u{0}'..='\u{1f}'))
+            .any(|c| matches!(c, '@' | '=' | '\u{0}'..='\u{1f}'))
         && !lower.contains("http")
         && !lower.contains("www.")
         && !names.iter().any(|name| lower.contains(name.as_str()));
     looks_like_the_games.then_some(text)
+}
+
+/// Whether `text` (its spaces single) looks like a file's path: a
+/// backslash (`C:\Users\…`, `\\server\…`), a `/` or a `~` first (`/home`,
+/// `~/x`), or a `/` with no space on either side (`Users/me`, `C:/x`).
+fn looks_like_a_path(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    let spaced = |at: Option<&char>| at == Some(&' ');
+    text.contains('\\')
+        || text.starts_with(['/', '~'])
+        || chars.iter().enumerate().any(|(i, &c)| {
+            c == '/'
+                && !spaced(i.checked_sub(1).and_then(|j| chars.get(j)))
+                && !spaced(chars.get(i + 1))
+        })
+}
+
+/// Why sharing could not be changed. The phone is told [`ShareError::code`]
+/// and has the words for each, in its own language.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShareError {
+    /// The operating system gave no randomness for an install id: sharing
+    /// stays off.
+    NoId,
+    /// The choice could not be saved (`share.json`): sharing stays off.
+    NotSaved,
+    /// Sharing turned off, but these files (their names, in `metrics/`)
+    /// are still on this PC: another program may be holding them.
+    NotDeleted(Vec<String>),
+}
+
+impl ShareError {
+    /// What the phone is told: a code, not words.
+    pub fn code(&self) -> &'static str {
+        match self {
+            ShareError::NoId => "no_id",
+            ShareError::NotSaved => "not_saved",
+            ShareError::NotDeleted(_) => "not_deleted",
+        }
+    }
+}
+
+/// The file of a session under way: its own, `current-<session>.json`, so
+/// that two copies of MapleSyrup at once never write over each other's.
+fn snapshot_file(session: &str) -> String {
+    let session: String = session
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    format!("current-{session}.json")
 }
 
 /// The files under `metrics/` in the settings folder, shared by the main
@@ -574,95 +872,175 @@ impl Store {
     }
 
     /// Write `text` to `name` whole or not at all: beside it, then put in
-    /// its place.
+    /// its place (what a write that failed left half done is deleted).
     fn write(&self, name: &str, text: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
         let partial = self.path(&format!("{name}.partial"));
-        std::fs::write(&partial, text)?;
-        std::fs::rename(&partial, self.path(name))
+        let written = std::fs::write(&partial, text)
+            .and_then(|()| std::fs::rename(&partial, self.path(name)));
+        if written.is_err() {
+            let _ = std::fs::remove_file(&partial);
+        }
+        written
     }
 
-    /// The records kept, the oldest first (a line that cannot be read is
-    /// skipped).
+    /// `record` written to the file `name`; whether it was.
+    fn write_record(&self, name: &str, record: &SessionStats) -> bool {
+        serde_json::to_string(record).is_ok_and(|text| self.write(name, &text).is_ok())
+    }
+
+    /// The records kept, the oldest first — a line that cannot be read is
+    /// skipped, and no file yet is none — or the error that kept the file
+    /// from being read at all: that is not "none", and the file is not to
+    /// be written over.
+    fn read_kept(&self) -> std::io::Result<Vec<SessionStats>> {
+        let bytes = match std::fs::read(self.path("sessions.jsonl")) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
+        // (Lossily: a torn line costs that line, not the others.)
+        Ok(String::from_utf8_lossy(&bytes)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<SessionStats>(line).ok())
+            .map(SessionStats::tidy)
+            .collect())
+    }
+
+    /// The records kept, the oldest first (none when they cannot be read).
     fn kept(&self) -> Vec<SessionStats> {
-        std::fs::read_to_string(self.path("sessions.jsonl"))
-            .map(|text| {
-                text.lines()
-                    .filter_map(|line| serde_json::from_str(line).ok())
-                    .collect()
-            })
-            .unwrap_or_default()
+        self.read_kept().unwrap_or_default()
     }
 
     /// `record` among the records kept, in place of the one of its session
-    /// (its snapshot, recovered after a crash), the oldest dropped past
-    /// [`KEEP_RECORDS`].
-    fn keep(&self, record: &SessionStats) {
-        let mut records = self.kept();
+    /// (its snapshot, recovered), the oldest dropped past
+    /// [`KEEP_RECORDS`]. Returns whether it landed: when the records kept
+    /// cannot be read, nothing is written (over them, with this one), and
+    /// a write that failed is no landing.
+    fn keep(&self, record: &SessionStats) -> bool {
+        let Ok(mut records) = self.read_kept() else {
+            return false;
+        };
         records.retain(|r| r.session != record.session);
-        records.push(record.clone());
+        records.push(record.clone().tidy());
         let oldest = records.len().saturating_sub(KEEP_RECORDS);
         let text: String = records[oldest..]
             .iter()
             .filter_map(|r| serde_json::to_string(r).ok())
             .map(|line| line + "\n")
             .collect();
-        let _ = self.write("sessions.jsonl", &text);
+        self.write("sessions.jsonl", &text).is_ok()
     }
 
-    /// The session under way, as last written.
-    fn current(&self) -> Option<SessionStats> {
-        std::fs::read_to_string(self.path("current.json"))
+    /// The snapshots of sessions under way, or that never finished: every
+    /// `current-<session>.json` — and `current.json`, from before there was
+    /// one per session — the last written last.
+    fn snapshot_files(&self) -> Vec<String> {
+        let mut files: Vec<(Option<std::time::SystemTime>, String)> = std::fs::read_dir(&self.dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| {
+                        let entry = entry.ok()?;
+                        let name = entry.file_name().into_string().ok()?;
+                        let snapshot = name == "current.json"
+                            || (name.starts_with("current-") && name.ends_with(".json"));
+                        let written = entry.metadata().ok().and_then(|m| m.modified().ok());
+                        snapshot.then_some((written, name))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        files.sort();
+        files.into_iter().map(|(_, name)| name).collect()
+    }
+
+    /// The session in the snapshot `name` — None when there is none in it
+    /// (and never will be) — or the error that kept it from being read now.
+    fn read_snapshot(&self, name: &str) -> std::io::Result<Option<SessionStats>> {
+        let bytes = std::fs::read(self.path(name))?;
+        Ok(serde_json::from_slice::<SessionStats>(&bytes)
             .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
+            .map(SessionStats::tidy))
     }
 
-    /// The records kept and the session under way, the newest last.
+    /// The records kept and the sessions under way (a session's snapshot
+    /// in place of its record, when one was kept: the snapshot is the
+    /// newer), the newest last.
     fn all(&self) -> Vec<SessionStats> {
         let mut records = self.kept();
-        if let Some(current) = self.current()
-            && !records.iter().any(|r| r.session == current.session)
-        {
-            records.push(current);
+        for name in self.snapshot_files() {
+            if let Ok(Some(record)) = self.read_snapshot(&name) {
+                match records.iter_mut().find(|r| r.session == record.session) {
+                    Some(kept) => *kept = record,
+                    None => records.push(record),
+                }
+            }
         }
         records
     }
 
-    /// The session under way, as it stands (`current.json`).
-    pub fn snapshot(&self, record: &SessionStats) {
+    /// The session under way, as it stands, in its own file
+    /// (`current-<session>.json`). Returns whether it was written.
+    pub fn snapshot(&self, record: &SessionStats) -> bool {
         let _guard = self.guard();
-        if let Ok(text) = serde_json::to_string(record) {
-            let _ = self.write("current.json", &text);
-        }
+        self.write_record(&snapshot_file(&record.session), record)
     }
 
-    /// The session ended: its record joins the others (in place of its
-    /// snapshot), and the export is rebuilt when sharing is on.
-    pub fn finish(&self, record: &SessionStats) {
+    /// The session ended: its record joins the others, in place of its
+    /// snapshot — which is deleted once the record has landed, and is
+    /// otherwise left, as the session ended, for the next start to
+    /// recover. The export is rebuilt when sharing is on. Returns whether
+    /// the record landed.
+    pub fn finish(&self, record: &SessionStats) -> bool {
         let _guard = self.guard();
-        self.keep(record);
-        let _ = std::fs::remove_file(self.path("current.json"));
+        let own = snapshot_file(&record.session);
+        let kept = self.keep(record);
+        let gone = kept && {
+            let path = self.path(&own);
+            std::fs::remove_file(&path).is_ok() || !path.exists()
+        };
+        if !gone {
+            // (Not kept: the next start keeps it. Kept, but the snapshot
+            // stayed: the same record, so that keeping it again changes
+            // nothing.)
+            self.write_record(&own, record);
+        }
         self.rebuild();
+        kept
     }
 
-    /// A session that never finished (a crash, a console window closed
-    /// with the X): its last snapshot joins the others, and the export is
-    /// rebuilt when sharing is on. Returns whether there was one.
-    pub fn recover(&self) -> bool {
+    /// The sessions that never finished — a crash, a console window closed
+    /// with the X, a record that could not be kept — join the others: every
+    /// snapshot but `own`'s (this session's). Each is deleted once its
+    /// record has landed, and left for the next start when it has not (one
+    /// with no session in it is deleted). The export is rebuilt when
+    /// sharing is on. Returns how many joined.
+    pub fn recover(&self, own: &str) -> usize {
         let _guard = self.guard();
-        let path = self.path("current.json");
-        if !path.exists() {
-            return false;
+        let own = snapshot_file(own);
+        let mut joined = 0;
+        for name in self.snapshot_files() {
+            if name == own {
+                continue;
+            }
+            match self.read_snapshot(&name) {
+                Ok(Some(record)) => {
+                    if self.keep(&record) {
+                        let _ = std::fs::remove_file(self.path(&name));
+                        joined += 1;
+                    }
+                }
+                Ok(None) => {
+                    let _ = std::fs::remove_file(self.path(&name));
+                }
+                // (Not readable now — held by another program: next time.)
+                Err(_) => {}
+            }
         }
-        let found = self.current();
-        if let Some(record) = &found {
-            self.keep(record);
-        }
-        let _ = std::fs::remove_file(path);
-        if found.is_some() {
+        if joined > 0 {
             self.rebuild();
         }
-        found.is_some()
+        joined
     }
 
     /// Whether the player shares, as they last said (off unless they
@@ -682,49 +1060,77 @@ impl Store {
 
     /// Sharing on (`today`: the day it starts from) or off. On, it gets an
     /// install id and the export is built at once; turned on again, the
-    /// same id and day stand. Off, the export and the id are deleted.
-    pub fn set_sharing(&self, on: bool, today: NaiveDate) -> Result<Consent, String> {
+    /// same id and day stand. Off, as "Delete it" ([`Store::delete_shared`]).
+    pub fn set_sharing(&self, on: bool, today: NaiveDate) -> Result<Consent, ShareError> {
         let _guard = self.guard();
         if !on {
-            return Ok(self.turn_off());
+            return self.turn_off().map(|()| Consent::default());
         }
         let consent = self.read_consent();
         if consent.on {
             return Ok(consent);
         }
-        let id = new_install_id().ok_or("this PC gave no randomness for an install id")?;
+        let id = new_install_id().ok_or(ShareError::NoId)?;
         let consent = Consent {
             on: true,
             since: Some(today.format("%Y-%m-%d").to_string()),
             id: Some(id),
         };
-        let text = serde_json::to_string_pretty(&consent).map_err(|e| e.to_string())?;
+        let text = serde_json::to_string_pretty(&consent).map_err(|_| ShareError::NotSaved)?;
         self.write("share.json", &text)
-            .map_err(|e| format!("couldn't save the choice: {e}"))?;
+            .map_err(|_| ShareError::NotSaved)?;
         self.rebuild();
         Ok(consent)
     }
 
-    /// "Delete it": sharing off, the export and the install id deleted.
-    pub fn delete_shared(&self) -> Consent {
+    /// "Delete it": sharing off — the choice (`share.json`: no file is
+    /// off), the export with its install id, and any half-written file
+    /// deleted. An error names the files still on this PC.
+    pub fn delete_shared(&self) -> Result<Consent, ShareError> {
         let _guard = self.guard();
-        self.turn_off()
+        self.turn_off().map(|()| Consent::default())
     }
 
-    fn turn_off(&self) -> Consent {
-        let consent = Consent::default();
-        if let Ok(text) = serde_json::to_string_pretty(&consent) {
-            let _ = self.write("share.json", &text);
+    /// Sharing off: `share.json`, `share-export.json` and every `*.partial`
+    /// (what a write that failed left half done, which may hold the id)
+    /// deleted, then looked for: an error names what is still there.
+    fn turn_off(&self) -> Result<(), ShareError> {
+        let mut files = vec!["share.json".to_string(), "share-export.json".to_string()];
+        files.extend(
+            std::fs::read_dir(&self.dir)
+                .map(|entries| {
+                    entries
+                        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+                        .filter(|name| name.ends_with(".partial"))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        );
+        let mut left = Vec::new();
+        for name in files {
+            let path = self.path(&name);
+            if std::fs::remove_file(&path).is_err() {
+                // (A folder by that name goes too, when it is empty.)
+                let _ = std::fs::remove_dir(&path);
+            }
+            if std::fs::symlink_metadata(&path).is_ok() {
+                left.push(name);
+            }
         }
-        let _ = std::fs::remove_file(self.path("share-export.json"));
-        consent
+        if left.is_empty() {
+            Ok(())
+        } else {
+            Err(ShareError::NotDeleted(left))
+        }
     }
 
     /// The export rebuilt from the records since sharing was turned on —
-    /// only while it is on.
+    /// only while it is on. While it is off there is none: one left behind
+    /// by a deletion that failed goes now.
     fn rebuild(&self) {
         let consent = self.read_consent();
         if !consent.on {
+            let _ = std::fs::remove_file(self.path("share-export.json"));
             return;
         }
         let export = build_export(&self.all(), &consent);
@@ -827,17 +1233,27 @@ pub struct Stats {
     /// The character's names (lowercased), to keep out of the words kept:
     /// held here, never written.
     names: Vec<String>,
+    /// The class as last read (held here, never written: what is kept is
+    /// a name from [`CLASSES`], or [`OTHER_CLASS`]).
+    job_read: Option<String>,
+    /// The level the companion last took, the character's name then
+    /// (lowercased; held here, never written), and the level-ups the
+    /// companion had counted when the last character's began.
+    level_taken: Option<u32>,
+    character: Option<String>,
+    levels_before: u32,
     /// Time to the first words of each reply, in milliseconds.
     latencies: Vec<u32>,
 }
 
 impl Stats {
     /// The session's stats, starting now, kept in the settings folder
-    /// `settings`. A session that never finished (a crash, a closed
-    /// window) joins the others first.
+    /// `settings`. The sessions that never finished (a crash, a closed
+    /// window, a record that could not be kept) join the others first.
     pub fn start(settings: &Path) -> Stats {
         let store = Store::new(settings);
-        store.recover();
+        let session = crate::phone::tls::random_hex(8);
+        store.recover(&session);
         let sharing = store.consent().on;
         let commit: String = env!("MS_COMMIT")
             .chars()
@@ -846,7 +1262,7 @@ impl Stats {
             .collect();
         Stats {
             record: SessionStats {
-                session: crate::phone::tls::random_hex(8),
+                session,
                 day: chrono::Local::now().format("%Y-%m-%d").to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 commit: if commit.len() >= 7 {
@@ -872,6 +1288,10 @@ impl Stats {
             looked: None,
             map: None,
             names: Vec::new(),
+            job_read: None,
+            level_taken: None,
+            character: None,
+            levels_before: 0,
             latencies: Vec::new(),
         }
     }
@@ -897,15 +1317,21 @@ impl Stats {
         if let Some(name) = &obs.name {
             self.know_name(name);
         }
-        if let Some(job) = &obs.job
-            && self.record.job.as_deref() != Some(job.trim())
-            && let Some(job) = game_text(job, &self.names)
+        self.follow_character(obs, companion);
+        if let Some(read) = obs.job.as_deref().map(str::trim).filter(|j| !j.is_empty())
+            && self.job_read.as_deref() != Some(read)
         {
-            self.record.job = Some(job);
-        }
-        if let Some(level) = companion.level() {
-            self.record.level_start.get_or_insert(level);
-            self.record.level_end = Some(level);
+            self.job_read = Some(read.to_string());
+            // A class's name; else "other" — which never takes the place of
+            // a class read before (a misread since, the player's words).
+            match class_of(read) {
+                Some(class) => self.record.job = Some(class.to_string()),
+                None => {
+                    self.record
+                        .job
+                        .get_or_insert_with(|| OTHER_CLASS.to_string());
+                }
+            }
         }
         let hp = obs.hp.map(|g| g.percent);
         if self.close_calls.track(at, hp, companion.dead()).is_some() {
@@ -917,11 +1343,55 @@ impl Stats {
         if at - self.progress_at >= PROGRESS_EVERY {
             self.progress_at = at;
             let progress = companion.progress();
-            self.record.levels_gained = progress.levels_gained;
+            self.record.levels_gained = progress.levels_gained.saturating_sub(self.levels_before);
             if let Some(rate) = progress.exp_per_hour.filter(|r| r.is_finite()) {
                 self.record.exp_per_hour = Some(((rate * 100.0).round() / 100.0) as f32);
             }
             self.record.attitude = companion.settings.attitude.word().to_string();
+        }
+    }
+
+    /// The level, as the companion takes it, and whose it is. Another
+    /// character — a level taken with another name than the last one's,
+    /// or a lower level: the companion's own "another character" — starts
+    /// the levels and the class over, and is counted (`characters`): a
+    /// session is one run of MapleSyrup, its minutes, words and errors
+    /// the run's, but its levels and class are a character's, the last
+    /// one played.
+    fn follow_character(&mut self, obs: &Observation, companion: &Companion) {
+        // (Only when it is needed: a level taken, or no name yet.)
+        let name = || {
+            obs.name
+                .as_deref()
+                .map(|n| n.trim().to_lowercase())
+                .filter(|n| !n.is_empty())
+        };
+        let level = companion.level();
+        if level != self.level_taken {
+            let name = name();
+            if let (Some(before), Some(now)) = (self.level_taken, level) {
+                let renamed =
+                    matches!((&self.character, &name), (Some(then), Some(seen)) if then != seen);
+                if renamed || now < before {
+                    self.record.characters += 1;
+                    self.record.level_start = None;
+                    self.record.levels_gained = 0;
+                    self.levels_before = companion.so_far().level_ups;
+                    self.record.job = None;
+                    self.job_read = None;
+                }
+            }
+            self.level_taken = level;
+            if name.is_some() {
+                self.character = name;
+            }
+        } else if self.character.is_none() {
+            self.character = name();
+        }
+        if let Some(level) = level {
+            self.record.characters = self.record.characters.max(1);
+            self.record.level_start.get_or_insert(level);
+            self.record.level_end = Some(level);
         }
     }
 
@@ -1046,8 +1516,8 @@ impl Stats {
     }
 
     /// The record as of now (`coach`: its looks and lines; `language`:
-    /// the phone's locale). The words kept are checked once more against
-    /// every name known by now.
+    /// the phone's locale). The maps' names are checked once more against
+    /// every name known by now, and the class against the list.
     pub fn record(&self, coach: &Coach, language: Option<&str>) -> SessionStats {
         let mut record = self.record.clone();
         record.minutes = minutes(self.now);
@@ -1071,7 +1541,7 @@ impl Stats {
         if record.attitude.is_empty() {
             record.attitude = crate::companion::Attitude::default().word().to_string();
         }
-        record.job = record.job.and_then(|job| game_text(&job, &self.names));
+        record.job = record.job.as_deref().map(class_or_other);
         record.maps = std::mem::take(&mut record.maps)
             .into_iter()
             .filter_map(|(map, n)| game_text(&map, &self.names).map(|map| (map, n)))
@@ -1087,10 +1557,11 @@ impl Stats {
         }
     }
 
-    /// The session ended: its record kept, and the export rebuilt when
-    /// sharing is on.
-    pub fn finish(&mut self, coach: &Coach, language: Option<&str>) {
-        self.store.finish(&self.record(coach, language));
+    /// The session ended: its record kept — or, when it cannot be, left
+    /// for the next start — and the export rebuilt when sharing is on.
+    /// Returns whether it was kept.
+    pub fn finish(&mut self, coach: &Coach, language: Option<&str>) -> bool {
+        self.store.finish(&self.record(coach, language))
     }
 }
 
@@ -1169,6 +1640,7 @@ mod tests {
             level_end: Some(154),
             level_start_band: Some("141-200".into()),
             level_end_band: Some("141-200".into()),
+            characters: 1,
             job: Some("Night Lord".into()),
             hud: Some("modern".into()),
             deaths: 1,
@@ -1409,20 +1881,20 @@ mod tests {
         assert_eq!(view.export.unwrap().install_id.as_deref(), Some(&*id));
         // Turned on again: the same id and day.
         assert_eq!(store.set_sharing(true, day("2026-10-20")).unwrap(), on);
-        // Off: the export and the id are deleted.
+        // Off: the choice, the export and the id are deleted (no
+        // `share.json` is off).
         assert_eq!(
-            store.set_sharing(false, day("2026-10-21")).unwrap(),
-            Consent::default()
+            store.set_sharing(false, day("2026-10-21")),
+            Ok(Consent::default())
         );
         assert!(!export.exists());
         assert!(store.export().is_none());
-        let saved = std::fs::read_to_string(settings.join("metrics").join("share.json")).unwrap();
-        assert!(!saved.contains(&id), "{saved}");
+        assert!(!settings.join("metrics").join("share.json").exists());
         // On again: a new id. "Delete it": off, and the export and the id gone.
         let again = store.set_sharing(true, day("2026-10-22")).unwrap();
         assert_ne!(again.id, on.id);
         assert!(export.exists());
-        assert_eq!(store.delete_shared(), Consent::default());
+        assert_eq!(store.delete_shared(), Ok(Consent::default()));
         assert!(!export.exists());
         assert_eq!(store.consent(), Consent::default());
         // The stats themselves stay (they never leave the PC).
@@ -1433,10 +1905,13 @@ mod tests {
     #[test]
     fn a_session_is_written_as_it_goes_and_kept_after_a_crash_once() {
         let settings = temp_dir("crash");
-        // A session under way writes its snapshot every minute.
+        // A session under way writes its snapshot every minute, to its own
+        // file.
         let mut stats = Stats::start(&settings);
         let coach = Coach::new(true);
-        let current = settings.join("metrics").join("current.json");
+        let current = settings
+            .join("metrics")
+            .join(format!("current-{}.json", stats.record.session));
         stats.phone(30.0, true, false);
         stats.save_every(&coach, None);
         assert!(!current.exists(), "not before the first minute");
@@ -1460,14 +1935,197 @@ mod tests {
         assert_ne!(kept[0].session, next.record.session);
         // A session's end replaces its snapshot, never doubles it.
         let mut stats = next;
+        let current = settings
+            .join("metrics")
+            .join(format!("current-{}.json", stats.record.session));
         stats.phone(61.0, false, false);
         stats.save_every(&coach, None);
+        assert!(current.exists());
         stats.said();
-        stats.finish(&coach, None);
+        assert!(stats.finish(&coach, None));
         let kept = Store::new(&settings).kept();
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[1].sentences, 1);
         assert!(!current.exists());
+        // A snapshot from before there was one per session (`current.json`)
+        // is kept at the next start too.
+        let older = full_record("s-older", "2026-10-08");
+        std::fs::write(
+            settings.join("metrics").join("current.json"),
+            serde_json::to_string(&older).unwrap(),
+        )
+        .unwrap();
+        let _later = Stats::start(&settings);
+        assert!(!settings.join("metrics").join("current.json").exists());
+        assert_eq!(Store::new(&settings).kept().len(), 3);
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
+    #[test]
+    fn a_session_whose_record_cannot_be_kept_is_kept_at_the_next_start() {
+        // `sessions.jsonl` cannot be written (on Windows: another program
+        // holds it; here a folder where its half-written file goes — w32's
+        // p21 C1): the session's end leaves its snapshot, as the session
+        // ended, and the phone still has it; the next start that can keep
+        // it does, once.
+        let settings = temp_dir("unkept");
+        let metrics = settings.join("metrics");
+        let coach = Coach::new(true);
+        let mut stats = Stats::start(&settings);
+        let own = metrics.join(format!("current-{}.json", stats.record.session));
+        stats.phone(90.0, true, false);
+        stats.said();
+        stats.save_every(&coach, None);
+        stats.said();
+        std::fs::create_dir_all(metrics.join("sessions.jsonl.partial")).unwrap();
+        assert!(!stats.finish(&coach, None));
+        let left: SessionStats = serde_json::from_slice(&std::fs::read(&own).unwrap()).unwrap();
+        assert_eq!(left.sentences, 2, "the session as it ended");
+        let shown = Store::new(&settings).stats_view(SHOWN_SESSIONS).sessions;
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].sentences, 2);
+        // The next start cannot keep it either (p21 C1b): still left.
+        drop(Stats::start(&settings));
+        assert!(own.exists());
+        assert_eq!(Store::new(&settings).kept().len(), 0);
+        // Once it can be written, the next start keeps it, once.
+        std::fs::remove_dir(metrics.join("sessions.jsonl.partial")).unwrap();
+        let third = Stats::start(&settings);
+        assert!(!own.exists());
+        let kept = Store::new(&settings).kept();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].sentences, 2);
+        assert_eq!(third.store().stats_view(SHOWN_SESSIONS).sessions.len(), 1);
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
+    #[test]
+    fn a_torn_line_in_the_kept_records_costs_that_line_not_the_others() {
+        // A record cut off half way (a power cut mid-write on an older
+        // copy; a byte that is not text): the others stay when the next
+        // session joins them — never all of them written over with it.
+        let settings = temp_dir("torn");
+        let metrics = settings.join("metrics");
+        std::fs::create_dir_all(&metrics).unwrap();
+        let mut bytes = Vec::new();
+        for session in ["s0", "s1"] {
+            bytes.extend(serde_json::to_vec(&full_record(session, "2026-10-08")).unwrap());
+            bytes.push(b'\n');
+        }
+        bytes.extend(b"{\"session\":\"s2\",\"day\":\"2026-10-0\xff\xfe");
+        bytes.push(b'\n');
+        std::fs::write(metrics.join("sessions.jsonl"), bytes).unwrap();
+        let store = Store::new(&settings);
+        assert!(store.finish(&full_record("s3", "2026-10-09")));
+        let sessions: Vec<String> = store.kept().into_iter().map(|r| r.session).collect();
+        assert_eq!(sessions, ["s0", "s1", "s3"]);
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
+    #[test]
+    fn two_copies_at_once_keep_both_sessions_and_neither_twice() {
+        // Two copies of MapleSyrup on one settings folder (w32's p21 C2):
+        // each writes its own snapshot; the second's start keeps the
+        // first's (running, so its end replaces it); the first's end
+        // deletes only its own; the second, closed with the X, is kept at
+        // the next start.
+        let settings = temp_dir("two");
+        let metrics = settings.join("metrics");
+        let coach = Coach::new(true);
+        let mut a = Stats::start(&settings);
+        a.phone(61.0, true, false);
+        a.said();
+        a.save_every(&coach, None);
+        let mut b = Stats::start(&settings);
+        b.phone(61.0, true, false);
+        for _ in 0..5 {
+            b.said();
+        }
+        b.save_every(&coach, None);
+        a.phone(130.0, true, false);
+        assert!(a.finish(&coach, None));
+        let snapshots = || {
+            std::fs::read_dir(&metrics)
+                .unwrap()
+                .filter(|e| {
+                    let name = e.as_ref().unwrap().file_name();
+                    name.to_string_lossy().starts_with("current")
+                })
+                .count()
+        };
+        assert_eq!(
+            snapshots(),
+            1,
+            "the first copy's end took the second's snapshot"
+        );
+        drop(b);
+        let _c = Stats::start(&settings);
+        assert_eq!(snapshots(), 0);
+        let mut sentences: Vec<u32> = Store::new(&settings)
+            .kept()
+            .iter()
+            .map(|r| r.sentences)
+            .collect();
+        sentences.sort_unstable();
+        assert_eq!(sentences, [1, 5]);
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
+    #[test]
+    fn turning_sharing_off_deletes_every_file_of_it_and_never_fails_silently() {
+        let settings = temp_dir("withdraw");
+        let metrics = settings.join("metrics");
+        let store = Store::new(&settings);
+        store.finish(&full_record("s0", "2026-10-09"));
+        let id = store
+            .set_sharing(true, day("2026-10-01"))
+            .unwrap()
+            .id
+            .unwrap();
+        // What writes that failed half way left behind, with the id in it;
+        // and `share.json` that cannot be written (a folder where its
+        // half-written file goes: w32's p21 C3, where "Delete it" said
+        // "Deleted" and the next session rebuilt the export under the id).
+        std::fs::write(metrics.join("share-export.json.partial"), &id).unwrap();
+        std::fs::create_dir_all(metrics.join("share.json.partial")).unwrap();
+        assert_eq!(store.delete_shared(), Ok(Consent::default()));
+        assert_eq!(store.consent(), Consent::default());
+        for name in [
+            "share.json",
+            "share-export.json",
+            "share-export.json.partial",
+            "share.json.partial",
+        ] {
+            assert!(!metrics.join(name).exists(), "{name} is still there");
+        }
+        // The next session's end rebuilds nothing, and no file holds the id.
+        store.finish(&full_record("s1", "2026-10-10"));
+        assert!(!metrics.join("share-export.json").exists());
+        assert!(store.export().is_none());
+        for entry in std::fs::read_dir(&metrics).unwrap() {
+            let path = entry.unwrap().path();
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            assert!(!text.contains(&id), "{} holds the id", path.display());
+        }
+        // A file that cannot be deleted (held by another program; here a
+        // folder that is not empty in the export's place): turning sharing
+        // off says so, naming it — the choice itself is gone, so sharing is
+        // off — and "Delete it" says so again until it can go.
+        store.set_sharing(true, day("2026-10-11")).unwrap();
+        let export = metrics.join("share-export.json");
+        std::fs::remove_file(&export).unwrap();
+        std::fs::create_dir_all(export.join("held")).unwrap();
+        let left = Err(ShareError::NotDeleted(vec!["share-export.json".into()]));
+        assert_eq!(store.set_sharing(false, day("2026-10-12")), left);
+        assert_eq!(store.consent(), Consent::default());
+        assert_eq!(store.delete_shared(), left);
+        std::fs::remove_dir_all(&export).unwrap();
+        assert_eq!(store.delete_shared(), Ok(Consent::default()));
+        assert_eq!(
+            std::fs::read_dir(&metrics).unwrap().count(),
+            1,
+            "sessions.jsonl only"
+        );
         let _ = std::fs::remove_dir_all(&settings);
     }
 
@@ -1631,6 +2289,23 @@ mod tests {
         assert_eq!(game_text("me@example.com", &names), None);
         assert_eq!(game_text("WanWan's map", &names), None);
         assert_eq!(game_text(&"x".repeat(60), &names), None);
+        // A path is no map; the game's own " / " is (w32's S5: his Classic
+        // maps were never counted).
+        assert_eq!(
+            game_text("Victoria Road  /  Ellinia", &names).as_deref(),
+            Some("Victoria Road / Ellinia")
+        );
+        for path in [
+            r"\\pc\share",
+            "/home/me",
+            "~/maps",
+            "Users/me",
+            "C:/Users",
+            "Documents/",
+            "Road /x/y",
+        ] {
+            assert_eq!(game_text(path, &names), None, "{path}");
+        }
         let a = new_install_id().unwrap();
         let b = new_install_id().unwrap();
         assert_ne!(a, b);
@@ -1638,5 +2313,243 @@ mod tests {
             a.chars().all(|c| c.is_ascii_hexdigit() || c == '-') && a.matches('-').count() == 4,
             "{a}"
         );
+    }
+
+    #[test]
+    fn the_class_is_a_name_from_the_list_or_other_never_the_words() {
+        // w32's p21 B: the class as read off the screen (the name beside it,
+        // misread, a guild tag, a chat line) or as the player said it, his
+        // name known as WanWanBoggio. A record, its file and the export hold
+        // a class's name or "other" — never the words.
+        let coach = Coach::new(true);
+        for (read, kept) in [
+            ("Night Lord", "Night Lord"),
+            ("  night   LORD ", "Night Lord"),
+            ("נייט לורד", "Night Lord"),
+            ("Night Lord WanWan", OTHER_CLASS),
+            ("WanWanBoggi Night Lord", OTHER_CLASS),
+            ("WANWANBUJIO Beginner", OTHER_CLASS),
+            ("Bishop, my girlfriend's account", OTHER_CLASS),
+            ("Hero from Moshav Livnim", OTHER_CLASS),
+            ("Night Lord [Guild: Livnim]", OTHER_CLASS),
+            ("Michael's thief", OTHER_CLASS),
+            ("WanWan: selling pots 5m DM me", OTHER_CLASS),
+        ] {
+            let settings = temp_dir("class");
+            let mut stats = Stats::start(&settings);
+            let mut companion = Companion::seeded(Settings::default(), 7);
+            for i in 0..20 {
+                let t = i as f64 * 0.1;
+                let obs = seen(90.0, 167, "WanWanBoggio", read, "MapleStory");
+                companion.observe(t, obs.clone());
+                stats.frame(t, &obs, &companion);
+            }
+            assert_eq!(
+                stats.record(&coach, None).job.as_deref(),
+                Some(kept),
+                "{read}"
+            );
+            stats.finish(&coach, Some("he-IL"));
+            let store = Store::new(&settings);
+            store.set_sharing(true, day("2000-01-01")).unwrap();
+            let export = store.export().unwrap();
+            assert_eq!(export.sessions[0].job.as_deref(), Some(kept), "{read}");
+            let files: String = ["sessions.jsonl", "share-export.json"]
+                .iter()
+                .map(|f| std::fs::read_to_string(settings.join("metrics").join(f)).unwrap())
+                .collect();
+            if read.trim() != kept {
+                assert!(!files.contains(read.trim()), "{read:?} in {files}");
+            }
+            for word in ["WanWan", "Livnim", "Michael", "girlfriend", "DM me", "נייט"] {
+                assert!(!files.contains(word), "{word:?} in {files}");
+            }
+            let _ = std::fs::remove_dir_all(&settings);
+        }
+        // A class read before stays when other words are read after it (a
+        // misread, the player's words); "other" only when no class was.
+        let settings = temp_dir("class-kept");
+        let mut stats = Stats::start(&settings);
+        let companion = Companion::seeded(Settings::default(), 7);
+        for (i, read) in [
+            "Hermit",
+            "Night Lord [Guild: Livnim]",
+            "Night Lord",
+            "Michael's thief",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let obs = seen(90.0, 120, "WanWanBoggio", read, "MapleStory");
+            stats.frame(i as f64, &obs, &companion);
+        }
+        assert_eq!(
+            stats.record(&coach, None).job.as_deref(),
+            Some("Night Lord")
+        );
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
+    #[test]
+    fn the_classes_are_matched_whole_in_any_case_spacing_and_in_hebrew() {
+        for (name, also) in CLASSES {
+            assert_eq!(class_of(name), Some(*name));
+            assert_eq!(class_of(&name.to_uppercase()), Some(*name));
+            for said in *also {
+                assert_eq!(class_of(said), Some(*name), "{said}");
+            }
+        }
+        // No two classes are written alike.
+        let mut written = HashMap::new();
+        for (name, also) in CLASSES {
+            for said in std::iter::once(name).chain(also.iter()) {
+                if let Some(other) = written.insert(class_key(said), *name) {
+                    assert_eq!(other, *name, "{said:?} is two classes'");
+                }
+            }
+        }
+        for (said, class) in [
+            ("night-lord", Some("Night Lord")),
+            ("NightLord", Some("Night Lord")),
+            ("\u{200f}נייט לורד\u{200f}", Some("Night Lord")),
+            ("פייג׳", Some("Page")),
+            ("Arch Mage (Fire, Poison)", Some("Arch Mage (F/P)")),
+            ("arch mage(i/l)", Some("Arch Mage (I/L)")),
+            ("Crossbow Master", Some("Marksman")),
+            ("Rogue", Some("Thief")),
+            ("Dragon Knight", Some("Dragon Knight")),
+            ("Night Lords", None),
+            ("Lord", None),
+            ("", None),
+            ("   ", None),
+        ] {
+            assert_eq!(class_of(said), class, "{said:?}");
+        }
+        assert_eq!(class_or_other("Michael's thief"), OTHER_CLASS);
+        assert_eq!(class_or_other(OTHER_CLASS), OTHER_CLASS);
+    }
+
+    #[test]
+    fn a_class_kept_before_the_list_is_shown_and_shared_as_a_name_or_other() {
+        // A record kept by a copy from before the list holds the class as it
+        // was read: the phone, the export and the file written next hold
+        // its name, or "other".
+        let settings = temp_dir("class-older");
+        let metrics = settings.join("metrics");
+        std::fs::create_dir_all(&metrics).unwrap();
+        let mut older = full_record("s0", "2026-10-09");
+        older.job = Some("Michael's thief".into());
+        let mut named = full_record("s1", "2026-10-09");
+        named.job = Some("night lord".into());
+        let lines: String = [older, named]
+            .iter()
+            .map(|r| serde_json::to_string(r).unwrap() + "\n")
+            .collect();
+        std::fs::write(metrics.join("sessions.jsonl"), lines).unwrap();
+        let store = Store::new(&settings);
+        let shown: Vec<Option<String>> = store
+            .stats_view(SHOWN_SESSIONS)
+            .sessions
+            .into_iter()
+            .map(|s| s.job)
+            .collect();
+        assert_eq!(shown, [Some("Night Lord".into()), Some(OTHER_CLASS.into())]);
+        let preview = store.share_view().export.unwrap();
+        let jobs: Vec<Option<&str>> = preview.sessions.iter().map(|s| s.job.as_deref()).collect();
+        assert_eq!(jobs, [Some(OTHER_CLASS), Some("Night Lord")]);
+        assert!(store.finish(&full_record("s2", "2026-10-10")));
+        let file = std::fs::read_to_string(metrics.join("sessions.jsonl")).unwrap();
+        assert!(
+            !file.contains("Michael") && !file.contains("night lord"),
+            "{file}"
+        );
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
+    #[test]
+    fn a_map_written_with_a_slash_between_spaces_is_counted() {
+        // How the sight reads his Classic maps: counted, by name on this PC
+        // and as a count in the export.
+        let settings = temp_dir("slash");
+        let mut stats = Stats::start(&settings);
+        let coach = Coach::new(true);
+        let sight = Arc::new(Mutex::new(Sight::load(&settings.join("learned"))));
+        sight.lock().unwrap().facts.map = Some("Victoria Road / Ellinia".into());
+        stats.look(Some(&sight), None);
+        let record = stats.record(&coach, None);
+        assert_eq!(
+            record.maps,
+            BTreeMap::from([("Victoria Road / Ellinia".to_string(), 1)])
+        );
+        assert_eq!(SharedSession::of(&record).unwrap().maps, 1);
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
+    #[test]
+    fn another_character_starts_the_levels_and_the_class_over() {
+        // His log, 11:19:03: "Level 9 now, from 167 (another character)".
+        // The record is the last character's levels and class — never
+        // "167 → 9" — and counts the characters.
+        let settings = temp_dir("characters");
+        let mut stats = Stats::start(&settings);
+        let mut companion = Companion::seeded(Settings::default(), 7);
+        let coach = Coach::new(true);
+        let mut t = 0.0;
+        let mut play = |secs: f64, level: u32, name: Option<&str>, job: &str| {
+            let mut obs = seen(90.0, level, name.unwrap_or(""), job, "MapleStory");
+            obs.name = name.map(String::from);
+            for _ in 0..(secs * 10.0) as usize {
+                companion.observe(t, obs.clone());
+                stats.frame(t, &obs, &companion);
+                t += 0.1;
+            }
+            let record = stats.record(&coach, None);
+            (
+                record.level_start,
+                record.level_end,
+                record.characters,
+                record.job,
+                record.levels_gained,
+            )
+        };
+        let class = |name: &str| Some(name.to_string());
+        // His main, and a level-up of it: one character.
+        assert_eq!(
+            play(10.0, 167, Some("WanWanBoggio"), "Night Lord"),
+            (Some(167), Some(167), 1, class("Night Lord"), 0)
+        );
+        assert_eq!(
+            play(35.0, 168, Some("WanWanBoggio"), "Night Lord"),
+            (Some(167), Some(168), 1, class("Night Lord"), 1)
+        );
+        // Another character (another name): its levels and its class.
+        assert_eq!(
+            play(35.0, 9, Some("WanLittle"), "Beginner"),
+            (Some(9), Some(9), 2, class("Beginner"), 0)
+        );
+        assert_eq!(
+            play(35.0, 10, Some("WanLittle"), "Beginner"),
+            (Some(9), Some(10), 2, class("Beginner"), 1)
+        );
+        // Back to the first: the third character played.
+        assert_eq!(
+            play(10.0, 168, Some("WanWanBoggio"), "Night Lord"),
+            (Some(168), Some(168), 3, class("Night Lord"), 0)
+        );
+        // A lower level with no name read: another character too.
+        assert_eq!(
+            play(40.0, 30, None, "Hermit"),
+            (Some(30), Some(30), 4, class("Hermit"), 0)
+        );
+        let record = stats.record(&coach, None);
+        assert_eq!(
+            (
+                record.level_start_band.as_deref(),
+                record.level_end_band.as_deref()
+            ),
+            (Some("11-30"), Some("11-30"))
+        );
+        assert_eq!(SharedSession::of(&record).unwrap().characters, 4);
+        let _ = std::fs::remove_dir_all(&settings);
     }
 }

@@ -3,9 +3,12 @@ errors, the main screen shows only the essentials (the language picker
 among them), the gear opens Settings, the voice search narrows the list,
 the live-call toggle flipped before Listen says hello again, sharing play
 stats starts off (on posts it, the view is JSON with no name in it,
-"Delete it" posts the delete), the game line opens Details (the last
-sessions in a table), Hebrew is right to left (and at 320 px the game line loses
-its end, not the level); then the turn-taking, with a stand-in speech
+"Delete it" posts the delete and says "Deleted" only on the PC's ok — a
+delete the PC fails says so, in the page's words, in English and Hebrew,
+as does a turn-on refused for the age box), the game line opens Details
+(the last sessions in a table, "Levels up"), Hebrew is right to left (and
+at 320 px the game line loses its end, not the level); then the
+turn-taking, with a stand-in speech
 recognizer, a stand-in call and a microphone fed from a file: the words so
 far never land after the sentence, a sentence cut off by a clip is still
 sent, a loud sound over a clip pauses it until the PC's word, a PC started
@@ -98,11 +101,14 @@ INSTRUCTIONS = "You are MapleSyrup. Your attitude: friendly."
 # fails to open.
 LIVE = {"opens": True}
 # The stand-in PC's play stats: whether the player shares (off unless
-# turned on), a session as the export has it (the fields of
-# `metrics::EXPORT_FIELDS`), and the last sessions for Details.
+# turned on), how many of the next deletions it fails (a file of it still on
+# the PC: 500 and the code, as the PC answers), a session as the export has
+# it (the fields of `metrics::EXPORT_FIELDS`), and the last sessions for
+# Details.
 SHARE = {"on": False}
+SHARE_FAILS = {"left": 0}
 SHARED_SESSION = {"week": "2026-W41", "minutes": 95, "game_minutes": 90, "levels_gained": 2, "level_start_band": "141-200",
-                  "level_end_band": "141-200", "job": "Night Lord", "hud": "modern", "deaths": 1,
+                  "level_end_band": "141-200", "characters": 1, "job": "Night Lord", "hud": "modern", "deaths": 1,
                   "warnings": {"hp_low": 3, "mp_low": 1, "beating": 2, "taught": 0}, "close_calls": 1, "potions_answered": 0.7,
                   "exp_per_hour": 1.2, "maps": 4, "map_visits": 9, "sentences": 40, "replies": 38, "reply_ms_median": 1200,
                   "instant_answers": 5, "call_minutes": 60, "clip_minutes": 20, "coach_looks": 30, "coach_lines": 9, "attitude": "savage",
@@ -161,10 +167,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/live" and not LIVE["opens"]: self._send(200, b'{"error": "no key"}', "application/json")
         elif path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "attitude": "savage"}).encode(), "application/json")
         elif path == "/sdp": self._send(200, b"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n", "application/sdp")
-        elif path == "/api/share" and isinstance((body or {}).get("on"), bool):
-            SHARE["on"] = body["on"]; self._send(200, json.dumps({"ok": True, "share": {"on": SHARE["on"]}}).encode(), "application/json")
-        elif path == "/api/share/delete":
-            SHARE["on"] = False; self._send(200, json.dumps({"ok": True, "share": {"on": False}}).encode(), "application/json")
+        elif path in ("/api/share", "/api/share/delete"):
+            # As the PC answers: a code for what went wrong (the page has the
+            # words), never ok while a file of it is left.
+            on = (body or {}).get("on") if path == "/api/share" else False
+            if not isinstance(on, bool): self._send(400, b'{"error": "bad_request"}', "application/json")
+            elif on and (body or {}).get("adult") is not True: self._send(400, b'{"error": "adult_only"}', "application/json")
+            elif not on and SHARE_FAILS["left"] > 0:
+                SHARE_FAILS["left"] -= 1
+                self._send(500, json.dumps({"error": "not_deleted", "left": ["share-export.json"]}).encode(), "application/json")
+            else: SHARE["on"] = on; self._send(200, json.dumps({"ok": True, "share": {"on": on}}).encode(), "application/json")
         else: self._send(200, b'{"ok":true}', "application/json")
 
 socketserver.ThreadingTCPServer.allow_reuse_address = True
@@ -220,7 +232,14 @@ FAKES = """
 
 errors = []
 def watch(page):
-    page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
+    def console(m):
+        if m.type != "error": return
+        # (The stand-in PC refuses a share change on purpose — 500 for a
+        # file left, 400 for the age box — and the browser logs each answer
+        # it loads: those are what is checked, not errors.)
+        if m.text.startswith("Failed to load resource") and urlparse((m.location or {}).get("url", "")).path in ("/api/share", "/api/share/delete"): return
+        errors.append(m.text)
+    page.on("console", console)
     page.on("pageerror", lambda e: errors.append(str(e)))
 
 def requests_since(t0, path=None):
@@ -318,10 +337,23 @@ def ui_checks(browser):
     assert not [k for k in keys_of(shown) if "name" in k], keys_of(shown)
     assert page.is_checked("#shareBox")
     page.locator("#shareCard").screenshot(path=os.path.join(SHOTS, "phone-share-card.png"))
+    # The PC fails the next "Delete it" (a file of it is still there: 500,
+    # once): the page says so in its own words, never "Deleted", and the
+    # toggle shows what the PC has — still sharing.
+    SHARE_FAILS["left"] = 1
+    t_fail = time.time()
+    page.click("#shareDelete")
+    wait_for(lambda: requests_since(t_fail, "/api/share/delete"), 3, "Delete it did not post /api/share/delete")
+    wait_for(lambda: page.inner_text("#shareState"), 3, "a delete the PC failed said nothing")
+    state = page.inner_text("#shareState")
+    assert state.startswith("Not deleted: a file of it is still on the PC") and not state.startswith("Deleted"), state
+    wait_for(lambda: page.is_checked("#shareBox"), 3, "after a failed delete the toggle did not show the PC still sharing")
+    assert SHARE["on"] and not SHARE_FAILS["left"]
+    page.locator("#shareCard").screenshot(path=os.path.join(SHOTS, "phone-share-not-deleted.png"))
     t_delete = time.time()
     page.click("#shareDelete")
     wait_for(lambda: requests_since(t_delete, "/api/share/delete"), 3, "Delete it did not post /api/share/delete")
-    page.wait_for_timeout(200)
+    wait_for(lambda: page.inner_text("#shareState").startswith("Deleted: sharing is off"), 3, ("the PC's ok did not say Deleted", page.inner_text("#shareState")))
     assert not page.is_checked("#shareBox") and page.is_hidden("#shareView") and not SHARE["on"]
     page.click("#sheetDone")
     page.wait_for_timeout(100)
@@ -335,6 +367,8 @@ def ui_checks(browser):
     assert page.is_hidden("#sessionsEmpty")
     cells = [td.inner_text() for td in page.query_selector_all("#sessionsBody tr:first-child td")]
     assert cells[1:] == ["95", "2", "1", "6"], cells
+    # (The levels gained, not the level.)
+    assert page.inner_text("#sessionsCard th[data-t=col_levels]") == "Levels up"
     page.locator("#sessionsCard").screenshot(path=os.path.join(SHOTS, "phone-sessions-card.png"))
     assert "6,370 / 6,370" in page.inner_text("#hpVal"), page.inner_text("#hpVal")
     # The workshop card: on, both coders to pick from, what it is doing.
@@ -387,6 +421,34 @@ def ui_checks(browser):
     wait_for(lambda: any((r["body"] or {}).get("on") is False for r in requests_since(t_off, "/api/share")), 3, "turning sharing off did not post /api/share {on: false}")
     wait_for(lambda: page.is_disabled("#shareBox"), 3, "once off, the toggle did not wait for the age box again")
     assert not SHARE["on"]
+    # The Hebrew words (w32 §2 rows 21–23; the levels gained, not the level).
+    assert page.inner_text("#shareCard [data-t=share_adult]") == "גילי 18 ומעלה"
+    assert "הקלאס שלך" in page.inner_text("#shareCard") and "המקצוע" not in page.inner_text("#shareCard")
+    assert page.text_content("th[data-t=col_levels]") == "+רמות"
+    page.click("#shareSee")
+    page.wait_for_selector("#shareView:not([hidden])", timeout=3000)
+    assert page.inner_text("#shareNote") == "השיתוף כבוי. אם הוא היה דלוק, הסשנים האחרונים שלך היו נראים כך:", page.inner_text("#shareNote")
+    page.click("#shareSee")
+    # Turned on without the age box (only a race reaches the PC so: forced
+    # here): its refusal in the page's Hebrew, not the PC's words.
+    page.evaluate("document.querySelector('#shareBox').disabled = false")
+    t_race = time.time()
+    page.click("#shareBox")
+    wait_for(lambda: any((r["body"] or {}).get("adult") is False for r in requests_since(t_race, "/api/share")), 3, "the forced turn-on was not posted")
+    wait_for(lambda: page.inner_text("#shareState") == "קודם צריך לסמן „גילי 18 ומעלה”.", 3, ("the age box's refusal not in the page's Hebrew", page.inner_text("#shareState")))
+    wait_for(lambda: not page.is_checked("#shareBox") and page.is_disabled("#shareBox"), 3, "a refused turn-on left the toggle on")
+    assert not SHARE["on"]
+    # A delete the PC fails, in Hebrew: said so, never "נמחק"; then done.
+    SHARE["on"] = True
+    wait_for(shown_on, 6, "a share already on did not show on")
+    SHARE_FAILS["left"] = 1
+    page.click("#shareDelete")
+    wait_for(lambda: page.inner_text("#shareState").startswith("לא נמחק:"), 3, ("a failed delete not said in Hebrew", page.inner_text("#shareState")))
+    wait_for(lambda: page.is_checked("#shareBox"), 3, "after a failed delete the toggle did not show the PC still sharing")
+    page.locator("#shareCard").screenshot(path=os.path.join(SHOTS, "phone-share-not-deleted-he.png"))
+    page.click("#shareDelete")
+    wait_for(lambda: page.inner_text("#shareState").startswith("נמחק:"), 3, ("the PC's ok did not say נמחק", page.inner_text("#shareState")))
+    assert not page.is_checked("#shareBox") and not SHARE["on"]
     page.close()
 
 def listening_page(browser):

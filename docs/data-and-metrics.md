@@ -23,8 +23,9 @@ works out while it runs: aggregates and game facts only.
 |---|---|---|
 | `day` | the day the session started (no time) | sessions per day, retention |
 | `minutes`, `game_minutes` | minutes MapleSyrup ran; minutes the game was seen | engagement |
-| `levels_gained`, `level_start`, `level_end` (+ `_band`) | levels, and their bands | who plays it, how far |
-| `job` | the class as the game shows it ("Night Lord") | who plays it |
+| `levels_gained`, `level_start`, `level_end` (+ `_band`) | levels, and their bands — of the last character played (see `characters`) | who plays it, how far |
+| `characters` | how many characters the levels followed in the session (0: no level was read, or a record kept before there was this count) | so that two characters in one session never read as "167 → 9" |
+| `job` | the class: a name from a closed list ("Night Lord"; see below), or `other` | who plays it |
 | `hud` | `modern` or `classic` (Classic World) | which HUD reader to improve |
 | `deaths`, `warnings` (`hp_low`, `mp_low`, `beating`, `taught`), `close_calls` | counts | are the warnings useful, too many |
 | `potions_answered` | share of low-HP/MP warnings a potion answered | are the warnings heeded |
@@ -44,10 +45,40 @@ works out while it runs: aggregates and game facts only.
 screenshot, a crop or any picture; the notebook (`memory.json`, `knowledge.json`) or anything the
 player taught; file paths (the Windows user name is in them); the PC's name; keys; IP addresses;
 the phone's browser (user agent). The hooks the main loop calls take no text of the player's at
-all. The words the game shows (the class, a map's name) are kept only when they look like the
-game's — no slashes, no `@`, no link, not too long — and do not contain the character's name. A
-test builds a session whose inputs hold a name, a transcript and a path with a Hebrew Windows user
-name in it, and checks that none of them reaches a record, an export or a file.
+all. A test builds a session whose inputs hold a name, a transcript and a path with a Hebrew
+Windows user name in it, and checks that none of them reaches a record, an export or a file.
+
+**The class is never free text.** What the screen shows beside the class, or what the player says
+it is, can hold anything: the character's name, a guild tag, a chat line, a place, a girlfriend's
+account. So a record, its file and the export hold only a name from a closed list — `CLASSES` in
+`src/metrics.rs`: MapleStory's classes and their advancements, modern and Classic World (Beginner;
+Warrior, Fighter, Crusader, Hero; Page, White Knight, Paladin; Spearman, Dragon Knight or
+Berserker, Dark Knight; Magician, Wizard, Mage and Arch Mage, with F/P and I/L; Cleric, Priest,
+Bishop; Bowman, Hunter, Ranger, Bowmaster; Crossbowman, Sniper, Marksman; Pathfinder; Thief,
+Assassin, Hermit, Night Lord; Bandit, Chief Bandit, Shadower; Dual Blade and its five
+advancements; Pirate, Brawler, Marauder, Buccaneer; Gunslinger, Outlaw, Corsair; Cannoneer and its
+advancements; Jett; the Cygnus Knights, the Heroes, the Resistance, Nova, Flora, Anima, and the
+rest) — or `other`. A text is matched whole, case, spaces, hyphens and the kind of apostrophe aside;
+each class also has its other spellings (an older name such as "Crossbow Master", the elements
+spelled out, the players' short forms such as "NL") and its Hebrew transliterations ("נייט לורד" is
+"Night Lord"). "Night Lord [Guild: …]" or "Night Lord" with the name beside it is `other`, not the
+text. A class read before is not replaced by `other` (a misread after it, the player's words).
+Records kept before the list are shown, shared and written again with their class made a name or
+`other`.
+
+**A map's name** is kept on this PC only (the export has how many), when it looks like the game's:
+no path — a backslash (`C:\…`), a `/` or `~` first, or a `/` with no space on either side
+(`Users/me`); the game's own " / ", as in "Victoria Road / Ellinia", is a map — no `@`, no link,
+not too long, and not containing the character's name.
+
+**Two characters in one session** (a main, then an alt): a session is one run of MapleSyrup — its
+minutes, words, replies and errors are the run's — but its levels and its class are a character's.
+Another character (a level taken with another name than the last one's, or a lower level: what the
+companion itself calls "another character") starts the levels and the class over, and `characters`
+counts them: the record is the last character's levels and class, never "167 → 9" of two. A new
+record per character was the other choice; it would count one evening as two sessions (skewing
+sessions per day and minutes per session) and split its minutes, words and errors at a moment the
+game does not mark (the level is taken a few seconds after the switch).
 
 ## Where it is kept
 
@@ -56,13 +87,16 @@ All under the settings folder, `%APPDATA%\MapleSyrup\metrics\`:
 | File | What | When |
 |---|---|---|
 | `sessions.jsonl` | one record per line, the newest last | at each session's end |
-| `current.json` | the session under way | every minute; it joins `sessions.jsonl` when the session ends, or — after a crash or a console window closed with the X, which skips the program's own end — at the next start |
-| `share.json` | `{"on": true, "since": "2026-10-09", "id": "<uuid>"}`, or `{"on": false}` | when the player turns sharing on or off |
+| `current-<session>.json` | the session under way — its own file, so that two copies of MapleSyrup running at once never write over each other's | every minute; it joins `sessions.jsonl` when the session ends, or — after a crash or a console window closed with the X, which skips the program's own end — at the next start (each start takes every snapshot but its own; one from before there was one per session, `current.json`, too). It is deleted only once its record has landed: when `sessions.jsonl` cannot be written, it is left, as the session ended, and the next start keeps it |
+| `share.json` | `{"on": true, "since": "2026-10-09", "id": "<uuid>"}` | only while sharing is on: written when it is turned on, deleted when it is turned off (no file is off) |
 | `share-export.json` | what would be shared | only while sharing is on: built when it is turned on, rebuilt at each session's end |
+| `*.partial` | a file being written (each is written beside its place, then put there) | for a moment; a write that fails deletes its own, and "Delete it" deletes any |
 
 **Retention:** the last 365 sessions; older ones are dropped. The export holds the sessions since
 the day sharing was turned on, and is deleted when it is turned off. Deleting the `metrics` folder
-by hand is safe: the stats start again.
+by hand is safe: the stats start again. A line of `sessions.jsonl` that cannot be read (cut off by
+a power cut) costs that line, not the others; a `sessions.jsonl` that cannot be read at all is
+never written over.
 
 ## The consent model
 
@@ -79,8 +113,19 @@ by hand is safe: the stats start again.
   off it shows a preview built from the last sessions, with no id (made and written nowhere), so
   the player sees exactly what they would be agreeing to.
 - **Only from consent on.** The export holds the sessions from the day sharing was turned on.
-- **Withdrawable, and deletable.** Turning it off — or "Delete it" — deletes the export and the
-  install id. Turned on again, a new id is made, unlinkable to the old one.
+- **Withdrawable, and deletable — never silently failing.** Turning it off — or "Delete it" —
+  deletes the choice (`share.json`: no file is off), the export with the install id, and any
+  half-written file (`*.partial`, which may hold the id), then looks: if anything is still there
+  (another program holding a file, on Windows an antivirus or a backup tool), the PC answers 500
+  with the code `not_deleted` and the files left, and the phone says so — "Not deleted: a file of
+  it is still on the PC…", in the page's own language — and shows the toggle as the PC has it. It
+  says "Deleted" only on the PC's ok. "Delete it" again tries again; while sharing is off, an export
+  left behind is also deleted at the next session's end. Turned on again, a new id is made,
+  unlinkable to the old one.
+- **The phone's words, not the PC's.** What goes wrong is answered as a code (`adult_only`,
+  `bad_request`, `no_stats`, `no_id`, `not_saved`, `not_deleted`); the page has the words for each,
+  in English and Hebrew (other languages fall back to English), so a Hebrew page never shows an
+  English sentence.
 - **A random install id.** A UUID v4 from the operating system's randomness (through `ring`,
   already a dependency), made only when sharing is turned on. It identifies an installation, not a
   person, and lets a future server delete one player's records on request (see below).
@@ -92,7 +137,8 @@ and another every record to `RECORD_FIELDS`:
 
 `format`, `install_id`, `app_version`, and per session: `week` (ISO week, not the day),
 `minutes`, `game_minutes`, `levels_gained`, `level_start_band`, `level_end_band` (1–10, 11–30,
-31–60, 61–100, 101–140, 141–200, 201+; never the level), `job`, `hud`, `deaths`, `warnings`
+31–60, 61–100, 101–140, 141–200, 201+; never the level), `characters` (a count), `job` (a name
+from the closed list, or `other`), `hud`, `deaths`, `warnings`
 (`hp_low`, `mp_low`, `beating`, `taught`), `close_calls`, `potions_answered` (to a tenth),
 `exp_per_hour` (to a tenth), `maps` and `map_visits` (counts: never which maps), `sentences`,
 `replies`, `reply_ms_median` (to a tenth of a second), `instant_answers`, `call_minutes`,
@@ -148,10 +194,13 @@ lawyer.
 
 ## In the code
 
-- `src/metrics.rs` — the record, the export, the allow-lists, the files, the consent; its tests.
+- `src/metrics.rs` — the record, the export, the allow-lists, the class list (`CLASSES`), the
+  files, the consent; its tests.
 - `src/bin/maplesyrup/main.rs` — one-line hooks where things happen (a frame, a sentence, a
   reply's first words, a failure, every quarter second for the phone and the map), the record
   written every minute and at the end, and the console line.
 - `src/phone/mod.rs` — `GET /api/stats`, `GET /api/share`, `POST /api/share {on, adult}`,
-  `POST /api/share/delete`.
-- `src/phone/page.html` — the card at the end of Settings, and the last sessions in Details.
+  `POST /api/share/delete`; a change answers `{"ok": true, "share": …}`, or an error code (500
+  `{"error": "not_deleted", "left": ["share-export.json"]}` when a file is still there).
+- `src/phone/page.html` — the card at the end of Settings (its words for each error code), and the
+  last sessions in Details ("Levels up": the levels gained, not the level).
