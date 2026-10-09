@@ -1824,6 +1824,82 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The bottom of a player's 4K screen on Classic World, whose old
+    /// status bar prints `HP[178/178]`, `MP[101/101]` and `EXP. 619[49.84%]`
+    /// above the bars, small and thin (see `tests/classic_hud.rs`).
+    fn classic_4k_frame() -> RgbaImage {
+        let strip = image::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/resources/hud-classic-4k-strip.png"
+        ))
+        .expect("the classic 4K strip fixture")
+        .to_rgba8();
+        let mut frame = RgbaImage::from_pixel(3840, 2160, image::Rgba([20, 20, 30, 255]));
+        image::imageops::replace(&mut frame, &strip, 0, (2160 - strip.height()) as i64);
+        frame
+    }
+
+    #[test]
+    fn on_the_classic_hud_the_numbers_are_read_every_frame_once_the_teacher_spelled_them_out() {
+        let dir = temp_dir("classic");
+        let mut sight = Sight::load(&dir);
+        let frame = classic_4k_frame();
+        // The bars where the player's sight boxed them, and the lines as the
+        // teacher spelled them on its first look (the session of 9 October,
+        // when every one of them "split into 11 glyphs": the bar's ticks).
+        let c = Calibration {
+            level: None,
+            hp: Some(NBox::new(0.36822918, 0.9777778, 0.4450521, 0.9925926)),
+            mp: Some(NBox::new(0.44739583, 0.9777778, 0.5239583, 0.9930556)),
+            exp: Some(NBox::new(0.53020835, 0.9777778, 0.6132866, 0.9930556)),
+            minimap: None,
+            values: HudValues {
+                level: Some(9),
+                hp: Some((178, 178)),
+                mp: Some((101, 101)),
+                exp_percent: Some(49.84),
+                hp_text: Some("178/178".into()),
+                mp_text: Some("101/101".into()),
+                exp_text: Some("619[49.84%]".into()),
+                ..Default::default()
+            },
+        };
+        let line = sight.calibrated(&frame, &c).unwrap();
+        assert!(line.contains("found 3 bar(s)"), "{line}");
+        assert!(!line.contains("not learned"), "{line}");
+        // Every frame, the numbers in the game's font, the same each time.
+        let t0 = Instant::now();
+        let mut seen = Seen::default();
+        for i in 0..5 {
+            seen = sight.observe(&frame, t0 + Duration::from_millis(100 * i));
+            assert_eq!(seen.hp_number, Some((178, 178)), "{i}: {seen:?}");
+            assert_eq!(seen.mp_number, Some((101, 101)), "{i}: {seen:?}");
+            assert_eq!(
+                seen.exp_number,
+                Some(Value::Percent(49.84)),
+                "{i}: {seen:?}"
+            );
+        }
+        // Read, so the companion trusts them over the bars' fill (which a
+        // cursor over a bar throws off).
+        let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
+        sight.apply(&mut obs, &seen);
+        let (hp, mp, exp) = (obs.hp.unwrap(), obs.mp.unwrap(), obs.exp.unwrap());
+        assert!(
+            hp.read && hp.current == Some(178) && hp.max == Some(178),
+            "{hp:?}"
+        );
+        assert!(mp.read && mp.current == Some(101), "{mp:?}");
+        assert!(exp.read && (exp.percent - 49.84).abs() < 0.001, "{exp:?}");
+        // And after a restart, from what was kept.
+        let mut again = Sight::load(&dir);
+        let seen = again.observe(&frame, t0 + Duration::from_secs(1));
+        assert_eq!(seen.hp_number, Some((178, 178)), "{seen:?}");
+        assert_eq!(seen.mp_number, Some((101, 101)), "{seen:?}");
+        assert_eq!(seen.exp_number, Some(Value::Percent(49.84)), "{seen:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_exp_bar_wrapping_is_a_level_up_and_corrections_stick() {
         let dir = temp_dir("level");
