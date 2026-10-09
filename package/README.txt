@@ -19,6 +19,11 @@ Start
        Android: Advanced -> Proceed
   4. Tap "Start listening", allow the microphone, and just talk to it:
      "hey, how am I doing?", "how long until I level?", "mark that!".
+     It says hello once per visit (a page reloaded within half an hour is
+     the same visit): the live call's hello when a call is coming, else its
+     own (on the phone, heard once you have tapped). After its own hello, a
+     player it does not know yet hears what it does ("I yell when your HP
+     drops. Ask me stuff.").
 
   If Windows asks whether MapleSyrup may use the network, allow private networks.
 
@@ -54,9 +59,13 @@ How it talks
   listens while it talks. Speak any language, switch or mix languages
   mid-sentence (Hebrew and English, say) and it follows you, with no setting.
   Talk over it and it stops and goes with what you said. It sees your screen
-  while MapleStory is the window in front, and says its own warnings (low HP,
-  level up) on the call too, in the language you're speaking. While it talks,
-  MapleStory's sound is turned down.
+  while MapleStory is the window in front, and says its own lines (low HP,
+  a level-up) on the call too, in the language you're speaking: handed to
+  the call at most every 20 seconds, with the number only for HP and MP; a
+  death or a level-up goes at once and is said even when it comes late. If
+  the phone sleeps and the call drops, MapleSyrup notices within seconds
+  and its lines go back to its own voice. While it talks, MapleStory's
+  sound is turned down.
   Prefer its voice on the PC speakers? Choose "PC" under "Replies spoken on"
   on the phone: then it works as below.
 
@@ -68,17 +77,32 @@ How it talks
   rather than stopping to look things up, even when it isn't completely
   sure ("I think..."): when it gets something wrong, just correct it, and
   it remembers (see "It learns as you play"). Talk over it and it stops and
-  listens ("wait", or just ask something else). Pause mid-sentence and go on,
-  and it waits for the rest instead of answering half of it. The phone keeps
+  listens ("wait", or just ask something else); a warning, or news such as
+  a death, still plays out on the PC. Pause mid-sentence and go on, and it
+  waits for the rest instead of answering half of it. The phone keeps
   listening while it talks on the PC and tells your voice from its own.
   While it speaks, MapleStory's sound is turned down for a moment.
   The OpenAI account needs credit (platform.openai.com/settings/organization/billing);
   without it MapleSyrup says so and goes on with simple answers and the
-  Windows voice. It also speaks up by itself when HP or MP runs low or you level up
-  (a level-up is the level at the bottom left going up by one — nothing else
-  counts). Warnings nobody answers stop after six until you say something, and
-  a bar it can only guess at is not warned from. "Don't talk to me this way"
-  makes it friendly.
+  Windows voice. It also speaks up by itself when HP or MP runs low, when you
+  take a beating, when you die and when you level up (a level-up is the level
+  at the bottom left going up by one — nothing else counts): a warning is
+  shouted, a death or a level-up told.
+  A warning is said once per fight. Pot after it and the beating is not
+  shouted again in that fight, and the low bar not until the fight is over
+  or the bar goes lower; a low bar nothing answers is said again after 12,
+  30, 60 and 120 seconds. After four warnings that nothing answers (not a
+  word, no potion, no EXP) it says it will wait, and holds the rest for ten
+  minutes or until you are back. Pot within three seconds of the shout three
+  fights running and it stops shouting "back off": it watches instead, and
+  shouts when HP goes deeper than you usually let it or the potion is late;
+  after a late potion, no potion or a death, it shouts again until you have
+  handled three more. A reading has to hold: one odd frame is neither a
+  potion nor a fall, and a bar it can only guess at is not warned from. A
+  bar that reads low for minutes while your EXP keeps coming is a bar it is
+  reading wrong: it says so once ("I'm reading your HP wrong") and holds
+  that bar's warnings until it reads above the warning level again.
+  "Don't talk to me this way" makes it friendly.
   On the phone you can choose where replies are spoken (PC, phone, both, off)
   and switch to "only after 'syrup'" for streaming.
 
@@ -125,8 +149,8 @@ It learns as you play
   call it waits longer if it keeps jumping in before you finish; if you often
   talk over long answers, it keeps them shorter.
   Warnings too: "warn me at 40%", "no more MP warnings", "warn me like
-  before". If you die without a warning while your HP went down, it warns you
-  sooner from then on (up to half the bar).
+  before". If you die with no warning in that fight while your HP went down,
+  it warns you sooner from then on (up to half the bar), and says so.
   The phone shows what it knows about you ("What I know about you"), with a
   Forget button on each thing. It all stays on your PC, in
   %APPDATA%\MapleSyrup\memory.json and knowledge.json: delete them to make it
@@ -136,9 +160,12 @@ Languages
   The phone page speaks English, Hebrew, Spanish, Portuguese, French, German,
   Korean, Japanese, Chinese (simplified and traditional), Thai, Vietnamese,
   Indonesian and Russian. It follows the phone's language; pick another on the
-  page. That is also the language the phone listens in. MapleSyrup answers in
-  the language you speak to it and says its own lines (warnings, level ups) in
-  yours too. The installer speaks yours when Inno Setup has it.
+  main screen, under "Start listening". That is also the language the phone
+  listens in; when a live call hears you speak Hebrew, the phone listens in
+  Hebrew off the call too, and says so (picking a language puts it back).
+  MapleSyrup answers in the language you speak to it and says its own lines
+  (warnings, level ups) in yours too. The installer speaks yours when Inno
+  Setup has it.
 
 Recording the session
   Tap "Record the session" on the phone (or just say "start recording"; tap
