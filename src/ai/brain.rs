@@ -444,10 +444,10 @@ pub const HERE_EN: [&[&str]; 3] = [
 pub const HERE_HE: [&[&str]; 3] = [
     &[
         "אני פה. מה קורה?",
-        "ממש פה. מה עובר עליך?",
+        "אני כאן. מה עובר עליך?",
         "היי, אני מקשיב. דבר איתי.",
     ],
-    &["יו. מדבר. מה?", "אני פה. דבר.", "מקשיב. מה קורה?"],
+    &["יו. שומע. מה?", "אני פה. דבר.", "מקשיב. מה קורה?"],
     &[
         "מה, כבר התגעגעת?",
         "אני פה. שיהיה שווה את זה.",
@@ -1020,10 +1020,23 @@ const FILLER: &[&str] = &[
     "רק",
     "גם",
     "מלא",
+    // ("Of", "still", "left", "here", "really": "החלון של המשחק סגור.",
+    // "נשארו לך 48 אחוז חיים." say no more than "יש לך…".)
+    "של",
+    "עוד",
+    "נשאר",
+    "נשארה",
+    "נשארו",
+    "פה",
+    "כאן",
+    "ממש",
 ];
 
 /// The level's own words.
 const LEVEL_WORDS: &[&str] = &["level", "lvl", "lv", "רמה", "לבל"];
+/// How far over the snapshot's level a level said is one just reached
+/// (more is another character's, or a misread).
+const LEVELS_REACHED: f32 = 5.0;
 /// The bars' own words.
 const BAR_WORDS: &[&str] = &[
     "hp",
@@ -1159,20 +1172,40 @@ const NOT_ORDERS: &[&str] = &[
 
 /// Whether `word`, first in a sentence, makes it an order ("Open the
 /// game.", "Drink, HP 30%."): said for its own sake, whatever else is in
-/// it.
+/// it. Of the letters Hebrew joins to a word only "and" (ו) leaves an
+/// order an order ("ותשתה"): the others make a noun of a verb — "המשחק"
+/// is "the game", not "play!" (`forms` gave "שחק", and "המשחק לא פתוח."
+/// was said as an order), "מדבר" is "speaking". And a fact's own word is
+/// never one ("Game's closed.", "Level 167.").
 fn is_order(word: &str) -> bool {
-    is_one_of_or_plural(word, VERBS) && !is_one_of(word, NOT_ORDERS)
+    let bare = word
+        .strip_prefix('ו')
+        .filter(|rest| rest.chars().count() >= 2)
+        .unwrap_or(word);
+    let plural = (word.len() > 3 && !word.ends_with("ss"))
+        .then(|| word.strip_suffix('s'))
+        .flatten();
+    let verb = [Some(word), Some(bare), plural]
+        .into_iter()
+        .flatten()
+        .any(|w| VERBS.contains(&w));
+    let fact = [GAME_NAMES, LEVEL_WORDS, BAR_WORDS]
+        .iter()
+        .any(|list| is_one_of(word, list));
+    verb && !fact && !is_one_of(word, NOT_ORDERS)
 }
 
-/// Whether `word` is a Hebrew place said with "in", "to" or "from" joined
-/// to it ("באליניה", "להנסיס"): the snapshot's map, said in Hebrew (its
-/// English "Ellinia" never matches) — not a word of its own like "מהר"
-/// (too short for a place), "תיזהר" or "שיקוי" (no "in" joined), nor an
-/// order or a cheer.
+/// Whether `word` is a Hebrew place said with "in" or "to" joined to it
+/// ("באליניה", "להנסיס"): the snapshot's map, said in Hebrew (its English
+/// "Ellinia" never matches) — not a word of its own like "תיזהר" or
+/// "שיקוי" (no "in" joined), nor an order or a cheer ("לשתות!",
+/// "ברכות!"). Not "from" (מ): Hebrew's adjectives and participles start
+/// with it — "מצוין", "מגיע לך", "מגניב", "מדהים" were taken for a map and
+/// the cheer beside the level went unsaid.
 fn is_place(word: &str) -> bool {
     let hebrew = |c: char| ('\u{05d0}'..='\u{05ea}').contains(&c);
     let mut chars = word.chars();
-    matches!(chars.next(), Some('ב' | 'ל' | 'מ'))
+    matches!(chars.next(), Some('ב' | 'ל'))
         && chars.clone().count() >= 3
         && chars.all(hebrew)
         && !is_one_of_or_plural(word, VERBS)
@@ -1254,6 +1287,21 @@ const REACTIONS: &[&str] = &[
     "מהמם",
     "מושלם",
     "בכיף",
+    "מצוין",
+    "מגניב",
+    "מדהים",
+    "מגיע",
+    "ברכות",
+    "אלוף",
+    "תותח",
+    "אש",
+    "וואלה",
+    "אדיר",
+    "בול",
+    "ברור",
+    "בטח",
+    "בגדול",
+    "לעניין",
 ];
 
 /// Whether `heard` asks about anything a snapshot says: the level, a bar,
@@ -1352,6 +1400,15 @@ fn restates(part: &str, facts: &Facts) -> bool {
     if words.first().is_some_and(|(w, _)| is_order(w)) {
         return false;
     }
+    // "Now!" called out at its end is an order's word: "48 אחוז, עכשיו!" is
+    // "pot, now!" (in "אתה ברמה 9 עכשיו." it is filler).
+    if part.trim_end().ends_with('!')
+        && words
+            .last()
+            .is_some_and(|(w, _)| matches!(w.as_str(), "now" | "עכשיו" | "מיד"))
+    {
+        return false;
+    }
     let word = |i: usize| words[i].0.as_str();
     let mut fact = vec![false; words.len()];
     // Whether a fact is more than a reading (the level, a bar): the
@@ -1399,13 +1456,21 @@ fn restates(part: &str, facts: &Facts) -> bool {
     // level (a stale one too), a bar's own for a bar (a boss "at 20% HP"
     // is not theirs at 85); and the level's number on its own.
     let number = |i: usize| word(i).parse::<f32>().ok();
+    // A level just over the snapshot's is news, not the snapshot: the one
+    // they just reached ("ding!" → "Level 168!" while the snapshot, a
+    // second behind, says 167).
+    let reached = |n: f32| {
+        facts
+            .level
+            .is_some_and(|l| n > l as f32 && n - l as f32 <= LEVELS_REACHED)
+    };
     for i in 0..words.len() {
         let level = is_one_of(word(i), LEVEL_WORDS);
         let bar = is_one_of(word(i), BAR_WORDS);
         if level || bar {
             for j in i.saturating_sub(2)..(i + 3).min(words.len()) {
                 let theirs = match number(j) {
-                    Some(_) if level => true,
+                    Some(n) if level => !reached(n),
                     Some(n) => {
                         facts.bars.is_empty() || facts.bars.iter().any(|p| (p - n).abs() <= 2.5)
                     }
@@ -2554,6 +2619,10 @@ const VERBS: &[&str] = &[
     "תזוז",
     "תשתה",
     "שתה",
+    "לשתות",
+    "להתרחק",
+    "לברוח",
+    "לקום",
     "תתרחק",
     "תברח",
     "ברח",
@@ -3770,6 +3839,10 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             ("let's play Maple", "Open MapleStory.", &closed),
             ("I'm bored", "Open the game!", &closed),
             ("I'm bored", "Then open the game.", &closed),
+            // The level just reached, the snapshot a second behind; "now!"
+            // called out (w26's last two).
+            ("ding!", "Level 168!", &main),
+            ("אוי", "48 אחוז, עכשיו!", &low),
         ];
         for (heard, reply, facts) in said {
             assert_eq!(unasked(reply, heard, facts), *reply, "{heard:?}");
@@ -3784,6 +3857,8 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             ("ok", "No game window open, Michael!", &closed, ""),
             ("ok", "You're level 167, WanWanBoggi.", &main, ""),
             ("ok", "You're level 167.", &main, ""),
+            ("ding!", "Level 167!", &main, ""),
+            ("ok", "אתה ברמה 9 עכשיו.", &ellinia(), ""),
             ("אוי", "יש לך 48 אחוז חיים.", &low, ""),
             ("I'm back", "WanWanBoggi! Missed you.", &main, "Missed you."),
             (
@@ -3796,6 +3871,95 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
         for (heard, reply, facts, kept) in dropped {
             assert_eq!(unasked(reply, heard, facts), *kept, "{heard:?} → {reply:?}");
         }
+    }
+
+    #[test]
+    fn a_hebrew_window_recital_is_no_order() {
+        // Before the game, in Hebrew, the model recites the window: "המשחק"
+        // ("the game") lost its "the" and became "שחק" ("play!"), an order,
+        // said whole; "של", "נשארו" were words of their own. (442bd85.)
+        let closed = Facts {
+            level: Some(167),
+            map: Some("Gate of the Future".into()),
+            name: Some("WanWanBoggi".into()),
+            job: Some("Night Lord".into()),
+            bars: vec![],
+        };
+        let main = Facts {
+            bars: vec![48.0, 90.0, 34.36],
+            ..closed.clone()
+        };
+        let low = Facts {
+            bars: vec![48.0, 100.0, 49.84],
+            ..ellinia()
+        };
+        for (heard, reply, facts) in [
+            ("סתם", "המשחק לא פתוח.", &closed),
+            ("סתם", "המשחק סגור כרגע.", &closed),
+            ("משעמם לי", "החלון של המשחק סגור.", &closed),
+            ("יאללה", "המשחק פתוח, רמה 167.", &main),
+            ("אוי", "נשארו לך 48 אחוז חיים.", &low),
+            ("אוי", "יש לך 48 אחוז חיים.", &low),
+        ] {
+            assert_eq!(unasked(reply, heard, facts), "", "{heard:?} → {reply:?}");
+            assert_eq!(without_status(reply, facts), None, "{reply:?}");
+        }
+        // "And" joined to an order leaves it an order; the other letters
+        // make nouns, and a fact's own word is never one.
+        for order in ["ותשתה", "תשתה", "שחק", "Open", "pots", "Drink"] {
+            assert!(is_order(&order.to_lowercase()), "{order}");
+        }
+        for word in [
+            "המשחק",
+            "משחק",
+            "מדבר",
+            "שלך",
+            "game",
+            "level",
+            "חיים",
+            "יש",
+        ] {
+            assert!(!is_order(word), "{word}");
+        }
+        // Asked to talk, a recital is no answer: the card that it is here
+        // is (`ai::converse` deals it when nothing else is left).
+        assert!(asked_to_talk("תדבר איתי"));
+        assert_eq!(without_status("המשחק לא פתוח.", &closed), None);
+    }
+
+    #[test]
+    fn a_hebrew_cheer_beside_a_number_is_said() {
+        // The model's cheer to his "יש!": any word of מ, ב or ל and three
+        // letters was "the map", and the whole reply was silence. (The
+        // snapshot already at 10: the level is the snapshot's, the cheer
+        // is what is left.)
+        let ten = Facts {
+            level: Some(10),
+            ..ellinia()
+        };
+        let low = Facts {
+            bars: vec![48.0, 100.0, 49.84],
+            ..ellinia()
+        };
+        for (heard, reply, facts) in [
+            ("יש!", "רמה 10, מגיע לך!", &ten),
+            ("יש!", "רמה 10, מצוין!", &ten),
+            ("יש!", "רמה 10, מגניב!", &ten),
+            ("יש!", "רמה 10, מדהים!", &ten),
+            ("יש!", "רמה 10, ברכות!", &ten),
+            ("יש!", "רמה 10, ממש טוב!", &ten),
+            ("יש!", "רמה 10, אלוף!", &ten),
+            // (A cheer no list has: no "in" or "to" joined, no map.)
+            ("יש!", "רמה 10, מרשים!", &ten),
+            ("אוי", "48 אחוז חיים, לשתות!", &low),
+            ("אוי", "48 אחוז, בזהירות!", &low),
+            ("אוי", "48 אחוז, לזוז!", &low),
+        ] {
+            assert_eq!(unasked(reply, heard, facts), reply, "{heard:?} → {reply:?}");
+        }
+        // The map said in Hebrew is still the map.
+        assert_eq!(unasked("אתה באליניה, רמה 9.", "פטריות", &ellinia()), "");
+        assert_eq!(unasked("רמה 9, להנסיס.", "פטריות", &ellinia()), "");
     }
 
     #[test]

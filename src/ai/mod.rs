@@ -1081,7 +1081,7 @@ impl Translations {
         let shape = self
             .shapes
             .get(&key(&shape))
-            .filter(|_| !numbers.is_empty())?;
+            .filter(|_| templated(locale, &numbers))?;
         let mut out = shape.pieces[0].clone();
         for (gap, piece) in shape.order.iter().zip(&shape.pieces[1..]) {
             out.push_str(numbers.get(*gap)?);
@@ -1096,12 +1096,41 @@ impl Translations {
             self.shapes.clear();
         }
         let (shape, numbers) = numbers_of(text);
-        if let Some(found) = shape_of(done, &numbers) {
+        if templated(locale, &numbers)
+            && let Some(found) = shape_of(done, &numbers)
+        {
             self.shapes.insert((locale.to_string(), shape), found);
         }
         self.lines
             .insert((locale.to_string(), text.to_string()), done.to_string());
     }
+}
+
+/// Languages whose nouns take more forms by the number before them than
+/// one and many ("21 процент", "22 процента", "25 процентов"; Arabic's dual
+/// and its plurals; Romanian's "20 de"): their lines are kept one by one,
+/// never as a template.
+const INFLECTS_BY_NUMBER: &[&str] = &[
+    "ru", "uk", "be", "pl", "cs", "sk", "sl", "hr", "sr", "bs", "lt", "lv", "ro", "ar", "ga", "cy",
+    "is",
+];
+
+/// Whether a line with `numbers` in it is translated into `locale` once
+/// for all its numbers ([`Translations`]): when every number is two or
+/// more — a template learned from "25" said "1 אחוז", "Te quedan 1 de PM";
+/// one learned from "1" would say "Te queda 20" — and the language's nouns
+/// have one plural for them all.
+fn templated(locale: &str, numbers: &[String]) -> bool {
+    let language = locale
+        .split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    !numbers.is_empty()
+        && !INFLECTS_BY_NUMBER.contains(&language.as_str())
+        && numbers
+            .iter()
+            .all(|n| n.replace(',', "").parse::<f64>().is_ok_and(|v| v >= 2.0))
 }
 
 /// `text` with `{}` for each number in it, and the numbers ("HP 25.5
@@ -2094,6 +2123,49 @@ mod tests {
         assert_eq!(
             cache.get("he-IL", "Level up! Nice.").as_deref(),
             Some("עלית רמה! יפה.")
+        );
+    }
+
+    #[test]
+    fn a_template_never_puts_a_number_in_another_numbers_grammar() {
+        // A template learned from 25 said "1 אחוז", "Te quedan 1 de PM",
+        // and in Russian "21 процентов", "22 процентов" (процент, процента).
+        let mut cache = Translations::default();
+        cache.put(
+            "he-IL",
+            "HP 25 percent. Pot now!",
+            "25 אחוז חיים. תשתה עכשיו!",
+        );
+        assert_eq!(cache.get("he-IL", "HP 1 percent. Pot now!"), None);
+        assert_eq!(cache.get("he-IL", "HP 1.5 percent. Pot now!"), None);
+        assert_eq!(
+            cache.get("he-IL", "HP 2 percent. Pot now!").as_deref(),
+            Some("2 אחוז חיים. תשתה עכשיו!")
+        );
+        cache.put("es-ES", "20 MP left. Drink.", "Te quedan 20 de PM. Bebe.");
+        assert_eq!(cache.get("es-ES", "1 MP left. Drink."), None);
+        assert_eq!(
+            cache.get("es-ES", "21 MP left. Drink.").as_deref(),
+            Some("Te quedan 21 de PM. Bebe.")
+        );
+        // Learned from a one, no template at all ("Te queda 20").
+        cache.put("es-ES", "1 HP left. Drink.", "Te queda 1 de HP. Bebe.");
+        assert_eq!(cache.get("es-ES", "20 HP left. Drink."), None);
+        assert_eq!(
+            cache.get("es-ES", "1 HP left. Drink.").as_deref(),
+            Some("Te queda 1 de HP. Bebe.")
+        );
+        // Russian: the noun follows the number's last digits — each line
+        // its own.
+        cache.put(
+            "ru-RU",
+            "HP 25 percent. Pot now!",
+            "HP 25 процентов. Пей зелье!",
+        );
+        assert_eq!(cache.get("ru-RU", "HP 22 percent. Pot now!"), None);
+        assert_eq!(
+            cache.get("ru-RU", "HP 25 percent. Pot now!").as_deref(),
+            Some("HP 25 процентов. Пей зелье!")
         );
     }
 }

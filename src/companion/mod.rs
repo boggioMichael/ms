@@ -425,6 +425,11 @@ pub struct Companion {
     /// HP lately (when, percent), to tell a death a sooner warning could
     /// have helped with from a sudden one, and a beating as it happens.
     hp_lately: std::collections::VecDeque<(f64, f32)>,
+    /// The last HP reading that held (two frames in a row) outside a swing
+    /// hold, and EXP lately (when, percent): what tells a death through
+    /// the hold from a cursor parked on the bar's start.
+    steady_hp: Option<f32>,
+    exp_lately: std::collections::VecDeque<(f64, f32)>,
     /// Frames in a row in which HP has fallen fast, and when that was last
     /// said.
     falling_frames: u32,
@@ -541,6 +546,10 @@ struct Steadiness {
     settle: f64,
     /// When the player was last told the readings are jumping around.
     noted: f64,
+    /// When the swing being held began: its first reading, a few frames
+    /// before it was found to swing (lines said from then on were said
+    /// from a guess).
+    swing_from: f64,
 }
 
 const SWING: f32 = 20.0;
@@ -560,7 +569,13 @@ impl Steadiness {
             unsteady_until: f64::NEG_INFINITY,
             settle: SETTLE_SECS,
             noted: f64::NEG_INFINITY,
+            swing_from: f64::INFINITY,
         }
+    }
+
+    /// Whether the readings are being held at `now`.
+    fn holding(&self, now: f64) -> bool {
+        now < self.unsteady_until
     }
 
     /// Takes a reading; whether the bar is being guessed at right now.
@@ -591,6 +606,13 @@ impl Steadiness {
                 self.settle = (self.settle * 2.0).min(SETTLE_MAX_SECS);
             } else if !held {
                 self.settle = SETTLE_SECS;
+                // (A new bout: it began with its first jump.)
+                self.swing_from = self
+                    .lately
+                    .iter()
+                    .zip(self.lately.iter().skip(1))
+                    .find(|(a, b)| (b.1 - a.1).abs() >= SWING)
+                    .map_or(now, |(_, b)| b.0);
             }
             self.unsteady_until = now + self.settle;
             self.lately.clear();
@@ -665,6 +687,12 @@ fn held_readings(
 /// A death read from the bar's fill (not the printed number) must last
 /// this long: a dialog over the bar reads as an empty bar too.
 const ZERO_HOLD_SECS: f64 = 2.0;
+/// Through a swing hold, an empty bar that lasts is no death on its own —
+/// the cursor parked on the bar's start reads as one — unless EXP fell by
+/// this much within this long (the death's penalty), or HP read steady
+/// under the mark before the swing.
+const DEATH_EXP_LOSS: f32 = QUIET_EXP_BAR;
+const DEATH_EXP_SECS: f64 = 10.0;
 
 /// Alerts said with no sign of life from the player — a word, HP going
 /// back up (a potion), EXP gained, a level — before the rest are held…
@@ -946,7 +974,7 @@ pub mod lines {
             "זהירות, החיים שלך יורדים מהר. תתרחק!",
             "היי היי היי, זה הרבה נזק. תתרחק שנייה.",
             "אתה נמס! תשתה, ואז תחזור.",
-            "הדבר הזה מרביץ חזק. תן לו קצת מרחק.",
+            "הדבר הזה מרביץ חזק. תתרחק ממנו קצת.",
             "אאוץ'. תתרחק ותשתה משהו לפני שהמכה הבאה נוחתת.",
             "מכות כבדות נוחתות עליך, אתה יורד מהר. קודם שותים, אחר כך נלחמים.",
         ],
@@ -954,7 +982,7 @@ pub mod lines {
             "תתרחק, קורעים אותך. {} וממשיך לרדת.",
             "תצא משם. תשתה.",
             "אתה אוכל כל מכה. זוז.",
-            "תצא ממה שזה לא יהיה. אחורה.",
+            "לא משנה מה זה, תצא משם. אחורה.",
             "שיקוי. עכשיו. לא אחרי המכה הבאה.",
             "חתיכה מהבר שלך נעלמה בבת אחת. תזוז משם.",
             "תצא מהקרב. אתה לא יכול להחליף מכות עם הדבר הזה.",
@@ -965,7 +993,7 @@ pub mod lines {
             "אתה סופג את זה בכוונה? תשתה, ליצן.",
             "תפסיק לספוג הכול בפרצוף ותלחץ על השיקוי המחורבן.",
             "בר החיים שלך עושה ספידראן. תצא משם.",
-            "להתחמק זה בחינם, אתה יודע. תנסה.",
+            "להתחמק לא עולה כסף, אתה יודע. תנסה.",
             "וואו, פשוט עמדת שם וספגת את זה. זוז, אהבל.",
         ],
     ];
@@ -1014,7 +1042,7 @@ pub mod lines {
             "תשתה, אתה על {}.",
             "החיים שלך נמוכים, {}. אל תגזים, תשתה.",
             "היי, בר החיים נהיה מפחיד. שיקוי, בבקשה!",
-            "{} על הבר. תמלא אותו לפני המכה הבאה.",
+            "נשארו {} בבר. תמלא לפני המכה הבאה.",
         ],
         &[
             "{} חיים. תשתה עכשיו!",
@@ -1029,7 +1057,7 @@ pub mod lines {
             "תשתה עכשיו, אתה על {}, גאון.",
             "{} חיים. אתה מנסה למות?",
             "יש לך {} חיים ואתה תוקף. אמיץ. מטומטם, אבל אמיץ.",
-            "{} חיים זה בשביל להשוויץ? תשתה את השיקוי המחורבן.",
+            "{} חיים, מה, אתה עושה פוזות? תשתה את השיקוי המחורבן.",
             "{} חיים. המצבה שלך בטעינה.",
             "בר אדום, {}, בלי שיקוי. מדהים. תשתה.",
         ],
@@ -1189,7 +1217,7 @@ pub mod lines {
             "{} מאנה, אולי כדאי שיקוי.",
             "שים לב, נשארו רק {} מאנה.",
             "המאנה יורדת, {}. תשתה כחול.",
-            "המאנה כמעט נגמרת לך. תשתה לפני שהסקילים נעצרים.",
+            "המאנה כמעט נגמרת לך. תשתה לפני שלא יהיו לך סקילים.",
             "{} מאנה. תמלא כשיש לך רגע.",
             "בדיקת מאנה: {}. זמן לשיקוי.",
         ],
@@ -1197,7 +1225,7 @@ pub mod lines {
             "{} מאנה. תשתה.",
             "המאנה על {}. תשתה.",
             "נשארו {} מאנה. תשתה.",
-            "אתה עומד להתייבש, {}. שיקוי כחול.",
+            "המאנה עומדת להיגמר, {}. שיקוי כחול.",
             "אין מאנה, אין סקילים. {}. תשתה.",
             "המאנה על {}. הסקילים צריכים אותה. תשתה.",
         ],
@@ -1206,7 +1234,7 @@ pub mod lines {
             "{} מאנה. תשתה משהו, ליצן.",
             "{} מאנה. מה, תהרוג את הבוס במכות רגילות?",
             "המאנה על {}. הסקילים שלך עומדים להיות קישוט.",
-            "{} מאנה. אפילו מכשף מיול מסתדר יותר טוב מזה.",
+            "{} מאנה. אפילו מכשף מתחיל מסתדר יותר טוב מזה.",
             "{} מאנה. תשתה את הכחול, גאון.",
         ],
     ];
@@ -1312,7 +1340,7 @@ pub mod lines {
             "יש לך שיקויי מאנה או לא? {} מאנה.",
             "המקש של המאנה שבור? {} מאנה.",
             "המאנה על {}. אתה הולך לשתות או לא?",
-            "איך אתה הולך להטיל סקילים על {} מאנה?",
+            "איך תעשה סקילים עם {} מאנה?",
             "למה אתה מחכה? {} מאנה. תשתה.",
         ],
         &[
@@ -1364,22 +1392,22 @@ pub mod lines {
             "החיים שלך הגיעו לאפס. זמן לקום ולחזור.",
             "אוי, מתת. תקום ותחזור לשם, אתה יכול.",
             "נפלת! אוקיי, תקום, תשתה, ועוד ניסיון.",
-            "זה תפס אותך. תקום, לא נורא.",
+            "זה הפיל אותך. תקום, לא נורא.",
             "ריפ. תאסוף את הדברים שלך ותחזור לשם.",
-            "אאוץ'. חזרה לעיר בשבילך. תקום ויוצאים לעוד סיבוב.",
-            "מת. תנער את זה, תקום ותחזור פנימה.",
+            "אאוץ'. חוזרים לעיר. תקום ויוצאים לעוד סיבוב.",
+            "מת. קורה. תקום ותחזור לשם.",
         ],
         &[
             "מתת. תקום ותחזור לשם.",
-            "טוב, זה מוות. תקום, עוד סיבוב.",
+            "נו, מתת. תקום, עוד סיבוב.",
             "וזהו, נפלת. ריספאון.",
             "עמדת בתוך זה ומתת. תלמד מזה משהו. תקום.",
             "שטוח על הרצפה. תקום, והפעם תסתכל על הבר.",
-            "מת. יאללה, למעלה. ובפעם הבאה אל תעמוד בזה.",
+            "מת. יאללה, קום. ובפעם הבאה אל תעמוד בתוך זה.",
         ],
         &[
-            "מת. וואו. תקום ותנסה לא להיות גרוע הפעם.",
-            "מתת, גאון. תקום ותחזור פנימה.",
+            "מת. וואו. תקום ותנסה לא לפשל הפעם.",
+            "מתת, גאון. תקום ותחזור לשם.",
             "מזל טוב, מצאת את הרצפה. ריספאון.",
             "מת. המפלצות מתחילות לרחם עליך.",
             "אפס חיים. אפס כישרון. תקום, אידיוט.",
@@ -1422,8 +1450,8 @@ pub mod lines {
     pub const DEATH_WARNED_HE: [&[&str]; 3] = [
         &[
             "אוי, אמרתי לשתות. תקום ויוצאים לעוד סיבוב.",
-            "זה בדיוק מה שהזהרתי ממנו. חזרה לעיר, תנער את זה.",
-            "אמרתי שזה יקרה, וזה בכל זאת תפס אותך. תקום, ותשתה קצת יותר מוקדם.",
+            "זה בדיוק מה שהזהרתי ממנו. חוזרים לעיר, לא נורא.",
+            "אמרתי שזה יקרה, ובכל זאת מתת. תקום, ובפעם הבאה תשתה קצת יותר מוקדם.",
             "אמרתי לך שזה נהיה נמוך! תקום, ותשים עין על הבר.",
             "בפעם הבאה, כשאני אומר לשתות, תשתה. תקום, אתה יכול.",
             "שמעת אותי אומר שיקוי, נכון? אוקיי, תקום, לא קרה כלום.",
@@ -1523,11 +1551,11 @@ pub mod lines {
     pub const LEVEL_UP_HE: [&[&str]; 3] = [
         &[
             "עלית רמה! אתה ברמה {}.",
-            "יש! רמה {}! עבודה יפה.",
+            "יש! רמה {}! כל הכבוד.",
             "דינג! {}. יאללה!",
             "רמה {}, תראה אותך!",
             "יוהו, {}! תשמור על הקצב.",
-            "הנה זה, רמה {}. הרווחת את זה.",
+            "הנה זה, רמה {}. מגיע לך.",
             "{} כבר? אתה טס.",
         ],
         &[
@@ -1540,7 +1568,7 @@ pub mod lines {
             "{}, דינג. חזרה לעבודה.",
         ],
         &[
-            "רמה {}. לקח לך מספיק זמן.",
+            "רמה {}. לקח לך נצח.",
             "רמה {}. סוף סוף.",
             "{}. לקח לך רק את כל הערב.",
             "דינג, {}. חילזון עם מקלדת היה עושה את זה יותר מהר.",
@@ -1589,7 +1617,7 @@ pub mod lines {
             "הנה זה, מייפלסטורי פתוח. אני צופה.",
             "אוקיי, אני רואה את המשחק. קדימה, אני מגבה אותך.",
             "המשחק אצלי על המסך. תהנה!",
-            "יש לי עין על מייפלסטורי. בוא נעשה את זה.",
+            "אני עוקב אחרי מייפלסטורי. יאללה, מתחילים.",
             "מייפלסטורי פתוח ואני רואה אותו. מוכן כשאתה מוכן.",
         ],
         &[
@@ -1606,9 +1634,9 @@ pub mod lines {
             "המשחק פתוח. בוא נראה אותך מת.",
             "הנה המשחק. תנסה להחזיק מעמד חמש דקות.",
             "אני רואה אותו. אוי ואבוי, מתחילים.",
-            "מייפלסטורי פתוח. זמן שהעצות שלי יסחבו אותך.",
+            "מייפלסטורי פתוח. העצות שלי הולכות לסחוב אותך.",
             "החלון פתוח. תשתה לפני שאני צריך להגיד לך.",
-            "יש לי את המשחק. אני פה, שופט אותך.",
+            "רואה את המשחק. אני פה, שופט אותך.",
         ],
     ];
 
@@ -1650,7 +1678,7 @@ pub mod lines {
             "הממ, המשחק נעלם לי. עשית אלט-טאב?",
             "אני לא רואה יותר את מייפלסטורי. תחזיר אותו כשאתה מוכן.",
             "חלון המשחק נעלם. אני מחכה.",
-            "איבדתי את המשחק. מזערת אותו?",
+            "איבדתי את המשחק. הקטנת אותו?",
             "מייפלסטורי נעלם לי מהעין. לוקח הפסקה?",
             "אני לא רואה את המשחק כרגע. אבל אני עדיין פה.",
         ],
@@ -1658,7 +1686,7 @@ pub mod lines {
             "איבדתי את חלון המשחק.",
             "המשחק נעלם. לאן הלכת?",
             "לא רואה את מייפלסטורי. תחזיר אותו.",
-            "מזערת אותו. אני עיוור עכשיו.",
+            "הקטנת אותו. אני עיוור עכשיו.",
             "איבדתי את החלון. תעשה אלט-טאב בחזרה כשתסיים.",
             "אין משחק על המסך. אני מחכה.",
             "מייפלסטורי ירד לי מהמסך. תזדרז.",
@@ -1669,7 +1697,7 @@ pub mod lines {
             "לא רואה את מייפלסטורי. בודק את הרשתות באמצע הגריינד, קלאסי.",
             "החבאת ממני את המשחק. פחדן.",
             "החלון נעלם. לוקח הפסקה מלהפסיד?",
-            "אין משחק. אין על מה לרדת עליך. תחזור מהר.",
+            "אין משחק, אין על מה לרדת. תחזור מהר.",
             "מייפלסטורי נעלם. וגם קצב האקספי שלך.",
         ],
     ];
@@ -1722,7 +1750,7 @@ pub mod lines {
             "המשחק חזר. יאללה.",
             "הנה אתה. תמשיך לשחק.",
             "החלון חזר. אני שוב צופה.",
-            "לקח לך מספיק זמן. המשחק פתוח.",
+            "לקח לך נצח. המשחק פתוח.",
             "המשחק חזר. איפה היינו?",
         ],
         &[
@@ -1833,16 +1861,16 @@ pub mod lines {
     pub const UNMUTED_HE: [&[&str]; 3] = [
         &[
             "חזרתי.",
-            "ההשתקה בוטלה! היי שוב.",
+            "חזרתי לדבר! היי שוב.",
             "הקול חזר. התגעגעתי.",
             "אוקיי, מדבר שוב.",
             "ואני חזרתי. מה פספסתי?",
-            "ההשתקה בוטלה. יאללה!",
+            "מדבר שוב. יאללה!",
             "חזרתי למיקרופון.",
         ],
         &[
             "חזרתי.",
-            "ההשתקה בוטלה. תתנהג יפה.",
+            "חזרתי לדבר. תתנהג יפה.",
             "מדבר שוב. שתית משהו בזמן שלא הייתי?",
             "חזרתי. בוא נראה את הנזק.",
             "הקול פועל. תקשיב.",
@@ -1851,12 +1879,12 @@ pub mod lines {
         ],
         &[
             "חזרתי.",
-            "ההשתקה בוטלה. שרדת בלעדיי?",
+            "חזרתי. שרדת בלעדיי?",
             "חזרתי. בוא נראה מה הרסת בשקט.",
             "יופי, אני יכול לרדת עליך שוב.",
             "הקול חזר. כדאי שגם בר החיים שלך יהיה למעלה.",
             "התגעגעת? חשבתי שלא. תשתה בכל מקרה.",
-            "ההשתקה בוטלה, בדיוק בזמן לראות אותך מפשל.",
+            "חזרתי לדבר, בדיוק בזמן לראות אותך מפשל.",
         ],
     ];
 
@@ -1899,20 +1927,20 @@ pub mod lines {
         &[
             "אתה לא עונה, אז אני עוצר את האזהרות עד שתגיד משהו.",
             "אין סימן ממך, אז אני אשתוק קצת. תגיד משהו ואני חוזר לזה.",
-            "אני מפסיק לנדנד לזמן מה. פשוט תדבר איתי כשתחזור.",
+            "אני מפסיק לנדנד בינתיים. פשוט תדבר איתי כשתחזור.",
             "אף אחד לא שותה, אף אחד לא מדבר. אני משתתק עד שתגיד משהו.",
-            "משתתק עם האזהרות בינתיים. מילה ממך והן חוזרות.",
+            "עוצר עם האזהרות בינתיים. מילה ממך והן חוזרות.",
             "או שאתה לא פה, או שהבר משקר לי. בכל מקרה, אני שותק עד שתדבר.",
             "עוצר את האזהרות לרגע. תגיד משהו כשתחזור ואני אמשיך.",
         ],
         &[
             "אתה לא עונה, אז אני עוצר את האזהרות עד שתגיד משהו.",
             "ארבע אזהרות, אפס תשובות. סיימתי עד שתדבר.",
-            "בסדר, אני סותם על זה. תגיד משהו כשתחזור.",
+            "בסדר, אני מפסיק עם זה. תגיד משהו כשתחזור.",
             "אין אף אחד בבית? האזהרות בהמתנה עד שתדבר.",
             "אמרתי את זה מספיק. שומר את השאר עד שאשמע ממך.",
             "אין שיקוי, אין מילה, אין טעם. אני מחכה.",
-            "האזהרות בהשהיה. תדבר איתי כשאתה באמת פה.",
+            "האזהרות בהפסקה. תדבר איתי כשאתה באמת פה.",
         ],
         &[
             "אתה לא עונה, אז אני עוצר את האזהרות עד שתגיד משהו.",
@@ -1921,7 +1949,7 @@ pub mod lines {
             "או שאתה לא ליד המחשב או שאתה מתעלם ממני. בכל מקרה, סיימתי עד שתדבר.",
             "יופי. תתרסק בשקט. תגיד משהו ואני אתחיל שוב לדאוג.",
             "אין תשובה, אין שיקוי, אין כבוד. האזהרות בהמתנה.",
-            "אני מפסיק לבזבז אוויר. תדבר כשתחזור מאיפה שלא תהיה.",
+            "אני מפסיק לבזבז אוויר. תדבר כשתחזור, איפה שלא היית.",
         ],
     ];
 
@@ -1969,7 +1997,7 @@ pub mod lines {
             "אני עוזב את זה. תשתה כשמתאים לך.",
         ],
         &[
-            "בסדר. אני סותם על זה.",
+            "בסדר. אני סותם.",
             "ארבע אזהרות. סיימתי לנדנד.",
             "הבר שלך, ההחלטה שלך. סיימתי.",
             "אוקיי. ממני לא תשמע יותר על שיקויים.",
@@ -2061,7 +2089,7 @@ pub mod lines {
     pub const STILL_THERE_HE: [&[&str]; 3] = [
         &[
             "אתה עדיין פה? נהיה ממש שקט.",
-            "עדיין איתי? שום דבר לא זז כבר זמן מה.",
+            "עדיין איתי? שום דבר לא זז כבר הרבה זמן.",
             "היי, אתה בסביבה? המשחק עומד במקום כבר קצת.",
             "רק בודק. אתה שם?",
             "נהיה פה שקט. הכול בסדר?",
@@ -2070,15 +2098,15 @@ pub mod lines {
         &[
             "אתה עדיין שם?",
             "נהיה שקט פה. עדיין איתי?",
-            "שום דבר לא זז כבר זמן מה. אתה שם?",
+            "שום דבר לא זז כבר הרבה זמן. אתה שם?",
             "הלו? עדיין בסביבה?",
             "המשחק סתם עומד שם. אתה עדיין פה?",
-            "כבר זמן מה ששום דבר לא זז. אתה שם?",
+            "כבר הרבה זמן ששום דבר לא זז. אתה שם?",
         ],
         &[
             "הלו? המפלצות מתחילות להשתעמם.",
             "אתה עדיין שם, או שהכיסא השתלט? שום דבר לא זז.",
-            "הדמות שלך עומדת שם כבר זמן מה. אתה חי?",
+            "הדמות שלך עומדת שם כבר הרבה זמן. אתה חי?",
             "שום דבר לא זז כבר נצח. תמצמץ אם אתה שם.",
             "לעמוד במקום כל כך הרבה זמן זה כישרון. אתה שם?",
             "הלכת? המשחק סתם עומד שם.",
@@ -2110,18 +2138,18 @@ pub mod lines {
     /// it: the one is plural, the other feminine.
     pub const MISREAD_HE: [&[&str]; 3] = [
         &[
-            "נראה לי שאני קורא לא נכון את ה{} שלך. עוצר את אזהרות ה{} בינתיים.",
+            "נראה לי שאני קורא לא נכון את בר ה{} שלך. עוצר את אזהרות ה{} בינתיים.",
             "הבר של ה{} נמוך כבר נצח ואתה ממשיך לצבור אקספי: כנראה אני קורא אותו לא נכון. עוצר את אזהרות ה{}.",
             "הקריאה הזאת של ה{} לא יכולה להיות נכונה. אעצור את אזהרות ה{} עד שזה ייראה הגיוני.",
         ],
         &[
-            "אני קורא את ה{} שלך לא נכון. עוצר את אזהרות ה{}.",
-            "הבר של ה{} אומר נמוך, האקספי אומר שאתה בסדר. אני סותם על ה{} עד שזה ייקרא נכון.",
+            "אני קורא את בר ה{} שלך לא נכון. עוצר את אזהרות ה{}.",
+            "הבר של ה{} אומר נמוך, האקספי אומר שאתה בסדר. אני מפסיק עם אזהרות ה{} עד שזה ייקרא נכון.",
             "הבר של ה{} משקר לי. אין יותר אזהרות {} עד שהוא יעלה בחזרה.",
         ],
         &[
             "או שהבר של ה{} שלך שבור או שאתה בן אלמוות. עוצר את אזהרות ה{}.",
-            "ארבע אזהרות ואתה ממשיך להרוג דברים. אני קורא את ה{} שלך לא נכון, אז אני סותם על זה.",
+            "ארבע אזהרות ואתה ממשיך להרוג דברים. אני קורא את בר ה{} שלך לא נכון, אז אני שותק.",
             "הבר של ה{} שלך אומר שאתה מת ואתה עולה רמות. יופי, אני מפסיק לסמוך עליו.",
         ],
     ];
@@ -2161,7 +2189,7 @@ pub mod lines {
         "My {} readings are jumping around, so I'm holding the {} warnings until they settle.";
     /// [`UNSTEADY`] in Hebrew (`{}` as in [`MISREAD_HE`]).
     pub const UNSTEADY_HE: &str =
-        "הקריאות של ה{} שלך קופצות, אז אני עוצר את אזהרות ה{} עד שזה יירגע.";
+        "הקריאות של בר ה{} קופצות, אז אני עוצר את אזהרות ה{} עד שזה יירגע.";
 
     /// A moment marked: `{}` is how many this session.
     pub const MARKED: &str = "Marked. That's mark {}.";
@@ -2416,6 +2444,8 @@ impl Companion {
             zero_hp_frames: 0,
             dead: false,
             hp_lately: std::collections::VecDeque::new(),
+            steady_hp: None,
+            exp_lately: std::collections::VecDeque::new(),
             falling_frames: 0,
             fall_told: f64::NEG_INFINITY,
             fall_at: f64::NEG_INFINITY,
@@ -2861,6 +2891,37 @@ impl Companion {
             self.hp_at_change = hp.or(self.hp_at_change);
             self.exp_at_change = exp.map(|g| g.percent).or(self.exp_at_change);
         }
+        if let Some(exp) = exp {
+            self.exp_lately.push_back((now, exp.percent));
+        }
+        while self
+            .exp_lately
+            .front()
+            .is_some_and(|(t, _)| now - t > DEATH_EXP_SECS)
+        {
+            self.exp_lately.pop_front();
+        }
+    }
+
+    /// Whether EXP fell lately — by more than the bar's flicker, and held
+    /// (one frame read low is a misread; a one-frame spike up is not where
+    /// it fell from) — and not by a level-up's wrap: what a death costs.
+    fn exp_fell(&self) -> bool {
+        let Some(high) = held_readings(&self.exp_lately)
+            .map(|(_, p)| p)
+            .reduce(f32::max)
+        else {
+            return false;
+        };
+        let now = self
+            .exp_lately
+            .iter()
+            .rev()
+            .take(HELD_FRAMES as usize)
+            .map(|(_, p)| *p)
+            .fold(f32::MIN, f32::max);
+        let fell = high - now;
+        self.exp_lately.len() > HELD_FRAMES as usize && (DEATH_EXP_LOSS..50.0).contains(&fell)
     }
 
     /// Whether a sentence now would count as addressed without the wake word.
@@ -3282,7 +3343,20 @@ impl Companion {
             }
             self.zero_hp_frames += 1;
             let held = if hp.read { 0.0 } else { ZERO_HOLD_SECS };
-            if self.zero_hp_frames >= 3 && now - self.zero_hp_since >= held && !self.dead {
+            // Through a swing hold, an empty bar that lasts is the cursor
+            // parked on the bar's start as often as a death — the very
+            // cursor that makes the swing (a blank HUD gives no reading at
+            // all): a death needs a second sign, EXP fallen (its penalty)
+            // or HP read steady under the mark before the swing. (A number
+            // read in the game's font needs none.)
+            let corroborated = !unsteady
+                || self.exp_fell()
+                || self.steady_hp.is_some_and(|p| p < self.settings.hp_low);
+            if self.zero_hp_frames >= 3
+                && now - self.zero_hp_since >= held
+                && !self.dead
+                && corroborated
+            {
                 self.dead = true;
                 self.deaths += 1;
                 self.last_death = now;
@@ -3297,11 +3371,20 @@ impl Companion {
                 // ("You're eating every hit. Move." and a second later
                 // "New rule: I yell at 35." — "I yell" one second after it
                 // yelled.)
-                let beaten = self.fight_lines > 0 && now - self.fall_at <= FIGHT_OVER_SECS;
-                let warned = beaten || self.low_hp.warned_this_fight(now, self.fall_at);
+                // (During a hold, not the lines said from the swing — its
+                // first frames, before it was found to swing, can pass for
+                // a beating: those warned of nothing.)
+                let holding = self.hp_steady.holding(now);
+                let before_swing = |at: f64| !holding || at < self.hp_steady.swing_from;
+                let beaten = self.fight_lines > 0
+                    && now - self.fall_at <= FIGHT_OVER_SECS
+                    && before_swing(self.fall_told);
+                let warned = beaten
+                    || (self.low_hp.warned_this_fight(now, self.fall_at)
+                        && before_swing(self.low_hp.told));
                 // (Nor for a death seen through a swinging bar: the way down
                 // was a guess, not seen.)
-                let sooner = if watched || unsteady {
+                let sooner = if watched || unsteady || holding {
                     None
                 } else {
                     self.sooner_warning(warned)
@@ -3314,6 +3397,13 @@ impl Companion {
             return;
         }
         self.zero_hp_frames = 0;
+        // (A reading that holds: the frame before alike.)
+        if let Some(&(t, before)) = self.hp_lately.back()
+            && now - t <= 1.0
+            && (hp.percent - before).abs() <= QUIET_HP_POINTS
+        {
+            self.steady_hp = Some(hp.percent);
+        }
         self.hp_lately.push_back((now, hp.percent));
         while self.hp_lately.front().is_some_and(|(t, _)| now - t > 10.0) {
             self.hp_lately.pop_front();
@@ -3703,9 +3793,10 @@ impl Companion {
     /// `None` when it does not, or the number isn't known right now.
     pub fn instant(&mut self, sentence: &str) -> Option<String> {
         let ask = instant::asks(sentence)?;
-        instant::answer(
+        instant::answer_in(
             ask,
             sentence,
+            self.hebrew,
             self.last.as_ref(),
             &self.progress(),
             self.settings.attitude,
@@ -3807,14 +3898,20 @@ impl Companion {
 /// "82 percent", or "about 82 percent" for a bar estimate.
 /// A low bar the way a person says it: "about 12 percent" (whole numbers;
 /// "about" when it was measured from the bar rather than read) — in
-/// Hebrew "12 אחוז", "בערך 12 אחוז".
+/// Hebrew "12 אחוז", "בערך 12 אחוז", and one "אחוז אחד" ("1 אחוז" is read
+/// "אחד אחוז").
 fn low_words(gauge: Gauge, hebrew: bool) -> String {
     let number = (gauge.percent.round() as i64).max(1);
+    let he = if number == 1 {
+        "אחוז אחד".to_string()
+    } else {
+        format!("{number} אחוז")
+    };
     match (gauge.read, hebrew) {
         (true, false) => format!("{number} percent"),
         (false, false) => format!("about {number} percent"),
-        (true, true) => format!("{number} אחוז"),
-        (false, true) => format!("בערך {number} אחוז"),
+        (true, true) => he,
+        (false, true) => format!("בערך {he}"),
     }
 }
 
@@ -5005,11 +5102,14 @@ mod tests {
         // unread, the bar's fill guessed at): 100, 3, 100, 46, 9… ten
         // times a second — a swing, held — and now and then an empty bar
         // for a frame or two. No death in that. Then he dies for real: the
-        // bar reads 0 and stays 0 for 3 s, inside the hold. The death is
-        // said, once, two seconds in — and the mark does not move for it
-        // (the way down was not seen). At a095e2b the hold reset the count
-        // of empty frames every frame: the death waited out the hold, 20 s
-        // that doubles up to ten minutes while the cursor stays.
+        // bar reads 0 and stays 0 for 3 s, inside the hold, and the death
+        // costs EXP (10% to 9%: the second sign a death through the hold
+        // needs — an empty fill alone is the cursor parked on the bar's
+        // start as often). The death is said, once, two seconds in — and
+        // the mark does not move for it (the way down was not seen). At
+        // a095e2b the hold reset the count of empty frames every frame: the
+        // death waited out the hold, 20 s that doubles up to ten minutes
+        // while the cursor stays.
         let swing = [
             100.0, 3.0, 100.0, 46.0, 9.0, 0.0, 100.0, 28.0, 0.0, 0.0, 3.0, 100.0,
         ];
@@ -5036,7 +5136,7 @@ mod tests {
         assert!(c.hp_steady.unsteady_until > 30.0, "{lines:?}");
         for i in 300..330 {
             let t = i as f64 * 0.1;
-            for line in dealt(&c.observe(t, frame(0.0, 90.0, 10.0))) {
+            for line in dealt(&c.observe(t, frame(0.0, 90.0, 9.0))) {
                 lines.push((t, line));
             }
         }
@@ -5050,7 +5150,7 @@ mod tests {
         // the hold is over — and the death is not said again.
         for i in 330..1200 {
             let t = i as f64 * 0.1;
-            for line in dealt(&c.observe(t, frame(100.0, 90.0, 10.0))) {
+            for line in dealt(&c.observe(t, frame(100.0, 90.0, 9.0))) {
                 lines.push((t, line));
             }
         }
@@ -5058,19 +5158,19 @@ mod tests {
         assert!(!c.dead());
         // The bar read steady at 40% — over the mark, in the band where a
         // sooner warning would have come — then the cursor on it (40, 10,
-        // 40, 10…), then the death: no warning came, but the way down was
-        // a guess, and the mark stays where it is.
+        // 40, 10…), then the death (EXP down with it): no warning came, but
+        // the way down was a guess, and the mark stays where it is.
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines: Vec<(f64, String)> = Vec::new();
         for i in 0..400 {
             let t = i as f64 * 0.1;
-            let hp = match i {
-                0..50 => 40.0,
-                50..372 if i % 2 == 1 => 10.0,
-                50..372 => 40.0,
-                _ => 0.0,
+            let (hp, exp) = match i {
+                0..50 => (40.0, 10.0),
+                50..372 if i % 2 == 1 => (10.0, 10.0),
+                50..372 => (40.0, 10.0),
+                _ => (0.0, 9.0),
             };
-            for line in dealt(&c.observe(t, frame(hp, 90.0, 10.0))) {
+            for line in dealt(&c.observe(t, frame(hp, 90.0, exp))) {
                 lines.push((t, line));
             }
         }
@@ -5079,6 +5179,68 @@ mod tests {
         assert!((died[0].0 - 39.2).abs() < 0.15, "{died:?}");
         assert!(from(lines::DEATH, &died[0].1), "{died:?}");
         assert_eq!(c.settings.hp_low, 30.0, "{died:?}");
+    }
+
+    #[test]
+    fn a_cursor_parked_on_the_bars_start_is_no_death() {
+        // w29's script: the cursor swings the bar's estimate for 10 s, then
+        // rests on the bar's start — the fill read empty for 2.5 s — then
+        // moves off. At 3851c5e that was a death, said ("Oh, I said to pot.
+        // Get up…"), counted and told to the coach — and claiming a warning:
+        // the swing's first frames, before it was found to swing, passed
+        // for a beating.
+        let swing = [
+            100.0, 3.0, 100.0, 46.0, 9.0, 0.0, 100.0, 28.0, 0.0, 0.0, 3.0, 100.0,
+        ];
+        let is_death = |l: &str| from(lines::DEATH, l) || from(lines::DEATH_WARNED, l);
+        // (`before`: HP steady for 5 s before the swing, or not.)
+        let run = |before: Option<f32>, exp_at_zero: f32| -> (Vec<(f64, String)>, bool) {
+            let mut c = Companion::seeded(Settings::default(), SEED);
+            let mut lines = Vec::new();
+            let start = if before.is_some() { 0 } else { 50 };
+            for i in start..300 {
+                let t = i as f64 * 0.1;
+                let (hp, exp) = match i {
+                    0..50 => (before.unwrap_or(100.0), 10.0),
+                    50..150 => (swing[i % swing.len()], 10.0),
+                    150..175 => (0.0, exp_at_zero),
+                    _ => (80.0, exp_at_zero),
+                };
+                for line in dealt(&c.observe(t, frame(hp, 90.0, exp))) {
+                    lines.push((t, line));
+                }
+            }
+            (lines, c.deaths > 0)
+        };
+        // Parked: no death.
+        let (parked, died) = run(None, 10.0);
+        assert!(!died, "{parked:?}");
+        assert!(parked.iter().all(|(_, l)| !is_death(l)), "{parked:?}");
+        // (The swing's first frames did pass for a beating: nothing is
+        // known yet.)
+        assert!(
+            parked
+                .iter()
+                .any(|(t, l)| *t < 6.0 && from(lines::BEATING, l)),
+            "{parked:?}"
+        );
+        // A death through the hold that cost EXP: said — and not as one it
+        // warned of: that beating was the swing's.
+        let (lines, died) = run(None, 9.0);
+        let deaths: Vec<&(f64, String)> = lines.iter().filter(|(_, l)| is_death(l)).collect();
+        assert!(died);
+        assert_eq!(deaths.len(), 1, "{lines:?}");
+        assert!(from(lines::DEATH, &deaths[0].1), "{deaths:?}");
+        // HP read steady under the mark before the swing (and warned of
+        // then): the empty bar is a death — a warned one — EXP or no EXP.
+        let (lines, died) = run(Some(20.0), 10.0);
+        let deaths: Vec<&(f64, String)> = lines.iter().filter(|(_, l)| is_death(l)).collect();
+        assert!(died);
+        assert_eq!(deaths.len(), 1, "{lines:?}");
+        assert!(from(lines::DEATH_WARNED, &deaths[0].1), "{deaths:?}");
+        // Steady over the mark before it: parked, no death.
+        let (lines, died) = run(Some(80.0), 10.0);
+        assert!(!died, "{lines:?}");
     }
 
     #[test]
@@ -6384,6 +6546,114 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_hebrew_cards_say_it_the_way_it_is_said() {
+        // What a native ear caught as translated (w29 §2): calques of
+        // English idioms, a system message, "your life" for the HP bar, and
+        // one card broken outright ("166 עכשיו. לקח לך מספיק.").
+        const CALQUES: &[&str] = &[
+            "לקח לך מספיק",
+            "עבודה יפה",
+            "יש לי את המשחק",
+            "יש לי עין",
+            "תנער את זה",
+            "תחזור פנימה",
+            "חזרה לעיר",
+            "בשבילך",
+            "בחינם",
+            "ההשתקה בוטלה",
+            "סותם על",
+            "תפס אותך",
+            "תן לו קצת מרחק",
+            "ממה שזה לא יהיה",
+            "זה מוות",
+            "הרווחת את זה",
+            "להשוויץ?",
+            "להתייבש",
+            "מיול",
+            "להטיל סקילים",
+            "הסקילים נעצרים",
+            "{} על הבר",
+            "משתתק עם",
+            "מאיפה שלא תהיה",
+            "זמן שהעצות",
+            "על מה לרדת עליך",
+            "את ה{} שלך",
+            "הקריאות של ה{} שלך",
+            "טיפוס יפה",
+            "תמשיך לטפס",
+            "עכשיו. למעלה.",
+            "יאללה, למעלה",
+            "ממש פה.",
+            "יו. מדבר.",
+            "זמן מה",
+            "מזערת",
+            "בהשהיה",
+        ];
+        let mut hebrew: Vec<&str> = Vec::new();
+        for (_, _, he) in lines::ALL {
+            for list in he.iter() {
+                hebrew.extend(list.iter());
+            }
+        }
+        hebrew.extend([lines::UNSTEADY_HE, lines::MARKED_HE]);
+        for deck in [
+            instant::lines::LEVEL_UP_HE,
+            instant::lines::LEVEL_NOW_HE,
+            instant::lines::LEVEL_HE,
+            instant::lines::BAR_LOW_HE,
+            instant::lines::BAR_OK_HE,
+            instant::lines::EXP_HE,
+            crate::ai::brain::HERE_HE,
+        ] {
+            for list in deck.iter() {
+                hebrew.extend(list.iter());
+            }
+        }
+        for card in &hebrew {
+            for calque in CALQUES {
+                assert!(!card.contains(calque), "{card:?} says {calque:?}");
+            }
+        }
+        // The bar's name in the notes is the bar's: "בר החיים שלך".
+        assert_eq!(
+            lines::UNSTEADY_HE.replace("{}", Bar::Hp.name(true)),
+            "הקריאות של בר החיים קופצות, אז אני עוצר את אזהרות החיים עד שזה יירגע."
+        );
+        // One is "אחוז אחד" ("1 אחוז" is read "אחד אחוז").
+        let one = |read| Gauge {
+            percent: 0.6,
+            current: None,
+            max: None,
+            read,
+        };
+        assert_eq!(low_words(one(true), true), "אחוז אחד");
+        assert_eq!(low_words(one(false), true), "בערך אחוז אחד");
+        assert_eq!(low_words(one(true), false), "1 percent");
+    }
+
+    #[test]
+    fn a_latin_hp_asked_in_a_hebrew_session_is_answered_in_hebrew() {
+        // A Hebrew recogniser writes "HP?" in Latin letters: it got "76% HP.
+        // You're fine, stop asking." — English, mid-Hebrew-session.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.observe(0.0, frame(76.0, 80.0, 10.0));
+        let english = c.instant("HP?").unwrap();
+        assert!(english.contains("HP"), "{english}");
+        c.set_language(Some("he-IL"));
+        let hebrew = c.instant("HP?").unwrap();
+        assert!(
+            !hebrew.chars().any(|ch| ch.is_ascii_alphabetic()) && hebrew.contains("76 אחוז"),
+            "{hebrew}"
+        );
+        // Asked in English words, it is answered in English.
+        let english = c.instant("what's my HP").unwrap();
+        assert!(
+            english.chars().any(|ch| ch.is_ascii_alphabetic()),
+            "{english}"
+        );
     }
 
     #[test]

@@ -46,6 +46,14 @@ const HELLOS: &[&str] = &[
     "מה קורה",
     "מה נשמע",
     "מה העניינים",
+    // (Israel's commonest "what's up", and "how's life": a hello, not the
+    // status or the HP — "מה המצב שלי", "מה החיים שלי" ask.)
+    "מה המצב",
+    "מה איתך",
+    "מה הולך",
+    "מה שלומך",
+    "מה החיים",
+    "מה חיים",
     "בוקר טוב",
     "צהריים טובים",
     "ערב טוב",
@@ -98,28 +106,28 @@ const SHALOM: &str = "שלום";
 /// Whether `sentence` is a greeting and nothing more: a greeting, then at
 /// most who it is said to — a word of address, the wake word, a name (a
 /// capitalised word, as recognisers write names) — or another greeting
-/// ("hey hey", "hey, what's up", "היי מה נשמע"). "Hey, what's my level" is
-/// more than a greeting, and so is "Hey, HP?": a word of the player's
-/// numbers is a question, never a name.
+/// ("hey hey", "hey, what's up", "היי מה נשמע", "היי מה המצב"). "Hey,
+/// what's my level" is more than a greeting, and so is "Hey, HP?": a word
+/// of the player's numbers is a question, never a name. (Inside a greeting
+/// it is the greeting's: "מה החיים" is "how's life"; "מה החיים שלי" asks
+/// the HP.)
 fn is_hello(sentence: &str) -> bool {
     let list = words(sentence);
     if list.is_empty() || list.len() > 6 {
-        return false;
-    }
-    if names_a_number(&list.join(" ")) {
         return false;
     }
     let greeting = opening(&list, HELLOS);
     if greeting == 0 {
         return false;
     }
-    // Names: capitalised words after the first ("I" is no name).
+    // Names: capitalised words after the first ("I" is no name, nor a
+    // word of the player's numbers).
     let names: Vec<String> = sentence
         .split_whitespace()
         .skip(1)
         .filter(|w| w.chars().next().is_some_and(char::is_uppercase))
         .map(normalize)
-        .filter(|w| !w.is_empty() && w != "i")
+        .filter(|w| !w.is_empty() && w != "i" && !names_a_number(w))
         .collect();
     let mut named = 0;
     let mut at = greeting;
@@ -149,16 +157,28 @@ fn names_a_number(text: &str) -> bool {
         .any(|names| names.iter().any(|n| has(text, n)))
 }
 
+/// How many words of `list` the greeting it opens with takes — none when
+/// that greeting names one of the player's numbers: before more words,
+/// "מה החיים" asks ("מה החיים שלי").
+fn greeting_in(list: &[String]) -> usize {
+    let at = opening(list, HELLOS);
+    if names_a_number(&list[..at].join(" ")) {
+        0
+    } else {
+        at
+    }
+}
+
 /// `list` without the hello it opens with, and whom it is said to ("Hey
 /// Syrup, HP?" asks "HP?"; "hey man, what's up, level?" asks "level?").
 fn after_hello(list: Vec<String>) -> Vec<String> {
-    let mut at = opening(&list, HELLOS);
+    let mut at = greeting_in(&list);
     if at == 0 {
         return list;
     }
     while at < list.len() {
         let rest = &list[at..];
-        let more = opening(rest, HELLOS).max(opening(rest, WAKE_WORDS));
+        let more = greeting_in(rest).max(opening(rest, WAKE_WORDS));
         if more > 0 {
             at += more;
         } else if HELLO_TO.contains(&list[at].as_str()) {
@@ -395,56 +415,60 @@ pub mod lines {
             "{n}'s at {v}. The bar isn't that hard to read.",
         ],
     ];
+    /// The bar named in Hebrew ("חיים", plural; "מאנה", feminine): no
+    /// card has a word that agrees with it ("ה{n} על {v}", "{v} {n}",
+    /// "{n}: {v}"). `{v}` is "76 אחוז" or "בערך 76 אחוז": never joined to
+    /// a letter ("ב-בערך").
     pub const BAR_LOW_HE: [&[&str]; 3] = [
         &[
-            "ה-{n} שלך {v}. תשתה שיקוי!",
-            "ה-{n} ב-{v}, תשתה משהו.",
-            "{n} {v}. תשתה עכשיו!",
+            "ה{n} שלך {v}. תשתה שיקוי!",
+            "ה{n} על {v}, תשתה משהו.",
+            "{n}: {v}. תשתה עכשיו!",
             "נמוך: {v} {n}. זמן לשיקוי.",
             "{v} {n}. תמלא!",
             "לא משהו, {v} {n}. תשתה.",
         ],
         &[
             "{v} {n}. תשתה עכשיו.",
-            "{n} {v}. תשתה.",
-            "ה-{n} ב-{v}. תסדר את זה.",
+            "{n}: {v}. תשתה.",
+            "ה{n} על {v}. תסדר את זה.",
             "{v}. שיקוי.",
-            "{n} {v}. אתה יודע מה לעשות.",
+            "{n}: {v}. אתה יודע מה לעשות.",
             "נמוך. {v} {n}. תשתה.",
         ],
         &[
             "{v} {n}. תשתה כבר, גאון.",
             "{v} {n}? תשתה, ליצן.",
-            "{n} {v}. לשאול לא ימלא את זה, לשתות כן.",
+            "{n}: {v}. לשאול לא ימלא את זה, לשתות כן.",
             "{v} {n}. רצית מדליה או שיקוי?",
             "{v}. תשתה לפני שאגיד את זה שוב, אידיוט.",
-            "{n} {v}. תפסיק לשאול ותתחיל לשתות.",
+            "{n}: {v}. תפסיק לשאול ותתחיל לשתות.",
         ],
     ];
     pub const BAR_OK_HE: [&[&str]; 3] = [
         &[
-            "ה-{n} שלך {v}.",
-            "{n} {v}, אתה בסדר.",
+            "ה{n} שלך {v}.",
+            "{n}: {v}, אתה בסדר.",
             "{v} {n}. הכול טוב!",
-            "ה-{n} עומד על {v}.",
+            "ה{n} על {v}. סבבה.",
             "{v} {n}, אין מה לדאוג.",
             "יש לך {v} {n}.",
         ],
         &[
             "{v} {n}.",
-            "{n} {v}. בסדר.",
-            "ה-{n} ב-{v}. תמשיך.",
+            "{n}: {v}. בסדר.",
+            "ה{n} על {v}. תמשיך.",
             "{v}. אתה בסדר.",
-            "{n} {v}, אין מה לראות.",
+            "{n}: {v}, אין מה לראות.",
             "{v} {n}. תשחק.",
         ],
         &[
             "{v} {n}. אתה בסדר, תפסיק לשאול.",
             "{v} {n}. תירגע.",
-            "{n} {v}. זה ממש שם על המסך, גאון.",
+            "{n}: {v}. זה ממש שם על המסך, גאון.",
             "{v} {n}. תסתכל על הבר שלך בעצמך בפעם הבאה.",
             "{v}. בסדר. עכשיו תשחק.",
-            "ה-{n} ב-{v}. הבר לא כזה קשה לקריאה.",
+            "ה{n} על {v}. הבר לא כזה קשה לקריאה.",
         ],
     ];
     pub const EXP_EN: [&[&str]; 3] = [
@@ -475,28 +499,28 @@ pub mod lines {
     ];
     pub const EXP_HE: [&[&str]; 3] = [
         &[
-            "ה-EXP שלך {v}.",
-            "EXP {v}. מתקדם!",
+            "האקספי שלך {v}.",
+            "אקספי: {v}. מתקדם!",
             "{v} מהדרך לרמה הבאה.",
-            "אתה ב-{v} EXP.",
-            "ה-EXP עומד על {v}.",
-            "{v} EXP. תמשיך ככה!",
+            "יש לך {v} אקספי.",
+            "האקספי עומד על {v}.",
+            "{v} אקספי. תמשיך ככה!",
         ],
         &[
-            "{v} EXP.",
+            "{v} אקספי.",
             "{v}. תמשיך לטחון.",
-            "{v} EXP. זוז.",
-            "אתה ב-{v}.",
-            "ה-EXP ב-{v}. אל תעצור.",
+            "{v} אקספי. זוז.",
+            "אתה על {v}.",
+            "האקספי על {v}. אל תעצור.",
             "{v} מהבר.",
         ],
         &[
-            "{v} EXP. תטחן מהר יותר.",
+            "{v} אקספי. תטחן מהר יותר.",
             "{v}. בקצב הזה, שנה הבאה.",
-            "EXP {v}. זה היה כל הערב?",
-            "{v} EXP. תפסיק לבדוק ותתחיל להרוג.",
+            "אקספי: {v}. זה היה כל הערב?",
+            "{v} אקספי. תפסיק לבדוק ותתחיל להרוג.",
             "{v}. הבר זז כשאתה זז, גאון.",
-            "EXP {v}. המפלצות לא יהרגו את עצמן.",
+            "אקספי: {v}. המפלצות לא יהרגו את עצמן.",
         ],
     ];
     pub const LEVEL_EN: [&[&str]; 3] = [
@@ -574,16 +598,16 @@ pub mod lines {
     pub const LEVEL_UP_HE: [&[&str]; 3] = [
         &[
             "רמה {v} עכשיו. עולים!",
-            "{v} עכשיו! טיפוס יפה.",
-            "אתה {v} עכשיו, תראה אותך!",
+            "{v} עכשיו! יפה מאוד.",
+            "אתה ברמה {v} עכשיו, תראה אותך!",
         ],
         &[
-            "{v} עכשיו. למעלה.",
+            "{v} עכשיו. עולים.",
             "רמה {v} עכשיו. הלאה.",
-            "{v} עכשיו. תמשיך לטפס.",
+            "{v} עכשיו. תמשיך ככה.",
         ],
         &[
-            "{v} עכשיו. לקח לך מספיק.",
+            "{v} עכשיו. לקח לך נצח.",
             "רמה {v} עכשיו. אל תשוויץ.",
             "{v} עכשיו. סוף סוף.",
         ],
@@ -650,7 +674,8 @@ pub mod lines {
             "עוד {v}, אתה תצליח!",
             "{v} ואתה עולה.",
             "הרמה הבאה בעוד {v}, תמשיך!",
-            "נשארו {v} בקצב הזה.",
+            // (Not "נשארו": "בערך דקה" is one.)
+            "בקצב הזה, עוד {v}.",
             "{v} עד הרמה. כמעט שם!",
         ],
         &[
@@ -741,26 +766,74 @@ pub mod lines {
     ];
 }
 
+/// A bar's value as it is said: "76%", "about 76%" for a bar measured
+/// rather than read — in Hebrew "76 אחוז", "בערך 76 אחוז", and one is
+/// "אחוז אחד" ("1 אחוז" is read "אחד אחוז").
 fn percent(gauge: Gauge, hebrew: bool) -> String {
     let p = gauge.percent.round().clamp(0.0, 100.0);
     match (gauge.read, hebrew) {
-        (true, _) => format!("{p:.0}%"),
+        (true, false) => format!("{p:.0}%"),
         (false, false) => format!("about {p:.0}%"),
-        (false, true) => format!("בערך {p:.0}%"),
+        (read, true) => {
+            let amount = if p == 1.0 {
+                "אחוז אחד".to_string()
+            } else {
+                format!("{p:.0} אחוז")
+            };
+            if read {
+                amount
+            } else {
+                format!("בערך {amount}")
+            }
+        }
     }
 }
 
+/// How long, as it is said: "about 1 hour 20 minutes", "בערך שעה ו-20
+/// דקות" (one is "שעה", "דקה"; two hours "שעתיים").
 fn duration(seconds: f64, hebrew: bool) -> String {
     let minutes = (seconds / 60.0).round().max(1.0) as u64;
     let (h, m) = (minutes / 60, minutes % 60);
+    let english = |n: u64, unit: &str| format!("{n} {unit}{}", if n == 1 { "" } else { "s" });
+    let hours_he = match h {
+        1 => "שעה".to_string(),
+        2 => "שעתיים".to_string(),
+        h => format!("{h} שעות"),
+    };
+    let minutes_he = match m {
+        1 => "דקה".to_string(),
+        m => format!("{m} דקות"),
+    };
     match (hebrew, h, m) {
-        (false, 0, m) => format!("about {m} minutes"),
-        (false, h, 0) => format!("about {h} hours"),
-        (false, h, m) => format!("about {h} hours {m} minutes"),
-        (true, 0, m) => format!("בערך {m} דקות"),
-        (true, h, 0) => format!("בערך {h} שעות"),
-        (true, h, m) => format!("בערך {h} שעות ו-{m} דקות"),
+        (false, 0, m) => format!("about {}", english(m, "minute")),
+        (false, h, 0) => format!("about {}", english(h, "hour")),
+        (false, h, m) => format!("about {} {}", english(h, "hour"), english(m, "minute")),
+        (true, 0, _) => format!("בערך {minutes_he}"),
+        (true, _, 0) => format!("בערך {hours_he}"),
+        // ("ו-20 דקות", "ודקה".)
+        (true, _, m) => format!(
+            "בערך {hours_he} ו{}{minutes_he}",
+            if m == 1 { "" } else { "-" }
+        ),
     }
+}
+
+/// The numbers' names as Hebrew says them too, and a Hebrew recogniser
+/// may write them, in Latin letters ("HP", "level": "לבל"). ("Health",
+/// "mana", "experience" are English words: Hebrew has its own.)
+const ACRONYMS: &[&str] = &["hp", "mp", "exp", "xp", "lvl", "level"];
+
+/// Whether the answer to `sentence` is said in Hebrew: when it is written
+/// in Hebrew — or, in a Hebrew session, when it has no word of either
+/// language but the number's own name ("HP?", "Hey Syrup, HP?": a Hebrew
+/// recogniser writes HP in Latin letters, and "76% HP. You're fine, stop
+/// asking." came back in English, mid-session).
+fn in_hebrew(sentence: &str, session_hebrew: bool) -> bool {
+    if is_hebrew(sentence) {
+        return true;
+    }
+    let list = after_hello(words(sentence));
+    session_hebrew && !list.is_empty() && list.iter().all(|w| ACRONYMS.contains(&w.as_str()))
 }
 
 /// A [`Deck`] per list in [`lines`], so that each kind of answer is dealt
@@ -886,7 +959,24 @@ pub fn answer(
     attitude: Attitude,
     decks: &mut Decks,
 ) -> Option<String> {
-    let he = is_hebrew(sentence);
+    answer_in(ask, sentence, false, obs, progress, attitude, decks)
+}
+
+/// [`answer`], in a session whose language is Hebrew when
+/// `session_hebrew`: a question with no word of either language but the
+/// number's name ("HP?") is answered in it ([`in_hebrew`]). In Hebrew the
+/// bars have their Hebrew names, as its own lines say them ("חיים",
+/// "מאנה", "אקספי"), and an amount is "76 אחוז".
+pub fn answer_in(
+    ask: Ask,
+    sentence: &str,
+    session_hebrew: bool,
+    obs: Option<&Observation>,
+    progress: &Progress,
+    attitude: Attitude,
+    decks: &mut Decks,
+) -> Option<String> {
+    let he = in_hebrew(sentence, session_hebrew);
     if ask == Ask::Hello {
         let line = if he {
             decks.hello_he.deal(attitude, lines::HELLO_HE)
@@ -903,8 +993,8 @@ pub fn answer(
         Some(line.replace("{v}", &value).replace("{n}", name))
     };
     match ask {
-        Ask::Hp => gauge_line(obs.hp, "HP"),
-        Ask::Mp => gauge_line(obs.mp, "MP"),
+        Ask::Hp => gauge_line(obs.hp, if he { "חיים" } else { "HP" }),
+        Ask::Mp => gauge_line(obs.mp, if he { "מאנה" } else { "MP" }),
         Ask::Exp => {
             let value = percent(obs.exp?, he);
             let line = if he {
@@ -1014,10 +1104,13 @@ mod tests {
             answer(ask, sentence, Some(&obs), &progress, attitude, &mut decks).unwrap()
         };
         assert_eq!(say(Ask::Hp, "what's my hp", Attitude::Blunt), "HP 76%.");
-        assert_eq!(say(Ask::Hp, "כמה HP יש לי", Attitude::Blunt), "76% HP.");
+        assert_eq!(
+            say(Ask::Hp, "כמה HP יש לי", Attitude::Blunt),
+            "76 אחוז חיים."
+        );
         assert_eq!(
             say(Ask::Mp, "כמה מאנה", Attitude::Savage),
-            "בערך 22% MP. תשתה כבר, גאון."
+            "בערך 22 אחוז מאנה. תשתה כבר, גאון."
         );
         assert_eq!(
             say(Ask::Mp, "mana?", Attitude::Friendly),
@@ -1030,7 +1123,7 @@ mod tests {
         );
         assert_eq!(
             say(Ask::NextLevel, "כמה זמן עד הרמה הבאה", Attitude::Friendly),
-            "בערך 2 שעות ו-20 דקות לרמה הבאה."
+            "בערך שעתיים ו-20 דקות לרמה הבאה."
         );
         // Not known right now: the model answers — and no card is dealt
         // for it: the next answer is still the lead.
@@ -1258,7 +1351,6 @@ mod tests {
             "morning star",
             "hey Zakum is hard",
             "מה קורה עם הבוס",
-            "מה המצב",
             "OK",
             "Danny",
         ] {
@@ -1400,8 +1492,88 @@ mod tests {
                 &mut decks
             )
             .as_deref(),
-            Some("76% HP.")
+            Some("76 אחוז חיים.")
         );
+    }
+
+    #[test]
+    fn a_hebrew_answer_names_the_bar_in_hebrew_and_reads_whole() {
+        // With the HP number unread (his Classic character), "ה-HP ב-בערך
+        // 76%. תמשיך." and "אתה ב-בערך 50% EXP." were said as written; every
+        // bar answer carried Latin ("76% HP. אתה בסדר…") where its own lines
+        // say "חיים".
+        let latin = |s: &str| s.chars().any(|c| c.is_ascii_alphabetic());
+        for (list, names) in [
+            (lines::BAR_LOW_HE, &["חיים", "מאנה"][..]),
+            (lines::BAR_OK_HE, &["חיים", "מאנה"][..]),
+            (lines::EXP_HE, &[""][..]),
+        ] {
+            for attitude in Attitude::ALL {
+                for card in attitude.lines(list) {
+                    for value in ["76 אחוז", "בערך 76 אחוז", "אחוז אחד"] {
+                        for name in names {
+                            let line = card.replace("{v}", value).replace("{n}", name);
+                            assert!(!latin(&line), "{line}");
+                            assert!(!line.contains("ב-") && !line.contains('%'), "{line}");
+                        }
+                    }
+                }
+            }
+        }
+        let obs = Observation {
+            hp: Some(Gauge {
+                percent: 76.0,
+                current: None,
+                max: None,
+                read: false,
+            }),
+            ..seen()
+        };
+        let none = Progress::default();
+        let mut decks = Decks::seeded(SEED);
+        let mut ask = |ask, q: &str, session_hebrew| {
+            answer_in(
+                ask,
+                q,
+                session_hebrew,
+                Some(&obs),
+                &none,
+                Attitude::Blunt,
+                &mut decks,
+            )
+            .unwrap()
+        };
+        assert_eq!(ask(Ask::Hp, "כמה חיים", false), "בערך 76 אחוז חיים.");
+        assert_eq!(ask(Ask::Exp, "כמה אקספי", false), "20 אחוז אקספי.");
+        // "HP?" in Latin letters, in a Hebrew session: in Hebrew; in an
+        // English one, or asked in English words, in English.
+        let he = ask(Ask::Hp, "HP?", true);
+        assert!(!latin(&he) && he.contains("76 אחוז"), "{he}");
+        let he = ask(Ask::Hp, "Hey Syrup, HP?", true);
+        assert!(!latin(&he), "{he}");
+        let he = ask(Ask::Level, "level?", true);
+        assert!(!latin(&he) && he.contains("109"), "{he}");
+        assert!(latin(&ask(Ask::Hp, "HP?", false)));
+        assert!(latin(&ask(Ask::Hp, "what's my HP", true)));
+        assert!(latin(&ask(Ask::Level, "what level am I", true)));
+        // One is said as one: "אחוז אחד", "דקה", "שעה" ("1 דקות", "about 1
+        // hours" were said).
+        let one = Gauge {
+            percent: 1.2,
+            current: None,
+            max: None,
+            read: true,
+        };
+        assert_eq!(percent(one, true), "אחוז אחד");
+        assert_eq!(percent(Gauge { read: false, ..one }, true), "בערך אחוז אחד");
+        assert_eq!(percent(one, false), "1%");
+        assert_eq!(duration(60.0, true), "בערך דקה");
+        assert_eq!(duration(85.0 * 60.0, true), "בערך שעה ו-25 דקות");
+        assert_eq!(duration(181.0 * 60.0, true), "בערך 3 שעות ודקה");
+        assert_eq!(duration(120.0 * 60.0, true), "בערך שעתיים");
+        assert_eq!(duration(60.0, false), "about 1 minute");
+        assert_eq!(duration(85.0 * 60.0, false), "about 1 hour 25 minutes");
+        assert_eq!(duration(121.0 * 60.0, false), "about 2 hours 1 minute");
     }
 
     #[test]
@@ -1435,6 +1607,37 @@ mod tests {
         ] {
             assert_eq!(asks(sentence), None, "{sentence}");
         }
+    }
+
+    #[test]
+    fn the_israeli_whats_up_is_a_hello() {
+        // "מה המצב" — the commonest Israeli "what's up" — went to the model
+        // as a question about the game ("מצב": status), which then recited
+        // it; "מה החיים" ("how's life") got the HP card.
+        for sentence in [
+            "מה המצב",
+            "מה המצב?",
+            "מה המצב אחי",
+            "היי מה המצב",
+            "יו מה המצב",
+            "אהלן מה המצב",
+            "מה העניינים",
+            "מה איתך",
+            "מה הולך",
+            "מה שלומך",
+            "שלום מה שלומך",
+            "מה החיים",
+            "מה החיים?",
+            "היי, מה החיים",
+            "מה חיים אחי",
+        ] {
+            assert_eq!(asks(sentence), Some(Ask::Hello), "{sentence}");
+        }
+        // With "my", they ask: the status, the HP.
+        assert_eq!(asks("מה החיים שלי"), Some(Ask::Hp));
+        assert_eq!(asks("היי, מה החיים שלי"), Some(Ask::Hp));
+        assert_eq!(asks("מה המצב שלי"), None);
+        assert_eq!(asks("כמה חיים יש לי"), Some(Ask::Hp));
     }
 
     #[test]

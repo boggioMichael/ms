@@ -2177,6 +2177,19 @@ impl Outputs {
         }
     }
 
+    /// The language `text` asks for ([`commands::language_request`]),
+    /// unless it is the one in use: the player's, taken by the phone (no
+    /// request of it waiting). A request for the language spoken changes
+    /// nothing and is not made — the "taken" line said again, the phone's
+    /// recogniser restarted, the sentence never reaching the model — so it
+    /// goes on like any other sentence ("in English", heard in English, as
+    /// likely ends one about the game). One the phone has not taken yet is
+    /// made again.
+    fn language_asked(&self, text: &str, player_language: Option<&str>) -> Option<&'static str> {
+        commands::language_request(text)
+            .filter(|locale| player_language != Some(*locale) || self.lang_asked.is_some())
+    }
+
     /// The phone took `locale` (its picker says so): it is no longer asked
     /// to.
     fn took_language(&mut self, locale: &str) {
@@ -3188,7 +3201,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                         // "Talk to me in Hebrew": from now on, the phone's
                         // language and its own — at once, no model asked.
-                        if let Some(locale) = commands::language_request(&text) {
+                        if let Some(locale) = out.language_asked(&text, player_language.as_deref())
+                        {
                             out.show(Kind::Heard, &text);
                             out.ask_language(locale, &mut player_language, &mut companion, true);
                             continue;
@@ -3295,7 +3309,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 set_coaching(&mut coach, &learning, &mut out, on);
                             } else if commands::tone_complaint(&text) {
                                 drop_the_attitude(&mut companion, &learning, &mut out);
-                            } else if let Some(locale) = commands::language_request(&text) {
+                            } else if let Some(locale) =
+                                out.language_asked(&text, player_language.as_deref())
+                            {
                                 // (The call follows the language spoken; the
                                 // phone's own words and its recogniser for
                                 // after the call follow the request.)
@@ -5532,6 +5548,51 @@ mod tests {
         let mut companion = Companion::new(Settings::default());
         out.set_language("he-IL", &mut player_language, &mut companion);
         assert!(!companion.speaks_hebrew());
+    }
+
+    #[test]
+    fn a_request_for_the_language_in_use_goes_on_to_the_model() {
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let mut player_language = None;
+        // The phone's picker says Hebrew (its hello): taken.
+        out.set_language("he-IL", &mut player_language, &mut companion);
+        out.took_language("he-IL");
+        let lang = player_language.clone();
+        // Hebrew asked for in Hebrew: nothing to change — no "taken" line,
+        // no request to the phone (its recogniser would restart); the
+        // sentence goes on to the model.
+        assert_eq!(out.language_asked("בעברית בבקשה", lang.as_deref()), None);
+        assert_eq!(
+            out.language_asked("תדבר איתי בעברית", lang.as_deref()),
+            None
+        );
+        // The other language is asked for, as before.
+        assert_eq!(
+            out.language_asked("תחזור לאנגלית", lang.as_deref()),
+            Some("en-US")
+        );
+        // In English, "in English" ends a sentence about the game as often
+        // as it asks: it goes on too.
+        out.set_language("en-US", &mut player_language, &mut companion);
+        out.took_language("en-US");
+        assert_eq!(
+            out.language_asked("in English", player_language.as_deref()),
+            None
+        );
+        assert_eq!(
+            out.language_asked("in Hebrew", player_language.as_deref()),
+            Some("he-IL")
+        );
+        // A request the phone has not taken yet is made again.
+        out.ask_language("he-IL", &mut player_language, &mut companion, false);
+        assert_eq!(
+            out.language_asked("talk to me in Hebrew", player_language.as_deref()),
+            Some("he-IL")
+        );
+        // Before any hello, nothing is known to be in use.
+        let fresh = outputs();
+        assert_eq!(fresh.language_asked("in English", None), Some("en-US"));
     }
 
     /// The size of the phone's clip `seq`, as it would fetch it.

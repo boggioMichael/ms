@@ -164,12 +164,14 @@ The quest marker is four maps to the left. Go!"
                                         // The next morning, the game open.
                                         "Got it. What map are we on? MapleStory window is open, level 167."
                                             .to_string()
-                                    } else if said.to_lowercase().contains("talk to me")
-                                        || said.contains("תדבר איתי")
-                                    {
+                                    } else if said.to_lowercase().contains("talk to me") {
                                         // The owner's "Talk to me you fucker",
                                         // the game not open yet.
                                         "No MapleStory window open.".to_string()
+                                    } else if said.contains("תדבר איתי") {
+                                        // …and its Hebrew twin, as the model
+                                        // writes it in a Hebrew session.
+                                        "המשחק לא פתוח.".to_string()
                                     } else {
                                         format!(
                                             "Hello there, my friend! ({model}) you said: {said}."
@@ -884,12 +886,17 @@ fn asked_to_talk_with_nothing_but_the_games_state_it_says_it_is_here() {
         notes.contains(&"not said, nobody asked: No MapleStory window open.".to_string()),
         "{notes:?}"
     );
-    // Asked in Hebrew: in Hebrew.
-    let (reply, ..) = outcome(&worker, ask("תדבר איתי", true));
+    // Asked in Hebrew, the window recited in Hebrew ("המשחק לא פתוח." was
+    // taken for an order, "play!", and said): in Hebrew, the card.
+    let (reply, _, notes) = outcome(&worker, ask("תדבר איתי", true));
     let reply = reply.expect("silent");
     assert!(
         ms::ai::brain::HERE_HE[1].contains(&reply.as_str()),
         "{reply}"
+    );
+    assert!(
+        notes.contains(&"not said, nobody asked: המשחק לא פתוח.".to_string()),
+        "{notes:?}"
     );
     // Not spoken (on a call): the same word, shown.
     let (reply, spoken, _) = outcome(&worker, ask("talk to me", false));
