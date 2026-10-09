@@ -17,7 +17,9 @@ death or a level-up said however late, a warning's row red and news's amber
 (the dog barks at a warning only), a change of attitude retunes the call in
 place, Hebrew heard on the call sets the recogniser's language (two
 sentences, or one long one; two English ones set it back; shown beside the
-picker, with a × back), a glance at another app tells the PC nothing, a PC
+picker, with a × back), a language the player asked the PC for out loud is
+taken once per request as if picked in the picker, a glance at another app
+tells the PC nothing, a PC
 that lost the call is told it is on, the page leaving tells it the call is
 off, and a call that fails to open hands its hello back; and, under the
 browser's own autoplay policy (a phone's: no clip before a tap), the hello
@@ -568,6 +570,31 @@ def live_checks(browser):
     page.select_option("#lang", "en-US")
     wait_for(lambda: page.evaluate("!!window.__rec && window.__rec.running && window.__rec.lang === 'en-US'"), 5, "the picker did not take the recogniser back")
     assert hearing() is None and not rec_lang(), (hearing(), rec_lang())
+    # The player asked the PC out loud ("talk to me in Hebrew"): its status
+    # asks the page to take Hebrew, by number — taken as if picked in the
+    # picker (the picker, right to left, the recogniser, kept, the PC told)
+    # once: the same number on the next polls is nothing, even after the
+    # picker is changed by hand; the next number is taken again.
+    def rec_on(lang): return page.evaluate(f"!!window.__rec && window.__rec.running && window.__rec.lang === '{lang}'")
+    t_lang = time.time()
+    STATUS["lang_request"] = {"lang": "he-IL", "seq": 1}
+    wait_for(lambda: rec_on("he-IL"), 5, "the language asked for did not take the recogniser")
+    assert page.input_value("#lang") == "he-IL", page.input_value("#lang")
+    assert page.get_attribute("html", "dir") == "rtl"
+    assert page.evaluate("localStorage.getItem('ms.lang')") == "he-IL"
+    page.wait_for_timeout(1500)
+    assert [r["body"] for r in requests_since(t_lang, "/api/lang")] == [{"lang": "he-IL"}], [r["body"] for r in requests_since(t_lang, "/api/lang")]
+    page.select_option("#lang", "en-US")
+    wait_for(lambda: rec_on("en-US"), 5, "the picker did not take the recogniser back")
+    page.wait_for_timeout(1500)
+    assert page.input_value("#lang") == "en-US", "the same request was taken twice"
+    t_lang = time.time()
+    STATUS["lang_request"] = {"lang": "he-IL", "seq": 2}
+    wait_for(lambda: rec_on("he-IL"), 5, "the next request was not taken")
+    STATUS["lang_request"] = {"lang": "en-US", "seq": 3}
+    wait_for(lambda: rec_on("en-US") and page.get_attribute("html", "dir") == "ltr", 5, "English asked for did not take the page back")
+    assert [r["body"]["lang"] for r in requests_since(t_lang, "/api/lang")] == ["he-IL", "en-US"]
+    STATUS.pop("lang_request")
     # Back on a call for the rest.
     t_back = time.time()
     page.click("#gear"); page.check("#liveCall"); page.click("#sheetDone")

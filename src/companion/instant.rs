@@ -1,12 +1,13 @@
 //! Answers MapleSyrup knows without asking a model: the player's own HP,
-//! MP, EXP and level, and the time to the next level, read off the game.
-//! They are said at once, in Hebrew or English (a model would take a second
-//! or more for the same few words). Anything else goes to the model.
+//! MP, EXP and level, and the time to the next level, read off the game —
+//! and a hello. They are said at once, in Hebrew or English (a model would
+//! take a second or more for the same few words, and once judged four
+//! "Hello"s in a row not to be for it). Anything else goes to the model.
 
-use super::commands::normalize;
+use super::commands::{WAKE_WORDS, normalize};
 use super::{Attitude, Deck, Gauge, Observation, Progress};
 
-/// What a sentence asks about the player's own numbers.
+/// What a sentence asks about the player's own numbers — or a hello.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ask {
     Hp,
@@ -15,6 +16,108 @@ pub enum Ask {
     Level,
     /// How long until the next level.
     NextLevel,
+    /// A greeting on its own ("hey", "hello there", "שלום"): a friend
+    /// answers it at once, game or no game.
+    Hello,
+}
+
+/// Greetings, said on their own.
+const HELLOS: &[&str] = &[
+    "hey",
+    "hi",
+    "hello",
+    "hiya",
+    "heya",
+    "howdy",
+    "yo",
+    "sup",
+    "wassup",
+    "whats up",
+    "good morning",
+    "good afternoon",
+    "good evening",
+    "morning",
+    "היי",
+    "הי",
+    "הלו",
+    "שלום",
+    "אהלן",
+    "יו",
+    "מה קורה",
+    "מה נשמע",
+    "מה העניינים",
+    "בוקר טוב",
+    "צהריים טובים",
+    "ערב טוב",
+];
+/// Who a greeting may be said to, after it ("hey there", "hello buddy",
+/// "היי אחי"); the wake word ("hey syrup") and a name ("Hey Danny") too.
+const HELLO_TO: &[&str] = &[
+    "there",
+    "you",
+    "buddy",
+    "bud",
+    "man",
+    "dude",
+    "bro",
+    "friend",
+    "pal",
+    "boy",
+    "doggy",
+    "doggo",
+    "pup",
+    "puppy",
+    "maple",
+    "maplesyrup",
+    "אחי",
+    "גבר",
+    "חבר",
+    "חביבי",
+    "כלבלב",
+    "מותק",
+];
+
+/// Whether `sentence` is a greeting and nothing more: a greeting, then at
+/// most who it is said to — a word of address, the wake word, a name (a
+/// capitalised word, as recognisers write names) or the greeting again
+/// ("hey hey") — in three words at most. "Hey, what's my level" is more
+/// than a greeting.
+fn is_hello(sentence: &str) -> bool {
+    let list = words(sentence);
+    if list.is_empty() || list.len() > 3 {
+        return false;
+    }
+    let text = list.join(" ");
+    let Some(greeting) = HELLOS
+        .iter()
+        .filter(|g| text == **g || text.starts_with(&format!("{g} ")))
+        .max_by_key(|g| g.len())
+    else {
+        return false;
+    };
+    let mut rest = format!(" {} ", &text[greeting.len()..]);
+    for wake in WAKE_WORDS {
+        rest = rest.replace(&format!(" {wake} "), " ");
+    }
+    // Names: capitalised words after the first ("I" is no name).
+    let names: Vec<String> = sentence
+        .split_whitespace()
+        .skip(1)
+        .filter(|w| w.chars().next().is_some_and(char::is_uppercase))
+        .map(normalize)
+        .filter(|w| !w.is_empty() && w != "i")
+        .collect();
+    let mut named = 0;
+    rest.split(' ').filter(|w| !w.is_empty()).all(|w| {
+        if HELLO_TO.contains(&w) || HELLOS.contains(&w) {
+            true
+        } else if names.iter().any(|n| n == w) && named == 0 {
+            named += 1;
+            true
+        } else {
+            false
+        }
+    })
 }
 
 const HP: &[&str] = &[
@@ -139,8 +242,12 @@ fn has(text: &str, phrase: &str) -> bool {
 }
 
 /// What `sentence` asks, when all it asks is one of the player's own
-/// numbers (short, about them, nothing else in it).
+/// numbers (short, about them, nothing else in it) — or when it is a
+/// greeting and nothing more ([`Ask::Hello`]).
 pub fn asks(sentence: &str) -> Option<Ask> {
+    if is_hello(sentence) {
+        return Some(Ask::Hello);
+    }
     let list = words(sentence);
     if list.is_empty() || list.len() > 8 {
         return None;
@@ -447,6 +554,61 @@ pub mod lines {
         ],
     ];
 
+    /// A hello said on its own: a friend's hello back, in its attitude.
+    /// (No number in it: not among [`ALL`].)
+    pub const HELLO_EN: [&[&str]; 3] = [
+        &[
+            "Hey! Good to hear you.",
+            "Hi! I'm right here.",
+            "Hey hey! Ready when you are.",
+            "Hello! Nice to hear your voice.",
+            "Hey you! Let's have some fun.",
+            "Hi there! Glad you're here.",
+        ],
+        &[
+            "Yo.",
+            "Hey.",
+            "Yeah, hi.",
+            "Sup.",
+            "Yo. Talk to me.",
+            "Hey. I'm here.",
+        ],
+        &[
+            "Oh, it's you. Hi.",
+            "Ugh. Hi.",
+            "Yeah yeah, hello to you too.",
+            "Hi. Try not to die today.",
+            "Look who showed up.",
+            "Hey, noob.",
+        ],
+    ];
+    pub const HELLO_HE: [&[&str]; 3] = [
+        &[
+            "היי! טוב לשמוע אותך.",
+            "היי! אני פה.",
+            "אהלן! מוכן כשאתה מוכן.",
+            "שלום! כיף לשמוע אותך.",
+            "היי היי! בוא נעשה כיף.",
+            "אהלן! טוב שאתה פה.",
+        ],
+        &[
+            "יו.",
+            "היי.",
+            "כן, היי.",
+            "אהלן.",
+            "יו. דבר.",
+            "היי. אני פה.",
+        ],
+        &[
+            "אה, זה אתה. היי.",
+            "אוף. היי.",
+            "כן כן, גם לך שלום.",
+            "היי. נסה לא למות היום.",
+            "תראו מי הגיע.",
+            "היי, נוב.",
+        ],
+    ];
+
     /// Every list, by name, for tests and tools.
     pub const ALL: &[(&str, [&[&str]; 3])] = &[
         ("bar low", BAR_LOW_EN),
@@ -504,6 +666,8 @@ pub struct Decks {
     level_he: Deck,
     next_en: Deck,
     next_he: Deck,
+    hello_en: Deck,
+    hello_he: Deck,
 }
 
 impl Decks {
@@ -521,6 +685,8 @@ impl Decks {
             level_he: Deck::seeded(seed),
             next_en: Deck::seeded(seed),
             next_he: Deck::seeded(seed),
+            hello_en: Deck::seeded(seed),
+            hello_he: Deck::seeded(seed),
         }
     }
 
@@ -541,7 +707,8 @@ impl Decks {
 /// them, shuffled by the session's seed: the plainest first, every one
 /// before any again, and in another order each night. A card is dealt
 /// only for an answer given. `None` when the number isn't known right
-/// now: the model answers then.
+/// now: the model answers then. A hello is answered whatever the game is
+/// doing (before it is open, too).
 pub fn answer(
     ask: Ask,
     sentence: &str,
@@ -550,8 +717,16 @@ pub fn answer(
     attitude: Attitude,
     decks: &mut Decks,
 ) -> Option<String> {
-    let obs = obs.filter(|o| o.game.is_seen())?;
     let he = is_hebrew(sentence);
+    if ask == Ask::Hello {
+        let line = if he {
+            decks.hello_he.deal(attitude, lines::HELLO_HE)
+        } else {
+            decks.hello_en.deal(attitude, lines::HELLO_EN)
+        };
+        return Some(line.to_string());
+    }
+    let obs = obs.filter(|o| o.game.is_seen())?;
     let mut gauge_line = |gauge: Option<Gauge>, name: &str| -> Option<String> {
         let gauge = gauge?;
         let value = percent(gauge, he);
@@ -588,6 +763,8 @@ pub fn answer(
             };
             Some(line.replace("{v}", &left))
         }
+        // (Answered above: a hello needs no game.)
+        Ask::Hello => None,
     }
 }
 
@@ -870,6 +1047,145 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_hello_on_its_own_is_answered_at_once_game_or_no_game() {
+        // The owner's "Hey", then "Hello" three times, went to the model,
+        // which judged them not for it ("[ silent ]") every time.
+        for sentence in [
+            "Hey",
+            "hi",
+            "Hello.",
+            "yo",
+            "sup",
+            "hey there",
+            "Hey syrup",
+            "hello buddy",
+            "good morning",
+            "Good morning, syrup!",
+            "Hey Danny",
+            "what's up",
+            "hey hey",
+            "hello maple syrup",
+            "Hi sir up",
+            "היי",
+            "שלום",
+            "אהלן",
+            "מה קורה",
+            "בוקר טוב",
+            "היי סירופ",
+            "מה קורה אחי",
+        ] {
+            assert_eq!(asks(sentence), Some(Ask::Hello), "{sentence}");
+        }
+        // More than a hello goes on as before: a number asked is still
+        // that number; anything else, the model's.
+        assert_eq!(asks("hey what's my level"), Some(Ask::Level));
+        assert_eq!(asks("hey, what's my hp"), Some(Ask::Hp));
+        for sentence in [
+            "hey listen to this",
+            "hey you idiot",
+            "hello how are you",
+            "hey i",
+            "hi there my friend",
+            "good",
+            "morning star",
+            "hey Zakum is hard",
+            "מה קורה עם הבוס",
+            "מה המצב",
+            "OK",
+            "Danny",
+        ] {
+            assert_eq!(asks(sentence), None, "{sentence}");
+        }
+        // Answered with no game in view, in the hello's language and the
+        // attitude: the plain one first.
+        for (attitude, en, he) in [
+            (
+                Attitude::Friendly,
+                "Hey! Good to hear you.",
+                "היי! טוב לשמוע אותך.",
+            ),
+            (Attitude::Blunt, "Yo.", "יו."),
+            (Attitude::Savage, "Oh, it's you. Hi.", "אה, זה אתה. היי."),
+        ] {
+            let mut decks = Decks::seeded(SEED);
+            let none = Progress::default();
+            assert_eq!(
+                answer(Ask::Hello, "hey", None, &none, attitude, &mut decks).as_deref(),
+                Some(en)
+            );
+            assert_eq!(
+                answer(Ask::Hello, "היי", None, &none, attitude, &mut decks).as_deref(),
+                Some(he)
+            );
+        }
+        // A friend's, short, and varied: four ways at least, none twice.
+        for list in [lines::HELLO_EN, lines::HELLO_HE] {
+            for attitude in Attitude::ALL {
+                let cards = attitude.lines(list);
+                assert!(cards.len() >= 4, "{}", attitude.word());
+                let mut sorted = cards.to_vec();
+                sorted.sort_unstable();
+                sorted.dedup();
+                assert_eq!(sorted.len(), cards.len(), "{}", attitude.word());
+                for card in cards {
+                    assert!(card.split_whitespace().count() <= 7, "{card}");
+                    assert!(!card.to_lowercase().contains("syrup"), "{card}");
+                }
+            }
+        }
+        // Said hello twelve times: every card before any twice, never one
+        // twice running.
+        let mut decks = Decks::seeded(SEED);
+        let said: Vec<String> = (0..12)
+            .map(|_| {
+                answer(
+                    Ask::Hello,
+                    "hello",
+                    None,
+                    &Progress::default(),
+                    Attitude::Blunt,
+                    &mut decks,
+                )
+                .unwrap()
+            })
+            .collect();
+        for round in said.chunks(6) {
+            let mut seen: Vec<&String> = round.iter().collect();
+            seen.sort();
+            seen.dedup();
+            assert_eq!(seen.len(), 6, "{said:?}");
+        }
+        for pair in said.windows(2) {
+            assert_ne!(pair[0], pair[1], "{said:?}");
+        }
+        // Its deck is its own: the level asked after a hello is answered
+        // with the level list's lead.
+        let obs = seen();
+        let mut decks = Decks::seeded(SEED);
+        let none = Progress::default();
+        answer(
+            Ask::Hello,
+            "hey",
+            Some(&obs),
+            &none,
+            Attitude::Blunt,
+            &mut decks,
+        );
+        assert_eq!(
+            answer(
+                Ask::Level,
+                "what level am I",
+                Some(&obs),
+                &none,
+                Attitude::Blunt,
+                &mut decks
+            )
+            .as_deref(),
+            Some("Level 109.")
+        );
     }
 
     #[test]

@@ -194,6 +194,9 @@ pub enum Job {
     Converse {
         heard: String,
         snapshot: String,
+        /// What the snapshot says of the game (the level, the map…), to
+        /// tell a reply from a status line nobody asked for.
+        facts: brain::Facts,
         speak: bool,
         /// The screen, when the game is in view.
         eyes: Option<Eyes>,
@@ -735,6 +738,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                         Job::Converse {
                             heard,
                             mut snapshot,
+                            facts,
                             speak,
                             eyes,
                             language,
@@ -763,6 +767,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     stop: &stop,
                                     heard,
                                     snapshot: &snapshot,
+                                    facts: &facts,
                                     eyes: eyes.as_ref(),
                                     speak,
                                     language: language.as_deref(),
@@ -1275,11 +1280,54 @@ struct Talk<'a> {
     stop: &'a Stop,
     heard: String,
     snapshot: &'a str,
+    facts: &'a brain::Facts,
     eyes: Option<&'a Eyes>,
     speak: bool,
     language: Option<&'a str>,
     /// MapleSyrup's own lines in the player's language, translated once.
     translations: &'a mut std::collections::HashMap<(String, String), String>,
+}
+
+/// A reply's sentences as they are written: the ones said, how many went as
+/// said lately, and the status lines nobody asked for, set aside in case
+/// they were all there was.
+struct Saying<'a> {
+    /// They asked to hear it again: nothing goes as said lately.
+    again: bool,
+    /// They did not ask about the game: what only says the snapshot back
+    /// goes ([`brain::without_status`]).
+    unasked: bool,
+    facts: &'a brain::Facts,
+    kept: Vec<String>,
+    total: usize,
+    dropped: usize,
+    restated: Vec<String>,
+}
+
+impl Saying<'_> {
+    /// A sentence of the reply (or a few), as it is written: kept, and
+    /// handed to the voice, unless it was said lately or only says the
+    /// game's state back to someone who did not ask about it.
+    fn take(&mut self, sentence: &str, recent: &mut brain::Recent, voice: &Sender<String>) {
+        let sentence = if self.unasked {
+            match brain::without_status(&brain::for_speech(sentence), self.facts) {
+                Some(kept) => kept,
+                None => {
+                    self.restated.push(sentence.to_string());
+                    return;
+                }
+            }
+        } else {
+            sentence.to_string()
+        };
+        self.total += 1;
+        if self.again || recent.fresh(&sentence) {
+            let _ = voice.send(brain::for_speech(&sentence));
+            self.kept.push(sentence);
+        } else {
+            self.dropped += 1;
+        }
+    }
 }
 
 /// Answer the player. The reply is streamed and cut into sentences; they
@@ -1317,6 +1365,7 @@ fn converse<'a>(
         stop,
         heard,
         snapshot,
+        facts,
         eyes,
         speak,
         language,
@@ -1360,10 +1409,17 @@ fn converse<'a>(
     let mut chat = fast.unwrap_or(openai);
     let mut fast_failed = None;
     // Nothing said lately is said again (unless they asked to hear it
-    // again): the sentences kept, and how many went.
-    let again = brain::asks_again(&heard);
-    let mut kept: Vec<String> = Vec::new();
-    let (mut total, mut dropped) = (0usize, 0usize);
+    // again), nor the game's state to someone who did not ask about it:
+    // the sentences kept, and how many went.
+    let mut saying = Saying {
+        again: brain::asks_again(&heard),
+        unasked: !brain::asks_about_the_game(&heard),
+        facts,
+        kept: Vec::new(),
+        total: 0,
+        dropped: 0,
+        restated: Vec::new(),
+    };
     let mut looped = false;
     // Where the record of what was said lately stands: this reply's
     // sentences are checked (and recorded) as they are written, and settled
@@ -1437,13 +1493,7 @@ fn converse<'a>(
                         said.push_str(t);
                         if speak {
                             for sentence in sentences.push(t) {
-                                total += 1;
-                                if again || brain.recent.fresh(&sentence) {
-                                    kept.push(sentence.clone());
-                                    let _ = lines.send(brain::for_speech(&sentence));
-                                } else {
-                                    dropped += 1;
-                                }
+                                saying.take(&sentence, &mut brain.recent, &lines);
                             }
                         }
                     }
@@ -1476,13 +1526,7 @@ fn converse<'a>(
                 said.push(' ');
                 if speak {
                     for sentence in sentences.push(" ") {
-                        total += 1;
-                        if again || brain.recent.fresh(&sentence) {
-                            kept.push(sentence.clone());
-                            let _ = lines.send(brain::for_speech(&sentence));
-                        } else {
-                            dropped += 1;
-                        }
+                        saying.take(&sentence, &mut brain.recent, &lines);
                     }
                 }
             }
@@ -1586,26 +1630,45 @@ words (\"probably\" if you're not sure)."
             None => {
                 let text = if speak {
                     if let Some(rest) = sentences.finish() {
-                        total += 1;
-                        if again || brain.recent.fresh(&rest) {
-                            kept.push(rest.clone());
-                            let _ = lines.send(brain::for_speech(&rest));
-                        } else {
-                            dropped += 1;
+                        saying.take(&rest, &mut brain.recent, &lines);
+                    }
+                    // The game's state, said back, was all there was: a
+                    // question keeps it (better than nothing); anything
+                    // else needs no answer ("OK").
+                    if saying.kept.is_empty()
+                        && saying.dropped == 0
+                        && brain::wants_an_answer(&heard)
+                    {
+                        saying.unasked = false;
+                        for sentence in std::mem::take(&mut saying.restated) {
+                            saying.take(&sentence, &mut brain.recent, &lines);
                         }
                     }
-                    brain::for_speech(&brain::without_announcement(&kept.join(" ")))
+                    if !saying.restated.is_empty() {
+                        let _ = tx.send(Done::Noted {
+                            line: format!(
+                                "not said, nobody asked: {}",
+                                brain::for_speech(&saying.restated.join(" "))
+                            ),
+                        });
+                    }
+                    brain::for_speech(&brain::without_announcement(&saying.kept.join(" ")))
                 } else {
-                    let whole = brain::for_speech(&brain::without_announcement(&said));
-                    if again {
+                    let whole = brain::unasked(
+                        &brain::for_speech(&brain::without_announcement(&said)),
+                        &heard,
+                        facts,
+                    );
+                    if saying.again {
                         whole
                     } else {
                         let filtered = brain.recent.filter(&whole);
-                        total = filtered.total;
-                        dropped = filtered.dropped;
+                        saying.total = filtered.total;
+                        saying.dropped = filtered.dropped;
                         filtered.text
                     }
                 };
+                let (total, dropped) = (saying.total, saying.dropped);
                 looped = total >= 2 && dropped * 2 >= total;
                 if dropped > 0 {
                     let _ = tx.send(Done::Noted {
@@ -1613,13 +1676,14 @@ words (\"probably\" if you're not sure)."
                     });
                 }
                 brain.heard(&heard);
-                if text.is_empty() && dropped > 0 {
+                if text.is_empty() && dropped > 0 && !brain::a_word_or_two(&heard) {
                     // Nothing new in it: not the same again, but not
                     // silence either — they asked, and hear that they were
                     // heard (a card in its attitude: "Same as before." the
                     // third time is a machine's). The conversation keeps
                     // none of what was dropped, so the model has no loop
-                    // of its own to follow.
+                    // of its own to follow. (To a word or two — "OK",
+                    // "Danny" — nothing new is nothing to say: quiet.)
                     let card = brain.same_as_before();
                     let line = match language {
                         Some(l) if !language::is_english(l) => {
@@ -1640,7 +1704,9 @@ words (\"probably\" if you're not sure)."
                         });
                     }
                 } else if text.is_empty() {
-                    // Nothing in it to say (a link, an emoji): quiet.
+                    // Nothing in it to say (a link, an emoji, the game's
+                    // state nobody asked for, all of it said lately to an
+                    // "OK"): quiet.
                     let _ = tx.send(Done::Silent { id, heard });
                 } else {
                     brain.said(&text);

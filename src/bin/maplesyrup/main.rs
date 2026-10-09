@@ -1293,12 +1293,15 @@ fn conversation_job(
     language: Option<String>,
 ) -> Job {
     let snapshot = snapshot_text(companion, sight, in_view);
+    // What the snapshot says, for the reply that only says it back.
+    let mut facts = ai::brain::Facts::of(companion.last());
     let status = sight.and_then(|s| {
-        s.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .layout
-            .as_ref()
-            .and_then(|l| l.status)
+        let sight = s.lock().unwrap_or_else(|e| e.into_inner());
+        facts.map = sight.facts.map.clone();
+        facts.level = facts.level.or(sight.facts.level);
+        facts.name = facts.name.take().or_else(|| sight.facts.name.clone());
+        facts.job = facts.job.take().or_else(|| sight.facts.job.clone());
+        sight.layout.as_ref().and_then(|l| l.status)
     });
     let eyes = frame
         .filter(|_| in_view && companion.last().is_some_and(|o| o.game.is_seen()))
@@ -1306,6 +1309,7 @@ fn conversation_job(
     Job::Converse {
         heard: text,
         snapshot,
+        facts,
         speak: true,
         eyes,
         language,
@@ -1494,6 +1498,11 @@ struct Outputs {
     /// The call the hello was left to says what it does too (a player it
     /// does not know; the page reads `new_player` off the status).
     call_terms: bool,
+    /// A language the player asked for out loud, for the phone to take
+    /// (`lang_request` on its status, until it says it took it), and how
+    /// many were asked for this session (each request's number).
+    lang_asked: Option<LangAsked>,
+    lang_asks: u64,
 }
 
 /// How long after the clip hello the terms come, so the two do not
@@ -1519,6 +1528,68 @@ const TERMS: [&[&str]; 3] = [
         "You start dying, I scream. Questions, ask. Keep up.",
     ],
 ];
+
+/// The word that the language asked for out loud is taken ("talk to me in
+/// Hebrew"), in that language: one list per attitude. Hebrew's in Hebrew;
+/// the rest in English, `{lang}` its name, translated into it as its own
+/// lines are.
+const LANGUAGE_TAKEN_EN: [&[&str]; 3] = [
+    &[
+        "Sure — {lang} from now on.",
+        "You got it: {lang} it is.",
+        "Love it. {lang} from here on.",
+    ],
+    &[
+        "Fine, {lang} from now on.",
+        "{lang} it is.",
+        "Done. {lang} now.",
+    ],
+    &[
+        "{lang}? Fine, genius.",
+        "Ugh, fine. {lang} it is.",
+        "Whatever you say. {lang} now.",
+    ],
+];
+const LANGUAGE_TAKEN_HE: [&[&str]; 3] = [
+    &[
+        "בטח, מעכשיו בעברית.",
+        "בכיף, עוברים לעברית.",
+        "סגור, מדברים עברית.",
+    ],
+    &["סבבה, עברית מעכשיו.", "עברית. סגור.", "יאללה, בעברית."],
+    &[
+        "עברית? סבבה, גאון.",
+        "אוף, טוב. עברית.",
+        "מה שתגיד. עברית מעכשיו.",
+    ],
+];
+
+/// The word that `locale` is taken, in it (or in English, to be translated
+/// into it), in `attitude`'s voice.
+fn language_taken(locale: &str, attitude: ms::companion::Attitude) -> String {
+    let mut deck = ms::companion::Deck::seeded(ai::brain::session_seed());
+    deck.lead_first(false);
+    match ai::language::name(locale) {
+        "Hebrew" => deck.deal(attitude, LANGUAGE_TAKEN_HE).to_string(),
+        name => deck
+            .deal(attitude, LANGUAGE_TAKEN_EN)
+            .replace("{lang}", name),
+    }
+}
+
+/// A language the player asked for out loud, for the phone to take as if
+/// picked in its picker: its locale, its number (the page takes each
+/// number once) and when.
+struct LangAsked {
+    locale: String,
+    seq: u64,
+    at: Instant,
+}
+
+/// How long the phone's status asks it to take a language, at most: the
+/// page takes it within a poll or two and says so (`/api/lang`); a page
+/// not there then is not switched an hour later.
+const LANG_ASKED_FOR: Duration = Duration::from_secs(30);
 
 /// How long the phone must be gone before it is said hello to again: a
 /// page reloaded sooner (iOS Safari does that on its own) is the same
@@ -2085,6 +2156,66 @@ impl Outputs {
             "new_player": self.call_greets() && self.call_terms,
             "on_call": self.live,
         })
+    }
+
+    /// The player's language is `locale` now (picked on the phone, or
+    /// asked for out loud): MapleSyrup's own lines are translated into it,
+    /// and the model is told it.
+    fn set_language(&mut self, locale: &str, player_language: &mut Option<String>) {
+        let changed = player_language.as_deref() != Some(locale);
+        self.language = (!ai::language::is_english(locale)).then(|| locale.to_string());
+        *player_language = Some(locale.to_string());
+        if changed {
+            self.session.line(
+                "info",
+                &format!("language: {} ({locale})", ai::language::name(locale)),
+            );
+        }
+    }
+
+    /// The player asked out loud for another language ("talk to me in
+    /// Hebrew"): theirs from now on, at once and without a model — as if
+    /// picked on the phone, which is told to take it (`lang_request` on its
+    /// status: its words, and what it hears, in it), and MapleSyrup's own
+    /// lines in it. They hear so in a word, in that language (`say`: off a
+    /// call; on one the call answers them itself).
+    fn ask_language(
+        &mut self,
+        locale: &str,
+        player_language: &mut Option<String>,
+        companion: &mut Companion,
+        say: bool,
+    ) {
+        self.set_language(locale, player_language);
+        self.lang_asks += 1;
+        self.lang_asked = Some(LangAsked {
+            locale: locale.to_string(),
+            seq: self.lang_asks,
+            at: Instant::now(),
+        });
+        if say {
+            let line = language_taken(locale, companion.settings.attitude);
+            self.tell(Kind::Reply, &line, true, companion);
+        }
+    }
+
+    /// The phone took `locale` (its picker says so): it is no longer asked
+    /// to.
+    fn took_language(&mut self, locale: &str) {
+        if self.lang_asked.as_ref().is_some_and(|a| a.locale == locale) {
+            self.lang_asked = None;
+        }
+    }
+
+    /// The language the phone is asked to take, for its status (`null`:
+    /// none, or one it did not take in [`LANG_ASKED_FOR`]).
+    fn lang_request(&self) -> serde_json::Value {
+        match &self.lang_asked {
+            Some(asked) if asked.at.elapsed() < LANG_ASKED_FOR => {
+                json!({"lang": asked.locale, "seq": asked.seq})
+            }
+            _ => serde_json::Value::Null,
+        }
     }
 
     /// MapleSyrup's voice on a live call started or stopped: the game is
@@ -2751,6 +2882,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         terms_due: None,
         terms_said: false,
         call_terms: false,
+        lang_asked: None,
+        lang_asks: 0,
     };
     let hello = companion.hello();
     out.apply(hello, &mut companion, None);
@@ -3075,6 +3208,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             drop_the_attitude(&mut companion, &learning, &mut out);
                             continue;
                         }
+                        // "Talk to me in Hebrew": from now on, the phone's
+                        // language and its own — at once, no model asked.
+                        if let Some(locale) = commands::language_request(&text) {
+                            out.show(Kind::Heard, &text);
+                            out.ask_language(locale, &mut player_language, &mut companion, true);
+                            continue;
+                        }
                         if out.mouth.ai.is_some() {
                             out.show(Kind::Heard, &text);
                             if let Some(command) = commands::local_command(&text) {
@@ -3084,8 +3224,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 || !matches!(commands::interpret(&text, false), Heard::NotForUs)
                             {
                                 let text = turns.heard(&mut out, text);
-                                // Their own numbers: answered at once, without
-                                // a model.
+                                // Their own numbers, and a hello on its own:
+                                // answered at once, without a model. (On a
+                                // live call no sentence comes this way: the
+                                // call hears them, and answers.)
                                 if let Some(line) = companion.instant(&text) {
                                     out.session.line("timing", "instant answer");
                                     if let Some(worker) = &out.mouth.ai {
@@ -3175,6 +3317,16 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 set_coaching(&mut coach, &learning, &mut out, on);
                             } else if commands::tone_complaint(&text) {
                                 drop_the_attitude(&mut companion, &learning, &mut out);
+                            } else if let Some(locale) = commands::language_request(&text) {
+                                // (The call follows the language spoken; the
+                                // phone's own words and its recogniser for
+                                // after the call follow the request.)
+                                out.ask_language(
+                                    locale,
+                                    &mut player_language,
+                                    &mut companion,
+                                    false,
+                                );
                             } else if workshop.is_on() && ms::workshop::undo_request(&text) {
                                 workshop_ask(
                                     &workshop,
@@ -3355,16 +3507,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                     }
                     Inbound::Language(locale) => {
-                        let english = ai::language::is_english(&locale);
-                        let changed = out.language.as_deref() != Some(locale.as_str());
-                        out.language = (!english).then(|| locale.clone());
-                        player_language = Some(locale.clone());
-                        if changed {
-                            out.session.line(
-                                "info",
-                                &format!("language: {} ({locale})", ai::language::name(&locale)),
-                            );
-                        }
+                        out.set_language(&locale, &mut player_language);
+                        out.took_language(&locale);
                     }
                     Inbound::Forget(id) => {
                         // What it learned about the player, or a thing on screen.
@@ -3941,6 +4085,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     // What it learned about the player (with an OpenAI key).
                     "memory": if out.mouth.ai.is_some() { memory_status.clone() } else { serde_json::Value::Null },
                     "warn": {"hp": companion.settings.hp_low, "mp": companion.settings.mp_low},
+                    // A language the player asked for out loud, for the
+                    // phone to take once (by its number).
+                    "lang_request": out.lang_request(),
                 });
                 // (And the call's: `live`, `call_greets`, `new_player`, `on_call`.)
                 if let (Some(fields), serde_json::Value::Object(call)) =
@@ -4174,6 +4321,8 @@ mod tests {
             terms_due: None,
             terms_said: false,
             call_terms: false,
+            lang_asked: None,
+            lang_asks: 0,
         }
     }
 
@@ -5303,6 +5452,69 @@ mod tests {
         assert!(late.terms_due.is_some());
         assert!(late.call_opened());
         assert!(!late.terms_said, "the clip's terms are still to come");
+    }
+
+    #[test]
+    fn a_language_asked_for_out_loud_is_the_phones_and_its_own_at_once() {
+        use ms::companion::Attitude;
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let mut player_language = None;
+        let attitude = companion.settings.attitude;
+        // "Talk to me in Hebrew" took a model 13.5 s, and the phone still
+        // heard English. Now no model: its own lines are Hebrew from now on,
+        // the phone is told to take Hebrew (its status, by number), and the
+        // word that it is comes at once, in Hebrew, said.
+        let before = job(&out);
+        out.ask_language("he-IL", &mut player_language, &mut companion, true);
+        assert_eq!(out.language.as_deref(), Some("he-IL"));
+        assert_eq!(player_language.as_deref(), Some("he-IL"));
+        assert_eq!(out.lang_request(), json!({"lang": "he-IL", "seq": 1}));
+        let line = screen(&out).last().cloned().unwrap();
+        assert!(
+            attitude.lines(LANGUAGE_TAKEN_HE).contains(&line.as_str()),
+            "{line}"
+        );
+        assert_eq!(job(&out), before + 2, "the word was not said");
+        assert!(log(&out).contains("[info] language: Hebrew (he-IL)"));
+        // The phone took it (its picker says so): asked no more.
+        out.set_language("he-IL", &mut player_language);
+        out.took_language("he-IL");
+        assert_eq!(out.lang_request(), serde_json::Value::Null);
+        // And back to English: the next number, said in English.
+        out.ask_language("en-US", &mut player_language, &mut companion, true);
+        assert_eq!(out.language, None);
+        assert_eq!(out.lang_request(), json!({"lang": "en-US", "seq": 2}));
+        let line = screen(&out).last().cloned().unwrap();
+        assert!(
+            attitude
+                .lines(LANGUAGE_TAKEN_EN)
+                .iter()
+                .any(|l| l.replace("{lang}", "English") == line),
+            "{line}"
+        );
+        // Another of the picker's languages: the word in English, its own
+        // lines (that one too) translated into Spanish from now on.
+        out.ask_language("es-ES", &mut player_language, &mut companion, true);
+        assert_eq!(out.language.as_deref(), Some("es-ES"));
+        assert!(screen(&out).last().unwrap().contains("Spanish"));
+        // A request the phone never took is not made forever.
+        out.lang_asked.as_mut().unwrap().at = earlier(LANG_ASKED_FOR);
+        assert_eq!(out.lang_request(), serde_json::Value::Null);
+        // On a call the call answers them: nothing said or shown here, the
+        // phone told all the same.
+        out.live = true;
+        let (before, shown) = (job(&out), screen(&out).len());
+        out.ask_language("he-IL", &mut player_language, &mut companion, false);
+        assert_eq!(job(&out), before + 1);
+        assert_eq!(screen(&out).len(), shown);
+        assert_eq!(out.lang_request()["lang"], "he-IL");
+        assert_eq!(out.language.as_deref(), Some("he-IL"));
+        // Every attitude has three ways at least, in Hebrew and English.
+        for attitude in Attitude::ALL {
+            assert!(attitude.lines(LANGUAGE_TAKEN_HE).len() >= 3);
+            assert!(attitude.lines(LANGUAGE_TAKEN_EN).len() >= 3);
+        }
     }
 
     /// The size of the phone's clip `seq`, as it would fetch it.

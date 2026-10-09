@@ -1074,6 +1074,7 @@
     renderRecording(status.recording);
     // How long to wait after the words stop: adapted to how the player talks.
     if (status.settle_ms) settleMs = Math.max(300, Math.min(1500, status.settle_ms));
+    takeLanguage(status.lang_request);
     // The PC has this page's call as the page has it.
     healCall();
   }
@@ -1437,6 +1438,8 @@
     since = 0; first = true;
     lastClip = null; nextClip = null; lastCut = null;
     clipInfo.clear();
+    // (Its language requests are numbered from one again too.)
+    langTaken = null;
     // (The call after the hello: to the PC a page that says hello has no
     // call until it says so, and the two must land in that order — healCall
     // waits meanwhile.)
@@ -1724,6 +1727,21 @@
     postJson("/api/lang", { lang: locale }).catch(() => {});
     if (listening && !liveCall.on && !liveCall.starting) { stopRecognition(); startRecognition(); }
   });
+  // A language the player asked the PC for out loud ("talk to me in
+  // Hebrew"; status.lang_request): taken once per request (its number),
+  // exactly as if picked in the picker — its words, right to left, the
+  // recogniser (clip mode's, on a call too: the call follows the language
+  // spoken), kept for next time, and the PC told. (The owner asked for
+  // Hebrew and the model answered in it, but this page went on hearing
+  // English.)
+  let langTaken = null;
+  function takeLanguage(request) {
+    if (!request || request.seq === langTaken) return;
+    langTaken = request.seq;
+    if (!LANGUAGES.some((l) => l[0] === request.lang)) return;
+    lang.value = request.lang;
+    lang.dispatchEvent(new Event("change"));
+  }
   const sendAudio = $("sendAudio");
   sendAudio.checked = recall("sendAudio") !== "0";
   sendAudio.addEventListener("change", () => remember("sendAudio", sendAudio.checked ? "1" : "0"));

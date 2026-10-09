@@ -306,16 +306,14 @@ game, and you talk with them out loud.";
 
 /// What else it should know, after the rules.
 const MORE: &str = "More:
-- Answer in the language of what they just said, every time; say game names the way players say them. A language \
-you were told to use \"by default\" is for when their words have no language (a button): it never overrides the \
-language they are speaking now.
-- Don't say again what you said in your last two replies unless they ask again, and never open with where they \
-are unless they asked. If what you heard makes no sense (a bad transcription), say in a few words that you didn't \
-catch it; don't guess what they meant.
+- Answer in the language of what they just said, every time; say game names the way players say them. Their \
+language setting counts only when their words have none (a button).
+- Don't say again what you said in your last two replies unless they ask again. Never report their level, map or \
+bars unasked; while MapleStory isn't open, talk about whatever they say, and say it isn't open only when they ask \
+about the game. If what you heard makes no sense, say in a few words you didn't catch it; don't guess.
 - If your last reply ends with \"…\", they talked over you there: don't repeat it; go with what they said now.
-- Trust your eyes: use what you see when it bears on the moment (values marked \"about\" are estimates); if the \
-screen clearly shows something other than what they say, say what you see; never ask them to read the screen to \
-you — look closer instead.
+- Trust your eyes: use what you see when it matters (values marked \"about\" are estimates); if the screen clearly \
+shows something other than what they say, say what you see; never ask them to read it to you — look closer.
 - When they correct you, take it in a word and keep it (note_correction); what they corrected you on before beats what you think you know.
 - Presence: greet only when your watcher says the phone just connected, never on your own; never ask whether \
 they're still there — your watcher does, when the game idles. When the session facts say they had been quiet for \
@@ -325,7 +323,8 @@ changes what you'd say.
 - What you know about them from before comes in only when it bears on what they just said, as a clause, never \
 as a list: \"that boss again?\", not \"I remember you fought Zakum, wanted a Fafnir and play Mu Lung Dojo\".
 - You can't press keys or play for them; you watch and talk.
-- If they're clearly talking to someone else (their stream chat, a friend, a call) and not to you, reply with exactly: [silent]";
+- Words to you (a greeting, your name, \"talk to me\") always get an answer; if they're clearly talking to someone \
+else (stream chat, a friend, a call), reply with exactly: [silent]";
 
 /// How a turn of the conversation that is the watcher's, not the player's,
 /// starts (what follows says why it spoke: "an alert", "new scene").
@@ -773,6 +772,592 @@ until it is in front)."
     lines.join("\n")
 }
 
+/// What the snapshot told the model about the game, passed along with it
+/// so that a reply that only says it back can be told from one that says
+/// something ([`unasked`]): the level, the map's name as the snapshot has
+/// it, the character's name and job, and the bars in percent. (The game
+/// window's state is in every snapshot: any word on it says it back.)
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Facts {
+    pub level: Option<u32>,
+    pub map: Option<String>,
+    pub name: Option<String>,
+    pub job: Option<String>,
+    /// HP, MP and EXP, in percent, as far as they are known.
+    pub bars: Vec<f32>,
+}
+
+impl Facts {
+    /// What `obs` says (the map is the learned sight's, added by the
+    /// caller).
+    pub fn of(obs: Option<&Observation>) -> Facts {
+        let Some(obs) = obs.filter(|o| o.game.is_seen()) else {
+            return Facts::default();
+        };
+        Facts {
+            level: obs.level,
+            map: None,
+            name: obs.name.clone(),
+            job: obs.job.clone(),
+            bars: [obs.hp, obs.mp, obs.exp]
+                .into_iter()
+                .flatten()
+                .map(|g| g.percent)
+                .collect(),
+        }
+    }
+}
+
+/// Words a player asks about the game with ("what level am I", "where
+/// are we", "is the game open"): then its state is the answer. Hebrew too,
+/// with its one-letter prefixes ([`forms`]).
+const ASKED: &[&str] = &[
+    "level",
+    "lvl",
+    "lv",
+    "hp",
+    "health",
+    "mp",
+    "mana",
+    "exp",
+    "xp",
+    "experience",
+    "map",
+    "where",
+    "wheres",
+    "window",
+    "game",
+    "status",
+    "stats",
+    "percent",
+    "רמה",
+    "לבל",
+    "חיים",
+    "מאנה",
+    "ניסיון",
+    "נסיון",
+    "אקספי",
+    "מפה",
+    "איפה",
+    "חלון",
+    "משחק",
+    "מצב",
+    "סטטוס",
+    "אחוז",
+    "אחוזים",
+];
+
+/// How a question starts.
+const ASKING: &[&str] = &[
+    "what",
+    "whats",
+    "where",
+    "wheres",
+    "when",
+    "why",
+    "who",
+    "whos",
+    "which",
+    "how",
+    "hows",
+    "is",
+    "isnt",
+    "are",
+    "arent",
+    "am",
+    "do",
+    "does",
+    "did",
+    "dont",
+    "doesnt",
+    "can",
+    "cant",
+    "could",
+    "should",
+    "would",
+    "will",
+    "wont",
+    "have",
+    "has",
+    "was",
+    "were",
+    "מה",
+    "איפה",
+    "מתי",
+    "למה",
+    "מי",
+    "איזה",
+    "איזו",
+    "איך",
+    "כמה",
+    "האם",
+    "לאן",
+    "מאיפה",
+];
+
+/// Words of a status line that say nothing of their own ("you're at
+/// level 167", "HP full", "אתה ברמה 9 עכשיו").
+const FILLER: &[&str] = &[
+    "you",
+    "youre",
+    "your",
+    "were",
+    "we",
+    "i",
+    "im",
+    "my",
+    "me",
+    "its",
+    "it",
+    "is",
+    "are",
+    "am",
+    "was",
+    "at",
+    "on",
+    "in",
+    "of",
+    "the",
+    "a",
+    "an",
+    "and",
+    "with",
+    "to",
+    "now",
+    "right",
+    "currently",
+    "still",
+    "just",
+    "so",
+    "yeah",
+    "yep",
+    "yes",
+    "ok",
+    "okay",
+    "character",
+    "there",
+    "here",
+    "about",
+    "around",
+    "only",
+    "already",
+    "sitting",
+    "named",
+    "called",
+    "as",
+    "has",
+    "have",
+    "got",
+    "full",
+    "אתה",
+    "את",
+    "אני",
+    "אנחנו",
+    "שלך",
+    "שלי",
+    "שלנו",
+    "עכשיו",
+    "כרגע",
+    "עדיין",
+    "על",
+    "עם",
+    "זה",
+    "יש",
+    "לך",
+    "כבר",
+    "רק",
+    "גם",
+    "מלא",
+];
+
+/// The level's own words.
+const LEVEL_WORDS: &[&str] = &["level", "lvl", "lv", "רמה", "לבל"];
+/// The bars' own words.
+const BAR_WORDS: &[&str] = &[
+    "hp",
+    "mp",
+    "exp",
+    "xp",
+    "health",
+    "mana",
+    "experience",
+    "percent",
+    "חיים",
+    "מאנה",
+    "ניסיון",
+    "נסיון",
+    "אחוז",
+    "אחוזים",
+];
+/// The game's names, for a word on its window ("No game window open.",
+/// "MapleStory window is open", "המשחק לא פתוח").
+const GAME_NAMES: &[&str] = &[
+    "maplestory",
+    "game",
+    "client",
+    "משחק",
+    "מייפל",
+    "מייפלסטורי",
+    "חלון",
+];
+/// What a window is: its state.
+const WINDOW_STATES: &[&str] = &[
+    "open",
+    "opened",
+    "closed",
+    "shut",
+    "running",
+    "minimised",
+    "minimized",
+    "visible",
+    "פתוח",
+    "סגור",
+    "פועל",
+];
+/// The rest of a word on the window's state ("no", "isn't", "can't see").
+const WINDOW_WORDS: &[&str] = &[
+    "window", "windows", "maple", "no", "not", "isnt", "cant", "cannot", "see", "אין", "לא",
+];
+
+/// `word` and, when it is Hebrew, what is left of it without one or two of
+/// the one-letter prefixes Hebrew joins to a word: "והרמה" is "רמה" too.
+fn forms(word: &str) -> Vec<&str> {
+    let mut out = vec![word];
+    let mut rest = word;
+    for _ in 0..2 {
+        let mut chars = rest.chars();
+        match chars.next() {
+            Some(c) if "הובלמשכ".contains(c) && chars.as_str().chars().count() >= 2 => {
+                rest = chars.as_str();
+                out.push(rest);
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+fn is_one_of(word: &str, list: &[&str]) -> bool {
+    forms(word).iter().any(|f| list.contains(f))
+}
+
+/// A sentence (or a part of one) as plain words, for telling the facts
+/// from the rest: lower case, "%" as "percent", "'s" off ("HP's" is "hp");
+/// each with whether it was written with a capital.
+fn words_of(text: &str) -> Vec<(String, bool)> {
+    let text = text.replace('%', " percent ");
+    let mut out = Vec::new();
+    for token in text.split_whitespace() {
+        let token = token.trim_end_matches(|c: char| !c.is_alphanumeric());
+        let token = token
+            .strip_suffix("'s")
+            .or_else(|| token.strip_suffix("’s"))
+            .unwrap_or(token);
+        let capital = token
+            .chars()
+            .find(|c| c.is_alphanumeric())
+            .is_some_and(char::is_uppercase);
+        out.extend(
+            plain_words(token)
+                .split(' ')
+                .filter(|w| !w.is_empty())
+                .map(|w| (w.to_string(), capital)),
+        );
+    }
+    out
+}
+
+/// Words that say something of their own when they are all that is left
+/// of a status line beside a fact ("Nice, level 60!" cheers a level-up),
+/// though written with a capital as a name would be.
+const REACTIONS: &[&str] = &[
+    "nice",
+    "wow",
+    "gg",
+    "finally",
+    "yes",
+    "yay",
+    "congrats",
+    "grats",
+    "ding",
+    "sweet",
+    "great",
+    "awesome",
+    "cool",
+    "damn",
+    "oof",
+    "ouch",
+    "ugh",
+    "whoa",
+    "careful",
+    "sorry",
+    "thanks",
+    "almost",
+    "close",
+    "easy",
+    "low",
+    "good",
+    "bad",
+    "יפה",
+    "וואו",
+    "יאללה",
+    "סחתיין",
+    "אחלה",
+    "מעולה",
+    "טוב",
+    "נמוך",
+    "זהירות",
+];
+
+/// Whether `heard` asks about anything a snapshot says: the level, a bar,
+/// the map, where they are, the window, the game — or a status command
+/// ("how am I doing", "מה המצב שלי").
+pub fn asks_about_the_game(heard: &str) -> bool {
+    use crate::companion::Command;
+    words_of(heard).iter().any(|(w, _)| is_one_of(w, ASKED))
+        || matches!(
+            crate::companion::commands::command_in(heard),
+            Some(
+                Command::Status
+                    | Command::Hp
+                    | Command::Mp
+                    | Command::Exp
+                    | Command::Level
+                    | Command::Rate
+            )
+        )
+}
+
+/// Whether `heard` is a question: it ends with a question mark, or starts
+/// with a question word.
+pub fn is_question(heard: &str) -> bool {
+    heard
+        .trim()
+        .trim_end_matches(['"', '\'', '”', '’', ')'])
+        .ends_with('?')
+        || words_of(heard)
+            .first()
+            .is_some_and(|(w, _)| ASKING.contains(&w.as_str()))
+}
+
+/// Whether `heard` asks for an answer: a question, or words that ask it to
+/// talk ("talk to me", "say something", "תדבר איתי") — the owner's "Talk to
+/// me you fucker" before the game was open got the window's state back,
+/// and nothing at all would be worse. A reply with nothing but the game's
+/// state is kept for these rather than dropped.
+pub fn wants_an_answer(heard: &str) -> bool {
+    if is_question(heard) {
+        return true;
+    }
+    let lower = heard.to_lowercase();
+    [
+        "talk to me",
+        "speak to me",
+        "say something",
+        "answer me",
+        "talk with me",
+        "תדבר איתי",
+        "דבר איתי",
+        "תגיד משהו",
+        "תענה לי",
+        "ענה לי",
+    ]
+    .iter()
+    .any(|asks| lower.contains(asks))
+}
+
+/// Whether `heard` is a word or two and no question ("OK", "Hello",
+/// "Danny"): a reply to it that was all said lately is not worth a "same as
+/// before" card — a friend says nothing to an "OK". (A longer sentence, or
+/// a question, gets the card: they asked, and hear they were heard.)
+pub fn a_word_or_two(heard: &str) -> bool {
+    words_of(heard).len() <= 2 && !is_question(heard)
+}
+
+/// Whether `part` (a sentence, or a part of one) only says back what the
+/// snapshot says: it has a fact in it — the game window's state, the
+/// level with its number, a bar with its percent, the map, the
+/// character's name or job — and with the facts and the filler taken out,
+/// at most one word is left, and that one a name ("Danny", a map's name
+/// said another way: "באליניה"): "HP's at 20, pot." tells them to pot, and
+/// "Nice, level 60!" cheers.
+fn restates(part: &str, facts: &Facts) -> bool {
+    let words = words_of(part);
+    let word = |i: usize| words[i].0.as_str();
+    let mut fact = vec![false; words.len()];
+    // The map, the name and the job, as the snapshot has them ("Victoria
+    // Road / Ellinia" is two names).
+    let phrases: Vec<Vec<String>> = facts
+        .map
+        .iter()
+        .flat_map(|m| m.split(['/', ':', ',', '-']))
+        .chain(facts.name.iter().map(String::as_str))
+        .chain(facts.job.iter().map(String::as_str))
+        .map(|p| words_of(p).into_iter().map(|(w, _)| w).collect::<Vec<_>>())
+        .filter(|p| !p.is_empty())
+        .collect();
+    for phrase in &phrases {
+        for start in 0..words.len() {
+            let here = words[start..].iter().map(|(w, _)| w);
+            if words.len() - start >= phrase.len() && here.zip(phrase).all(|(a, b)| a == b) {
+                fact[start..start + phrase.len()].fill(true);
+            }
+        }
+    }
+    // The game window's state: the game named (or "no window") and a
+    // state, a "no" or a "can't see".
+    let named = (0..words.len()).any(|i| {
+        is_one_of(word(i), GAME_NAMES)
+            || (word(i) == "window" && i > 0 && matches!(word(i - 1), "no" | "maple"))
+    });
+    let stated = (0..words.len())
+        .any(|i| is_one_of(word(i), WINDOW_STATES) || matches!(word(i), "no" | "cant" | "אין"));
+    if named && stated {
+        for (i, is_fact) in fact.iter_mut().enumerate() {
+            let w = word(i);
+            *is_fact |= is_one_of(w, GAME_NAMES)
+                || is_one_of(w, WINDOW_STATES)
+                || WINDOW_WORDS.contains(&w);
+        }
+    }
+    // The level and the bars, by their words with a number near ("level
+    // 167", "HP at 48%", "והרמה שלך 9", "HP full"): any number for the
+    // level (a stale one too), a bar's own for a bar (a boss "at 20% HP"
+    // is not theirs at 85); and the level's number on its own.
+    let number = |i: usize| word(i).parse::<f32>().ok();
+    for i in 0..words.len() {
+        let level = is_one_of(word(i), LEVEL_WORDS);
+        let bar = is_one_of(word(i), BAR_WORDS);
+        if level || bar {
+            for j in i.saturating_sub(2)..(i + 3).min(words.len()) {
+                let theirs = match number(j) {
+                    Some(_) if level => true,
+                    Some(n) => {
+                        facts.bars.is_empty() || facts.bars.iter().any(|p| (p - n).abs() <= 2.5)
+                    }
+                    None => bar && matches!(word(j), "full" | "empty" | "מלא" | "ריק"),
+                };
+                if theirs {
+                    fact[i] = true;
+                    fact[j] = true;
+                }
+            }
+        }
+        if facts.level.is_some_and(|l| number(i) == Some(l as f32)) {
+            fact[i] = true;
+        }
+    }
+    let left: Vec<&(String, bool)> = words
+        .iter()
+        .zip(&fact)
+        .filter(|((w, _), f)| !**f && !is_one_of(w, FILLER))
+        .map(|(w, _)| w)
+        .collect();
+    fact.contains(&true)
+        && match left.as_slice() {
+            [] => true,
+            // A name: written with a capital, or in Hebrew (which has
+            // none); never an order or a cheer.
+            [(w, capital)] => {
+                (*capital || w.chars().any(|c| ('\u{05d0}'..='\u{05ea}').contains(&c)))
+                    && !VERBS.contains(&w.as_str())
+                    && !REACTIONS.contains(&w.as_str())
+            }
+            _ => false,
+        }
+}
+
+/// Where a sentence's parts meet: a dash, a semicolon.
+const PART_BREAKS: &[&str] = &["—", "–", " - ", ";"];
+
+/// `sentence` without the parts of it that only say back the snapshot
+/// ([`restates`]): the whole sentence, or a part of it after a dash ("כן,
+/// פטריות—אתה באליניה, והרמה שלך 9." is "כן, פטריות."). None when that
+/// was all there was.
+fn without_restated(sentence: &str, facts: &Facts) -> Option<String> {
+    // Its parts, each with the break before it.
+    let mut parts: Vec<(&str, &str)> = Vec::new();
+    let (mut rest, mut before) = (sentence, "");
+    loop {
+        let next = PART_BREAKS
+            .iter()
+            .filter_map(|b| rest.find(b).map(|at| (at, *b)))
+            .min_by_key(|(at, _)| *at);
+        let Some((at, b)) = next else {
+            parts.push((before, rest));
+            break;
+        };
+        parts.push((before, &rest[..at]));
+        (before, rest) = (b, &rest[at + b.len()..]);
+    }
+    let kept: Vec<(usize, &(&str, &str))> = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, part))| !restates(part, facts))
+        .collect();
+    if kept.len() == parts.len() {
+        return Some(sentence.to_string());
+    }
+    let mut out = String::new();
+    for (n, (i, (b, part))) in kept.iter().enumerate() {
+        if n > 0 {
+            out.push_str(b);
+        }
+        out.push_str(part);
+        // (Its first part gone, the sentence opens with the next.)
+        if n == 0 && *i > 0 {
+            out = capitalised(out.trim_start());
+        }
+    }
+    let out = out
+        .trim()
+        .trim_end_matches([',', ';', ':', ' '])
+        .to_string();
+    if out.is_empty() {
+        return None;
+    }
+    // The sentence's own end, when its last part went with it.
+    let end: String = sentence
+        .trim_end()
+        .chars()
+        .rev()
+        .take_while(|c| matches!(c, '.' | '!' | '?' | '…'))
+        .collect();
+    Some(if out.ends_with(['.', '!', '?', '…']) {
+        out
+    } else {
+        format!("{out}{}", end.chars().rev().collect::<String>())
+    })
+}
+
+/// `text` (a sentence or a few) without what only says back the snapshot
+/// ([`without_restated`]); None when that was all there was.
+pub fn without_status(text: &str, facts: &Facts) -> Option<String> {
+    let kept: Vec<String> = sentences_of(text)
+        .iter()
+        .filter_map(|s| without_restated(s, facts))
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(" "))
+}
+
+/// The reply as the player hears it, after `humanise`. A friend does not
+/// recite your level and map, nor that the game isn't open, to whatever
+/// you say: when `heard` did not ask about the game
+/// ([`asks_about_the_game`]), what only says the snapshot back goes
+/// ([`without_status`]) — and when that was all there was, the reply stays
+/// as it was for a question (better than nothing), and goes for anything
+/// else ("OK" needs no answer).
+pub fn unasked(reply: &str, heard: &str, facts: &Facts) -> String {
+    if asks_about_the_game(heard) {
+        return reply.to_string();
+    }
+    match without_status(reply, facts) {
+        Some(kept) => kept,
+        None if wants_an_answer(heard) => reply.to_string(),
+        None => String::new(),
+    }
+}
+
 /// Whether the model chose to stay quiet: it was told to reply with
 /// exactly `[silent]`, and writes it as "[ silent ]", "(silent)",
 /// "*stays silent*", "[silence]" or "[no reply]" as often as not. A reply
@@ -1194,8 +1779,10 @@ pub fn for_speech(reply: &str) -> String {
 ///
 /// When every sentence would go, they all stay (bar the marks): a reply of
 /// nothing but "Happy to help!" is still a reply, and better than silence.
+/// Two sentences glued at a full stop ("Danny.No game window open.") are
+/// parted first ([`unglued`]).
 pub fn humanise(reply: &str) -> String {
-    let plain = without_marks(reply);
+    let plain = without_marks(&unglued(reply));
     let mut kept = without_assistant(&plain);
     without_closing_offer(&mut kept, false);
     if kept.is_empty() {
@@ -1242,6 +1829,41 @@ fn is_label(word: &str) -> bool {
         word.to_lowercase().as_str(),
         "note:" | "tip:" | "hint:" | "important:" | "reminder:" | "הערה:" | "טיפ:"
     )
+}
+
+/// `text` with a full stop glued to the next sentence given its space: a
+/// lower-case letter, the stop, then a capital and a lower-case letter
+/// ("Danny.No game window open." is two sentences, said as one word
+/// "Danny.No" until now). A number ("3.5"), an abbreviation ("e.g."), a
+/// domain ("maplestory.nexon.net", "maplestory.Nexon.net": its word goes
+/// on with another stop) and Hebrew (no capitals) are left as they are.
+fn unglued(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len() + 4);
+    for (i, &c) in chars.iter().enumerate() {
+        out.push(c);
+        let glued = c == '.'
+            && i > 0
+            && chars[i - 1].is_lowercase()
+            && chars.get(i + 1).is_some_and(|n| n.is_uppercase())
+            && chars.get(i + 2).is_some_and(|n| n.is_lowercase());
+        if !glued {
+            continue;
+        }
+        // (A domain's next label: the word after the stop goes on with
+        // another stop and a letter.)
+        let word_end = chars[i + 1..]
+            .iter()
+            .position(|c| !c.is_alphanumeric())
+            .map(|at| i + 1 + at);
+        let domain = word_end.is_some_and(|end| {
+            chars[end] == '.' && chars.get(end + 1).is_some_and(|c| c.is_alphanumeric())
+        });
+        if !domain {
+            out.push(' ');
+        }
+    }
+    out
 }
 
 /// `text` with its first letter in upper case.
@@ -2386,6 +3008,32 @@ boss again?\""
         );
     }
 
+    /// The rule on status reports and on talk before the game, as the
+    /// conversation has it (the call has it word for word: `live.rs`).
+    const UNASKED_RULE: &str = "Never report their level, map or bars unasked; while MapleStory \
+isn't open, talk about whatever they say, and say it isn't open only when they ask about the game.";
+
+    #[test]
+    fn a_word_to_it_is_answered_and_nothing_is_reported_unasked() {
+        let persona = Brain::new().persona();
+        // Four "Hello"s in a row came back "[ silent ]": a word to it is
+        // never not for it.
+        assert!(
+            persona.contains(
+                "Words to you (a greeting, your name, \"talk to me\") always get an answer; if they're \
+clearly talking to someone else (stream chat, a friend, a call), reply with exactly: [silent]"
+            ),
+            "{persona}"
+        );
+        // Before the game everything got "No game window open."; in it,
+        // every Hebrew reply restated the level and the map.
+        assert!(persona.contains(UNASKED_RULE), "{persona}");
+        assert!(
+            !persona.contains("never open with where they are"),
+            "the narrower rule went into the new one: {persona}"
+        );
+    }
+
     #[test]
     fn the_conversation_is_kept_and_starts_with_the_player() {
         let mut brain = Brain::new();
@@ -2745,6 +3393,199 @@ boss again?\""
         for line in GAMER_TALK {
             assert_eq!(humanise(line), *line);
             assert_eq!(for_speech(line), *line);
+        }
+    }
+
+    /// What the snapshot said in the owner's sessions: level 167 at the
+    /// Gate of the Future, HP 48%; the next morning, level 9 in Ellinia.
+    fn gate() -> Facts {
+        Facts {
+            level: Some(167),
+            map: Some("Gate of the Future".into()),
+            name: None,
+            job: None,
+            bars: vec![48.0, 40.0],
+        }
+    }
+
+    fn ellinia() -> Facts {
+        Facts {
+            level: Some(9),
+            map: Some("Victoria Road / Ellinia".into()),
+            name: Some("WANWANBUJIO".into()),
+            job: Some("Beginner".into()),
+            bars: vec![100.0, 100.0, 49.84],
+        }
+    }
+
+    #[test]
+    fn a_status_line_nobody_asked_for_is_not_said() {
+        let closed = Facts::default();
+        // (heard, the reply, what the snapshot said, what is said; `None`:
+        // the reply as it was.)
+        let rows: &[(&str, &str, Facts, Option<&str>)] = &[
+            // The owner's evening, the game not open yet: its window's
+            // state, to anything at all. Nothing else in it, and no
+            // question asked: nothing to say.
+            (
+                "OK that sounds",
+                "Game window closed, Danny.No game window open.",
+                closed.clone(),
+                Some(""),
+            ),
+            // Asked to talk: the window's state is better than nothing
+            // (the persona tells it to talk about anything; this is the
+            // floor, not the answer).
+            (
+                "Talk to me you fucker",
+                "No MapleStory window open.",
+                closed.clone(),
+                None,
+            ),
+            (
+                "In the shine at the sun",
+                "No game window open.",
+                closed.clone(),
+                Some(""),
+            ),
+            // The game open: the level, the map, the bars.
+            (
+                "but you're about",
+                "Game window open, WanWanBoggi at level 167, Gate of the Future. HP at 48%.",
+                gate(),
+                Some(""),
+            ),
+            (
+                "Welcome let's play Maple",
+                "Got it. What map are we on? MapleStory window is open, level 167.",
+                gate(),
+                Some("Got it. What map are we on?"),
+            ),
+            // The morning, in Hebrew: every reply said the level and the
+            // map back; the part after the dash or the semicolon goes.
+            (
+                "Mushroom mushroom",
+                "כן, פטריות—אתה באליניה, והרמה שלך 9.",
+                ellinia(),
+                Some("כן, פטריות."),
+            ),
+            (
+                "Session",
+                "אנחנו באליניה, רמה 9; מה בא לך לעשות עכשיו?",
+                ellinia(),
+                Some("מה בא לך לעשות עכשיו?"),
+            ),
+            // Asked about the game: said whole.
+            (
+                "what level am I?",
+                "You're level 167, Gate of the Future.",
+                gate(),
+                None,
+            ),
+            ("where am I", "Gate of the Future, level 167.", gate(), None),
+            (
+                "is the game open?",
+                "No game window open.",
+                closed.clone(),
+                None,
+            ),
+            ("how am I doing", "Level 167, HP at 48%.", gate(), None),
+            ("מה הרמה שלי", "אתה ברמה 9.", ellinia(), None),
+            // A question answered with nothing but the game's state keeps
+            // it: better than nothing.
+            (
+                "is it night already?",
+                "MapleStory window is open, level 167.",
+                gate(),
+                None,
+            ),
+            ("מה אתה חושב?", "אתה ברמה 9 באליניה.", ellinia(), None),
+            // A friend's lines go through: an order, a cheer, someone
+            // else's numbers, a window that is not the game's.
+            ("this boss is hard", "Pot now, you're at 20.", gate(), None),
+            ("this boss is hard", "HP's at 48, pot.", gate(), None),
+            ("yes!", "Nice, level 167!", gate(), None),
+            ("ugh", "Level up!", gate(), None),
+            ("ugh", "Low HP, back off.", gate(), None),
+            ("ugh", "Zakum's at 20% HP, keep hitting.", gate(), None),
+            ("go", "Open the quest window.", gate(), None),
+            (
+                "I'm bored",
+                "Grind Gate of the Future, it's fast.",
+                gate(),
+                None,
+            ),
+            ("כן", "יפה, רמה 9!", ellinia(), None),
+        ];
+        for (heard, reply, facts, said) in rows {
+            let reply = humanise(reply);
+            assert_eq!(
+                unasked(&reply, heard, facts),
+                said.unwrap_or(&reply),
+                "{heard:?} → {reply:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_word_or_two_that_asks_nothing_needs_no_same_as_before() {
+        // The owner's "OK", "Hello", "Danny": a repeat that was all there
+        // was got "1 of 1 sentences said before, left out" — and now a card.
+        for heard in [
+            "OK",
+            "Hello",
+            "Danny",
+            "ok thanks",
+            "תודה",
+            "Mushroom mushroom",
+        ] {
+            assert!(a_word_or_two(heard), "{heard}");
+        }
+        for heard in [
+            "what?",
+            "level?",
+            "is it",
+            "where am I",
+            "you said that already",
+            "מה?",
+        ] {
+            assert!(!a_word_or_two(heard), "{heard}");
+        }
+    }
+
+    #[test]
+    fn two_sentences_glued_at_a_full_stop_are_parted() {
+        // From the owner's evening: "Game window closed, Danny.No game
+        // window open." went to the voice as one word, "Danny.No".
+        for (reply, heard) in [
+            (
+                "Game window closed, Danny.No game window open.",
+                "Game window closed, Danny. No game window open.",
+            ),
+            ("Pot now.Go left.", "Pot now. Go left."),
+            ("Nice.Level up!", "Nice. Level up!"),
+            // A number, an abbreviation, a domain, an acronym, a level
+            // written short and Hebrew (no capitals) stay as they are.
+            (
+                "You're at 3.5 hours to level 58.",
+                "You're at 3.5 hours to level 58.",
+            ),
+            ("Bring pots, e.g. Elixirs.", "Bring pots, e.g. Elixirs."),
+            (
+                "Check maplestory.nexon.net today.",
+                "Check maplestory.nexon.net today.",
+            ),
+            (
+                "Check maplestory.Nexon.net today.",
+                "Check maplestory.Nexon.net today.",
+            ),
+            ("The U.S. server is down.", "The U.S. server is down."),
+            ("Lv.200 is far.", "Lv.200 is far."),
+            ("אתה באליניה.רמה 9.", "אתה באליניה.רמה 9."),
+        ] {
+            assert_eq!(humanise(reply), heard, "{reply:?}");
+            assert_eq!(for_speech(reply), heard, "{reply:?}");
+            assert_eq!(humanise(heard), heard, "{heard:?}");
         }
     }
 

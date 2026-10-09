@@ -155,6 +155,15 @@ Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
                                         "Take it slowly, you're at the Gate of the Future, level 165. \
 The quest marker is four maps to the left. Go!"
                                             .to_string()
+                                    } else if said.contains("that sounds") {
+                                        // The owner's evening, the game not open
+                                        // yet: its window's state, to anything
+                                        // (two sentences glued, as it came).
+                                        "Game window closed, Danny.No game window open.".to_string()
+                                    } else if said.contains("let's play") {
+                                        // The next morning, the game open.
+                                        "Got it. What map are we on? MapleStory window is open, level 167."
+                                            .to_string()
                                     } else {
                                         format!(
                                             "Hello there, my friend! ({model}) you said: {said}."
@@ -393,6 +402,7 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
     let id = worker.send(Job::Converse {
         heard: "can you see my game".into(),
         snapshot: "HP is about 80%.".into(),
+        facts: Default::default(),
         speak: true,
         eyes: None,
         language: None,
@@ -551,6 +561,7 @@ fn a_reply_talked_over_stops_and_the_next_is_answered() {
     let slow = worker.send(Job::Converse {
         heard: "think about this forever".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: true,
         eyes: None,
         language: None,
@@ -563,6 +574,7 @@ fn a_reply_talked_over_stops_and_the_next_is_answered() {
     let next = worker.send(Job::Converse {
         heard: "how am I doing".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -599,6 +611,7 @@ fn what_a_reply_talked_over_never_said_is_said_when_asked_again() {
         worker.send(Job::Converse {
             heard: heard.into(),
             snapshot: String::new(),
+            facts: Default::default(),
             speak: true,
             eyes: None,
             language: None,
@@ -658,6 +671,7 @@ fn the_same_question_twice_gets_a_word_not_silence() {
         worker.send(Job::Converse {
             heard: heard.into(),
             snapshot: String::new(),
+            facts: Default::default(),
             speak: true,
             eyes: None,
             language: Some("he-IL".into()),
@@ -718,6 +732,168 @@ The quest marker is four maps to the left. Go!"
         "{reply}"
     );
     assert_eq!(spoken.as_deref(), Some(reply.as_str()));
+}
+
+/// What came of reply `id`: its text (None: it was silent), the lines its
+/// voice began, and the notes that came with it, once the voice is done.
+fn outcome(worker: &ms::ai::Worker, id: u64) -> (Option<String>, Vec<String>, Vec<String>) {
+    let (mut text, mut done, mut spoken, mut notes) = (None, false, Vec::new(), Vec::new());
+    loop {
+        // (After the reply, a moment for the rest of its voice.)
+        let wait = Duration::from_secs(if done { 1 } else { 30 });
+        match worker.done.recv_timeout(wait) {
+            Ok(Done::Reply {
+                id: of, text: t, ..
+            }) if of == id => {
+                text = Some(t);
+                done = true;
+            }
+            Ok(Done::Silent { id: of, .. }) if of == id => done = true,
+            Ok(Done::Audio {
+                id: of,
+                text: t,
+                start: true,
+                ..
+            }) if of == id => spoken.push(t),
+            Ok(Done::Noted { line }) => notes.push(line),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(_) if done => return (text, spoken, notes),
+            Err(e) => panic!("{e}"),
+        }
+    }
+}
+
+#[test]
+fn a_hello_is_answered_at_once_and_never_reaches_the_model() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // The owner's "Hey", then "Hello": the model judged them not for it,
+    // every time ("[ silent ]"). The main loop asks the companion first,
+    // and a hello is its own to answer — at once, and said like a reply.
+    let mut companion = ms::companion::Companion::seeded(ms::companion::Settings::default(), 7);
+    for heard in ["Hey", "Hello"] {
+        let line = companion
+            .instant(heard)
+            .unwrap_or_else(|| panic!("{heard}: not answered at once"));
+        let id = worker.send(Job::Say {
+            heard: Some(heard.into()),
+            text: line.clone(),
+        });
+        let (reply, spoken, _) = outcome(&worker, id);
+        assert_eq!(reply.as_deref(), Some(line.as_str()));
+        assert_eq!(spoken, [line]);
+    }
+    // No model was asked: speech only.
+    let paths: Vec<Value> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].clone())
+        .collect();
+    assert!(paths.iter().all(|p| p == "/v1/audio/speech"), "{paths:?}");
+    // More than a hello is the model's.
+    assert!(
+        companion
+            .instant("hey, which map should I grind?")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_status_line_nobody_asked_for_is_left_out_of_the_reply() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let ask = |heard: &str, facts: ms::ai::brain::Facts| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            facts,
+            speak: true,
+            eyes: None,
+            language: None,
+        })
+    };
+    // Before the game: "OK that sounds" got "Game window closed,
+    // Danny.No game window open." Nothing else in it, no question: quiet,
+    // not a word of it to the voice, and the log says what went.
+    let (reply, spoken, notes) = outcome(&worker, ask("OK that sounds", Default::default()));
+    assert_eq!((reply, spoken), (None, vec![]));
+    assert!(
+        notes.contains(
+            &"not said, nobody asked: Game window closed, Danny. No game window open.".to_string()
+        ),
+        "{notes:?}"
+    );
+    // The game open: the status line goes, the rest is said.
+    let level = ms::ai::brain::Facts {
+        level: Some(167),
+        ..Default::default()
+    };
+    let (reply, spoken, _) = outcome(&worker, ask("Welcome let's play Maple", level));
+    assert_eq!(reply.as_deref(), Some("Got it. What map are we on?"));
+    assert_eq!(spoken, ["Got it. What map are we on?"]);
+    // A question answered with nothing else keeps it: better than nothing.
+    let (reply, spoken, _) = outcome(&worker, ask("does that sounds right?", Default::default()));
+    let all = "Game window closed, Danny. No game window open.";
+    assert_eq!(reply.as_deref(), Some(all));
+    assert_eq!(spoken.concat(), all);
+}
+
+#[test]
+fn a_word_or_two_answered_as_before_gets_quiet_not_a_card() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let ask = |heard: &str| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            facts: Default::default(),
+            speak: true,
+            eyes: None,
+            language: None,
+        })
+    };
+    // "OK", twice, and the stand-in says the same both times: the second
+    // reply was all said lately, and to an "OK" that is nothing to say —
+    // quiet, not "Nothing's changed."
+    let (first, ..) = outcome(&worker, ask("OK"));
+    assert_eq!(
+        first.as_deref(),
+        Some("Hello there, my friend! (gpt-6.1-sol) you said: OK.")
+    );
+    let (second, spoken, notes) = outcome(&worker, ask("OK"));
+    assert_eq!((second, spoken), (None, vec![]));
+    assert!(
+        notes.contains(&"2 of 2 sentences said before, left out".to_string()),
+        "{notes:?}"
+    );
+    // A sentence of more than two words still hears it was heard.
+    outcome(&worker, ask("ok that's fine by me"));
+    let (again, ..) = outcome(&worker, ask("ok that's fine by me"));
+    let card = again.expect("no word for the sentence said twice");
+    assert!(
+        [
+            "Nothing's changed.",
+            "Same as before.",
+            "Still the same. Keep up.",
+            "Already told you.",
+        ]
+        .contains(&card.as_str()),
+        "{card}"
+    );
 }
 
 #[test]
@@ -818,6 +994,7 @@ fn an_alerts_line_is_not_called_off_with_the_rest() {
     let slow = worker.send(Job::Converse {
         heard: "think about this forever".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: true,
         eyes: None,
         language: None,
@@ -911,6 +1088,7 @@ fn what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees() {
     let reply = worker.send(Job::Converse {
         heard: "yeah yeah I'm potting".into(),
         snapshot: "HP 80%".into(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -1043,6 +1221,7 @@ fn a_line_of_its_own_called_off_before_a_sound_was_not_said() {
     let reply = worker.send(Job::Converse {
         heard: "yo".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -1348,6 +1527,7 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
     worker.send(Job::Converse {
         heard: "why?".into(),
         snapshot: "HP 80%".into(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -1647,6 +1827,7 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
     let id = worker.send(Job::Converse {
         heard: "what level is easy zakum".into(),
         snapshot: "HP is about 80%.".into(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -1740,6 +1921,7 @@ fn a_look_up_never_holds_the_answer_up_and_corrects_it_later() {
     let id = worker.send(Job::Converse {
         heard: "what level is easy zakum, look it up".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: Some("he-IL".into()),
@@ -1873,6 +2055,7 @@ fn grok_answers_and_openai_steps_in_when_it_fails() {
     worker.send(Job::Converse {
         heard: "yo".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -1911,6 +2094,7 @@ fn grok_answers_and_openai_steps_in_when_it_fails() {
     worker.send(Job::Converse {
         heard: "yo".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -1951,6 +2135,7 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
         worker.send(Job::Converse {
             heard: heard.into(),
             snapshot: String::new(),
+            facts: Default::default(),
             speak: false,
             eyes: None,
             language: None,
@@ -2020,6 +2205,7 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
         worker.send(Job::Converse {
             heard: heard.into(),
             snapshot: String::new(),
+            facts: Default::default(),
             speak: false,
             eyes: None,
             language: None,

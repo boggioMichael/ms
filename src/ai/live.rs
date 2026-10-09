@@ -58,8 +58,9 @@ const LIVE_MORE: &str = "On the call:
 they mix languages in one sentence (Hebrew and English, say), answer the same way. A language you were told to use \
 \"by default\" is for when their words have no language: it never overrides the one they are speaking now. Say \
 game words the way players say them.
-- Never say again what you said in your last two turns unless they ask again, and never open with where they are \
-unless they asked where they are. If what you heard makes no sense, say in a few words that you didn't catch it.
+- Never say again what you said in your last two turns unless they ask again. Never report their level, map or bars \
+unasked; while MapleStory isn't open, talk about whatever they say, and say it isn't open only when they ask about \
+the game. If what you heard makes no sense, say in a few words that you didn't catch it.
 - If they talk over you, stop and go with what they just said; don't repeat what you had said.
 - When they speak you may also get a message that is not from them: what your vision engine reads off the game \
 right now (level, HP, MP, EXP; values marked \"about\" are estimates) and, now and then, a small picture of the \
@@ -465,6 +466,12 @@ mod tests {
             assert!(rule.split_whitespace().count() > 20, "{rule}");
             assert!(persona.contains(rule), "the conversation lacks: {rule}");
         }
+        // The rule on status reports and on talk before the game, too
+        // (in a bullet of its own on each side).
+        let rule = "Never report their level, map or bars unasked; while MapleStory isn't open, talk \
+about whatever they say, and say it isn't open only when they ask about the game.";
+        assert!(persona.contains(rule), "the conversation lacks: {rule}");
+        assert!(LIVE_MORE.contains(rule), "the call lacks: {rule}");
         // And every call gets them, whatever the attitude.
         for attitude in crate::companion::Attitude::ALL {
             let text = instructions("", &[], None, attitude);

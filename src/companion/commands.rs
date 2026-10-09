@@ -84,7 +84,7 @@ pub enum Heard {
 }
 
 /// Spellings speech recognisers produce for "syrup".
-const WAKE_WORDS: &[&str] = &[
+pub(crate) const WAKE_WORDS: &[&str] = &[
     "syrup",
     "sirup",
     "syrop",
@@ -512,6 +512,228 @@ pub fn tone_complaint(sentence: &str) -> bool {
     COMPLAINTS.iter().any(|p| has_phrase(&text, p))
 }
 
+/// The languages the phone's picker offers, by the names a player calls
+/// them (in English and in Hebrew), with the picker's code for each.
+const LANGUAGES: &[(&str, &str)] = &[
+    ("hebrew", "he-IL"),
+    ("ivrit", "he-IL"),
+    ("עברית", "he-IL"),
+    ("english", "en-US"),
+    ("אנגלית", "en-US"),
+    ("spanish", "es-ES"),
+    ("ספרדית", "es-ES"),
+    ("portuguese", "pt-BR"),
+    ("פורטוגזית", "pt-BR"),
+    ("french", "fr-FR"),
+    ("צרפתית", "fr-FR"),
+    ("german", "de-DE"),
+    ("גרמנית", "de-DE"),
+    ("korean", "ko-KR"),
+    ("קוריאנית", "ko-KR"),
+    ("japanese", "ja-JP"),
+    ("יפנית", "ja-JP"),
+    ("chinese", "zh-CN"),
+    ("mandarin", "zh-CN"),
+    ("סינית", "zh-CN"),
+    ("thai", "th-TH"),
+    ("תאילנדית", "th-TH"),
+    ("vietnamese", "vi-VN"),
+    ("וייטנאמית", "vi-VN"),
+    ("indonesian", "id-ID"),
+    ("אינדונזית", "id-ID"),
+    ("russian", "ru-RU"),
+    ("רוסית", "ru-RU"),
+];
+
+/// The language `word` names, and whether it came joined to "in" or "to"
+/// as Hebrew writes them ("בעברית", "לאנגלית"): that is the request itself.
+fn language_named(word: &str) -> Option<(&'static str, bool)> {
+    let find = |w: &str| {
+        LANGUAGES
+            .iter()
+            .find(|(name, _)| *name == w)
+            .map(|(_, l)| *l)
+    };
+    if let Some(locale) = find(word) {
+        return Some((locale, false));
+    }
+    let rest = word.strip_prefix('ב').or_else(|| word.strip_prefix('ל'))?;
+    find(rest).map(|locale| (locale, true))
+}
+
+/// "Talk to me in Hebrew" — the player wants the other language, from now
+/// on: the phone's language (what it hears, its words) and MapleSyrup's.
+/// The locale the phone's picker has for it, when `sentence` asks for one:
+/// "speak/talk (to me) in Hebrew", "Hebrew please", "in Hebrew",
+/// "בעברית", "דבר עברית", "תדבר בעברית"; the same for English ("English
+/// please", "באנגלית", "תדבר אנגלית") and the picker's other languages by
+/// their English names ("in Spanish"). A question about a word ("how do
+/// you say potion in Hebrew?") is no request, nor a sentence with more in
+/// it than a word or two besides ("the quest is in Hebrew"), nor "I don't
+/// speak Hebrew". (One other word may come along: the phone heard the
+/// owner's "Hebrew in Hebrew case".)
+pub fn language_request(sentence: &str) -> Option<&'static str> {
+    // Words that ask for it.
+    const ASK: &[&str] = &[
+        "speak",
+        "talk",
+        "answer",
+        "reply",
+        "respond",
+        "switch",
+        "change",
+        "use",
+        "in",
+        "into",
+        "please",
+        "only",
+        "from",
+        "דבר",
+        "תדבר",
+        "תדברי",
+        "דברי",
+        "ענה",
+        "תענה",
+        "תעני",
+        "עבור",
+        "תעבור",
+        "תעברי",
+        "בבקשה",
+        "רק",
+    ];
+    // Words that go with asking, and say nothing else.
+    const ALONG: &[&str] = &[
+        "to",
+        "me",
+        "with",
+        "the",
+        "a",
+        "now",
+        "on",
+        "ok",
+        "okay",
+        "hey",
+        "hi",
+        "can",
+        "could",
+        "would",
+        "will",
+        "you",
+        "lets",
+        "let",
+        "us",
+        "again",
+        "back",
+        "instead",
+        "yeah",
+        "yes",
+        "so",
+        "and",
+        "just",
+        "all",
+        "i",
+        "want",
+        "language",
+        "mode",
+        "then",
+        "man",
+        "dude",
+        "bro",
+        "buddy",
+        "איתי",
+        "אליי",
+        "אלי",
+        "לי",
+        "אותי",
+        "עכשיו",
+        "מעכשיו",
+        "מהיום",
+        "והלאה",
+        "יאללה",
+        "אחי",
+        "טוב",
+        "אוקיי",
+        "נו",
+        "תמיד",
+        "אני",
+        "אתה",
+        "את",
+        "אפשר",
+        "רוצה",
+        "שפה",
+        "השפה",
+        "לשפה",
+        "גם",
+    ];
+    // A question about a word or the language; a "don't".
+    const NOT: &[&str] = &[
+        "say",
+        "said",
+        "saying",
+        "translate",
+        "translation",
+        "mean",
+        "means",
+        "meaning",
+        "word",
+        "words",
+        "called",
+        "spell",
+        "learn",
+        "dont",
+        "not",
+        "never",
+        "cant",
+        "תרגם",
+        "תתרגם",
+        "תרגום",
+        "אומרים",
+        "פירוש",
+        "מילה",
+        "מילים",
+        "נקרא",
+        "ללמוד",
+        "לא",
+        "אל",
+    ];
+    const QUESTION: &[&str] = &[
+        "what", "whats", "how", "hows", "why", "which", "where", "who", "whos", "when", "is",
+        "isnt", "does", "did", "are", "מה", "איך", "למה", "איפה", "מי", "האם", "מתי", "איזה",
+        "איזו",
+    ];
+    let mut text = format!(" {} ", normalize(sentence));
+    for wake in WAKE_WORDS {
+        text = text.replace(&format!(" {wake} "), " ");
+    }
+    let words: Vec<&str> = text.split(' ').filter(|w| !w.is_empty()).collect();
+    if words.is_empty()
+        || words.len() > 10
+        || QUESTION.contains(&words[0])
+        || words.iter().any(|w| NOT.contains(w))
+    {
+        return None;
+    }
+    let (mut locale, mut asked, mut other) = (None, false, 0);
+    for word in &words {
+        if let Some((named, joined)) = language_named(word) {
+            // (Two languages: "English, not Hebrew"; a translation.)
+            if locale.is_some_and(|l| l != named) {
+                return None;
+            }
+            locale = Some(named);
+            asked |= joined;
+        } else if ASK.contains(word)
+            // ("שתדבר": "that you speak".)
+            || word.strip_prefix(['ש', 'ו']).is_some_and(|w| ASK.contains(&w))
+        {
+            asked = true;
+        } else if !ALONG.contains(word) {
+            other += 1;
+        }
+    }
+    locale.filter(|_| asked && other <= 1)
+}
+
 /// Read one heard sentence. `listening` is true when the wake word was said
 /// on its own a moment ago, so this sentence counts as addressed.
 pub fn interpret(sentence: &str, listening: bool) -> Heard {
@@ -683,6 +905,67 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn a_language_asked_for_out_loud_is_the_phones_language() {
+        for (sentence, locale) in [
+            ("speak Hebrew", "he-IL"),
+            ("talk to me in Hebrew", "he-IL"),
+            ("Talk to me Hebrew", "he-IL"),
+            // The owner's, as the phone heard it.
+            ("Hebrew in Hebrew case", "he-IL"),
+            ("Hebrew please", "he-IL"),
+            ("in Hebrew", "he-IL"),
+            ("Syrup, speak to me in Hebrew from now on", "he-IL"),
+            ("can you speak Hebrew", "he-IL"),
+            ("no, Hebrew please", "he-IL"),
+            ("בעברית", "he-IL"),
+            ("דבר עברית", "he-IL"),
+            ("תדבר בעברית", "he-IL"),
+            ("סירופ, תדבר איתי בעברית", "he-IL"),
+            ("אני רוצה שתדבר בעברית", "he-IL"),
+            ("speak English", "en-US"),
+            ("talk to me in English", "en-US"),
+            ("English please", "en-US"),
+            ("באנגלית", "en-US"),
+            ("תדבר אנגלית", "en-US"),
+            ("in Spanish", "es-ES"),
+            ("speak French please", "fr-FR"),
+            ("talk to me in Japanese", "ja-JP"),
+            ("Russian please", "ru-RU"),
+        ] {
+            assert_eq!(language_request(sentence), Some(locale), "{sentence}");
+        }
+        for sentence in [
+            // A question about a word is the model's.
+            "how do you say potion in Hebrew?",
+            "what's potion in Hebrew",
+            "is the quest in Hebrew",
+            "איך אומרים שיקוי באנגלית",
+            "מה זה באנגלית",
+            "teach me Hebrew words",
+            "translate this to English",
+            // More in it than the request; another's language; a "don't".
+            "the quest is in Hebrew",
+            "my game is in Hebrew",
+            "my friend speaks Hebrew",
+            "I don't speak Hebrew",
+            "אני לא מדבר עברית",
+            "speak English not Hebrew",
+            // No language at all.
+            "Hebrew",
+            "speak to me",
+            "talk to me you fucker",
+            "what's my hp",
+        ] {
+            assert_eq!(language_request(sentence), None, "{sentence}");
+        }
+        // Each is a language the phone's picker offers, by its code there.
+        let page = include_str!("../phone/page.html");
+        for (name, locale) in LANGUAGES {
+            assert!(page.contains(&format!("[\"{locale}\"")), "{name}: {locale}");
+        }
     }
 
     #[test]
