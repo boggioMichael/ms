@@ -451,9 +451,10 @@ pub struct Companion {
     /// have helped with from a sudden one, and a beating as it happens.
     hp_lately: std::collections::VecDeque<(f64, f32)>,
     /// The last HP reading that held (two frames in a row) outside a swing
-    /// hold, and EXP lately (when, percent): what tells a death through
-    /// the hold from a cursor parked on the bar's start.
-    steady_hp: Option<f32>,
+    /// hold, and when it was taken; EXP lately (when, percent): what tells
+    /// a death from a cursor parked on the bar's start (see
+    /// [`Companion::zero_is_death`]).
+    steady_hp: Option<(f64, f32)>,
     exp_lately: std::collections::VecDeque<(f64, f32)>,
     /// Frames in a row in which HP has fallen fast, and when that was last
     /// said.
@@ -605,6 +606,13 @@ impl Steadiness {
         now < self.unsteady_until
     }
 
+    /// Whether a reading taken at `at` was the swing's: one of its first
+    /// frames, before it was found to swing (they pass for readings), or
+    /// one of the hold's.
+    fn swung_at(&self, at: f64) -> bool {
+        (self.swing_from..self.unsteady_until).contains(&at)
+    }
+
     /// Takes a reading; whether the bar is being guessed at right now.
     fn unsteady(&mut self, now: f64, percent: f32) -> bool {
         self.lately.push_back((now, percent));
@@ -714,12 +722,20 @@ fn held_readings(
 /// A death read from the bar's fill (not the printed number) must last
 /// this long: a dialog over the bar reads as an empty bar too.
 const ZERO_HOLD_SECS: f64 = 2.0;
-/// Through a swing hold, an empty bar that lasts is no death on its own —
-/// the cursor parked on the bar's start reads as one — unless EXP fell by
-/// this much within this long (the death's penalty), or HP read steady
-/// under the mark before the swing.
+/// An empty bar read from its fill is no death on its own, held or not:
+/// the learned sight gives no reading at all for an empty bar, so a fill
+/// at zero is a sliver — and the everyday sliver is the cursor's tip
+/// parked on the bar's start. It needs a second sign (see
+/// [`Companion::zero_is_death`]): EXP fell by this much within this long
+/// (the death's penalty)…
 const DEATH_EXP_LOSS: f32 = QUIET_EXP_BAR;
 const DEATH_EXP_SECS: f64 = 10.0;
+/// …or the way down was seen: this many readings under the mark (not the
+/// swing's) within this long before the bar read empty — a cursor jumps
+/// from where the bar was to its start; HP that runs out goes through the
+/// red first.
+const DEATH_FALL_READINGS: usize = 2;
+const DEATH_FALL_SECS: f64 = 3.0;
 
 /// Alerts said with no sign of life from the player — a word, HP going
 /// back up (a potion), EXP gained, a level — before the rest are held…
@@ -1002,8 +1018,8 @@ pub mod lines {
             "היי היי היי, זה הרבה נזק. תתרחק שנייה.",
             "אתה נמס! תשתה, ואז תחזור.",
             "הדבר הזה מרביץ חזק. תתרחק ממנו קצת.",
-            "אאוץ'. תתרחק ותשתה משהו לפני שהמכה הבאה נוחתת.",
-            "מכות כבדות נוחתות עליך, אתה יורד מהר. קודם שותים, אחר כך נלחמים.",
+            "אאוץ'. תתרחק ותשתה משהו לפני המכה הבאה.",
+            "אתה חוטף חזק ויורד מהר. קודם שותים, אחר כך נלחמים.",
         ],
         &[
             "תתרחק, קורעים אותך. {} וממשיך לרדת.",
@@ -1069,7 +1085,7 @@ pub mod lines {
             "תשתה, אתה על {}.",
             "החיים שלך נמוכים, {}. אל תגזים, תשתה.",
             "היי, בר החיים נהיה מפחיד. שיקוי, בבקשה!",
-            "נשארו {} בבר. תמלא לפני המכה הבאה.",
+            "נשארו לך {} חיים. תשתה לפני המכה הבאה.",
         ],
         &[
             "{} חיים. תשתה עכשיו!",
@@ -1143,7 +1159,7 @@ pub mod lines {
             "אמרתי לשתות, גאון. {}.",
             "{} חיים, עדיין. האוזניים שלך עובדות? תשתה.",
             "שוב? {} חיים. תשתה, ליצן.",
-            "אני כל הזמן אומר את זה: {}. תשתה.",
+            "אני חוזר על עצמי: {}. תשתה.",
             "{}. תשתה, או שתמות ותוכיח שצדקתי.",
         ],
     ];
@@ -1244,8 +1260,8 @@ pub mod lines {
             "{} מאנה, אולי כדאי שיקוי.",
             "שים לב, נשארו רק {} מאנה.",
             "המאנה יורדת, {}. תשתה כחול.",
-            "המאנה כמעט נגמרת לך. תשתה לפני שלא יהיו לך סקילים.",
-            "{} מאנה. תמלא כשיש לך רגע.",
+            "המאנה כמעט נגמרת לך. תשתה לפני שתישאר בלי סקילים.",
+            "{} מאנה. תמלא אותה כשיש לך רגע.",
             "בדיקת מאנה: {}. זמן לשיקוי.",
         ],
         &[
@@ -1261,7 +1277,7 @@ pub mod lines {
             "{} מאנה. תשתה משהו, ליצן.",
             "{} מאנה. מה, תהרוג את הבוס במכות רגילות?",
             "המאנה על {}. הסקילים שלך עומדים להיות קישוט.",
-            "{} מאנה. אפילו מכשף מתחיל מסתדר יותר טוב מזה.",
+            "{} מאנה. אפילו מאג' מתחיל מסתדר יותר טוב מזה.",
             "{} מאנה. תשתה את הכחול, גאון.",
         ],
     ];
@@ -1300,7 +1316,7 @@ pub mod lines {
         &[
             "המאנה עדיין נמוכה, {}. שיקוי כחול!",
             "עדיין מעט מאנה, {}. תשתה כחול.",
-            "שוב בדיקת מאנה: {}. תמלא.",
+            "שוב בדיקת מאנה: {}. תמלא אותה.",
             "אמרתי מאנה, {}. תשתה כשאתה יכול.",
             "רק {} מאנה, עדיין. תשתה.",
             "שוב מאנה: {}. שיקוי כחול, בבקשה.",
@@ -1367,7 +1383,7 @@ pub mod lines {
             "יש לך שיקויי מאנה או לא? {} מאנה.",
             "המקש של המאנה שבור? {} מאנה.",
             "המאנה על {}. אתה הולך לשתות או לא?",
-            "איך תעשה סקילים עם {} מאנה?",
+            "איך תזרוק סקילים עם {} מאנה?",
             "למה אתה מחכה? {} מאנה. תשתה.",
         ],
         &[
@@ -1419,13 +1435,13 @@ pub mod lines {
             "החיים שלך הגיעו לאפס. זמן לקום ולחזור.",
             "אוי, מתת. תקום ותחזור לשם, אתה יכול.",
             "נפלת! אוקיי, תקום, תשתה, ועוד ניסיון.",
-            "זה הפיל אותך. תקום, לא נורא.",
+            "זה גמר אותך. תקום, לא נורא.",
             "ריפ. תאסוף את הדברים שלך ותחזור לשם.",
             "אאוץ'. חוזרים לעיר. תקום ויוצאים לעוד סיבוב.",
-            "מת. קורה. תקום ותחזור לשם.",
+            "מת. קורה. תקום, ממשיכים.",
         ],
         &[
-            "מתת. תקום ותחזור לשם.",
+            "מתת. קום, חוזרים לזה.",
             "נו, מתת. תקום, עוד סיבוב.",
             "וזהו, נפלת. ריספאון.",
             "עמדת בתוך זה ומתת. תלמד מזה משהו. תקום.",
@@ -1582,7 +1598,7 @@ pub mod lines {
             "דינג! {}. יאללה!",
             "רמה {}, תראה אותך!",
             "יוהו, {}! תשמור על הקצב.",
-            "הנה זה, רמה {}. מגיע לך.",
+            "הנה, רמה {}. מגיע לך.",
             "{} כבר? אתה טס.",
         ],
         &[
@@ -1641,10 +1657,10 @@ pub mod lines {
         &[
             "אני רואה את מייפלסטורי.",
             "המשחק על המסך. בוא נשחק!",
-            "הנה זה, מייפלסטורי פתוח. אני צופה.",
+            "הנה, מייפלסטורי פתוח. אני צופה.",
             "אוקיי, אני רואה את המשחק. קדימה, אני מגבה אותך.",
             "המשחק אצלי על המסך. תהנה!",
-            "אני עוקב אחרי מייפלסטורי. יאללה, מתחילים.",
+            "אני איתך במייפלסטורי. יאללה, מתחילים.",
             "מייפלסטורי פתוח ואני רואה אותו. מוכן כשאתה מוכן.",
         ],
         &[
@@ -1887,7 +1903,7 @@ pub mod lines {
     /// [`UNMUTED`] in Hebrew, card for card.
     pub const UNMUTED_HE: [&[&str]; 3] = [
         &[
-            "חזרתי.",
+            "הנה אני.",
             "חזרתי לדבר! היי שוב.",
             "הקול חזר. התגעגעתי.",
             "אוקיי, מדבר שוב.",
@@ -1899,7 +1915,7 @@ pub mod lines {
             "חזרתי.",
             "חזרתי לדבר. תתנהג יפה.",
             "מדבר שוב. שתית משהו בזמן שלא הייתי?",
-            "חזרתי. בוא נראה את הנזק.",
+            "שוב איתך. בוא נראה את הנזק.",
             "הקול פועל. תקשיב.",
             "אוקיי, אני יכול לדבר. מה שברת?",
             "המיקרופון חזר. תמשיך לשחק.",
@@ -1907,7 +1923,7 @@ pub mod lines {
         &[
             "חזרתי.",
             "חזרתי. שרדת בלעדיי?",
-            "חזרתי. בוא נראה מה הרסת בשקט.",
+            "נו, מה הרסת בשקט?",
             "יופי, אני יכול לרדת עליך שוב.",
             "הקול חזר. כדאי שגם בר החיים שלך יהיה למעלה.",
             "התגעגעת? חשבתי שלא. תשתה בכל מקרה.",
@@ -1976,7 +1992,7 @@ pub mod lines {
             "או שאתה לא ליד המחשב או שאתה מתעלם ממני. בכל מקרה, סיימתי עד שתדבר.",
             "יופי. תתרסק בשקט. תגיד משהו ואני אתחיל שוב לדאוג.",
             "אין תשובה, אין שיקוי, אין כבוד. האזהרות בהמתנה.",
-            "אני מפסיק לבזבז אוויר. תדבר כשתחזור, איפה שלא היית.",
+            "חבל על המילים. תדבר כשתחזור, איפה שלא היית.",
         ],
     ];
 
@@ -2072,7 +2088,7 @@ pub mod lines {
             "פיו. הנה.",
             "יפה, ככה זה צריך להיות.",
         ],
-        &["סוף סוף.", "הנה זה.", "יותר טוב.", "טוב. תשאיר את זה ככה."],
+        &["סוף סוף.", "הנה.", "יותר טוב.", "טוב. תשאיר את זה ככה."],
         &[
             "אוי תראו, הוא מצא את המקש של השיקוי.",
             "וואו, שיקוי. התפתחות אישית.",
@@ -2976,6 +2992,48 @@ impl Companion {
         self.exp_lately.len() > HELD_FRAMES as usize && (DEATH_EXP_LOSS..50.0).contains(&fell)
     }
 
+    /// Whether HP at zero (`hp`, since `zero_hp_since`) is a death. The
+    /// number read 0 in the game's font is. The bar's fill at zero is a
+    /// sliver (the learned sight gives no reading for an empty bar), and
+    /// the everyday sliver is the cursor's tip parked on the bar's start,
+    /// steady bar or swinging (the cursor makes the swing): it is a death
+    /// only with a second sign — EXP fell (the death's penalty); or the
+    /// way down was seen, readings under the mark just before it
+    /// ([`DEATH_FALL_READINGS`] in [`DEATH_FALL_SECS`]); or HP read steady
+    /// under the mark before a swing that hid the rest. Readings that were
+    /// the swing's are no sign: its first frames, before it was found to
+    /// swing, can rest a moment where the cursor rests ("12, 12", "10,
+    /// 10" — a steady 10 under the mark, taken from a cursor coming in,
+    /// had a parked cursor counted as a warned death). With none, it is no
+    /// death, said or counted: a death missed is better than one made up
+    /// — "your HP hit zero" to a player at 85% — counted in the stats and
+    /// told to the coach. (A death in the red is still seen; one from
+    /// high with no EXP to lose and the number unread is not.)
+    fn zero_is_death(&self, hp: Gauge) -> bool {
+        if hp.read {
+            return true;
+        }
+        // (The mark, or the default's 30 when it is lower or off: a death
+        // is seen with the warnings off too.)
+        let mark = self.settings.hp_low.max(Settings::default().hp_low);
+        let steady = &self.hp_steady;
+        let fall = self
+            .hp_lately
+            .iter()
+            .filter(|&&(t, p)| {
+                p > 0.5
+                    && p < mark
+                    && t < self.zero_hp_since
+                    && self.zero_hp_since - t <= DEATH_FALL_SECS
+                    && !steady.swung_at(t)
+            })
+            .count();
+        let steady_under = self
+            .steady_hp
+            .is_some_and(|(t, p)| p < mark && !steady.swung_at(t));
+        self.exp_fell() || fall >= DEATH_FALL_READINGS || steady_under
+    }
+
     /// Whether a sentence now would count as addressed without the wake word.
     /// When a level-up was last announced (never: minus infinity).
     pub fn last_level_up(&self) -> f64 {
@@ -3389,26 +3447,18 @@ impl Companion {
         }
         // A death: HP at zero for a moment (longer when that is the bar's
         // fill rather than the printed number: a dialog over the bar reads
-        // as empty too).
+        // as empty too) — and from the fill, with a second sign (see
+        // `zero_is_death`: the cursor parked on the bar's start reads so).
         if hp.percent <= 0.5 {
             if self.zero_hp_frames == 0 {
                 self.zero_hp_since = now;
             }
             self.zero_hp_frames += 1;
             let held = if hp.read { 0.0 } else { ZERO_HOLD_SECS };
-            // Through a swing hold, an empty bar that lasts is the cursor
-            // parked on the bar's start as often as a death — the very
-            // cursor that makes the swing (a blank HUD gives no reading at
-            // all): a death needs a second sign, EXP fallen (its penalty)
-            // or HP read steady under the mark before the swing. (A number
-            // read in the game's font needs none.)
-            let corroborated = !unsteady
-                || self.exp_fell()
-                || self.steady_hp.is_some_and(|p| p < self.settings.hp_low);
             if self.zero_hp_frames >= 3
                 && now - self.zero_hp_since >= held
                 && !self.dead
-                && corroborated
+                && self.zero_is_death(hp)
             {
                 self.dead = true;
                 self.deaths += 1;
@@ -3455,7 +3505,7 @@ impl Companion {
             && now - t <= 1.0
             && (hp.percent - before).abs() <= QUIET_HP_POINTS
         {
-            self.steady_hp = Some(hp.percent);
+            self.steady_hp = Some((now, hp.percent));
         }
         self.hp_lately.push_back((now, hp.percent));
         while self.hp_lately.front().is_some_and(|(t, _)| now - t > 10.0) {
@@ -3951,22 +4001,24 @@ impl Companion {
 /// "82 percent", or "about 82 percent" for a bar estimate.
 /// A low bar the way a person says it: "about 12 percent" (whole numbers;
 /// "about" when it was measured from the bar rather than read) — in
-/// Hebrew "12 אחוז", "בערך 12 אחוז", and one "אחוז אחד" ("1 אחוז" is read
-/// "אחד אחוז").
+/// Hebrew "12 אחוז", "בערך 12 אחוז", and one [`LESS_THAN_TWO`].
 fn low_words(gauge: Gauge, hebrew: bool) -> String {
     let number = (gauge.percent.round() as i64).max(1);
-    let he = if number == 1 {
-        "אחוז אחד".to_string()
-    } else {
-        format!("{number} אחוז")
-    };
     match (gauge.read, hebrew) {
         (true, false) => format!("{number} percent"),
         (false, false) => format!("about {number} percent"),
-        (true, true) => he,
-        (false, true) => format!("בערך {he}"),
+        (_, true) if number == 1 => LESS_THAN_TWO.to_string(),
+        (true, true) => format!("{number} אחוז"),
+        (false, true) => format!("בערך {number} אחוז"),
     }
 }
+
+/// One percent in Hebrew, read or measured: "less than two percent". It
+/// is plural, as every amount the cards take is ("נשארו לך {} חיים",
+/// "{} ויורד"), where "אחוז אחד" is singular ("נשארו לך אחוז אחד חיים"
+/// is not said) and "1 אחוז" is read "אחד אחוז"; and it says "about"
+/// already ("בערך פחות משני אחוז" is not said either).
+pub(crate) const LESS_THAN_TWO: &str = "פחות משני אחוז";
 
 fn percent_words(gauge: Gauge) -> String {
     let amount = percent_amount(gauge.percent as f64);
@@ -5058,16 +5110,17 @@ mod tests {
         c.observe(0.0, frame(50.0, 50.0, 10.0));
         let mut lines = Vec::new();
         // From the bar's fill, a death must last two seconds (a dialog
-        // over the bar reads as empty too).
+        // over the bar reads as empty too) — and come with a second sign:
+        // here the death's EXP penalty, 10% to 9%.
         for i in 0..15 {
             lines.extend(said(
-                &c.observe(1.0 + i as f64 * 0.1, frame(0.0, 50.0, 10.0)),
+                &c.observe(1.0 + i as f64 * 0.1, frame(0.0, 50.0, 9.0)),
             ));
         }
         assert!(lines.is_empty(), "{lines:?}");
         for i in 15..40 {
             lines.extend(said(
-                &c.observe(1.0 + i as f64 * 0.1, frame(0.0, 50.0, 10.0)),
+                &c.observe(1.0 + i as f64 * 0.1, frame(0.0, 50.0, 9.0)),
             ));
         }
         assert_eq!(lines, ["Your HP hit zero. Time to revive and head back."]);
@@ -5294,6 +5347,143 @@ mod tests {
         // Steady over the mark before it: parked, no death.
         let (lines, died) = run(Some(80.0), 10.0);
         assert!(!died, "{lines:?}");
+    }
+
+    #[test]
+    fn an_empty_fill_is_a_death_only_with_a_second_sign_on_a_steady_bar_or_through_a_hold() {
+        // The learned sight gives no reading for an empty bar, so the fill
+        // read at zero is a sliver, and the everyday sliver is his cursor
+        // parked on the bar's start (w32's D1, p21 A6/A7). At 72c97ff: on a
+        // steady bar, two seconds of it was a death — said ("Your HP hit
+        // zero" at 85%), counted in the stats, told to the coach; and
+        // through a hold, a cursor coming in rests a moment (12, 12; 10,
+        // 10) before it is found to swing, and that "steady HP under the
+        // mark" passed for the second sign. Ten frames a second; `script`
+        // gives HP, whether it was read in the game's font, and EXP.
+        type Script<'a> = &'a dyn Fn(usize) -> (f32, bool, f32);
+        let swing = [
+            100.0, 3.0, 100.0, 46.0, 9.0, 0.0, 100.0, 28.0, 0.0, 0.0, 3.0, 100.0,
+        ];
+        let is_death = |l: &str| from(lines::DEATH, l) || from(lines::DEATH_WARNED, l);
+        let run = |settings: Settings, frames: usize, script: Script| {
+            let mut c = Companion::seeded(settings, SEED);
+            let mut lines: Vec<(f64, String)> = Vec::new();
+            for i in 0..frames {
+                let t = i as f64 * 0.1;
+                let (hp, read, exp) = script(i);
+                let mut obs = frame(hp, 90.0, exp);
+                obs.hp = gauge(hp, read);
+                for line in dealt(&c.observe(t, obs)) {
+                    lines.push((t, line));
+                }
+            }
+            let deaths: Vec<(f64, String)> =
+                lines.iter().filter(|(_, l)| is_death(l)).cloned().collect();
+            assert_eq!(deaths.len() as u32, c.deaths, "{lines:?}");
+            (deaths, lines)
+        };
+        let run = |frames: usize, script: Script| run(Settings::default(), frames, script);
+        // Parked on a steady bar: 85%, the cursor's tip at the bar's start
+        // for 3 s, then off. (Fails at 72c97ff: a death at 7.0 s.)
+        let (deaths, lines) = run(200, &|i| match i {
+            50..80 => (0.3, false, 40.0),
+            _ => (85.0, false, 40.0),
+        });
+        assert!(deaths.is_empty(), "{lines:?}");
+        // However long it stays (a mouse left there while he grinds on the
+        // keyboard), and at 0.0 (a tip just before the start reads 0).
+        let (deaths, lines) = run(600, &|i| match i {
+            50..350 => (0.0, false, 40.0),
+            _ => (80.0, false, 40.0),
+        });
+        assert!(deaths.is_empty(), "{lines:?}");
+        // Through a hold, the cursor coming in resting at 12% and 10% — the
+        // swing's own first frames, HP really at 85 — then parked. (Fails
+        // at 72c97ff: a death at 16.9 s, from the steady 10.)
+        let coming_in = [
+            85.0, 60.0, 40.0, 20.0, 12.0, 12.0, 40.0, 70.0, 85.0, 50.0, 10.0, 10.0, 60.0, 85.0,
+            30.0, 5.0, 60.0, 85.0,
+        ];
+        let (deaths, lines) = run(300, &|i| match i {
+            0..50 => (85.0, false, 40.0),
+            50..68 => (coming_in[i - 50], false, 40.0),
+            68..150 => (swing[i % swing.len()], false, 40.0),
+            150..180 => (0.3, false, 40.0),
+            _ => (85.0, false, 40.0),
+        });
+        assert!(deaths.is_empty(), "{lines:?}");
+        // The cursor coming in, found to swing, and parked at once: its
+        // readings under the mark in the three seconds before the zero
+        // were the swing's, no fall. (Fails at 72c97ff, as above.)
+        let quick = [60.0, 20.0, 12.0, 12.0, 70.0, 10.0, 10.0, 80.0, 15.0];
+        let (deaths, lines) = run(200, &|i| match i {
+            50..59 => (quick[i - 50], false, 40.0),
+            59..89 => (0.3, false, 40.0),
+            _ => (85.0, false, 40.0),
+        });
+        assert!(deaths.is_empty(), "{lines:?}");
+        // Deaths, each with its sign. Through a hold: EXP lost (40 → 39);
+        // the 0 read in the font (at once); HP read steady at 20 before
+        // the swing (warned of then, so a warned death).
+        let (deaths, lines) = run(300, &|i| match i {
+            0..50 => (70.0, false, 40.0),
+            50..150 => (swing[i % swing.len()], false, 40.0),
+            150..230 => (0.0, false, 39.0),
+            _ => (100.0, false, 39.0),
+        });
+        assert_eq!(deaths.len(), 1, "{lines:?}");
+        let (deaths, lines) = run(300, &|i| match i {
+            0..50 => (70.0, false, 40.0),
+            50..150 => (swing[i % swing.len()], false, 40.0),
+            150..230 => (0.0, true, 40.0),
+            _ => (100.0, false, 40.0),
+        });
+        assert_eq!(deaths.len(), 1, "{lines:?}");
+        assert!(deaths[0].0 < 15.3, "{deaths:?}");
+        let (deaths, lines) = run(300, &|i| match i {
+            0..50 => (20.0, false, 40.0),
+            50..150 => (swing[i % swing.len()], false, 40.0),
+            150..230 => (0.0, false, 40.0),
+            _ => (100.0, false, 40.0),
+        });
+        assert_eq!(deaths.len(), 1, "{lines:?}");
+        assert!(from(lines::DEATH_WARNED, &deaths[0].1), "{deaths:?}");
+        // On a steady bar, the way down seen: 85, 45, 25, 12, then empty,
+        // EXP flat — a death two seconds on; with the warnings off too
+        // (the red is under 30 then).
+        let fall = |i: usize| match i {
+            0..50 => (85.0, false, 40.0),
+            50 => (45.0, false, 40.0),
+            51 => (25.0, false, 40.0),
+            52 => (12.0, false, 40.0),
+            53..133 => (0.0, false, 40.0),
+            _ => (100.0, false, 40.0),
+        };
+        let (deaths, lines) = run(200, &fall);
+        assert_eq!(deaths.len(), 1, "{lines:?}");
+        assert!((deaths[0].0 - 7.3).abs() < 0.15, "{deaths:?}");
+        let off = Settings {
+            hp_low: 0.0,
+            ..Settings::default()
+        };
+        let mut c = Companion::seeded(off, SEED);
+        for i in 0..200 {
+            let (hp, read, exp) = fall(i);
+            let mut obs = frame(hp, 90.0, exp);
+            obs.hp = gauge(hp, read);
+            c.observe(i as f64 * 0.1, obs);
+        }
+        assert_eq!(c.deaths, 1);
+        // The price, chosen (w32's D2: a death missed is better than one
+        // made up): from 70% straight to an empty fill, with no EXP to lose
+        // and the number unread, is no death — it is the parked cursor's
+        // very shape. (p21 A1.)
+        let (deaths, lines) = run(250, &|i| match i {
+            50..130 => (0.0, false, 40.0),
+            0..50 => (70.0, false, 40.0),
+            _ => (100.0, false, 40.0),
+        });
+        assert!(deaths.is_empty(), "{lines:?}");
     }
 
     #[test]
@@ -6709,16 +6899,127 @@ mod tests {
             lines::UNSTEADY_HE.replace("{}", Bar::Hp.name(true)),
             "הקריאות של בר החיים קופצות, אז אני עוצר את אזהרות החיים עד שזה יירגע."
         );
-        // One is "אחוז אחד" ("1 אחוז" is read "אחד אחוז").
+        // One is "פחות משני אחוז", read or measured: plural, as every card's
+        // amount, and "about" already ("נשארו לך אחוז אחד חיים" broke the
+        // agreement; "1 אחוז" is read "אחד אחוז").
         let one = |read| Gauge {
             percent: 0.6,
             current: None,
             max: None,
             read,
         };
-        assert_eq!(low_words(one(true), true), "אחוז אחד");
-        assert_eq!(low_words(one(false), true), "בערך אחוז אחד");
+        assert_eq!(low_words(one(true), true), "פחות משני אחוז");
+        assert_eq!(low_words(one(false), true), "פחות משני אחוז");
         assert_eq!(low_words(one(true), false), "1 percent");
+    }
+
+    #[test]
+    fn no_hebrew_card_says_what_a_native_ear_heard_as_translated() {
+        // w32's §2: Hebrew a friend on voice chat would not say — calques
+        // of the English ("נוחתת", "לבזבז אוויר", "ממש שם", "הנה זה"),
+        // book Hebrew ("קשה לקריאה"), a word for word "not changing while
+        // you ask", the wrong word ("הפיל" is a knockdown; "עוקב אחרי" is
+        // "follows"; "מכשף" a translated wizard where gamers say "מאג'";
+        // skills are thrown, not done) — and the tells of a machine: one
+        // opening ("חזרתי") for most of a deck, one ending ("תחזור לשם")
+        // for a quarter of one. Every Hebrew card, its own and the
+        // instant answers'.
+        const SAID_WRONG: &[&str] = &[
+            "לפני שלא",
+            "תמלא לפני",
+            "תמלא.",
+            "תמלא!",
+            "תמלא כש",
+            "הפיל אותך",
+            "הנה זה",
+            "עוקב אחרי",
+            "תעשה סקילים",
+            "מכשף",
+            "נוחת",
+            "לבזבז אוויר",
+            "לא משתנה בזמן",
+            "אין מה לראות",
+            "ממש שם",
+            "לשאול לא ימלא",
+            "קשה לקריאה",
+            "זה רמה",
+            "כל הזמן אומר",
+        ];
+        let mut cards: Vec<&str> = Vec::new();
+        for (_, _, he) in lines::ALL {
+            for attitude in Attitude::ALL {
+                cards.extend(attitude.lines(*he));
+            }
+        }
+        for (_, list) in instant::lines::ALL {
+            for attitude in Attitude::ALL {
+                cards.extend(attitude.lines(*list));
+            }
+        }
+        for card in &cards {
+            for wrong in SAID_WRONG {
+                assert!(!card.contains(wrong), "{card:?} says {wrong:?}");
+            }
+        }
+        let count = |deck: lines::Cards, f: &dyn Fn(&str) -> bool| -> usize {
+            Attitude::ALL
+                .iter()
+                .flat_map(|a| a.lines(deck).iter())
+                .filter(|c| f(c))
+                .count()
+        };
+        // (Was 11 of 21, and 5 of 19.)
+        assert!(count(lines::UNMUTED_HE, &|c| c.starts_with("חזרתי")) <= 8);
+        assert!(count(lines::DEATH_HE, &|c| c.ends_with("תחזור לשם.")) <= 3);
+    }
+
+    #[test]
+    fn one_percent_agrees_with_every_hebrew_card() {
+        // w32's D6: filled at 1%, the cards that open with the plural
+        // "נשארו" said "נשארו לך אחוז אחד חיים" (a plural verb, a singular
+        // noun, and "אחוז אחד חיים" is not said), "נשארו אחוז אחד בבר",
+        // "נשארו לך אחוז אחד מאנה". Every card with an amount, at 1%, read
+        // and measured, says "פחות משני אחוז" — plural like the rest — and
+        // never "about" before it.
+        let decks = [
+            lines::BEATING_HE,
+            lines::HP_LOW_HE,
+            lines::HP_LOW_AGAIN_HE,
+            lines::HP_LOW_ASK_HE,
+            lines::MP_LOW_HE,
+            lines::MP_LOW_AGAIN_HE,
+            lines::MP_LOW_ASK_HE,
+        ];
+        let mut filled = 0;
+        for deck in decks {
+            for attitude in Attitude::ALL {
+                for card in attitude.lines(deck).iter().filter(|c| c.contains("{}")) {
+                    for read in [true, false] {
+                        let one = gauge(1.3, read).unwrap();
+                        let line = card.replace("{}", &low_words(one, true));
+                        assert!(line.contains("פחות משני אחוז"), "{line}");
+                        assert!(!line.contains("אחוז אחד"), "{line}");
+                        assert!(!line.contains("בערך פחות"), "{line}");
+                        filled += 1;
+                    }
+                }
+            }
+        }
+        assert!(filled > 100, "{filled}");
+        // As said: the beating's lead at 1%, then the low line's.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.set_language(Some("he-IL"));
+        c.observe(0.0, frame(80.0, 90.0, 10.0));
+        c.observe(0.1, frame(80.0, 90.0, 10.0));
+        let mut lines: Vec<String> = Vec::new();
+        for i in 2..30 {
+            lines.extend(dealt(&c.observe(i as f64 * 0.1, frame(1.2, 90.0, 10.0))));
+        }
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some("וואו, אתה חוטף מכות, נשארו לך פחות משני אחוז חיים. תתרחק ותשתה!"),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -6921,12 +7222,19 @@ mod tests {
         let mut c = Companion::seeded(Settings::default(), SEED);
         // Worn down through 40% and 32% over a few seconds: above 30%, so
         // no warning came, and slowly enough for one at 35 to have helped.
+        // Each death costs EXP (10% to 9%, then 8%…): a death read from the
+        // bar's fill needs that second sign (a fill at zero from over the
+        // mark is the cursor parked on the bar's start as often).
         let mut t = 0.0;
+        let mut exp = 10.0;
         let mut step = |c: &mut Companion, hp: f32, frames: usize| {
             let mut lines = Vec::new();
-            for _ in 0..frames {
+            for i in 0..frames {
                 t += 0.1;
-                lines.extend(said(&c.observe(t, frame(hp, 50.0, 10.0))));
+                if hp <= 0.0 && i == 0 {
+                    exp -= 1.0;
+                }
+                lines.extend(said(&c.observe(t, frame(hp, 50.0, exp))));
             }
             lines
         };

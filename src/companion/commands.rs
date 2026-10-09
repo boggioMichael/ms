@@ -153,6 +153,7 @@ const PHRASES: &[(Command, &[&str])] = &[
             "how fast",
             "כמה זמן עד",
             "כמה זמן לרמה",
+            "כמה זמן ללבל",
             "כמה זמן לעלות",
             "לשעה",
             "קצב",
@@ -637,7 +638,8 @@ pub fn language_request(sentence: &str) -> Option<&'static str> {
     ];
     // Whom it is said to, right after a verb that is another word too.
     const TO_ME: &[&str] = &["איתי", "אליי", "אלי", "לי"];
-    // Words that ask for a language without a verb.
+    // Words that ask for a language without a verb. ("אפשר", "may I have":
+    // "אפשר אנגלית?" asks as "אפשר באנגלית?" does.)
     const ASK: &[&str] = &[
         "in",
         "into",
@@ -652,6 +654,7 @@ pub fn language_request(sentence: &str) -> Option<&'static str> {
         "בחזרה",
         "פליז",
         "רוצה",
+        "אפשר",
     ];
     // Words that go with asking, and say nothing else.
     const ALONG: &[&str] = &[
@@ -714,7 +717,6 @@ pub fn language_request(sentence: &str) -> Option<&'static str> {
         "אני",
         "אתה",
         "את",
-        "אפשר",
         "יכול",
         "יכולה",
         "תוכל",
@@ -1015,6 +1017,11 @@ mod tests {
             interpret("כמה זמן עד הרמה הבאה", true),
             Heard::Command(Command::Rate)
         );
+        // ("לבל", the gamer's word, was the level itself.)
+        assert_eq!(
+            interpret("כמה זמן ללבל הבא", true),
+            Heard::Command(Command::Rate)
+        );
         assert_eq!(
             interpret("כמה זמן אני משחק", true),
             Heard::Command(Command::Session)
@@ -1198,6 +1205,10 @@ mod tests {
             "הוא כתב לי באנגלית",
             "תגיד לו באנגלית",
             "השם שלו באנגלית זה אתנה",
+            // ("אפשר" asks for the language only with nothing else.)
+            "אפשר להבין את זה באנגלית?",
+            "אפשר את השם באנגלית?",
+            "אפשר אנגלית או עברית?",
         ] {
             assert_eq!(language_request(sentence), None, "{sentence}");
         }
@@ -1233,6 +1244,11 @@ mod tests {
             ("אתה יכול לדבר איתי בעברית?", "he-IL"),
             ("תוכל לדבר באנגלית?", "en-US"),
             ("please answer in English", "en-US"),
+            // A polite "אפשר" and the language alone (w32's D7).
+            ("אפשר אנגלית?", "en-US"),
+            ("אפשר עברית?", "he-IL"),
+            ("אפשר עברית בבקשה", "he-IL"),
+            ("סירופ, אפשר אנגלית?", "en-US"),
             // The five that must always work.
             ("תדבר איתי בעברית", "he-IL"),
             ("בעברית בבקשה", "he-IL"),

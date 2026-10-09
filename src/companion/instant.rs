@@ -52,6 +52,7 @@ const HELLOS: &[&str] = &[
     "מה איתך",
     "מה הולך",
     "מה שלומך",
+    "מה שלומך היום",
     "מה החיים",
     "מה חיים",
     "בוקר טוב",
@@ -85,6 +86,9 @@ const HELLO_TO: &[&str] = &[
     "חביבי",
     "כלבלב",
     "מותק",
+    // ("With you", "at yours": "מה קורה איתך", "מה נשמע אצלך".)
+    "איתך",
+    "אצלך",
 ];
 
 /// How many words of `list` the longest phrase of `phrases` that opens it
@@ -100,7 +104,8 @@ fn opening(list: &[String], phrases: &[&str]) -> usize {
 }
 
 /// "שלום" is "goodbye" as well as "hello": at the end of a sentence, after
-/// other words ("טוב שלום", "יאללה שלום", "היי שלום"), it is no hello.
+/// other words ("טוב שלום", "יאללה שלום", "היי שלום"), it is no hello —
+/// except after "שלום" itself: "שלום שלום" is the doubled hello.
 const SHALOM: &str = "שלום";
 
 /// Whether `sentence` is a greeting and nothing more: a greeting, then at
@@ -135,7 +140,8 @@ fn is_hello(sentence: &str) -> bool {
         let rest = &list[at..];
         // Another greeting or the wake word, whole ("what's up", "sir up").
         let more = opening(rest, HELLOS).max(opening(rest, WAKE_WORDS));
-        if more > 0 && !(rest.len() == 1 && rest[0] == SHALOM) {
+        let goodbye = rest.len() == 1 && rest[0] == SHALOM && list[at - 1] != SHALOM;
+        if more > 0 && !goodbye {
             at += more;
         } else if HELLO_TO.contains(&rest[0].as_str()) {
             at += 1;
@@ -231,6 +237,15 @@ const NEXT_LEVEL: &[&str] = &[
     "מתי אעלה רמה",
     "מתי אני עולה רמה",
     "מתי אני עולה",
+    // ("לבל", the gamer's word: "כמה זמן ללבל" went to the model.)
+    "כמה זמן ללבל",
+    "כמה זמן עד הלבל",
+    "כמה זמן עד לבל",
+    "כמה זמן לעלות לבל",
+    "כמה זמן לעלות רמה",
+    "כמה זמן עד שאני עולה",
+    "מתי אעלה לבל",
+    "מתי אעלה ללבל",
 ];
 /// Words that ask about the player themselves.
 const SELF: &[&str] = &[
@@ -261,6 +276,10 @@ const QUESTION: &[&str] = &[
     "עכשיו",
     "ה",
     "סירופ",
+    // ("How many percent": "כמה אחוז אקספי", "what percent HP".)
+    "percent",
+    "אחוז",
+    "אחוזים",
 ];
 /// Words that make it about something else ("how much HP does Zakum need").
 const ELSEWHERE: &[&str] = &[
@@ -425,7 +444,7 @@ pub mod lines {
             "ה{n} על {v}, תשתה משהו.",
             "{n}: {v}. תשתה עכשיו!",
             "נמוך: {v} {n}. זמן לשיקוי.",
-            "{v} {n}. תמלא!",
+            "{v} {n}. תמלא את הבר!",
             "לא משהו, {v} {n}. תשתה.",
         ],
         &[
@@ -439,7 +458,7 @@ pub mod lines {
         &[
             "{v} {n}. תשתה כבר, גאון.",
             "{v} {n}? תשתה, ליצן.",
-            "{n}: {v}. לשאול לא ימלא את זה, לשתות כן.",
+            "{n}: {v}. שאלות לא ממלאות את הבר, שיקויים כן.",
             "{v} {n}. רצית מדליה או שיקוי?",
             "{v}. תשתה לפני שאגיד את זה שוב, אידיוט.",
             "{n}: {v}. תפסיק לשאול ותתחיל לשתות.",
@@ -459,16 +478,16 @@ pub mod lines {
             "{n}: {v}. בסדר.",
             "ה{n} על {v}. תמשיך.",
             "{v}. אתה בסדר.",
-            "{n}: {v}, אין מה לראות.",
+            "{n}: {v}, אין מה לדאוג.",
             "{v} {n}. תשחק.",
         ],
         &[
             "{v} {n}. אתה בסדר, תפסיק לשאול.",
             "{v} {n}. תירגע.",
-            "{n}: {v}. זה ממש שם על המסך, גאון.",
+            "{n}: {v}. זה כתוב לך על המסך, גאון.",
             "{v} {n}. תסתכל על הבר שלך בעצמך בפעם הבאה.",
             "{v}. בסדר. עכשיו תשחק.",
-            "ה{n} על {v}. הבר לא כזה קשה לקריאה.",
+            "ה{n} על {v}. לא כזה קשה לקרוא את הבר.",
         ],
     ];
     pub const EXP_EN: [&[&str]; 3] = [
@@ -556,7 +575,7 @@ pub mod lines {
             "{v}. רמה יפה.",
             "אתה {v} כרגע.",
             "רמה {v}, ועולה.",
-            "זה רמה {v}.",
+            "הרמה שלך: {v}.",
         ],
         &[
             "רמה {v}.",
@@ -571,7 +590,7 @@ pub mod lines {
             "{v}. כבר שכחת?",
             "רמה {v}. עדיין.",
             "{v}. כמו בפעם האחרונה ששאלת.",
-            "רמה {v}. לא משתנה בזמן שאתה שואל.",
+            "רמה {v}. היא לא תעלה מזה שאתה שואל.",
             "{v}. לך תעלה רמה במקום לשאול.",
         ],
     ];
@@ -768,24 +787,16 @@ pub mod lines {
 
 /// A bar's value as it is said: "76%", "about 76%" for a bar measured
 /// rather than read — in Hebrew "76 אחוז", "בערך 76 אחוז", and one is
-/// "אחוז אחד" ("1 אחוז" is read "אחד אחוז").
+/// "פחות משני אחוז", read or measured (plural, as every card's amount:
+/// "{v} {n}" gave "אחוז אחד חיים"; see [`super::LESS_THAN_TWO`]).
 fn percent(gauge: Gauge, hebrew: bool) -> String {
     let p = gauge.percent.round().clamp(0.0, 100.0);
     match (gauge.read, hebrew) {
         (true, false) => format!("{p:.0}%"),
         (false, false) => format!("about {p:.0}%"),
-        (read, true) => {
-            let amount = if p == 1.0 {
-                "אחוז אחד".to_string()
-            } else {
-                format!("{p:.0} אחוז")
-            };
-            if read {
-                amount
-            } else {
-                format!("בערך {amount}")
-            }
-        }
+        (_, true) if p == 1.0 => super::LESS_THAN_TWO.to_string(),
+        (true, true) => format!("{p:.0} אחוז"),
+        (false, true) => format!("בערך {p:.0} אחוז"),
     }
 }
 
@@ -1089,6 +1100,67 @@ mod tests {
         ] {
             assert_eq!(asks(sentence), None, "{sentence}");
         }
+    }
+
+    #[test]
+    fn the_gamers_words_for_the_level_and_the_percent_are_answered_at_once() {
+        // "לבל" is how an Israeli gamer says level, and "כמה אחוז" how he
+        // asks a bar: "כמה זמן ללבל" (the brief's own example), "כמה זמן
+        // ללבל הבא" and "כמה אחוז אקספי" each waited seconds for the model
+        // (w32's D5, w33 §4).
+        for (sentence, ask) in [
+            ("כמה זמן ללבל", Ask::NextLevel),
+            ("כמה זמן עד הלבל", Ask::NextLevel),
+            ("כמה זמן ללבל הבא", Ask::NextLevel),
+            ("כמה זמן עד הלבל הבא?", Ask::NextLevel),
+            ("מתי אני עולה לבל", Ask::NextLevel),
+            ("מתי אעלה לבל", Ask::NextLevel),
+            ("יו כמה זמן ללבל", Ask::NextLevel),
+            ("עוד כמה זמן ללבל?", Ask::NextLevel),
+            ("כמה זמן לעלות לבל", Ask::NextLevel),
+            ("כמה אחוז אקספי", Ask::Exp),
+            ("כמה אחוז אקספי יש לי", Ask::Exp),
+            ("כמה אקספי יש לי", Ask::Exp),
+            ("כמה אחוז חיים", Ask::Hp),
+            ("what percent HP do I have", Ask::Hp),
+            ("באיזה לבל אני", Ask::Level),
+            ("מה הלבל שלי", Ask::Level),
+            ("איזה לבל אני", Ask::Level),
+        ] {
+            assert_eq!(asks(sentence), Some(ask), "{sentence}");
+        }
+        // Still not about his own numbers: the model's.
+        for sentence in [
+            "כמה זמן לוקח ללבל 200",
+            "כמה אחוז אקספי צריך ללבל הבא",
+            "כמה אחוז אקספי נותן הקווסט",
+            "כמה אחוז דרופ יש לבוס",
+            "כמה אחוז מהשרת ברמה 200",
+        ] {
+            assert_eq!(asks(sentence), None, "{sentence}");
+        }
+        // Answered in Hebrew, as the "רמה" questions are.
+        let progress = Progress {
+            seconds_to_level: Some(2.0 * 3600.0 + 20.0 * 60.0),
+            ..Default::default()
+        };
+        let say = |sentence: &str| {
+            let ask = asks(sentence).unwrap();
+            let mut decks = Decks::seeded(SEED);
+            answer(
+                ask,
+                sentence,
+                Some(&seen()),
+                &progress,
+                Attitude::Friendly,
+                &mut decks,
+            )
+            .unwrap()
+        };
+        assert_eq!(say("כמה זמן ללבל"), "בערך שעתיים ו-20 דקות לרמה הבאה.");
+        assert_eq!(say("מתי אעלה לבל"), "בערך שעתיים ו-20 דקות לרמה הבאה.");
+        assert_eq!(say("כמה אחוז אקספי"), "האקספי שלך 20 אחוז.");
+        assert_eq!(say("באיזה לבל אני"), "אתה ברמה 109.");
     }
 
     #[test]
@@ -1510,7 +1582,8 @@ mod tests {
         ] {
             for attitude in Attitude::ALL {
                 for card in attitude.lines(list) {
-                    for value in ["76 אחוז", "בערך 76 אחוז", "אחוז אחד"] {
+                    for value in ["76 אחוז", "בערך 76 אחוז", "פחות משני אחוז"]
+                    {
                         for name in names {
                             let line = card.replace("{v}", value).replace("{n}", name);
                             assert!(!latin(&line), "{line}");
@@ -1556,16 +1629,20 @@ mod tests {
         assert!(latin(&ask(Ask::Hp, "HP?", false)));
         assert!(latin(&ask(Ask::Hp, "what's my HP", true)));
         assert!(latin(&ask(Ask::Level, "what level am I", true)));
-        // One is said as one: "אחוז אחד", "דקה", "שעה" ("1 דקות", "about 1
-        // hours" were said).
+        // One is said as one: "דקה", "שעה" ("1 דקות", "about 1 hours" were
+        // said) — and a percent is "פחות משני אחוז", read or measured
+        // (plural, as every card's amount; "about" already).
         let one = Gauge {
             percent: 1.2,
             current: None,
             max: None,
             read: true,
         };
-        assert_eq!(percent(one, true), "אחוז אחד");
-        assert_eq!(percent(Gauge { read: false, ..one }, true), "בערך אחוז אחד");
+        assert_eq!(percent(one, true), "פחות משני אחוז");
+        assert_eq!(
+            percent(Gauge { read: false, ..one }, true),
+            "פחות משני אחוז"
+        );
         assert_eq!(percent(one, false), "1%");
         assert_eq!(duration(60.0, true), "בערך דקה");
         assert_eq!(duration(85.0 * 60.0, true), "בערך שעה ו-25 דקות");
@@ -1591,6 +1668,8 @@ mod tests {
             "שלום",
             "שלום אחי",
             "שלום סירופ",
+            // (Doubled, it is the hello said entering a room.)
+            "שלום שלום",
         ] {
             assert_eq!(asks(sentence), Some(Ask::Hello), "{sentence}");
         }
@@ -1600,7 +1679,6 @@ mod tests {
             "טוב שלום",
             "יאללה שלום",
             "היי שלום",
-            "שלום שלום",
             "hi I'm back",
             "hey I'm back",
             "hey what's up with the boss",
@@ -1630,6 +1708,11 @@ mod tests {
             "מה החיים?",
             "היי, מה החיים",
             "מה חיים אחי",
+            // (w32's D7: each went to the model.)
+            "מה שלומך היום",
+            "מה קורה איתך",
+            "מה נשמע אצלך אחי",
+            "היי, מה המצב איתך?",
         ] {
             assert_eq!(asks(sentence), Some(Ask::Hello), "{sentence}");
         }
@@ -1638,6 +1721,11 @@ mod tests {
         assert_eq!(asks("היי, מה החיים שלי"), Some(Ask::Hp));
         assert_eq!(asks("מה המצב שלי"), None);
         assert_eq!(asks("כמה חיים יש לי"), Some(Ask::Hp));
+        // A hello "with you" before a question: the question is asked.
+        assert_eq!(asks("מה קורה איתך, כמה חיים יש לי?"), Some(Ask::Hp));
+        // "What's going on here / with the EXP" asks: no hello.
+        assert_eq!(asks("מה קורה פה"), None);
+        assert_ne!(asks("מה קורה עם האקספי"), Some(Ask::Hello));
     }
 
     #[test]
