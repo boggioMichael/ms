@@ -382,6 +382,9 @@ pub struct Brain {
     /// The "same as before" lines, dealt like the companion's: every card
     /// once before any again, in another order every session.
     same_as_before: Deck,
+    /// The "I'm here" lines ([`HERE_EN`], [`HERE_HE`]), dealt the same way.
+    here_en: Deck,
+    here_he: Deck,
 }
 
 impl Default for Brain {
@@ -416,6 +419,42 @@ const SAME_AS_BEFORE: [&[&str]; 3] = [
     ],
 ];
 
+/// What it says when the player asks it to talk ("talk to me", "תדבר
+/// איתי") and all the model had for them was the game's state ("No
+/// MapleStory window open." — the owner's "Talk to me you fucker" got
+/// exactly that): that it is here, and listening, in its attitude. One
+/// list per attitude (friendly, blunt, savage), the lead card first.
+pub const HERE_EN: [&[&str]; 3] = [
+    &[
+        "I'm here. What's up?",
+        "Right here. What's on your mind?",
+        "Hey, I'm listening. Talk to me.",
+    ],
+    &[
+        "Yo. Talking. What?",
+        "I'm here. Go.",
+        "Listening. What's up?",
+    ],
+    &[
+        "What, you miss me already?",
+        "I'm here. Make it worth it.",
+        "Fine, I'm talking. Happy?",
+    ],
+];
+pub const HERE_HE: [&[&str]; 3] = [
+    &[
+        "אני פה. מה קורה?",
+        "ממש פה. מה עובר עליך?",
+        "היי, אני מקשיב. דבר איתי.",
+    ],
+    &["יו. מדבר. מה?", "אני פה. דבר.", "מקשיב. מה קורה?"],
+    &[
+        "מה, כבר התגעגעת?",
+        "אני פה. שיהיה שווה את זה.",
+        "טוב, אני מדבר. מרוצה?",
+    ],
+];
+
 /// A seed for a session's decks: the clock and the process, so that no two
 /// sessions deal them alike.
 pub fn session_seed() -> u64 {
@@ -435,6 +474,8 @@ impl Brain {
             learning: None,
             attitude: Attitude::default(),
             same_as_before: Deck::seeded(session_seed()),
+            here_en: Deck::seeded(session_seed()),
+            here_he: Deck::seeded(session_seed()),
         }
     }
 
@@ -443,6 +484,17 @@ impl Brain {
     pub fn same_as_before(&mut self) -> &'static str {
         let attitude = self.attitude();
         self.same_as_before.deal(attitude, SAME_AS_BEFORE)
+    }
+
+    /// The next "I'm here" line ([`HERE_EN`]), in its attitude, in Hebrew
+    /// when `hebrew`: dealt like [`Brain::same_as_before`].
+    pub fn here(&mut self, hebrew: bool) -> &'static str {
+        let attitude = self.attitude();
+        if hebrew {
+            self.here_he.deal(attitude, HERE_HE)
+        } else {
+            self.here_en.deal(attitude, HERE_EN)
+        }
     }
 
     pub fn heard(&mut self, text: &str) {
@@ -1041,6 +1093,92 @@ fn is_one_of(word: &str, list: &[&str]) -> bool {
     forms(word).iter().any(|f| list.contains(f))
 }
 
+/// [`is_one_of`], or so once an English plural's "s" is off ("pots" is
+/// "pot").
+fn is_one_of_or_plural(word: &str, list: &[&str]) -> bool {
+    is_one_of(word, list)
+        || (word.len() > 3 && !word.ends_with("ss"))
+            .then(|| word.strip_suffix('s'))
+            .flatten()
+            .is_some_and(|w| list.contains(&w))
+}
+
+/// Words `VERBS` has (for [`stands_alone`]) that are no order at the start
+/// of a sentence: a pronoun's verb ("You're level 167."), an auxiliary,
+/// "there's", and Hebrew's "there is", "there isn't", "can", "must" ("יש לך
+/// 48 אחוז חיים." says, it does not tell).
+const NOT_ORDERS: &[&str] = &[
+    "do",
+    "is",
+    "are",
+    "am",
+    "was",
+    "were",
+    "know",
+    "think",
+    "mean",
+    "want",
+    "need",
+    "have",
+    "has",
+    "can",
+    "will",
+    "should",
+    "must",
+    "cant",
+    "wont",
+    "isnt",
+    "arent",
+    "didnt",
+    "doesnt",
+    "im",
+    "youre",
+    "its",
+    "thats",
+    "theres",
+    "heres",
+    "hes",
+    "shes",
+    "theyre",
+    "ill",
+    "youll",
+    "ive",
+    "youve",
+    "id",
+    "youd",
+    "יכול",
+    "יכולה",
+    "צריך",
+    "צריכה",
+    "רוצה",
+    "חייב",
+    "חייבת",
+    "יש",
+    "אין",
+];
+
+/// Whether `word`, first in a sentence, makes it an order ("Open the
+/// game.", "Drink, HP 30%."): said for its own sake, whatever else is in
+/// it.
+fn is_order(word: &str) -> bool {
+    is_one_of_or_plural(word, VERBS) && !is_one_of(word, NOT_ORDERS)
+}
+
+/// Whether `word` is a Hebrew place said with "in", "to" or "from" joined
+/// to it ("באליניה", "להנסיס"): the snapshot's map, said in Hebrew (its
+/// English "Ellinia" never matches) — not a word of its own like "מהר"
+/// (too short for a place), "תיזהר" or "שיקוי" (no "in" joined), nor an
+/// order or a cheer.
+fn is_place(word: &str) -> bool {
+    let hebrew = |c: char| ('\u{05d0}'..='\u{05ea}').contains(&c);
+    let mut chars = word.chars();
+    matches!(chars.next(), Some('ב' | 'ל' | 'מ'))
+        && chars.clone().count() >= 3
+        && chars.all(hebrew)
+        && !is_one_of_or_plural(word, VERBS)
+        && !is_one_of_or_plural(word, REACTIONS)
+}
+
 /// A sentence (or a part of one) as plain words, for telling the facts
 /// from the rest: lower case, "%" as "percent", "'s" off ("HP's" is "hp");
 /// each with whether it was written with a capital.
@@ -1107,6 +1245,15 @@ const REACTIONS: &[&str] = &[
     "טוב",
     "נמוך",
     "זהירות",
+    "בהצלחה",
+    "לעזאזל",
+    "ברצינות",
+    "בדיוק",
+    "לגמרי",
+    "מטורף",
+    "מהמם",
+    "מושלם",
+    "בכיף",
 ];
 
 /// Whether `heard` asks about anything a snapshot says: the level, a bar,
@@ -1166,6 +1313,18 @@ pub fn wants_an_answer(heard: &str) -> bool {
     .any(|asks| lower.contains(asks))
 }
 
+/// Whether `heard` asks it to talk and asks nothing else ("talk to me",
+/// "תדבר איתי"): a reply with nothing but the game's state is no answer to
+/// that — a word that it is here is ([`Brain::here`]).
+pub fn asked_to_talk(heard: &str) -> bool {
+    wants_an_answer(heard) && !is_question(heard)
+}
+
+/// Whether `text` is written in Hebrew.
+pub fn is_hebrew(text: &str) -> bool {
+    text.chars().any(|c| ('\u{05d0}'..='\u{05ea}').contains(&c))
+}
+
 /// Whether `heard` is a word or two and no question ("OK", "Hello",
 /// "Danny"): a reply to it that was all said lately is not worth a "same as
 /// before" card — a friend says nothing to an "OK". (A longer sentence, or
@@ -1178,13 +1337,26 @@ pub fn a_word_or_two(heard: &str) -> bool {
 /// snapshot says: it has a fact in it — the game window's state, the
 /// level with its number, a bar with its percent, the map, the
 /// character's name or job — and with the facts and the filler taken out,
-/// at most one word is left, and that one a name ("Danny", a map's name
-/// said another way: "באליניה"): "HP's at 20, pot." tells them to pot, and
-/// "Nice, level 60!" cheers.
+/// at most one word is left, and that one a name: someone called by it
+/// beside more than a number — the window's state, the map, the name or
+/// the job ("Game window closed, Danny.") — or the map said in Hebrew
+/// ("אתה באליניה, והרמה שלך 9."). Anything else says something of its
+/// own: "HP's at 20, pot." tells them to pot, "Nice, level 60!" and "Bro,
+/// level 168!" cheer (a capital on the first word is the sentence's, not
+/// a name's), "48 אחוז חיים, שיקוי!" orders, and a number alone said to
+/// someone by name is said for a reason ("48% HP, Einstein." in a fight,
+/// "Level 168, Michael!" at a level-up). A part that opens with an order
+/// is never a status line ("Open the game.").
 fn restates(part: &str, facts: &Facts) -> bool {
     let words = words_of(part);
+    if words.first().is_some_and(|(w, _)| is_order(w)) {
+        return false;
+    }
     let word = |i: usize| words[i].0.as_str();
     let mut fact = vec![false; words.len()];
+    // Whether a fact is more than a reading (the level, a bar): the
+    // window's state, the map, the name or the job.
+    let mut more_than_a_reading = false;
     // The map, the name and the job, as the snapshot has them ("Victoria
     // Road / Ellinia" is two names).
     let phrases: Vec<Vec<String>> = facts
@@ -1201,6 +1373,7 @@ fn restates(part: &str, facts: &Facts) -> bool {
             let here = words[start..].iter().map(|(w, _)| w);
             if words.len() - start >= phrase.len() && here.zip(phrase).all(|(a, b)| a == b) {
                 fact[start..start + phrase.len()].fill(true);
+                more_than_a_reading = true;
             }
         }
     }
@@ -1213,6 +1386,7 @@ fn restates(part: &str, facts: &Facts) -> bool {
     let stated = (0..words.len())
         .any(|i| is_one_of(word(i), WINDOW_STATES) || matches!(word(i), "no" | "cant" | "אין"));
     if named && stated {
+        more_than_a_reading = true;
         for (i, is_fact) in fact.iter_mut().enumerate() {
             let w = word(i);
             *is_fact |= is_one_of(w, GAME_NAMES)
@@ -1247,21 +1421,23 @@ fn restates(part: &str, facts: &Facts) -> bool {
             fact[i] = true;
         }
     }
-    let left: Vec<&(String, bool)> = words
+    let left: Vec<(usize, &str, bool)> = words
         .iter()
-        .zip(&fact)
-        .filter(|((w, _), f)| !**f && !is_one_of(w, FILLER))
-        .map(|(w, _)| w)
+        .enumerate()
+        .filter(|(i, (w, _))| !fact[*i] && !is_one_of(w, FILLER))
+        .map(|(i, (w, capital))| (i, w.as_str(), *capital))
         .collect();
     fact.contains(&true)
         && match left.as_slice() {
             [] => true,
-            // A name: written with a capital, or in Hebrew (which has
-            // none); never an order or a cheer.
-            [(w, capital)] => {
-                (*capital || w.chars().any(|c| ('\u{05d0}'..='\u{05ea}').contains(&c)))
-                    && !VERBS.contains(&w.as_str())
-                    && !REACTIONS.contains(&w.as_str())
+            // A name, never an order or a cheer: the map in Hebrew (which
+            // has no capitals), or a capitalised word after the first,
+            // beside more than a reading (a number said to someone by name
+            // is said for a reason).
+            [(at, w, capital)] => {
+                !is_one_of_or_plural(w, VERBS)
+                    && !is_one_of_or_plural(w, REACTIONS)
+                    && (is_place(w) || (*capital && *at > 0 && more_than_a_reading))
             }
             _ => false,
         }
@@ -2738,6 +2914,31 @@ Pot now, you're at 20.",
     }
 
     #[test]
+    fn asked_to_talk_it_says_it_is_here_in_its_attitude_and_language() {
+        assert!(asked_to_talk("Talk to me you fucker"));
+        assert!(asked_to_talk("תדבר איתי"));
+        assert!(!asked_to_talk("is it night already?"));
+        assert!(!asked_to_talk("OK that sounds"));
+        let mut brain = Brain::new();
+        for (i, attitude) in Attitude::ALL.into_iter().enumerate() {
+            brain.attitude = attitude;
+            for (hebrew, lines) in [(false, HERE_EN), (true, HERE_HE)] {
+                let cards = lines[i];
+                assert!(cards.len() >= 3, "{attitude:?}");
+                let mut round: Vec<&str> = (0..cards.len()).map(|_| brain.here(hebrew)).collect();
+                round.sort_unstable();
+                let mut all = cards.to_vec();
+                all.sort_unstable();
+                assert_eq!(round, all, "{attitude:?}: every card once before any again");
+                for card in cards {
+                    assert_eq!(is_hebrew(card), hebrew, "{card}");
+                    assert!(!card.to_lowercase().contains("window"), "{card}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_snapshot_says_what_is_seen_and_what_is_estimated() {
         let obs = Observation {
             game: GameView::Seen("MapleStory".into()),
@@ -3524,6 +3725,76 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
                 said.unwrap_or(&reply),
                 "{heard:?} → {reply:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_line_beside_a_number_that_says_something_of_its_own_is_said() {
+        // The snapshots of the owner's main (HP 48%), his Classic character
+        // in Ellinia (HP full, then 48%), and the game closed (the last
+        // level, map and name kept, no bars).
+        let main = Facts {
+            name: Some("WanWanBoggi".into()),
+            job: Some("Night Lord".into()),
+            bars: vec![48.0, 90.0, 34.36],
+            ..gate()
+        };
+        let low = Facts {
+            bars: vec![48.0, 100.0, 49.84],
+            ..ellinia()
+        };
+        let closed = Facts {
+            bars: vec![],
+            ..main.clone()
+        };
+        // Said whole: an opener's capital is the sentence's, not a name's;
+        // a Hebrew order or cheer is no place; a number said to someone by
+        // name is said for a reason; an order is an order. (Every one of
+        // these was silence: the status filter took it for a recital.)
+        let said: &[(&str, &str, &Facts)] = &[
+            ("ugh this boss", "Pots, you're at 48% HP.", &main),
+            ("ugh this boss", "Potion, HP 48%.", &main),
+            ("ugh this boss", "Drink, HP 48%.", &main),
+            ("ugh this boss", "48% HP, Einstein.", &main),
+            ("ding!", "Bro, level 168!", &main),
+            ("ding!", "Level 168, Michael!", &main),
+            ("ok", "Hey, level 9!", &ellinia()),
+            ("יש!", "עלית לרמה 10!", &ellinia()),
+            ("יש!", "אחי, רמה 10!", &ellinia()),
+            ("יש!", "רמה 10, בהצלחה!", &ellinia()),
+            ("אוי", "48 אחוז חיים, שיקוי!", &low),
+            ("אוי", "חיים 48 אחוז, תיזהר!", &low),
+            ("אוי", "48 אחוז חיים, ותשתה!", &low),
+            ("אוי", "48 אחוז חיים, מהר!", &low),
+            ("let's play Maple", "Open the game.", &closed),
+            ("let's play Maple", "Open MapleStory.", &closed),
+            ("I'm bored", "Open the game!", &closed),
+            ("I'm bored", "Then open the game.", &closed),
+        ];
+        for (heard, reply, facts) in said {
+            assert_eq!(unasked(reply, heard, facts), *reply, "{heard:?}");
+            assert_eq!(without_status(reply, facts).as_deref(), Some(*reply));
+        }
+        // Still a recital: a name beside the window's state, the
+        // character's own name, a pronoun's "you're" or Hebrew's "יש" (no
+        // orders), the map in Hebrew beside the level.
+        let dropped: &[(&str, &str, &Facts, &str)] = &[
+            ("OK that sounds", "Game window closed, Danny.", &closed, ""),
+            ("ok", "Game's closed, Michael.", &closed, ""),
+            ("ok", "No game window open, Michael!", &closed, ""),
+            ("ok", "You're level 167, WanWanBoggi.", &main, ""),
+            ("ok", "You're level 167.", &main, ""),
+            ("אוי", "יש לך 48 אחוז חיים.", &low, ""),
+            ("I'm back", "WanWanBoggi! Missed you.", &main, "Missed you."),
+            (
+                "פטריות",
+                "פטריות! אתה באליניה, רמה 9.",
+                &ellinia(),
+                "פטריות!",
+            ),
+        ];
+        for (heard, reply, facts, kept) in dropped {
+            assert_eq!(unasked(reply, heard, facts), *kept, "{heard:?} → {reply:?}");
         }
     }
 

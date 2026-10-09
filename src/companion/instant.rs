@@ -52,7 +52,9 @@ const HELLOS: &[&str] = &[
 ];
 /// Who a greeting may be said to, after it ("hey there", "hello buddy",
 /// "היי אחי"); the wake word ("hey syrup") and a name ("Hey Danny") too.
+/// ("Again": "hi again".)
 const HELLO_TO: &[&str] = &[
+    "again",
     "there",
     "you",
     "buddy",
@@ -77,27 +79,39 @@ const HELLO_TO: &[&str] = &[
     "מותק",
 ];
 
+/// How many words of `list` the longest phrase of `phrases` that opens it
+/// takes (0: none opens it).
+fn opening(list: &[String], phrases: &[&str]) -> usize {
+    phrases
+        .iter()
+        .map(|p| p.split(' ').collect::<Vec<_>>())
+        .filter(|p| p.len() <= list.len() && p.iter().zip(list).all(|(a, b)| a == b))
+        .map(|p| p.len())
+        .max()
+        .unwrap_or(0)
+}
+
+/// "שלום" is "goodbye" as well as "hello": at the end of a sentence, after
+/// other words ("טוב שלום", "יאללה שלום", "היי שלום"), it is no hello.
+const SHALOM: &str = "שלום";
+
 /// Whether `sentence` is a greeting and nothing more: a greeting, then at
 /// most who it is said to — a word of address, the wake word, a name (a
-/// capitalised word, as recognisers write names) or the greeting again
-/// ("hey hey") — in three words at most. "Hey, what's my level" is more
-/// than a greeting.
+/// capitalised word, as recognisers write names) — or another greeting
+/// ("hey hey", "hey, what's up", "היי מה נשמע"). "Hey, what's my level" is
+/// more than a greeting, and so is "Hey, HP?": a word of the player's
+/// numbers is a question, never a name.
 fn is_hello(sentence: &str) -> bool {
     let list = words(sentence);
-    if list.is_empty() || list.len() > 3 {
+    if list.is_empty() || list.len() > 6 {
         return false;
     }
-    let text = list.join(" ");
-    let Some(greeting) = HELLOS
-        .iter()
-        .filter(|g| text == **g || text.starts_with(&format!("{g} ")))
-        .max_by_key(|g| g.len())
-    else {
+    if names_a_number(&list.join(" ")) {
         return false;
-    };
-    let mut rest = format!(" {} ", &text[greeting.len()..]);
-    for wake in WAKE_WORDS {
-        rest = rest.replace(&format!(" {wake} "), " ");
+    }
+    let greeting = opening(&list, HELLOS);
+    if greeting == 0 {
+        return false;
     }
     // Names: capitalised words after the first ("I" is no name).
     let names: Vec<String> = sentence
@@ -108,16 +122,52 @@ fn is_hello(sentence: &str) -> bool {
         .filter(|w| !w.is_empty() && w != "i")
         .collect();
     let mut named = 0;
-    rest.split(' ').filter(|w| !w.is_empty()).all(|w| {
-        if HELLO_TO.contains(&w) || HELLOS.contains(&w) {
-            true
-        } else if names.iter().any(|n| n == w) && named == 0 {
+    let mut at = greeting;
+    while at < list.len() {
+        let rest = &list[at..];
+        // Another greeting or the wake word, whole ("what's up", "sir up").
+        let more = opening(rest, HELLOS).max(opening(rest, WAKE_WORDS));
+        if more > 0 && !(rest.len() == 1 && rest[0] == SHALOM) {
+            at += more;
+        } else if HELLO_TO.contains(&rest[0].as_str()) {
+            at += 1;
+        } else if named == 0 && names.contains(&rest[0]) {
             named += 1;
-            true
+            at += 1;
         } else {
-            false
+            return false;
         }
-    })
+    }
+    true
+}
+
+/// Whether `text` (normalised) names one of the player's numbers: HP, MP,
+/// EXP or the level.
+fn names_a_number(text: &str) -> bool {
+    [HP, MP, EXP, LEVEL]
+        .iter()
+        .any(|names| names.iter().any(|n| has(text, n)))
+}
+
+/// `list` without the hello it opens with, and whom it is said to ("Hey
+/// Syrup, HP?" asks "HP?"; "hey man, what's up, level?" asks "level?").
+fn after_hello(list: Vec<String>) -> Vec<String> {
+    let mut at = opening(&list, HELLOS);
+    if at == 0 {
+        return list;
+    }
+    while at < list.len() {
+        let rest = &list[at..];
+        let more = opening(rest, HELLOS).max(opening(rest, WAKE_WORDS));
+        if more > 0 {
+            at += more;
+        } else if HELLO_TO.contains(&list[at].as_str()) {
+            at += 1;
+        } else {
+            break;
+        }
+    }
+    list[at..].to_vec()
 }
 
 const HP: &[&str] = &[
@@ -242,13 +292,14 @@ fn has(text: &str, phrase: &str) -> bool {
 }
 
 /// What `sentence` asks, when all it asks is one of the player's own
-/// numbers (short, about them, nothing else in it) — or when it is a
-/// greeting and nothing more ([`Ask::Hello`]).
+/// numbers (short, about them, nothing else in it; a hello before it, and
+/// the wake word, aside: "Hey Syrup, HP?") — or when it is a greeting and
+/// nothing more ([`Ask::Hello`]).
 pub fn asks(sentence: &str) -> Option<Ask> {
     if is_hello(sentence) {
         return Some(Ask::Hello);
     }
-    let list = words(sentence);
+    let list = after_hello(words(sentence));
     if list.is_empty() || list.len() > 8 {
         return None;
     }
@@ -500,6 +551,72 @@ pub mod lines {
             "{v}. לך תעלה רמה במקום לשאול.",
         ],
     ];
+    /// The level asked when it went up since the level last said (by a
+    /// level or a few): a level-up's answer, never a card that presumes
+    /// the same level ("Still level {v}.", "Forgot already?").
+    pub const LEVEL_UP_EN: [&[&str]; 3] = [
+        &[
+            "Level {v} now. Up you go!",
+            "{v} now! Nice climb.",
+            "You're {v} now, look at you!",
+        ],
+        &[
+            "{v} now. Up you go.",
+            "Level {v} now. Next.",
+            "{v} now. Keep climbing.",
+        ],
+        &[
+            "{v} now. Took you long enough.",
+            "Level {v} now. Don't get cocky.",
+            "{v} now. Finally.",
+        ],
+    ];
+    pub const LEVEL_UP_HE: [&[&str]; 3] = [
+        &[
+            "רמה {v} עכשיו. עולים!",
+            "{v} עכשיו! טיפוס יפה.",
+            "אתה {v} עכשיו, תראה אותך!",
+        ],
+        &[
+            "{v} עכשיו. למעלה.",
+            "רמה {v} עכשיו. הלאה.",
+            "{v} עכשיו. תמשיך לטפס.",
+        ],
+        &[
+            "{v} עכשיו. לקח לך מספיק.",
+            "רמה {v} עכשיו. אל תשוויץ.",
+            "{v} עכשיו. סוף סוף.",
+        ],
+    ];
+    /// The level asked when it is another than the level last said, and
+    /// not a level-up's (another character, most likely): said as news,
+    /// never as the same as before.
+    pub const LEVEL_NOW_EN: [&[&str]; 3] = [
+        &[
+            "Level {v} now.",
+            "You're level {v} now.",
+            "Level {v} on this one.",
+        ],
+        &["Level {v} now.", "{v} now.", "You're {v} now."],
+        &[
+            "Level {v} now. Keep up, genius.",
+            "{v} now. Try to keep track.",
+            "You're {v} now. Write it down.",
+        ],
+    ];
+    pub const LEVEL_NOW_HE: [&[&str]; 3] = [
+        &[
+            "רמה {v} עכשיו.",
+            "אתה ברמה {v} עכשיו.",
+            "רמה {v} בדמות הזאת.",
+        ],
+        &["רמה {v} עכשיו.", "{v} עכשיו.", "אתה {v} עכשיו."],
+        &[
+            "רמה {v} עכשיו. תתעדכן, גאון.",
+            "{v} עכשיו. נסה לעקוב.",
+            "אתה {v} עכשיו. תרשום לך.",
+        ],
+    ];
     /// (`{v}` already says "about".)
     pub const NEXT_EN: [&[&str]; 3] = [
         &[
@@ -650,10 +767,14 @@ fn duration(seconds: f64, hebrew: bool) -> String {
 /// on its own: the first "what level am I" of a night is the level list's
 /// lead, whatever was asked before it, and a card that presumes an
 /// earlier answer ("Still level 165.", "Forgot already?") comes only after
-/// one of the same kind. (One deck shared by the ten lists had the first
+/// one of the same kind — and only for the level said last: a level-up or
+/// another character since is news ("10 now. Up you go."), not "Same as
+/// last time you asked." (One deck shared by the ten lists had the first
 /// level question of a night answered "Still level 165.": the shared count
 /// had moved on past the lead.) The lead stays first on every night: an
-/// answer is an answer, and the plain one is the right first one.
+/// answer is an answer, and the plain one is the right first one. (Only
+/// the level's cards presume an unchanged value; the bars' and EXP's say
+/// "stop asking", which holds whatever the number.)
 #[derive(Debug)]
 pub struct Decks {
     bar_low_en: Deck,
@@ -664,11 +785,22 @@ pub struct Decks {
     exp_he: Deck,
     level_en: Deck,
     level_he: Deck,
+    level_up_en: Deck,
+    level_up_he: Deck,
+    level_now_en: Deck,
+    level_now_he: Deck,
+    /// The level last said, in English and in Hebrew.
+    level_said_en: Option<u32>,
+    level_said_he: Option<u32>,
     next_en: Deck,
     next_he: Deck,
     hello_en: Deck,
     hello_he: Deck,
 }
+
+/// How many levels up since the level last said still make a level-up's
+/// answer (more is another character).
+const LEVELS_GAINED: u32 = 5;
 
 impl Decks {
     /// Every deck shuffled by the session's `seed` (and by its own lines,
@@ -683,6 +815,12 @@ impl Decks {
             exp_he: Deck::seeded(seed),
             level_en: Deck::seeded(seed),
             level_he: Deck::seeded(seed),
+            level_up_en: Deck::seeded(seed),
+            level_up_he: Deck::seeded(seed),
+            level_now_en: Deck::seeded(seed),
+            level_now_he: Deck::seeded(seed),
+            level_said_en: None,
+            level_said_he: None,
             next_en: Deck::seeded(seed),
             next_he: Deck::seeded(seed),
             hello_en: Deck::seeded(seed),
@@ -698,6 +836,37 @@ impl Decks {
             (false, false) => self.bar_ok_en.deal(attitude, lines::BAR_OK_EN),
             (true, true) => self.bar_low_he.deal(attitude, lines::BAR_LOW_HE),
             (true, false) => self.bar_ok_he.deal(attitude, lines::BAR_OK_HE),
+        }
+    }
+
+    /// The next card for the level `level`, in `he`/`attitude`: the level
+    /// list's while it is the level said last (or none was), else a
+    /// level-up's or a new level's — which a "still" or a "same as last
+    /// time" would get wrong.
+    fn level(&mut self, attitude: Attitude, he: bool, level: u32) -> &'static str {
+        let (said, deck, up, now, lists) = if he {
+            (
+                &mut self.level_said_he,
+                &mut self.level_he,
+                &mut self.level_up_he,
+                &mut self.level_now_he,
+                [lines::LEVEL_HE, lines::LEVEL_UP_HE, lines::LEVEL_NOW_HE],
+            )
+        } else {
+            (
+                &mut self.level_said_en,
+                &mut self.level_en,
+                &mut self.level_up_en,
+                &mut self.level_now_en,
+                [lines::LEVEL_EN, lines::LEVEL_UP_EN, lines::LEVEL_NOW_EN],
+            )
+        };
+        match said.replace(level) {
+            Some(before) if before < level && level - before <= LEVELS_GAINED => {
+                up.deal(attitude, lists[1])
+            }
+            Some(before) if before != level => now.deal(attitude, lists[2]),
+            _ => deck.deal(attitude, lists[0]),
         }
     }
 }
@@ -747,11 +916,7 @@ pub fn answer(
         }
         Ask::Level => {
             let level = obs.level?;
-            let line = if he {
-                decks.level_he.deal(attitude, lines::LEVEL_HE)
-            } else {
-                decks.level_en.deal(attitude, lines::LEVEL_EN)
-            };
+            let line = decks.level(attitude, he, level);
             Some(line.replace("{v}", &level.to_string()))
         }
         Ask::NextLevel => {
@@ -1186,6 +1351,221 @@ mod tests {
             .as_deref(),
             Some("Level 109.")
         );
+    }
+
+    #[test]
+    fn a_hello_never_swallows_a_question_about_the_numbers() {
+        // "Hey, HP?" was answered "Yo.": the recogniser writes HP in
+        // capitals, and a capitalised word after a greeting was a name.
+        // With the wake word too ("Hey Syrup, HP?"), the canonical way to
+        // ask in wake-word mode.
+        for (sentence, ask) in [
+            ("Hey HP", Ask::Hp),
+            ("Hey, HP?", Ask::Hp),
+            ("hey HP?", Ask::Hp),
+            ("hey hp", Ask::Hp),
+            ("Hey MP", Ask::Mp),
+            ("Hey EXP?", Ask::Exp),
+            ("Hi Level?", Ask::Level),
+            ("hey level?", Ask::Level),
+            ("Hey Syrup HP", Ask::Hp),
+            ("hey syrup, HP?", Ask::Hp),
+            ("hi sir up, level?", Ask::Level),
+            ("Yo HP", Ask::Hp),
+            ("Yo, MP?", Ask::Mp),
+            ("היי HP", Ask::Hp),
+            ("Hey, Level", Ask::Level),
+            ("hey, what's my HP", Ask::Hp),
+            ("Hey Exp", Ask::Exp),
+            ("Hello Mana?", Ask::Mp),
+            ("hey man, level?", Ask::Level),
+            ("hey, how long to level", Ask::NextLevel),
+        ] {
+            assert_eq!(asks(sentence), Some(ask), "{sentence}");
+        }
+        // A name is still a name.
+        for sentence in ["Hey Danny", "Hey Ellinia", "hi Wan"] {
+            assert_eq!(asks(sentence), Some(Ask::Hello), "{sentence}");
+        }
+        // Answered in the hello's language.
+        let mut decks = Decks::seeded(SEED);
+        let none = Progress::default();
+        assert_eq!(
+            answer(
+                Ask::Hp,
+                "היי HP",
+                Some(&seen()),
+                &none,
+                Attitude::Blunt,
+                &mut decks
+            )
+            .as_deref(),
+            Some("76% HP.")
+        );
+    }
+
+    #[test]
+    fn an_everyday_hello_is_a_hello_and_shalom_at_the_end_a_goodbye() {
+        for sentence in [
+            "hey what's up",
+            "Hey, what's up?",
+            "hey man what's up",
+            "hey Syrup what's up",
+            "hi again",
+            "hello again",
+            "היי מה נשמע",
+            "היי, מה קורה?",
+            "אהלן אחי מה נשמע",
+            "שלום",
+            "שלום אחי",
+            "שלום סירופ",
+        ] {
+            assert_eq!(asks(sentence), Some(Ask::Hello), "{sentence}");
+        }
+        // "שלום" is "goodbye" too: after other words, at the end, it is
+        // one (the model hears it); and more than a hello is the model's.
+        for sentence in [
+            "טוב שלום",
+            "יאללה שלום",
+            "היי שלום",
+            "שלום שלום",
+            "hi I'm back",
+            "hey I'm back",
+            "hey what's up with the boss",
+        ] {
+            assert_eq!(asks(sentence), None, "{sentence}");
+        }
+    }
+
+    #[test]
+    fn a_level_asked_after_it_changed_is_news_not_the_same_as_before() {
+        // The level asked at 167, after a switch to his Classic character
+        // (9), after its level-up (10): "9. Same as last time you asked.",
+        // "Still level 9.", "Level 10. Not changing while you ask." were
+        // dealt for these seeds. And asked again at 10: the level list,
+        // where a "still" is true.
+        fn obs(level: u32) -> Observation {
+            Observation {
+                level: Some(level),
+                ..seen()
+            }
+        }
+        let presumes = |line: &str| {
+            let lower = line.to_lowercase();
+            [
+                "still",
+                "same",
+                "again",
+                "forgot",
+                "not changing",
+                "עדיין",
+                "כמו בפעם",
+                "שוב",
+                "שכחת",
+                "לא משתנה",
+            ]
+            .iter()
+            .any(|w| lower.contains(w))
+        };
+        let none = Progress::default();
+        for (question, same, up, now) in [
+            (
+                "what level am I",
+                lines::LEVEL_EN,
+                lines::LEVEL_UP_EN,
+                lines::LEVEL_NOW_EN,
+            ),
+            (
+                "מה הרמה שלי",
+                lines::LEVEL_HE,
+                lines::LEVEL_UP_HE,
+                lines::LEVEL_NOW_HE,
+            ),
+        ] {
+            let mut nights = Vec::new();
+            for attitude in Attitude::ALL {
+                for seed in [1u64, 7, 20261008, 3] {
+                    let mut decks = Decks::seeded(seed);
+                    let mut ask = |level: u32| {
+                        answer(
+                            Ask::Level,
+                            question,
+                            Some(&obs(level)),
+                            &none,
+                            attitude,
+                            &mut decks,
+                        )
+                        .unwrap()
+                    };
+                    let night = [ask(167), ask(9), ask(10), ask(10)];
+                    // Never the same as before across a change.
+                    for line in &night[..3] {
+                        assert!(!presumes(line), "{attitude:?} seed {seed}: {night:?}");
+                    }
+                    nights.push((attitude, night));
+                }
+            }
+            for (attitude, [_, switched, level_up, again]) in nights {
+                // Another character's level is news; a level-up's is a
+                // level-up's; the same level again, the level list's next.
+                for (line, list, level) in [
+                    (switched, now, "9"),
+                    (level_up, up, "10"),
+                    (again, same, "10"),
+                ] {
+                    assert!(
+                        attitude
+                            .lines(list)
+                            .iter()
+                            .any(|card| card.replace("{v}", level) == line),
+                        "{attitude:?}: {line}"
+                    );
+                }
+            }
+        }
+        // Every change list: three ways at least, the number in each,
+        // none twice, none presuming.
+        for list in [
+            lines::LEVEL_UP_EN,
+            lines::LEVEL_UP_HE,
+            lines::LEVEL_NOW_EN,
+            lines::LEVEL_NOW_HE,
+        ] {
+            for attitude in Attitude::ALL {
+                let cards = attitude.lines(list);
+                assert!(cards.len() >= 3, "{cards:?}");
+                let mut sorted = cards.to_vec();
+                sorted.sort_unstable();
+                sorted.dedup();
+                assert_eq!(sorted.len(), cards.len(), "{cards:?}");
+                for card in cards {
+                    assert!(card.contains("{v}") && !presumes(card), "{card}");
+                }
+            }
+        }
+        // Only the level's cards presume the value has not changed.
+        for (name, list) in lines::ALL {
+            if name.starts_with("level") {
+                continue;
+            }
+            for attitude in Attitude::ALL {
+                for card in attitude.lines(*list) {
+                    let lower = card.to_lowercase();
+                    for word in [
+                        "still",
+                        "same",
+                        "forgot",
+                        "not changing",
+                        "עדיין",
+                        "כמו בפעם",
+                        "שכחת",
+                        "לא משתנה",
+                    ] {
+                        assert!(!lower.contains(word), "{name}: {card}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

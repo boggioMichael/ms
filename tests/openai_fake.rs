@@ -164,6 +164,12 @@ The quest marker is four maps to the left. Go!"
                                         // The next morning, the game open.
                                         "Got it. What map are we on? MapleStory window is open, level 167."
                                             .to_string()
+                                    } else if said.to_lowercase().contains("talk to me")
+                                        || said.contains("תדבר איתי")
+                                    {
+                                        // The owner's "Talk to me you fucker",
+                                        // the game not open yet.
+                                        "No MapleStory window open.".to_string()
                                     } else {
                                         format!(
                                             "Hello there, my friend! ({model}) you said: {said}."
@@ -846,6 +852,130 @@ fn a_status_line_nobody_asked_for_is_left_out_of_the_reply() {
     let all = "Game window closed, Danny. No game window open.";
     assert_eq!(reply.as_deref(), Some(all));
     assert_eq!(spoken.concat(), all);
+}
+
+#[test]
+fn asked_to_talk_with_nothing_but_the_games_state_it_says_it_is_here() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let ask = |heard: &str, speak: bool| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            facts: Default::default(),
+            speak,
+            eyes: None,
+            language: None,
+        })
+    };
+    // The owner's "Talk to me you fucker" before the game got "No
+    // MapleStory window open." Now: a word that it is here, in its
+    // attitude (blunt, the usual); the window's state is not said.
+    let blunt = ms::ai::brain::HERE_EN[1];
+    let (reply, spoken, notes) = outcome(&worker, ask("Talk to me you fucker", true));
+    let reply = reply.expect("silent");
+    assert!(blunt.contains(&reply.as_str()), "{reply}");
+    assert_eq!(spoken, std::slice::from_ref(&reply));
+    assert!(
+        notes.contains(&"not said, nobody asked: No MapleStory window open.".to_string()),
+        "{notes:?}"
+    );
+    // Asked in Hebrew: in Hebrew.
+    let (reply, ..) = outcome(&worker, ask("תדבר איתי", true));
+    let reply = reply.expect("silent");
+    assert!(
+        ms::ai::brain::HERE_HE[1].contains(&reply.as_str()),
+        "{reply}"
+    );
+    // Not spoken (on a call): the same word, shown.
+    let (reply, spoken, _) = outcome(&worker, ask("talk to me", false));
+    let reply = reply.expect("silent");
+    assert!(blunt.contains(&reply.as_str()), "{reply}");
+    assert!(spoken.is_empty());
+}
+
+#[test]
+fn a_warning_waits_two_seconds_for_its_translation_then_is_said_in_english() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // The translation hangs (the stand-in takes forever): a warning does
+    // not wait for it — said in English, about two seconds on.
+    let line = "HP 20 percent, this takes forever. Pot!";
+    let asked = Instant::now();
+    worker.send(Job::Speak {
+        text: line.into(),
+        language: Some("he-IL".into()),
+        kind: ms::companion::Kind::Warning,
+        show: true,
+        speak: false,
+    });
+    match worker.done.recv_timeout(Duration::from_secs(8)) {
+        Ok(Done::Shown { text, kind }) => {
+            assert_eq!(kind, ms::companion::Kind::Warning);
+            assert_eq!(text, line);
+        }
+        other => panic!("{}", describe(other)),
+    }
+    assert!(
+        asked.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        asked.elapsed()
+    );
+}
+
+#[test]
+fn a_line_that_comes_back_with_another_number_is_translated_once() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let shown = |text: &str| {
+        worker.send(Job::Speak {
+            text: text.into(),
+            language: Some("he-IL".into()),
+            kind: ms::companion::Kind::Warning,
+            show: true,
+            speak: false,
+        });
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, .. }) => text,
+            other => panic!("{}", describe(other)),
+        }
+    };
+    let asked = || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["path"] == "/v1/responses")
+            .count()
+    };
+    // The stand-in "translates" by saying it back (its model's name has a
+    // number of its own, which stays).
+    assert_eq!(
+        shown("HP 25 percent. Pot now!"),
+        "(gpt-6.1-sol) you said: HP 25 percent. Pot now!"
+    );
+    let calls = asked();
+    assert!(calls > 0);
+    // The same warning a moment later, HP lower: no call, the number in.
+    assert_eq!(
+        shown("HP 20 percent. Pot now!"),
+        "(gpt-6.1-sol) you said: HP 20 percent. Pot now!"
+    );
+    assert_eq!(asked(), calls);
+    // Another line is another call.
+    shown("MP 10 percent. Drink!");
+    assert!(asked() > calls);
 }
 
 #[test]

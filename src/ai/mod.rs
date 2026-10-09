@@ -497,7 +497,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
             .spawn(move || {
                 // Its own lines come back often ("Level up!"): each is
                 // translated once.
-                let mut translations = std::collections::HashMap::new();
+                let mut translations = Translations::default();
                 while let Ok((id, job)) = lines_rx.recv() {
                     let Job::Speak {
                         text,
@@ -560,7 +560,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
             let openai: &OpenAi = &openai;
             // The line it says when a reply had nothing new in it, in the
             // player's language: translated once.
-            let mut translations = std::collections::HashMap::new();
+            let mut translations = Translations::default();
             // The fast brain failing again and again is given up on; one
             // going round in circles rests a while.
             let mut fast_failures = 0u32;
@@ -874,14 +874,18 @@ fn say_line(
     id: u64,
     stop: &Stop,
     line: Line,
-    translations: &mut std::collections::HashMap<(String, String), String>,
+    translations: &mut Translations,
     tx: &Sender<Done>,
     on_say: &mut dyn FnMut(&str),
 ) {
     let asked = Instant::now();
     let text = match line.language {
         Some(l) if !language::is_english(l) => {
-            translate(mouth.openai, line.text, l, stop, translations)
+            let wait = match line.kind {
+                Kind::Warning => WARNING_TRANSLATION,
+                _ => LINE_TRANSLATION,
+            };
+            translate(mouth.openai, line.text, l, stop, translations, wait)
         }
         _ => line.text.to_string(),
     };
@@ -1037,23 +1041,154 @@ comment for the sake of it, never ask them anything, never repeat what you said 
 const LEARNED_GUIDE: &str =
     "\n\nWhat you learned from playing together before (use it naturally; never recite it):";
 
+/// How long one of its own lines waits for its translation: a warning is
+/// said in English after [`WARNING_TRANSLATION`] (a late warning is no
+/// warning), anything else after [`LINE_TRANSLATION`].
+const WARNING_TRANSLATION: Duration = Duration::from_secs(2);
+const LINE_TRANSLATION: Duration = Duration::from_secs(20);
+
+/// MapleSyrup's own lines in the player's language, each translated once —
+/// and a line that comes back with other numbers ("HP 25 percent. Pot
+/// now!", then "HP 20 percent. Pot now!") translated once for all of them:
+/// kept by the line with its numbers taken out, as the translation with a
+/// gap where each number goes. (A translation the numbers can't be found
+/// in, once each, is kept for its own line only.)
+#[derive(Default)]
+struct Translations {
+    /// By locale and line.
+    lines: std::collections::HashMap<(String, String), String>,
+    /// By locale and the line with `{}` for each number.
+    shapes: std::collections::HashMap<(String, String), Shape>,
+}
+
+/// A translation with its numbers taken out: the text around them, and
+/// which of the line's numbers goes in each gap (the translation may put
+/// them in another order).
+#[derive(Debug, Clone, PartialEq)]
+struct Shape {
+    pieces: Vec<String>,
+    order: Vec<usize>,
+}
+
+impl Translations {
+    /// The translation into `locale` of `text`, when it is known.
+    fn get(&self, locale: &str, text: &str) -> Option<String> {
+        let key = |s: &str| (locale.to_string(), s.to_string());
+        if let Some(done) = self.lines.get(&key(text)) {
+            return Some(done.clone());
+        }
+        let (shape, numbers) = numbers_of(text);
+        let shape = self
+            .shapes
+            .get(&key(&shape))
+            .filter(|_| !numbers.is_empty())?;
+        let mut out = shape.pieces[0].clone();
+        for (gap, piece) in shape.order.iter().zip(&shape.pieces[1..]) {
+            out.push_str(numbers.get(*gap)?);
+            out.push_str(piece);
+        }
+        Some(out)
+    }
+
+    fn put(&mut self, locale: &str, text: &str, done: &str) {
+        if self.lines.len() > 200 {
+            self.lines.clear();
+            self.shapes.clear();
+        }
+        let (shape, numbers) = numbers_of(text);
+        if let Some(found) = shape_of(done, &numbers) {
+            self.shapes.insert((locale.to_string(), shape), found);
+        }
+        self.lines
+            .insert((locale.to_string(), text.to_string()), done.to_string());
+    }
+}
+
+/// `text` with `{}` for each number in it, and the numbers ("HP 25.5
+/// percent" is "HP {} percent" and "25.5").
+fn numbers_of(text: &str) -> (String, Vec<String>) {
+    let (mut shape, mut numbers) = (String::new(), Vec::new());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if !c.is_ascii_digit() {
+            shape.push(c);
+            continue;
+        }
+        let mut number = c.to_string();
+        // Its digits, and a point or a comma between two of them.
+        while let Some(&next) = chars.peek() {
+            let inside = matches!(next, '.' | ',')
+                && chars.clone().nth(1).is_some_and(|d| d.is_ascii_digit());
+            if !next.is_ascii_digit() && !inside {
+                break;
+            }
+            number.push(next);
+            chars.next();
+        }
+        shape.push_str("{}");
+        numbers.push(number);
+    }
+    (shape, numbers)
+}
+
+/// `done`, a translation of a line with `numbers` in it, cut around them:
+/// when each is in it exactly once (and no two are the same), so that it
+/// can be told where each goes.
+fn shape_of(done: &str, numbers: &[String]) -> Option<Shape> {
+    if numbers.is_empty() {
+        return None;
+    }
+    let (_, found) = numbers_of(done);
+    let mut at = Vec::new();
+    for (i, number) in numbers.iter().enumerate() {
+        let places: Vec<usize> = found
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| *f == number)
+            .map(|(p, _)| p)
+            .collect();
+        if numbers.iter().filter(|n| *n == number).count() > 1 || places.len() != 1 {
+            return None;
+        }
+        at.push((places[0], i));
+    }
+    // The translation's own pieces, and its numbers: the line's go into
+    // gaps, any other stays as it was.
+    let (shape, _) = numbers_of(done);
+    let mut pieces = vec![String::new()];
+    let mut order = Vec::new();
+    for (p, piece) in shape.split("{}").enumerate() {
+        if p > 0 {
+            match at.iter().find(|(place, _)| *place == p - 1) {
+                Some((_, i)) => {
+                    order.push(*i);
+                    pieces.push(String::new());
+                }
+                None => pieces.last_mut()?.push_str(&found[p - 1]),
+            }
+        }
+        pieces.last_mut()?.push_str(piece);
+    }
+    Some(Shape { pieces, order })
+}
+
 /// One of MapleSyrup's own lines in the player's language (as it is, when
-/// it can't be translated).
+/// it can't be translated within `wait`).
 fn translate(
     openai: &OpenAi,
     text: &str,
     locale: &str,
     stop: &Stop,
-    cache: &mut std::collections::HashMap<(String, String), String>,
+    cache: &mut Translations,
+    wait: Duration,
 ) -> String {
     // Already written in another script (a line the model made in the
     // player's language, such as an alert they asked for).
     if !text.chars().any(|c| c.is_ascii_alphabetic()) {
         return text.to_string();
     }
-    let key = (locale.to_string(), text.to_string());
-    if let Some(done) = cache.get(&key) {
-        return done.clone();
+    if let Some(done) = cache.get(locale, text) {
+        return done;
     }
     let name = language::name(locale);
     let ask = Ask {
@@ -1065,17 +1200,14 @@ translation only."
         ),
         input: vec![json!({"role": "user", "content": text})],
         max_output_tokens: 150,
-        timeout: Duration::from_secs(20),
+        timeout: wait,
         stop: Some(stop.clone()),
         ..Default::default()
     };
     match openai.ask(&ask, None) {
         Ok(answer) if !answer.text.trim().is_empty() => {
             let done = brain::for_speech(&answer.text);
-            if cache.len() > 200 {
-                cache.clear();
-            }
-            cache.insert(key, done.clone());
+            cache.put(locale, text, &done);
             done
         }
         _ => text.to_string(),
@@ -1285,7 +1417,7 @@ struct Talk<'a> {
     speak: bool,
     language: Option<&'a str>,
     /// MapleSyrup's own lines in the player's language, translated once.
-    translations: &'a mut std::collections::HashMap<(String, String), String>,
+    translations: &'a mut Translations,
 }
 
 /// A reply's sentences as they are written: the ones said, how many went as
@@ -1633,15 +1765,21 @@ words (\"probably\" if you're not sure)."
                         saying.take(&rest, &mut brain.recent, &lines);
                     }
                     // The game's state, said back, was all there was: a
-                    // question keeps it (better than nothing); anything
-                    // else needs no answer ("OK").
+                    // question keeps it (better than nothing); asked to
+                    // talk, it is here and listening (a card: the state
+                    // stays unsaid); anything else needs no answer ("OK").
                     if saying.kept.is_empty()
                         && saying.dropped == 0
                         && brain::wants_an_answer(&heard)
                     {
-                        saying.unasked = false;
-                        for sentence in std::mem::take(&mut saying.restated) {
-                            saying.take(&sentence, &mut brain.recent, &lines);
+                        if brain::asked_to_talk(&heard) {
+                            let card = brain.here(brain::is_hebrew(&heard));
+                            saying.take(card, &mut brain.recent, &lines);
+                        } else {
+                            saying.unasked = false;
+                            for sentence in std::mem::take(&mut saying.restated) {
+                                saying.take(&sentence, &mut brain.recent, &lines);
+                            }
                         }
                     }
                     if !saying.restated.is_empty() {
@@ -1654,11 +1792,17 @@ words (\"probably\" if you're not sure)."
                     }
                     brain::for_speech(&brain::without_announcement(&saying.kept.join(" ")))
                 } else {
-                    let whole = brain::unasked(
-                        &brain::for_speech(&brain::without_announcement(&said)),
-                        &heard,
-                        facts,
-                    );
+                    let reply = brain::for_speech(&brain::without_announcement(&said));
+                    // (Asked to talk, and nothing but the game's state:
+                    // here and listening, as above.)
+                    let whole = if brain::asked_to_talk(&heard)
+                        && !brain::asks_about_the_game(&heard)
+                        && brain::without_status(&reply, facts).is_none()
+                    {
+                        brain.here(brain::is_hebrew(&heard)).to_string()
+                    } else {
+                        brain::unasked(&reply, &heard, facts)
+                    };
                     if saying.again {
                         whole
                     } else {
@@ -1687,7 +1831,7 @@ words (\"probably\" if you're not sure)."
                     let card = brain.same_as_before();
                     let line = match language {
                         Some(l) if !language::is_english(l) => {
-                            translate(openai, card, l, stop, translations)
+                            translate(openai, card, l, stop, translations, LINE_TRANSLATION)
                         }
                         _ => card.to_string(),
                     };
@@ -1798,7 +1942,7 @@ fn greet(
     }
     if text.is_empty() {
         // The usual line, in their language.
-        let mut translations = std::collections::HashMap::new();
+        let mut translations = Translations::default();
         say_line(
             mouth,
             id,
@@ -1901,5 +2045,55 @@ mod tests {
         assert!(COACH_GUIDE.contains("Never narrate or list what's on screen"));
         assert!(COACH_GUIDE.contains("never ask them anything"));
         assert!(COACH_GUIDE.contains("never greet"));
+    }
+
+    #[test]
+    fn a_line_with_other_numbers_is_translated_once() {
+        assert_eq!(
+            numbers_of("HP 25.5 percent, MP 1,200. Pot now!"),
+            (
+                "HP {} percent, MP {}. Pot now!".to_string(),
+                vec!["25.5".to_string(), "1,200".to_string()]
+            )
+        );
+        let mut cache = Translations::default();
+        cache.put(
+            "he-IL",
+            "HP 25 percent. Pot now!",
+            "25 אחוז חיים. תשתה עכשיו!",
+        );
+        // The same line with another number: no call, the number put in.
+        assert_eq!(
+            cache.get("he-IL", "HP 20 percent. Pot now!").as_deref(),
+            Some("20 אחוז חיים. תשתה עכשיו!")
+        );
+        assert_eq!(cache.get("fr-FR", "HP 20 percent. Pot now!"), None);
+        assert_eq!(cache.get("he-IL", "HP 20 percent. Drink!"), None);
+        // Two numbers the translation puts the other way round, and a
+        // number of its own that stays.
+        cache.put("he-IL", "HP 30, MP 40.", "מאנה 40, חיים 30 (v2).");
+        assert_eq!(
+            cache.get("he-IL", "HP 12, MP 9.").as_deref(),
+            Some("מאנה 9, חיים 12 (v2).")
+        );
+        // A number not found once each (written in words, said twice, two
+        // the same): kept for its own line only.
+        for (line, done) in [
+            ("Level 10!", "רמה עשר!"),
+            ("Level 11! 11!", "רמה 11! 11!"),
+            ("EXP 50, HP 50.", "ניסיון 50, חיים 50."),
+        ] {
+            cache.put("he-IL", line, done);
+            assert_eq!(cache.get("he-IL", line).as_deref(), Some(done));
+        }
+        assert_eq!(cache.get("he-IL", "Level 12!"), None);
+        assert_eq!(cache.get("he-IL", "Level 12! 12!"), None);
+        assert_eq!(cache.get("he-IL", "EXP 60, HP 70."), None);
+        // A line without numbers, as before.
+        cache.put("he-IL", "Level up! Nice.", "עלית רמה! יפה.");
+        assert_eq!(
+            cache.get("he-IL", "Level up! Nice.").as_deref(),
+            Some("עלית רמה! יפה.")
+        );
     }
 }
