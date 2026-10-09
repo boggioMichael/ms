@@ -21,9 +21,10 @@ Start
      "hey, how am I doing?", "how long until I level?", "mark that!".
      It says hello once per visit (a page reloaded within half an hour is
      the same visit): the live call's hello when a call is coming, else its
-     own (on the phone, heard once you have tapped). After its own hello, a
-     player it does not know yet hears what it does ("I yell when your HP
-     drops. Ask me stuff.").
+     own (on the phone, heard once you have tapped). A player it does not
+     know yet hears what it does ("I yell when your HP drops. Ask me
+     stuff."). What waited for your first tap is played only while it is
+     still news.
 
   If Windows asks whether MapleSyrup may use the network, allow private networks.
 
@@ -62,10 +63,11 @@ How it talks
   while MapleStory is the window in front, and says its own lines (low HP,
   a level-up) on the call too, in the language you're speaking: handed to
   the call at most every 20 seconds, with the number only for HP and MP; a
-  death or a level-up goes at once and is said even when it comes late. If
-  the phone sleeps and the call drops, MapleSyrup notices within seconds
-  and its lines go back to its own voice. While it talks, MapleStory's
-  sound is turned down.
+  death or a level-up goes at once and is said even when it comes late. A
+  glance at another app costs nothing. If the phone sleeps and the call
+  drops, MapleSyrup notices within seconds and its lines go back to its own
+  voice, the one it was about to hand over included. While it talks,
+  MapleStory's sound is turned down.
   Prefer its voice on the PC speakers? Choose "PC" under "Replies spoken on"
   on the phone: then it works as below.
 
@@ -90,14 +92,18 @@ How it talks
   shouted, a death or a level-up told.
   A warning is said once per fight. Pot after it and the beating is not
   shouted again in that fight, and the low bar not until the fight is over
-  or the bar goes lower; a low bar nothing answers is said again after 12,
-  30, 60 and 120 seconds. After four warnings that nothing answers (not a
-  word, no potion, no EXP) it says it will wait, and holds the rest for ten
-  minutes or until you are back. Pot within three seconds of the shout three
-  fights running and it stops shouting "back off": it watches instead, and
-  shouts when HP goes deeper than you usually let it or the potion is late;
-  after a late potion, no potion or a death, it shouts again until you have
-  handled three more. A reading has to hold: one odd frame is neither a
+  or the bar goes lower; a low bar nothing answers is said again, then
+  asked about ("Are you going to pot or not?"). After four warnings that
+  nothing answers (not a word, no potion for HP or MP, no EXP) it stops
+  ("Okay. No more pot talk from me." — "you're away" words only if you have
+  been silent ten minutes) and holds the rest, and the coach's looks, for
+  ten minutes, until you speak, or until you pot ("There it is."). Pot
+  within three seconds of the shout three fights running and it stops
+  shouting "back off": it watches instead, and shouts when HP goes deeper
+  than you usually let it, when the potion is late, or under half the
+  warning level — never quiet near the bottom of the bar; after a late
+  potion, no potion or a death, it shouts again until you have handled
+  three more. A reading has to hold: one odd frame is neither a
   potion nor a fall, and a bar it can only guess at is not warned from. A
   bar that reads low for minutes while your EXP keeps coming is a bar it is
   reading wrong: it says so once ("I'm reading your HP wrong") and holds
@@ -161,8 +167,10 @@ Languages
   Korean, Japanese, Chinese (simplified and traditional), Thai, Vietnamese,
   Indonesian and Russian. It follows the phone's language; pick another on the
   main screen, under "Start listening". That is also the language the phone
-  listens in; when a live call hears you speak Hebrew, the phone listens in
-  Hebrew off the call too, and says so (picking a language puts it back).
+  listens in; when a live call hears you speak Hebrew (two sentences, or a
+  long one), the phone listens in Hebrew off the call too, shows "Hearing:
+  עברית ×" beside the picker (tap × to undo), and goes back after two
+  English ones.
   MapleSyrup answers in the language you speak to it and says its own lines
   (warnings, level ups) in yours too. The installer speaks yours when Inno
   Setup has it.

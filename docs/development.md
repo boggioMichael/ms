@@ -64,23 +64,36 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     fight, again unanswered on the same cadence (dealt from the
     `*_AGAIN` decks, `Low::repeating`), or once more at once when the bar
     goes lower than at the last line. `Low::warned_this_fight` is what the
-    death line (`DEATH_WARNED`) and `sooner_warning` go by.
+    death line (`DEATH_WARNED`, also after a beating shouted this fight)
+    and `sooner_warning` go by; the mark moves only when HP spent
+    `SOONER_BAND_SECS` in the `SOONER_BAND` above it on the way down.
   - **Trust.** After `TRUST_FIGHTS` fights in a row potted within
     `TRUST_POT_SECS` of the line, a fall is watched (`watch`), not
     shouted; it is shouted after all under the player's floor by
-    `TRUST_MARGIN` (trust kept if potted in time) or when the potion is
-    late (trust gone). A fight over unanswered, and a death, end it too.
+    `TRUST_MARGIN` (trust kept if potted in time; the floor follows the
+    lowest fall handled in time), under `TRUST_BOTTOM` of the mark however
+    the floor stands, or when the potion is late (trust gone). A fight over
+    unanswered, and a death, end it too; a death during a watched fall
+    moves no mark.
   - **A bar read wrong.** `DOUBT_AFTER_LINES` unanswered lines of one fight
     with EXP gained since the first and `Low::due` returns `Due::Misread`:
     one note (`lines::MISREAD`), then that bar's warnings (and, for HP,
     the beating) wait until it reads above the mark for
     `BELIEVE_AGAIN_SECS`.
-  - **The hold** (`pace`). After `UNANSWERED_MAX` warnings with no sign of
-    life — a word, a potion that held, `EXP_GAINED`, a level — the rest
-    wait `HOLD_SECS` (the `HOLD` line at most once per `HOLD_TOLD_EVERY`),
-    then `AFTER_HOLD` come through before the next hold. News passes a
-    hold. The main loop calls `player_spoke` when the player speaks, and
-    holds the taught things' alerts with its own (`alerts_held`).
+  - **The cadence and the hold.** A fight's unanswered low lines go
+    `Cadence::First`, `Again`, `Ask` (the second repeat is a question, the
+    `*_ASK` decks), times unchanged. In `pace`, after `UNANSWERED_MAX`
+    warnings with no sign of life — a word, an HP or MP potion that held,
+    `EXP_GAINED`, a level — the rest wait `HOLD_SECS`; the note (at most
+    once per `HOLD_TOLD_EVERY`) is `HOLD_HERE` when the player spoke within
+    `HOLD_AWAY_SECS`, else `HOLD_AWAY`. A word or a potion ends the hold at
+    once; a potion seen as one (a jump, `jumped`, within
+    `SEEN_POTION_SECS`) gets one `POTTED_AT_LAST` word when the note was
+    said within `POTTED_AT_LAST_SECS`. Otherwise `AFTER_HOLD` come through
+    when it runs out. News passes a hold. The main loop calls
+    `player_spoke` when the player speaks, holds the taught things' alerts
+    with its own, and the coach's looks and stalls (`alerts_held`,
+    `Glance::held`).
   - **Shouted or told.** `Kind::Warning` is danger now (a beating, a low
     bar, a taught thing past the player's mark); `Kind::Alert` is news (a
     death, a level-up, a thing seen, the coach's word, "still there?").
@@ -88,7 +101,8 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     warning (`ai::openai::Delivery::urgent`); the phone and the console
     colour the two apart.
   - **The cards.** `companion::lines` has six or seven cards per attitude
-    for each situation (three for `SOONER` and `MISREAD`, `lines::SHORT`),
+    for each situation (fewer for the decks in `lines::SHORT`: `SOONER`,
+    `MISREAD`, `POTTED_AT_LAST`),
     dealt from a `Deck` (`attitude.rs`): every card before any repeats,
     never one twice running, a fight's first line never a "still/again"
     card. Decks are seeded per session (`Companion::new`; `seeded` for
@@ -114,7 +128,8 @@ keeps what the pixels mean in MapleStory, and the orchestration.
   stop and `CONSULT_GAP`, and go without the picture,
   `Reason::wants_picture`), `NewScene`, `LevelUp` (the companion's
   verified one, through `Coach::leveled`), `ExpStalled` (seconds of play
-  with EXP unmoved: `STALL_AFTER`, `STALL_AGAIN`), `Look`. The main loop
+  with EXP unmoved, held minutes not counted: `STALL_AFTER`,
+  `STALL_AGAIN`), `Look` (neither while `Glance::held`). The main loop
   turns it into `ai::Job::Coach`, and the model answers one line or
   `[silent]`, from what happened and a few example lines in the player's
   attitude (`Reason::describe`, `coach::examples`). Pacing lives here and
@@ -152,9 +167,12 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     `HELLO_AGAIN` unless the live toggle changed who greets (`greeted_by`;
     a clip hello not heard yet is withdrawn, `withdraw_hello`). A hello
     left to a call that has not opened within `CALL_GREETS_FOR` is said
-    as a clip after all (`hello_overdue`, `hello_late`). After the clip
-    hello, a player it does not know (`Learning::knows_player`) hears
-    `TERMS`, `TERMS_AFTER` later, once a session.
+    as a clip after all (`hello_overdue`, `hello_late`); a page whose call
+    failed to open hands the hello back at once. A call that opens on a
+    greeted visit makes the hello final (`call_opened`, `hello_heard`): a
+    reload is Quiet. A player it does not know (`Learning::knows_player`)
+    hears `TERMS` once a session, `TERMS_AFTER` after the clip hello, or
+    from the call's own greeting (`new_player` in the status).
   - **The call** (`Relay`): its own lines go to a live call at most once
     per `RELAY_GAP` (a button's answer at once, outside the relay), the
     newest of each kind waiting for the gap; an
@@ -167,17 +185,24 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     `what: "dropped"`, logged "[live] not said, too late"); an urgent one
     is said however late. A call whose phone is gone `CALL_LOST_AFTER` is
     lost (`watch_call`, `call_ended`) and the lines go back to its own
-    voice; the page also says the call is off when it is hidden (a beacon
-    to `/api/mode`).
+    voice — the parked ones too, a warning or news said, the rest logged.
+    The page says the call is off only when it goes away (`pagehide`, a
+    beacon to `/api/mode`), not when hidden: a glance costs nothing; and
+    the status's `on_call` lets a page whose call is on correct a PC that
+    took it as lost (`healCall`).
   - **A talk-over** (`Outputs::cut`): a reply or a note is hushed and the
     rest of it dropped; a warning or news plays out on the PC, and its clip
     held for the phone goes after the player's turn. Mute (`silence`)
     stops everything.
   - **The page**: a clip refused before a tap (`NotAllowedError`) is kept
-    for it (`playNextClip`, `blocked`); `hearingLanguage` turns the
-    clip-mode recogniser to Hebrew when the call hears Hebrew; the
-    language picker (`#lang`) is on the main screen; `/api/state` carries
-    a boot id, and a page open across a restart starts over.
+    for it (`playNextClip`, `blocked`); at the tap the hello and the terms
+    play, and a clip no longer news is dropped — `/api/state`'s `clips`
+    carry kind and age; a warning past `SAY_STALE_MS`, news past
+    `NEWS_STALE_MS`. `hearingLanguage` turns the clip-mode recogniser to
+    Hebrew after two Hebrew sentences on the call (or one long one) and
+    back after two English ones, shown beside the language picker (`#lang`,
+    on the main screen) with an × to undo; `/api/state` carries a boot id,
+    and a page open across a restart starts over.
 - **`app/`**, **`platform/`**, **`observe/`**, **`overlay/`**: the
   screen, the console and voice, the dashboard and preview, the overlay.
 
