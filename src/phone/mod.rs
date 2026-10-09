@@ -13,7 +13,9 @@
 //!
 //! `/api/state` can wait (`wait=` milliseconds) until there is something
 //! new — a line, a spoken clip, a reply cut short — so the phone hears of
-//! it at once instead of at its next look.
+//! it at once instead of at its next look. It lists the clips the phone can
+//! still fetch with what each is (`kind`) and how old (`age_ms`): a phone
+//! that could play none before a tap plays no stale news at the tap.
 //!
 //! On a live call (`crate::ai::live`) the phone talks to OpenAI itself and
 //! asks the PC for a short-lived key (`/api/live`), the screen
@@ -301,9 +303,8 @@ struct State {
     phone_seen: Option<Instant>,
     browser: Option<String>,
     requests: u64,
-    /// The latest spoken lines as WAVs, for the phone to play in turn, with
-    /// their numbers.
-    clips: VecDeque<(u64, Arc<Vec<u8>>)>,
+    /// The latest spoken lines, for the phone to play in turn.
+    clips: VecDeque<Clip>,
     /// How loud each clip is as it goes (for the dog's mouth).
     mouths: VecDeque<(u64, Vec<u8>)>,
     last_clip: u64,
@@ -326,6 +327,16 @@ fn plausible_locale(text: &str) -> bool {
 
 /// How many spoken lines the phone can still fetch.
 const CLIPS_KEPT: usize = 8;
+
+/// A spoken line for the phone: its number, what it is (a warning, news, a
+/// reply, a note) and when it was made — the page drops a warning or news
+/// that waited too long for the tap — and the WAV.
+struct Clip {
+    seq: u64,
+    kind: Kind,
+    made: Instant,
+    wav: Arc<Vec<u8>>,
+}
 
 /// Everything the phone link shares between the server's threads and the
 /// main loop.
@@ -434,14 +445,19 @@ impl Hub {
         std::mem::take(&mut self.lock().inbox)
     }
 
-    /// Hand the phone a spoken line (a WAV) to play after the ones before
-    /// it. Returns its number.
-    pub fn set_clip(&self, wav: Vec<u8>) -> u64 {
+    /// Hand the phone a spoken line (a WAV) of this `kind` to play after
+    /// the ones before it. Returns its number.
+    pub fn set_clip(&self, kind: Kind, wav: Vec<u8>) -> u64 {
         let mouth = crate::app::dog::mouth_of_wav(&wav);
         let mut state = self.lock();
         state.last_clip += 1;
         let seq = state.last_clip;
-        state.clips.push_back((seq, Arc::new(wav)));
+        state.clips.push_back(Clip {
+            seq,
+            kind,
+            made: Instant::now(),
+            wav: Arc::new(wav),
+        });
         state.mouths.push_back((seq, mouth));
         while state.clips.len() > CLIPS_KEPT {
             state.clips.pop_front();
@@ -613,6 +629,17 @@ impl Hub {
                     .skip(skip)
                     .filter(|m| m.id > since)
                     .collect();
+                let clips: Vec<Value> = state
+                    .clips
+                    .iter()
+                    .map(|c| {
+                        json!({
+                            "seq": c.seq,
+                            "kind": c.kind,
+                            "age_ms": now.saturating_duration_since(c.made).as_millis() as u64,
+                        })
+                    })
+                    .collect();
                 Response::json(
                     200,
                     &json!({
@@ -624,6 +651,7 @@ impl Hub {
                         "uptime": self.started.elapsed().as_secs_f64(),
                         "boot": self.boot,
                         "clip": state.last_clip,
+                        "clips": clips,
                         "cut": state.cut,
                     }),
                 )
@@ -634,12 +662,13 @@ impl Hub {
                 let clip = {
                     let state = self.lock();
                     match wanted {
-                        Some(seq) => state.clips.iter().find(|(n, _)| *n == seq).cloned(),
-                        None => state.clips.back().cloned(),
+                        Some(seq) => state.clips.iter().find(|c| c.seq == seq),
+                        None => state.clips.back(),
                     }
+                    .map(|c| Arc::clone(&c.wav))
                 };
                 match clip {
-                    Some((_, wav)) => Response::new(200, "audio/wav", wav.as_slice()),
+                    Some(wav) => Response::new(200, "audio/wav", wav.as_slice()),
                     None => Response::json(404, &json!({"error": "no such clip"})),
                 }
             }
@@ -785,8 +814,8 @@ impl Hub {
                     .lock()
                     .clips
                     .iter()
-                    .find(|(n, _)| *n == seq)
-                    .map(|(_, wav)| Arc::clone(wav));
+                    .find(|c| c.seq == seq)
+                    .map(|c| Arc::clone(&c.wav));
                 match clip.as_deref().and_then(|wav| audio::wav_samples(wav)) {
                     Some((rate, samples)) => {
                         recording.played(rate, &samples, age);
@@ -1595,7 +1624,7 @@ mod tests {
         hub.set_recording(Some(Arc::clone(&recording) as Arc<dyn Recording>));
         assert_eq!(hub.handle(&req).status, 204);
         // A spoken line the phone started playing a moment ago, then stopped.
-        let seq = hub.set_clip(crate::ai::wav_bytes(&[100; 2_400], 24_000));
+        let seq = hub.set_clip(Kind::Reply, crate::ai::wav_bytes(&[100; 2_400], 24_000));
         let started = format!(r#"{{"seq": {seq}, "on": true, "age": 80}}"#);
         assert_eq!(
             hub.handle(&request("POST", "/api/playing?k=k1", &started))
@@ -1644,7 +1673,7 @@ mod tests {
         let hub = hub();
         let mut samples = vec![0i16; 960];
         samples.extend((0..960).map(|i| if i % 2 == 0 { 9_000 } else { -9_000 }));
-        let seq = hub.set_clip(crate::ai::wav_bytes(&samples, 24_000));
+        let seq = hub.set_clip(Kind::Reply, crate::ai::wav_bytes(&samples, 24_000));
         let mouth = body(&hub.handle(&request("GET", &format!("/api/mouth?k=k1&seq={seq}"), "")));
         assert_eq!(mouth["step_ms"], 40);
         let levels: Vec<u64> = mouth["levels"]
@@ -1675,10 +1704,30 @@ mod tests {
             hub.handle(&request("GET", "/api/clip?k=k1", "")).status,
             404
         );
-        assert_eq!(hub.set_clip(b"RIFF....WAVE".to_vec()), 1);
-        assert_eq!(hub.set_clip(b"RIFF....WAVE2".to_vec()), 2);
+        assert_eq!(hub.set_clip(Kind::Info, b"RIFF....WAVE".to_vec()), 1);
+        assert_eq!(hub.set_clip(Kind::Warning, b"RIFF....WAVE2".to_vec()), 2);
         let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
         assert_eq!(state["clip"], 2);
+        // Each with what it is and how old: the page plays no stale
+        // warning at the tap.
+        let listed = |state: &Value| -> Vec<(u64, String)> {
+            state["clips"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| {
+                    assert!(c["age_ms"].as_u64().unwrap() < 5_000, "{c}");
+                    (
+                        c["seq"].as_u64().unwrap(),
+                        c["kind"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(
+            listed(&state),
+            [(1, "info".to_string()), (2, "warning".to_string())]
+        );
         let clip = hub.handle(&request("GET", "/api/clip?k=k1&seq=2", ""));
         assert_eq!((clip.status, clip.content_type), (200, "audio/wav"));
         assert_eq!(clip.body, b"RIFF....WAVE2");
@@ -1686,13 +1735,20 @@ mod tests {
         let first = hub.handle(&request("GET", "/api/clip?k=k1&seq=1", ""));
         assert_eq!(first.body, b"RIFF....WAVE");
         for _ in 0..super::CLIPS_KEPT {
-            hub.set_clip(b"RIFF....MORE".to_vec());
+            hub.set_clip(Kind::Alert, b"RIFF....MORE".to_vec());
         }
         assert_eq!(
             hub.handle(&request("GET", "/api/clip?k=k1&seq=1", ""))
                 .status,
             404
         );
+        let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        assert_eq!(listed(&state).len(), super::CLIPS_KEPT);
+        assert_eq!(listed(&state)[0], (3, "alert".to_string()));
+        // Cut: none left to fetch, none listed.
+        hub.cut();
+        let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        assert!(listed(&state).is_empty());
         let dog = hub.handle(&request("GET", "/dog.js", ""));
         assert_eq!(
             (dog.status, dog.content_type),

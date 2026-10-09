@@ -462,6 +462,7 @@ fn main() {
             talking: now < voice_until || consult.is_some(),
             muted: companion.muted(),
             dead: companion.dead(),
+            held: companion.alerts_held(now),
         };
         if let Some(reason) = coach.observe(&glance) {
             let picture = if reason.wants_picture() {

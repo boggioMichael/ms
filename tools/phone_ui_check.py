@@ -2,22 +2,27 @@
 errors, the main screen shows only the essentials (the language picker
 among them), the gear opens Settings, the voice search narrows the list,
 the live-call toggle flipped before Listen says hello again, the game line
-opens Details, Hebrew is right to left; then the turn-taking, with a
-stand-in speech recognizer, a stand-in call and a microphone fed from a
-file: the words so far never land after the sentence, a sentence cut off
-by a clip is still sent, a loud sound over a clip pauses it until the PC's
-word, a PC started again is greeted again and its clips play, a page
-reloaded mid-visit is not greeted twice, and on a call MapleSyrup's own
-lines are said by the call, never by the phone's own voice: handed over
-with the reading behind them and the game as read now, never while the
-call is answering (one turn asked for at a time), a warning dropped once
-stale (and the PC told), a death or a level-up said however late, a
-warning's row red and news's amber (the dog barks at a warning only), a
-change of attitude retunes the call in place, Hebrew heard on the call
-sets the recogniser's language, the PC is told the call is off as the
-page is hidden or leaves and on again as it comes back; and, under the
+opens Details, Hebrew is right to left (and at 320 px the game line loses
+its end, not the level); then the turn-taking, with a stand-in speech
+recognizer, a stand-in call and a microphone fed from a file: the words so
+far never land after the sentence, a sentence cut off by a clip is still
+sent, a loud sound over a clip pauses it until the PC's word, a PC started
+again is greeted again and its clips play, a page reloaded mid-visit is not
+greeted twice, and on a call MapleSyrup's own lines are said by the call,
+never by the phone's own voice: the call's hello says what it does to a
+player the PC does not know, lines are handed over with the reading behind
+them and the game as read now, never while the call is answering (one turn
+asked for at a time), a warning dropped once stale (and the PC told), a
+death or a level-up said however late, a warning's row red and news's amber
+(the dog barks at a warning only), a change of attitude retunes the call in
+place, Hebrew heard on the call sets the recogniser's language (two
+sentences, or one long one; two English ones set it back; shown beside the
+picker, with a × back), a glance at another app tells the PC nothing, a PC
+that lost the call is told it is on, the page leaving tells it the call is
+off, and a call that fails to open hands its hello back; and, under the
 browser's own autoplay policy (a phone's: no clip before a tap), the hello
-clip made before the tap is kept for it. Needs `pip install playwright &&
+clip made before the tap is kept for it, and the terms with it, but not a
+stale warning or stale news. Needs `pip install playwright &&
 playwright install chromium`; run from the repository root: `python3
 tools/phone_ui_check.py` (or with some of `ui`, `recognition`, `live`,
 `loudness`, `hello` to run those alone; PHONE_PAGE=path checks another
@@ -62,8 +67,10 @@ STATUS = {
 # clip goes on, and a little more.
 PAUSE_SLACK = 2000
 # The stand-in PC's state, as the page polls it (/api/state), and every
-# request the page made.
-STATE = {"boot": "b1", "clip": 0, "cut": 0, "messages": [], "voice_on": "both"}
+# request the page made. `clips`: what a clip is and when it was made, by
+# its number (a clip not in it is listed by nobody, as a PC from before
+# would).
+STATE = {"boot": "b1", "clip": 0, "cut": 0, "messages": [], "voice_on": "both", "clips": {}}
 REQUESTS = []
 LOCK = threading.Lock()
 
@@ -83,6 +90,9 @@ CLIP_SECONDS = {"default": 8}
 # call's instructions once the attitude has changed (/api/instructions).
 EYES = "The MapleStory window is open and in view.\nCharacter: level 152.\nHP 11%, MP about 40%."
 INSTRUCTIONS = "You are MapleSyrup. Your attitude: friendly."
+# Whether the stand-in PC can start a call (/api/live): off, a call that
+# fails to open.
+LIVE = {"opens": True}
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -105,8 +115,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             with LOCK:
                 since = int(q.get("since", "0") or 0)
                 messages = [m for m in STATE["messages"] if m["id"] > since]
+                clips = [{"seq": seq, "kind": kind, "age_ms": int((time.time() - made) * 1000)} for seq, (kind, made) in sorted(STATE["clips"].items())]
                 body = {"status": STATUS, "mic": {"live": False, "level": 0, "speaking": False}, "voice_on": STATE["voice_on"],
-                        "messages": messages, "last_id": len(STATE["messages"]), "uptime": 100.0, "boot": STATE["boot"], "clip": STATE["clip"], "cut": STATE["cut"]}
+                        "messages": messages, "last_id": len(STATE["messages"]), "uptime": 100.0, "boot": STATE["boot"], "clip": STATE["clip"],
+                        "clips": clips, "cut": STATE["cut"]}
             self._send(200, json.dumps(body).encode(), "application/json")
         elif path == "/api/clip":
             self._log()
@@ -123,7 +135,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception: pass
         self._log(body)
         path = urlparse(self.path).path
-        if path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "attitude": "savage"}).encode(), "application/json")
+        if path == "/api/live" and not LIVE["opens"]: self._send(200, b'{"error": "no key"}', "application/json")
+        elif path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "attitude": "savage"}).encode(), "application/json")
         elif path == "/sdp": self._send(200, b"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n", "application/sdp")
         else: self._send(200, b'{"ok":true}', "application/json")
 
@@ -196,7 +209,7 @@ def wait_for(check, seconds, what):
 
 def reset_pc():
     with LOCK:
-        STATE.update({"boot": "b1", "clip": 0, "cut": 0, "messages": []})
+        STATE.update({"boot": "b1", "clip": 0, "cut": 0, "messages": [], "clips": {}})
         CLIP_SECONDS.clear(); CLIP_SECONDS["default"] = 8
         REQUESTS.clear()
 
@@ -274,6 +287,21 @@ def ui_checks(browser):
     page.select_option("#lang", "he-IL")
     page.wait_for_timeout(300)
     assert page.get_attribute("html", "dir") == "rtl"
+    # On a 320 px phone the game line does not fit: in Hebrew too it loses
+    # its end, never the level (its text keeps its own direction).
+    page.set_viewport_size({"width": 320, "height": 700})
+    page.wait_for_timeout(200)
+    strip = page.evaluate("""() => {
+      const el = document.querySelector("#stripText"), text = el.firstChild, box = el.getBoundingClientRect();
+      const range = document.createRange(), at = text.data.indexOf("Lv 152");
+      range.setStart(text, at); range.setEnd(text, at + "Lv 152".length);
+      const lv = range.getBoundingClientRect();
+      return { overflows: el.scrollWidth > el.clientWidth, box: [box.left, box.right], level: [lv.left, lv.right] };
+    }""")
+    assert strip["overflows"], ("the strip must be too narrow for its text here", strip)
+    assert strip["box"][0] - 0.5 <= strip["level"][0] and strip["level"][1] <= strip["box"][1] + 0.5, ("at 320 px in Hebrew the level is cut off", strip)
+    page.screenshot(path=os.path.join(SHOTS, "phone-main-320-he.png"), full_page=True)
+    page.set_viewport_size({"width": 390, "height": 844})
     page.click("#gear")
     page.wait_for_timeout(200)
     assert page.inner_text("#tabDetails") == "פרטים" and page.inner_text("#sheetDone") == "סיום"
@@ -404,6 +432,7 @@ const hookDog = setInterval(() => {
 def live_checks(browser):
     STATUS["live"] = True
     STATUS["attitude"] = "savage"
+    STATUS["new_player"] = True
     reset_pc()
     with LOCK: STATE["voice_on"] = "phone"
     page = browser.new_page(viewport={"width": 390, "height": 844})
@@ -425,8 +454,12 @@ def live_checks(browser):
         if fact: m["fact"] = fact
         if urgent: m["urgent"] = True
         with LOCK: STATE["messages"].append(m)
-    # The greeting asks for a turn; the call takes it and is done.
+    # The greeting asks for a turn; the call takes it and is done. To a
+    # player the PC does not know (status.new_player) it says what it does
+    # too, as the clip hello's terms would.
     wait_for(lambda: len(sent("response.create")) == 1, 4, "the greeting asked for no turn")
+    greeting = items_with("opened the call")
+    assert len(greeting) == 1 and "say you'll shout if their HP drops and they can ask you anything" in greeting[0]["item"]["content"][0]["text"], greeting
     event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
     # On the call, one of MapleSyrup's own lines (the answer to a button) is
     # handed to the call to say, never to the phone's own voice.
@@ -501,15 +534,31 @@ def live_checks(browser):
     assert requests_since(t1, "/api/instructions") and not requests_since(t1, "/api/live"), "the call was started over"
     page.wait_for_timeout(600)
     assert len(sent("session.update")) == 1, "retuned more than once"
-    # The player speaks Hebrew on the call (the phone is set to en-US):
-    # the recogniser clip mode uses follows them, said once on the screen;
-    # a second Hebrew sentence says nothing more.
-    event({"type": "conversation.item.input_audio_transcription.completed", "transcript": "מה הרמה שלי עכשיו"})
-    page.wait_for_timeout(200)
+    # The player speaks Hebrew on the call (the phone is set to en-US): the
+    # recogniser clip mode uses follows them — not on one short word (an
+    # English speaker's "תודה"), on two Hebrew sentences in a row or one
+    # long one — said once on the screen as it switches, and shown beside
+    # the picker while it differs from it; two English sentences in a row
+    # switch it back.
+    def heard(text):
+        event({"type": "conversation.item.input_audio_transcription.completed", "transcript": text})
+        page.wait_for_timeout(200)
+    def hearing(): return page.evaluate("(() => { const b = document.querySelector('#hearing'); return b.hidden ? null : b.textContent; })()")
+    def rec_lang(): return page.evaluate("localStorage.getItem('ms.recLang')")
+    def told(): return page.evaluate("""[...document.querySelectorAll("#log li.info")].filter((li) => li.textContent === "Hearing Hebrew now.").length""")
+    heard("תודה")
+    assert (page.inner_text("#note"), hearing(), rec_lang() or "") == ("", None, ""), ("one Hebrew word switched the recogniser", page.inner_text("#note"), hearing(), rec_lang())
+    heard("מה המצב")
     assert page.inner_text("#note") == "Hearing Hebrew now.", page.inner_text("#note")
-    event({"type": "conversation.item.input_audio_transcription.completed", "transcript": "ואיפה אני"})
-    page.wait_for_timeout(200)
-    assert page.evaluate("""[...document.querySelectorAll("#log li.info")].filter((li) => li.textContent === "Hearing Hebrew now.").length""") == 1
+    assert (hearing(), rec_lang(), told()) == ("Hearing: עברית ×", "he-IL", 1), (hearing(), rec_lang(), told())
+    heard("ok what's my hp")
+    assert hearing() == "Hearing: עברית ×", "one English sentence switched it back"
+    heard("and my mp")
+    assert (hearing(), rec_lang() or "", page.inner_text("#note")) == (None, "", ""), (hearing(), rec_lang(), page.inner_text("#note"))
+    heard("מה הרמה שלי עכשיו")
+    assert (hearing(), rec_lang(), told()) == ("Hearing: עברית ×", "he-IL", 2), (hearing(), rec_lang(), told())
+    heard("ואיפה אני")
+    assert told() == 2, "a second Hebrew sentence said it again"
     t_clip = time.time()
     page.click("#gear"); page.uncheck("#liveCall"); page.click("#sheetDone")
     wait_for(lambda: any(r["body"] == {"live": False} for r in requests_since(t_clip, "/api/mode")), 4, "the call did not give way to clip mode")
@@ -518,25 +567,41 @@ def live_checks(browser):
     # Picked by hand, the picker wins again.
     page.select_option("#lang", "en-US")
     wait_for(lambda: page.evaluate("!!window.__rec && window.__rec.running && window.__rec.lang === 'en-US'"), 5, "the picker did not take the recogniser back")
+    assert hearing() is None and not rec_lang(), (hearing(), rec_lang())
     # Back on a call for the rest.
     t_back = time.time()
     page.click("#gear"); page.check("#liveCall"); page.click("#sheetDone")
     wait_for(lambda: any(r["body"] == {"live": True} for r in requests_since(t_back, "/api/mode")), 5, "the call did not reopen")
-    # The phone pocketed (the page hidden; its call dies with it as often
-    # as not): the PC is told the call is off as the page goes, so its
-    # lines do not go to a call nobody is on; back in front with the call
-    # still alive, the PC is told it is on again.
+    # A glance at another app (the page hidden a moment) is not the end of
+    # the call: no word to the PC (the line waiting for the call's gap went
+    # nowhere, and a death meanwhile was shown and never said); a lock is
+    # the PC's to notice, when the phone stops asking. Back in front, no word
+    # while the PC has the call on (status.on_call).
     def visibility(state):
         page.evaluate("""(state) => {
           Object.defineProperty(document, "visibilityState", { get: () => state, configurable: true });
           document.dispatchEvent(new Event("visibilitychange"));
         }""", state)
+    STATUS["on_call"] = True
     t_hide = time.time()
     visibility("hidden")
-    wait_for(lambda: any(r["body"] == {"live": False} for r in requests_since(t_hide, "/api/mode")), 3, "the hidden page did not tell the PC its call is off")
+    page.wait_for_timeout(1000)
+    assert not requests_since(t_hide, "/api/mode"), ("a glance at another app told the PC about the call", [r["body"] for r in requests_since(t_hide, "/api/mode")])
     t_show = time.time()
     visibility("visible")
-    wait_for(lambda: any(r["body"] == {"live": True} for r in requests_since(t_show, "/api/mode")), 3, "the page back in front did not tell the PC its call is on")
+    page.wait_for_timeout(1000)
+    assert not requests_since(t_show, "/api/mode"), ("the page back in front told a PC that has the call on", [r["body"] for r in requests_since(t_show, "/api/mode")])
+    # The PC took the call as lost while the page's is on (the link down a
+    # while with the page in front; another page's hello): the page tells
+    # it the call is on — once, not every poll.
+    t_heal = time.time()
+    STATUS["on_call"] = False
+    # (Within 5 s of the call's own "on": up to that long.)
+    wait_for(lambda: requests_since(t_heal, "/api/mode"), 6, "the page did not tell a PC that lost its call that the call is on")
+    page.wait_for_timeout(2500)
+    modes = [r["body"] for r in requests_since(t_heal, "/api/mode")]
+    assert modes == [{"live": True}], modes
+    STATUS["on_call"] = True
     # The PC started again while the call is on: it hears of the call —
     # after the hello (to the PC a page that says hello has no call until
     # it says so).
@@ -575,6 +640,69 @@ def live_checks(browser):
     assert not [e for e in sent_now if e["type"] == "response.create" or "opened the call" in json.dumps(e)], "a reloaded page's call said hello again"
     STATUS["call_greets"] = True
     page.close()
+    # The next evening, in clip mode, the recogniser still in Hebrew from a
+    # call: shown beside the picker (it was not: every English sentence came
+    # out as Hebrew word salad, the picker saying English); its × goes back
+    # to the picker's, for good. (On a 320 px phone, within the screen.)
+    page = browser.new_page(viewport={"width": 320, "height": 700})
+    watch(page)
+    page.add_init_script(FAKES)
+    page.add_init_script("try { if (!sessionStorage.getItem('w')) { sessionStorage.setItem('w', '1'); localStorage.setItem('ms.recLang', 'he-IL'); localStorage.setItem('ms.live', '0'); localStorage.setItem('ms.lang', 'en-US'); } } catch (e) {}")
+    page.goto(f"http://127.0.0.1:{port}/?k=test")
+    page.wait_for_timeout(800)
+    assert hearing() == "Hearing: עברית ×", hearing()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth"), "the badge widened the page"
+    page.screenshot(path=os.path.join(SHOTS, "phone-hearing-320.png"))
+    page.click("#listen")
+    wait_for(lambda: page.evaluate("!!window.__rec && window.__rec.running"), 5, "recognition did not start")
+    assert page.evaluate("window.__rec.lang") == "he-IL", page.evaluate("window.__rec.lang")
+    page.click("#hearing")
+    wait_for(lambda: page.evaluate("!!window.__rec && window.__rec.running && window.__rec.lang === 'en-US'"), 5, "the × did not take the recogniser back to the picker's")
+    assert hearing() is None and not rec_lang(), (hearing(), rec_lang())
+    page.reload()
+    page.wait_for_timeout(800)
+    assert hearing() is None, "the × was not for good"
+    page.close()
+    # A player the PC knows: the call's hello says nothing of what it does.
+    STATUS["new_player"] = False
+    reset_pc()
+    with LOCK: STATE["voice_on"] = "phone"
+    page = browser.new_page(viewport={"width": 390, "height": 844})
+    watch(page)
+    page.add_init_script(FAKES)
+    page.goto(f"http://127.0.0.1:{port}/?k=test")
+    page.wait_for_timeout(800)
+    page.click("#listen")
+    wait_for(lambda: [e for e in page.evaluate("window.__dcSent") if "opened the call" in json.dumps(e)], 5, "the known player's call did not greet")
+    greeting = [e for e in page.evaluate("window.__dcSent") if "opened the call" in json.dumps(e)]
+    assert len(greeting) == 1 and "shout" not in json.dumps(greeting[0]), greeting
+    page.close()
+    # A call that fails to open at the tap (no key, OpenAI down): the hello
+    # the PC left to it is handed back — the page says hello again with the
+    # call off, so the PC says its own now, not a minute after the page
+    # opened. A page the PC greeted already (call_greets false): no hello.
+    LIVE["opens"] = False
+    for greets in (True, False):
+        STATUS["call_greets"] = greets
+        reset_pc()
+        with LOCK: STATE["voice_on"] = "phone"
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        watch(page)
+        page.add_init_script(FAKES)
+        page.goto(f"http://127.0.0.1:{port}/?k=test")
+        page.wait_for_timeout(800)
+        t4 = time.time()
+        page.click("#listen")
+        def handed_back(): return [r for r in requests_since(t4, "/api/hello") if (r["body"] or {}).get("live") is False]
+        wait_for(lambda: page.evaluate("!!window.__rec && window.__rec.running"), 5, "the call that failed did not give way to the regular mode")
+        if greets:
+            wait_for(handed_back, 3, "the call that failed to open did not hand its hello back")
+        else:
+            page.wait_for_timeout(1000)
+            assert not handed_back(), "a page greeted already said hello again when its call failed"
+        page.close()
+    LIVE["opens"] = True
+    STATUS["call_greets"] = True
 
 # What the phone's voice element played, in order, from its `playing`
 # events: the silent clip a tap unlocks sound with ("unlock"), and the
@@ -630,6 +758,37 @@ def hello_checks(p):
         fetched = [r["query"].get("seq") for r in requests_since(t0, "/api/clip")]
         assert fetched.count("1") <= 2 and fetched.count("2") == 1, fetched
         page.close()
+    # Everything made before the tap waits for it — but not as news when it
+    # is stale: the hello and the terms play; a warning made longer before
+    # than the call's own rule (6 s) does not, nor news over a minute old;
+    # and of what is left, far behind, only the latest. (`made`: each clip's
+    # kind and how many seconds before the tap it was made.)
+    def before_the_tap(made, expected, label):
+        reset_pc()
+        with LOCK: CLIP_SECONDS["default"] = 1
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        watch(page)
+        page.add_init_script(FAKES)
+        page.add_init_script(PLAYED)
+        t0 = time.time()
+        page.goto(f"http://127.0.0.1:{port}/?k=test")
+        wait_for(lambda: requests_since(t0, "/api/hello"), 5, "no hello")
+        page.wait_for_timeout(1000)
+        tap = time.time() + 1
+        with LOCK:
+            for seq, (kind, ago) in enumerate(made, 1):
+                STATE["clips"][seq] = (kind, tap - ago)
+            STATE["clip"] = len(made)
+        page.wait_for_timeout(1000)
+        page.click("#listen")
+        wait_for(lambda: page.evaluate("window.__played").count("seq " + str(expected[-1])) and page.evaluate("window.msVoice.ended"), 4 + 1.5 * len(expected), f"{label}: played {page.evaluate('window.__played')}")
+        page.wait_for_timeout(500)
+        played = page.evaluate("window.__played")
+        assert played == ["unlock"] + [f"seq {n}" for n in expected], f"{label}: played {played}"
+        page.close()
+    before_the_tap([("info", 12), ("info", 11), ("warning", 10)], [1, 2], "the hello, the terms and a warning made 10 s before the tap")
+    before_the_tap([("info", 40), ("info", 39), ("warning", 30), ("alert", 90), ("alert", 20), ("warning", 0)], [1, 2, 5, 6],
+                   "six clips before the tap, the hello first")
     browser.close()
 
 def browser_args(mic_file):

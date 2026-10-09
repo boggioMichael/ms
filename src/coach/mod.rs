@@ -52,6 +52,12 @@ pub struct Glance<'a> {
     /// The character is dead (HP at zero), until it comes back: the
     /// companion has said so, and the death screen is no new scene.
     pub dead: bool,
+    /// The companion holds its alerts (nothing the player does answers
+    /// them: away, or the readings are wrong): no look at nothing in
+    /// particular and no stall — "I'll wait" is not followed by "dead
+    /// map, change channel". What happens (a reaction, a new scene, a
+    /// level-up) is still looked at.
+    pub held: bool,
 }
 
 /// Why the model is consulted.
@@ -545,7 +551,11 @@ impl Coach {
         // over at a change. Twenty idle minutes and the player back had
         // "no EXP for 20 min" consulted, with the picture, 18 s after
         // their "I'm back", with EXP already moving.
+        // (Nor the minutes of a hold: they are the minutes nobody
+        // answered — the pet dead, the player away — and counted, "no EXP
+        // for 6 min" came fifteen seconds after the potion that ended it.)
         if watched
+            && !g.held
             && self.activity > IDLE_ACTIVITY
             && let Some(last) = self.last_frame
         {
@@ -600,7 +610,13 @@ impl Coach {
             self.level_up = None;
             self.propose(Reason::LevelUp { level }, now);
         }
-        if self.exp_read.is_some()
+        // Held, the coach does not keep talking either: no stall (nor one
+        // proposed before the hold), no look (below).
+        if g.held && matches!(self.pending, Some((Reason::ExpStalled { .. }, _))) {
+            self.pending = None;
+        }
+        if !g.held
+            && self.exp_read.is_some()
             && self.stalled_for >= STALL_AFTER
             && self
                 .stall_told
@@ -644,7 +660,7 @@ impl Coach {
         // A look at nothing in particular: put off by as long as anyone
         // talked lately (see TALK_WINDOW).
         let wait = self.look_every + self.talked_lately();
-        if quiet && now - self.last_consult >= wait && self.activity > IDLE_ACTIVITY {
+        if quiet && !g.held && now - self.last_consult >= wait && self.activity > IDLE_ACTIVITY {
             return Some(self.consult(Reason::Look, now));
         }
         None
@@ -1019,6 +1035,7 @@ mod tests {
                 talking: false,
                 muted: false,
                 dead: false,
+                held: false,
             };
             if let Some(reason) = coach.observe(&g) {
                 consults.push((now, reason));
@@ -1115,6 +1132,7 @@ mod tests {
                 talking: false,
                 muted: true,
                 dead: false,
+                held: false,
             };
             assert_eq!(muted.observe(&g), None);
         }
@@ -1138,6 +1156,7 @@ mod tests {
             talking: false,
             muted: false,
             dead: false,
+            held: false,
         };
         assert_eq!(coach.observe(&g), Some(Reason::NewScene));
         let said_at = now;
@@ -1245,6 +1264,109 @@ mod tests {
         assert!((-0.5..=CONSULT_GAP + 0.5).contains(&after), "{again:?}");
     }
 
+    /// [`play`] with EXP flat at `exp`, while the companion holds its
+    /// alerts (`held`) or not; every consult comes back with nothing.
+    fn play_held(
+        coach: &mut Coach,
+        from: f64,
+        seconds: f64,
+        exp: f32,
+        held: bool,
+    ) -> Vec<(f64, Reason)> {
+        let mut consults = Vec::new();
+        for i in 0..(seconds * 10.0) as usize {
+            let now = from + i as f64 * 0.1;
+            let o = obs(exp, 150);
+            let v = verdict(0.02, false);
+            let g = Glance {
+                now,
+                obs: &o,
+                scene: Some(&v),
+                in_view: true,
+                talking: false,
+                muted: false,
+                dead: false,
+                held,
+            };
+            if let Some(reason) = coach.observe(&g) {
+                consults.push((now, reason));
+                coach.answered(now, None);
+            }
+        }
+        consults
+    }
+
+    #[test]
+    fn while_the_companion_holds_its_alerts_the_coach_holds_its_tongue() {
+        // The evening at 83:47: "I'll stop nagging for a while. Just talk
+        // to me when you're back." — then a look at 84:15, "no EXP for 3
+        // min" at 84:59, more looks. Held, the coach proposes no look and
+        // no stall; what happens is still looked at.
+        let mut coach = Coach::new(true);
+        let held = play_held(&mut coach, 0.0, 600.0, 19.0, true);
+        assert!(held.is_empty(), "held: no look, no stall: {held:?}");
+        // A new scene and a level-up, held: looked at as ever.
+        let o = obs(19.0, 150);
+        let v = verdict(0.1, true);
+        let g = Glance {
+            now: 600.0,
+            obs: &o,
+            scene: Some(&v),
+            in_view: true,
+            talking: false,
+            muted: false,
+            dead: false,
+            held: true,
+        };
+        assert_eq!(coach.observe(&g), Some(Reason::NewScene));
+        coach.answered(600.0, None);
+        coach.leveled(601.0, Some(151));
+        let level: Vec<Reason> = play_held(&mut coach, 601.0, 30.0, 0.5, true)
+            .into_iter()
+            .map(|(_, r)| r)
+            .collect();
+        assert_eq!(level, [Reason::LevelUp { level: Some(151) }]);
+        // The hold over (they spoke, or it ran out): the looks and the
+        // stall as before.
+        let after = play_held(&mut coach, 631.0, 300.0, 0.5, false);
+        assert!(after.iter().any(|(_, r)| *r == Reason::Look), "{after:?}");
+        assert!(
+            after
+                .iter()
+                .any(|(_, r)| matches!(r, Reason::ExpStalled { .. })),
+            "{after:?}"
+        );
+    }
+
+    #[test]
+    fn the_minutes_of_a_hold_are_not_minutes_of_a_stall() {
+        // The evening at 88:00: the pet dead since 82:00, the warnings held
+        // from 83:47, a potion at last — and "no EXP for 6 min" fifteen
+        // seconds later, the held minutes counted as play. Like idle time,
+        // they do not count: a minute and a half of play before the hold,
+        // six minutes held, and the stall comes once the play adds up to
+        // three minutes, not at once.
+        let stalls = |consults: &[(f64, Reason)]| -> Vec<(f64, Reason)> {
+            consults
+                .iter()
+                .filter(|(_, r)| matches!(r, Reason::ExpStalled { .. }))
+                .cloned()
+                .collect()
+        };
+        let mut coach = Coach::new(true);
+        let before = play_held(&mut coach, 0.0, 90.0, 19.0, false);
+        assert!(stalls(&before).is_empty(), "{before:?}");
+        let held = play_held(&mut coach, 90.0, 360.0, 19.0, true);
+        assert!(held.is_empty(), "{held:?}");
+        let after = play_held(&mut coach, 450.0, 200.0, 19.0, false);
+        let stalled = stalls(&after);
+        let [(at, reason)] = stalled.as_slice() else {
+            panic!("one stall once the play adds up: {after:?}");
+        };
+        assert!(*at >= 530.0, "{after:?}");
+        assert_eq!(*reason, Reason::ExpStalled { minutes: 3 });
+    }
+
     #[test]
     fn a_level_reading_that_flips_is_not_the_coachs_to_celebrate() {
         // The sight's reader gives 165, then 166, then 165 again, every
@@ -1268,6 +1390,7 @@ mod tests {
                     talking: false,
                     muted: false,
                     dead: false,
+                    held: false,
                 };
                 if let Some(reason) = coach.observe(&g) {
                     coach.answered(now, None);
@@ -1315,6 +1438,7 @@ mod tests {
                 talking: true,
                 muted: false,
                 dead: false,
+                held: false,
             };
             assert_eq!(coach.observe(&g), None);
             now += 0.1;
@@ -1333,6 +1457,7 @@ mod tests {
                 talking: false,
                 muted: false,
                 dead: false,
+                held: false,
             };
             asked = coach.observe(&g).map(|r| (now, r));
             now += 0.1;
@@ -1349,6 +1474,7 @@ mod tests {
             talking: false,
             muted: false,
             dead: false,
+            held: false,
         };
         assert!(coach.consulting());
         assert_eq!(coach.observe(&g), None);
@@ -1365,6 +1491,7 @@ mod tests {
             talking: true,
             muted: false,
             dead: false,
+            held: false,
         };
         assert_eq!(coach.observe(&g), None);
         assert!(matches!(coach.pending, Some((Reason::NewScene, _))));
@@ -1377,6 +1504,7 @@ mod tests {
             talking: false,
             muted: false,
             dead: false,
+            held: false,
         };
         assert_ne!(coach.observe(&g), Some(Reason::NewScene));
     }
@@ -1405,6 +1533,7 @@ mod tests {
                 talking: false,
                 muted: false,
                 dead,
+                held: false,
             };
             if let Some(reason) = coach.observe(&g) {
                 consults.push((now, reason));
@@ -1475,6 +1604,7 @@ mod tests {
             talking: true,
             muted: false,
             dead: false,
+            held: false,
         };
         assert_eq!(coach.observe(&g), None);
         assert!(matches!(coach.pending, Some((Reason::NewScene, _))));
@@ -1516,6 +1646,7 @@ mod tests {
                 talking,
                 muted: false,
                 dead,
+                held: false,
             };
             if let Some(reason) = coach.observe(&g) {
                 consults.push((now, reason));

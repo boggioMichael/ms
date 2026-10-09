@@ -1483,10 +1483,17 @@ struct Outputs {
     /// The clip hello's job for this visit (None: none, or heard by now):
     /// withdrawn when the call takes the hello over before the tap.
     hello_job: Option<u64>,
+    /// The visit's hello was heard: a call opened after it (the call said
+    /// it, or the clip played at the tap that opened the call). Final: a
+    /// reload or a toggle flip within the visit is greeted by nobody.
+    hello_heard: bool,
     /// When to say what it does, to a player it does not know (None: not
     /// due), and whether it did this session.
     terms_due: Option<Instant>,
     terms_said: bool,
+    /// The call the hello was left to says what it does too (a player it
+    /// does not know; the page reads `new_player` off the status).
+    call_terms: bool,
 }
 
 /// How long after the clip hello the terms come, so the two do not
@@ -1574,7 +1581,7 @@ impl Outputs {
         // A page just opened has no call: the one that was on is over (a
         // page reloaded mid-call; a PC started again mid-call hears of the
         // page's call right after its hello).
-        self.call_ended();
+        self.call_ended(companion);
         let device = device_of(agent);
         self.push(Kind::Info, format!("{device} connected"));
         // (In another language the page says it itself.)
@@ -1597,7 +1604,8 @@ impl Outputs {
             Hello::Clip
         };
         let back = self.greeted.is_some() && away.is_some_and(|gone| gone < HELLO_AGAIN);
-        let hello = if back && self.greeted_by == Some(would) {
+        // (Re-decided only while not heard: a heard hello is final.)
+        let hello = if back && (self.hello_heard || self.greeted_by == Some(would)) {
             Hello::Quiet
         } else {
             would
@@ -1628,11 +1636,14 @@ impl Outputs {
                 }
                 self.greeted = Some(Instant::now());
                 self.greeted_by = Some(Hello::Call);
+                self.hello_heard = false;
                 self.call_greets = Some(Instant::now());
+                self.call_terms = !knows_player && !self.terms_said && !companion.muted();
             }
             Hello::Clip => {
                 self.greeted = Some(Instant::now());
                 self.greeted_by = Some(Hello::Clip);
+                self.hello_heard = false;
                 self.call_greets = None;
                 self.say_hello(companion, knows_player, language);
             }
@@ -1685,7 +1696,7 @@ impl Outputs {
     /// call's hello is the one. (A hello heard already is past
     /// withdrawing: the cut finds nothing.)
     fn withdraw_hello(&mut self) {
-        // (The call sets its own terms.)
+        // (The call says the terms itself: `call_terms`.)
         self.terms_due = None;
         let Some(id) = self.hello_job.take() else {
             return;
@@ -1941,18 +1952,20 @@ impl Outputs {
                         length,
                     });
                 } else {
-                    self.hand_clip(wav, length);
+                    self.hand_clip(kind, wav, length);
                 }
             }
         }
     }
 
-    /// Hand the phone a clip, to play after the ones before it.
-    fn hand_clip(&mut self, wav: Vec<u8>, length: Duration) {
+    /// Hand the phone a clip of this `kind` (its page drops a warning or
+    /// news that waited too long for the tap), to play after the ones
+    /// before it.
+    fn hand_clip(&mut self, kind: Kind, wav: Vec<u8>, length: Duration) {
         let Some(hub) = &self.phone else {
             return;
         };
-        hub.set_clip(wav);
+        hub.set_clip(kind, wav);
         // The phone fetches it at once and plays it after the last.
         let begins = self
             .mouth
@@ -1970,34 +1983,82 @@ impl Outputs {
             if !quiet && clip.since.elapsed() < CLIP_WAITS {
                 return;
             }
-            let HeldClip { wav, length, .. } = self.mouth.phone_held.remove(0);
-            self.hand_clip(wav, length);
+            let HeldClip {
+                kind, wav, length, ..
+            } = self.mouth.phone_held.remove(0);
+            self.hand_clip(kind, wav, length);
         }
     }
 
+    /// The page's call is on (it opened, or the page says so again).
+    /// Returns whether it is a new one: the PC's own voice gives way to it.
+    /// The visit's hello was heard by now — the call said it, or the clip
+    /// played at the tap that opened the call — and is final: the call
+    /// holds the voice, and a reload is greeted by nobody (it was taken for
+    /// a clip not heard yet: a cut, and the reopened call said hi again).
+    fn call_opened(&mut self) -> bool {
+        // (The call that opens says the hello left to it, and to a player
+        // it does not know, what it does.)
+        if self.call_greets() && self.call_terms {
+            self.terms_said = true;
+            self.terms_due = None;
+            self.session
+                .line("info", "a player I don't know: the call says what I do");
+        }
+        self.call_greets = None;
+        self.call_terms = false;
+        self.phone_gone = None;
+        if self.greeted.is_some() {
+            self.greeted_by = Some(Hello::Call);
+            self.hello_job = None;
+            self.hello_heard = true;
+        }
+        if self.live {
+            return false;
+        }
+        self.live = true;
+        // (Lines waiting for the old call are not for the new.)
+        self.relay = Relay::default();
+        self.session
+            .line("info", "live call on the phone: talking in real time");
+        true
+    }
+
     /// A live call ended (the page said so, or the phone is gone):
-    /// MapleSyrup's own lines go to its own voice again, the lines that
-    /// waited for the call are not for the next one, and the game comes
-    /// back up. (The log's "live call ended" is what the learner reads a
-    /// call's end from.)
-    fn call_ended(&mut self) {
+    /// MapleSyrup's own lines go to its own voice again, and the game comes
+    /// back up. The lines that waited for the call's gap are not for the
+    /// next call, nor lost without a word (the companion counted each said
+    /// as it dealt it): a warning or news is still true, and its own voice
+    /// says it now; the rest is logged as not said. (The log's "live call
+    /// ended" is what the learner reads a call's end from.)
+    fn call_ended(&mut self, companion: &mut Companion) {
         self.phone_gone = None;
         if !self.live {
             return;
         }
         self.live = false;
-        self.relay = Relay::default();
+        let waiting = std::mem::take(&mut self.relay).waiting;
         self.session.line("info", "live call ended");
         self.phone_talking(false);
+        for (kind, text) in waiting {
+            if kind.kept() {
+                self.session
+                    .line("live", &format!("the call ended before saying it: {text}"));
+                self.tell(kind, &text, true, companion);
+            } else {
+                self.session
+                    .line("live", &format!("not said, the call ended: {text}"));
+            }
+        }
     }
 
     /// Whether the phone is still there, on a call (`connected`: it asked
     /// the PC for something lately). Gone for [`CALL_LOST_AFTER`], the
     /// call is taken as lost: the page is not there to say the lines
     /// handed to it, nor to say that the call ended. When the phone comes
-    /// back, its page says so if its call is still on, and opens a new one
-    /// if not.
-    fn watch_call(&mut self, connected: bool) {
+    /// back, its page says so if its call is still on (it reads `on_call`
+    /// off the status), and opens a new one if not.
+    fn watch_call(&mut self, connected: bool, companion: &mut Companion) {
         if !self.live || connected {
             self.phone_gone = None;
             return;
@@ -2005,8 +2066,25 @@ impl Outputs {
         let since = *self.phone_gone.get_or_insert_with(Instant::now);
         if since.elapsed() >= CALL_LOST_AFTER {
             self.session.line("live", "call lost: the phone is gone");
-            self.call_ended();
+            self.call_ended(companion);
         }
+    }
+
+    /// The call's part of the phone's status: live calls can be made
+    /// (`live`); the next call to open says hello (`call_greets`: the
+    /// phone's hello was left to it), and what it does after it to a
+    /// player it does not know (`new_player`: the clip hello's terms, the
+    /// call's way); and whether the PC has the page's call on (`on_call`)
+    /// — a page whose call is on and reads otherwise says so again: the PC
+    /// took it as lost while the link was down with the page in front, or
+    /// another page's hello ended it.
+    fn call_status(&self) -> serde_json::Value {
+        json!({
+            "live": self.live_ok,
+            "call_greets": self.call_greets(),
+            "new_player": self.call_greets() && self.call_terms,
+            "on_call": self.live,
+        })
     }
 
     /// MapleSyrup's voice on a live call started or stopped: the game is
@@ -2669,8 +2747,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         greeted_by: None,
         call_greets: None,
         hello_job: None,
+        hello_heard: false,
         terms_due: None,
         terms_said: false,
+        call_terms: false,
     };
     let hello = companion.hello();
     out.apply(hello, &mut companion, None);
@@ -2816,6 +2896,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     talking,
                     muted: companion.muted(),
                     dead: companion.dead(),
+                    held: companion.alerts_held(now),
                 };
                 if let Some(reason) = coach.observe(&glance) {
                     let snapshot = snapshot_text(&companion, sight.as_ref(), in_view);
@@ -3117,17 +3198,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             }
                         }
                     }
-                    Inbound::Live(false) => out.call_ended(),
+                    Inbound::Live(false) => out.call_ended(&mut companion),
                     Inbound::Live(true) => {
-                        // (The call that opens says the hello left to it.)
-                        out.call_greets = None;
-                        out.phone_gone = None;
-                        if !out.live {
-                            out.live = true;
-                            // (Lines waiting for the old call are not for the new.)
-                            out.relay = Relay::default();
-                            out.session
-                                .line("info", "live call on the phone: talking in real time");
+                        if out.call_opened() {
                             // The PC's own voice gives way to the call.
                             turns.interrupt(&mut out);
                         }
@@ -3820,7 +3893,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             let summary = out.phone.as_ref().map(|h| h.summary());
             // A call whose phone has gone (pocketed, asleep) is lost.
             if let Some(summary) = &summary {
-                out.watch_call(summary.connected);
+                out.watch_call(summary.connected, &mut companion);
             }
             if let Some(hub) = &out.phone {
                 if out.mouth.ai.is_some()
@@ -3830,7 +3903,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     memory_status = learning.status();
                 }
                 let obs = companion.last();
-                hub.set_status(json!({
+                let mut status = json!({
                     "game": obs.map(|o| o.game.clone()).unwrap_or(GameView::NotFound),
                     "hp": obs.and_then(|o| o.hp),
                     "mp": obs.and_then(|o| o.mp),
@@ -3857,10 +3930,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     "thinking": out.mouth.ai.as_ref().is_some_and(|w| w.busy()),
                     "ai": out.mouth.ai.as_ref().map(|w| w.model.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "OpenAI".into())),
                     "learned": learned_status(sight.as_ref(), hub),
-                    // Live calls can be made; and the next call to open says
-                    // hello (the phone's hello was left to it).
-                    "live": out.live_ok,
-                    "call_greets": out.call_greets(),
                     "recording": recording.status(),
                     // How it talks, and who answers.
                     "attitude": companion.settings.attitude,
@@ -3872,7 +3941,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     // What it learned about the player (with an OpenAI key).
                     "memory": if out.mouth.ai.is_some() { memory_status.clone() } else { serde_json::Value::Null },
                     "warn": {"hp": companion.settings.hp_low, "mp": companion.settings.mp_low},
-                }));
+                });
+                // (And the call's: `live`, `call_greets`, `new_player`, `on_call`.)
+                if let (Some(fields), serde_json::Value::Object(call)) =
+                    (status.as_object_mut(), out.call_status())
+                {
+                    fields.extend(call);
+                }
+                hub.set_status(status);
                 // What a live call can see: the screen only while the game is
                 // the window in front.
                 if out.live_ok {
@@ -4094,8 +4170,10 @@ mod tests {
             greeted_by: None,
             call_greets: None,
             hello_job: None,
+            hello_heard: false,
             terms_due: None,
             terms_said: false,
+            call_terms: false,
         }
     }
 
@@ -4477,15 +4555,15 @@ mod tests {
         );
         assert_eq!(said(&out).len(), 1);
         // The phone stops asking (its screen locked): not lost at once…
-        out.watch_call(false);
+        out.watch_call(false, &mut companion);
         assert!(out.live && out.phone_gone.is_some());
         // …and not at all when it is back before the time is up.
-        out.watch_call(true);
+        out.watch_call(true, &mut companion);
         assert!(out.live && out.phone_gone.is_none());
         // Gone for CALL_LOST_AFTER: the call is lost, and the log says so.
-        out.watch_call(false);
+        out.watch_call(false, &mut companion);
         out.phone_gone = Some(earlier(CALL_LOST_AFTER));
-        out.watch_call(false);
+        out.watch_call(false, &mut companion);
         assert!(!out.live, "the call must be taken as lost");
         assert!(out.phone_gone.is_none());
         assert!(log(&out).contains("[live] call lost: the phone is gone"));
@@ -4513,7 +4591,7 @@ mod tests {
         assert_eq!(said(&out).len(), 1, "the warning went to the call");
         assert!(!log(&out).contains("to the call: HP 10 percent"));
         // Off a call there is nothing to watch.
-        out.watch_call(false);
+        out.watch_call(false, &mut companion);
         assert!(out.phone_gone.is_none());
         // A page that just opened has no call either: one that was on is
         // over (the page says so again when its call reopens).
@@ -4527,6 +4605,82 @@ mod tests {
             None,
         );
         assert!(!out.live, "a fresh page has no call");
+    }
+
+    #[test]
+    fn a_call_that_ends_hands_the_lines_waiting_for_its_gap_back() {
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let now = |out: &Outputs| out.start.elapsed().as_secs_f64();
+        companion.observe(now(&out), frame(11.0, true, 165));
+        // The page reads off the status whether the PC has its call.
+        assert_eq!(out.call_status()["on_call"], false);
+        assert!(out.call_opened());
+        assert_eq!(out.call_status()["on_call"], true);
+        // On a call, in a fight: the beating is handed over; the low line
+        // a moment later waits for the call's gap, and so does a look-up's
+        // correction.
+        out.tell(
+            Kind::Warning,
+            "Back off, you're getting shredded.",
+            true,
+            &mut companion,
+        );
+        out.tell(
+            Kind::Warning,
+            "Pot! You're at 11 percent.",
+            true,
+            &mut companion,
+        );
+        out.tell(
+            Kind::Info,
+            "Actually, Zakum is level 110.",
+            true,
+            &mut companion,
+        );
+        assert_eq!(said(&out).len(), 1);
+        assert_eq!(out.relay.waiting.len(), 2);
+        // The call ends (the page leaves, the phone is gone, another page
+        // says hello): the warning is still true, and its own voice says it
+        // — on the phone's screen, a job for the voice, remembered as its
+        // own words; the correction is not lost without a word either.
+        let before = job(&out);
+        out.call_ended(&mut companion);
+        assert!(!out.live && out.relay.waiting.is_empty());
+        assert_eq!(out.call_status()["on_call"], false);
+        assert_eq!(
+            job(&out),
+            before + 2,
+            "the waiting warning was not given to the voice"
+        );
+        assert!(
+            companion
+                .own_words(now(&out) + 1.0, "Pot! You're at 11 percent.", 0)
+                .is_none(),
+            "the waiting warning was not spoken"
+        );
+        assert!(screen(&out).contains(&"Pot! You're at 11 percent.".to_string()));
+        assert!(!screen(&out).contains(&"Actually, Zakum is level 110.".to_string()));
+        let log = log(&out);
+        assert!(
+            log.contains("[live] the call ended before saying it: Pot! You're at 11 percent.\n"),
+            "{log}"
+        );
+        assert!(
+            log.contains("[live] not said, the call ended: Actually, Zakum is level 110.\n"),
+            "{log}"
+        );
+        // The phone gone with a line waiting: the same.
+        assert!(out.call_opened());
+        out.relay.sent = Some(Instant::now());
+        out.tell(Kind::Alert, "Rebuff.", true, &mut companion);
+        assert_eq!(out.relay.waiting.len(), 1);
+        out.phone_gone = Some(earlier(CALL_LOST_AFTER));
+        let before = job(&out);
+        out.watch_call(false, &mut companion);
+        assert!(!out.live);
+        assert_eq!(job(&out), before + 2, "the waiting news was not said");
+        assert_eq!(out.call_status()["on_call"], false);
     }
 
     #[test]
@@ -4929,6 +5083,67 @@ mod tests {
         assert!(!late.hello_overdue());
     }
 
+    #[test]
+    fn a_hello_heard_is_final_and_a_reload_mid_call_is_greeted_by_nobody() {
+        let mut out = outputs();
+        out.live_ok = true;
+        let mut companion = Companion::new(Settings::default());
+        let hello =
+            |out: &mut Outputs, companion: &mut Companion, live: bool, away: Option<Duration>| {
+                out.hello(companion, false, "iPhone Safari", live, away, None)
+            };
+        let moment = Some(Duration::from_secs(3));
+        // The page opens with the toggle on: the hello is left to the call.
+        // A minute and no call (the player read the page first): a clip
+        // says it, which the phone keeps for the tap.
+        assert_eq!(hello(&mut out, &mut companion, true, None), Hello::Call);
+        out.call_greets = Some(earlier(CALL_GREETS_FOR));
+        assert!(out.hello_overdue());
+        out.hello_late(&mut companion, false, None);
+        let late = out.hello_job.expect("the late hello is a clip");
+        // Listen tapped: the clip plays, the call opens and says none.
+        assert!(!out.call_greets());
+        assert!(out.call_opened(), "a new call");
+        assert!(out.live);
+        // Twenty minutes on, iOS reloads the tab mid-call (the toggle still
+        // on): the same visit, its hello heard — no second one, and no cut
+        // for a clip heard long ago.
+        let cuts_before = cuts(&out);
+        assert_eq!(hello(&mut out, &mut companion, true, moment), Hello::Quiet);
+        assert!(!out.call_greets(), "the reopened call would say hi again");
+        assert_eq!(cuts(&out), cuts_before, "a clip heard long ago was cut");
+        assert!(!cancelled(&out, late));
+        assert!(out.hello_job.is_none());
+        assert!(
+            !log(&out).contains("the clip is withdrawn"),
+            "{}",
+            log(&out)
+        );
+        // Nor with the toggle off by then: heard is final, whoever would
+        // say it now.
+        assert_eq!(hello(&mut out, &mut companion, false, moment), Hello::Quiet);
+        // The reloaded page's call opens; the page saying so again is no
+        // new call.
+        assert!(out.call_opened());
+        assert!(!out.call_opened(), "the same call twice");
+        // The same through the toggle: a clip visit, the toggle turned on
+        // while listening (the call opens, no hello posted), a reload.
+        let mut clip = outputs();
+        clip.live_ok = true;
+        assert_eq!(hello(&mut clip, &mut companion, false, None), Hello::Clip);
+        assert!(clip.call_opened());
+        let cuts_before = cuts(&clip);
+        assert_eq!(hello(&mut clip, &mut companion, true, moment), Hello::Quiet);
+        assert!(!clip.call_greets());
+        assert_eq!(cuts(&clip), cuts_before);
+        // A new visit is a new hello, and the toggle decides it again.
+        assert_eq!(
+            hello(&mut clip, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Call
+        );
+        assert_eq!(hello(&mut clip, &mut companion, false, moment), Hello::Clip);
+    }
+
     /// Every line on the phone's screen, in order.
     fn screen(out: &Outputs) -> Vec<String> {
         let hub = out.phone.as_ref().unwrap();
@@ -5039,6 +5254,55 @@ mod tests {
             Hello::Call
         );
         assert!(call.terms_due.is_none());
+    }
+
+    #[test]
+    fn on_a_call_a_player_it_does_not_know_is_told_what_it_does_by_the_call() {
+        let mut out = outputs();
+        out.live_ok = true;
+        let mut companion = Companion::new(Settings::default());
+        // A player it does not know, the hello left to the call: the page
+        // reads off the status that the call's hello says what it does too
+        // (the clip path's terms; nothing of its own is scheduled).
+        assert_eq!(
+            out.hello(&mut companion, false, "iPhone", true, None, None),
+            Hello::Call
+        );
+        assert_eq!(out.call_status()["new_player"], true);
+        assert!(out.terms_due.is_none() && !out.terms_said);
+        // The call opens and says them: said, once a session.
+        assert!(out.call_opened());
+        assert!(out.terms_said);
+        assert_eq!(out.call_status()["new_player"], false);
+        assert!(log(&out).contains("[info] a player I don't know: the call says what I do"));
+        assert_eq!(
+            out.hello(
+                &mut companion,
+                false,
+                "iPhone",
+                true,
+                Some(HELLO_AGAIN),
+                None
+            ),
+            Hello::Call
+        );
+        assert_eq!(out.call_status()["new_player"], false);
+        // A player it knows: none.
+        let mut known = outputs();
+        known.live_ok = true;
+        known.hello(&mut companion, true, "iPhone", true, None, None);
+        assert_eq!(known.call_status()["new_player"], false);
+        // A call that never came: not the call's to say any more; the
+        // clip hello brings them, as before.
+        let mut late = outputs();
+        late.live_ok = true;
+        late.hello(&mut companion, false, "iPhone", true, None, None);
+        late.call_greets = Some(earlier(CALL_GREETS_FOR));
+        assert_eq!(late.call_status()["new_player"], false);
+        late.hello_late(&mut companion, false, None);
+        assert!(late.terms_due.is_some());
+        assert!(late.call_opened());
+        assert!(!late.terms_said, "the clip's terms are still to come");
     }
 
     /// The size of the phone's clip `seq`, as it would fetch it.
