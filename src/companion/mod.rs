@@ -408,9 +408,9 @@ pub struct Companion {
     fall_answered: bool,
     fall_up_frames: u32,
     /// Trust in the player with a beating: fights in a row they handled
-    /// (a potion within [`TRUST_POT_SECS`], no deeper than the ones
-    /// before), the lowest HP of those, the lowest of the fight under way,
-    /// and a fall being watched instead of shouted — since when.
+    /// (a potion within [`TRUST_POT_SECS`]), the lowest HP of those
+    /// (infinite until one), the lowest of the fight under way, and a
+    /// fall being watched instead of shouted — since when.
     trust: u32,
     trust_floor: f32,
     fight_low: f32,
@@ -444,11 +444,14 @@ pub struct Companion {
     zero_hp_since: f64,
     /// Alerts said with no sign of life from the player since, and the
     /// state when the last was said: when, and HP, EXP and the level then,
-    /// with the highest HP and EXP seen since.
+    /// with the highest EXP seen since, and whether HP has been back up by
+    /// a potion's worth since — frames in a row with it so: one is a
+    /// misread (see [`HELD_FRAMES`]).
     unanswered: u32,
     alert_at: f64,
     hp_at_alert: Option<f32>,
-    hp_peak: Option<f32>,
+    hp_up_frames: u32,
+    potted: bool,
     exp_at_alert: Option<f32>,
     exp_peak: Option<f32>,
     level_at_alert: Option<u32>,
@@ -601,7 +604,12 @@ const ZERO_HOLD_SECS: f64 = 2.0;
 
 /// Alerts said with no sign of life from the player — a word, HP going
 /// back up (a potion), EXP gained, a level — before the rest are held…
-const UNANSWERED_MAX: u32 = 6;
+/// (Four: a beating and the low line's first three — at 0, 5, 17 and 47 s
+/// — and the hold where the next would come, a minute after; six ran a
+/// pet's death to six lines in six minutes to a room that may be empty.
+/// The same count as [`DOUBT_AFTER_LINES`], which is about a bar that
+/// lies while EXP comes in; this one is about nothing moving at all.)
+const UNANSWERED_MAX: u32 = 4;
 /// …and for how long, unless the player turns up sooner. When the hold
 /// ends, a couple more come through before the next.
 const HOLD_SECS: f64 = 600.0;
@@ -670,13 +678,16 @@ const HELD_FRAMES: u32 = 2;
 const FIGHT_OVER_SECS: f64 = 60.0;
 const FALL_COOLDOWNS: [f64; 4] = [12.0, 30.0, 60.0, 120.0];
 /// A player who handles the beating is trusted with it: after this many
-/// fights in a row with a potion within [`TRUST_POT_SECS`] of the line and
-/// none deeper than the ones before, the next fall is watched instead of
-/// shouted, and shouted after all only when HP goes under their usual
-/// floor (the lowest of those fights) by [`TRUST_MARGIN`], or no potion
-/// comes within the same time of the fall; either, or a death, ends the
-/// trust. A friend stops saying "back off" the fourth time you handle it
-/// (34 beatings in 65 min for a player who potted within 3 s every time).
+/// fights in a row with a potion within [`TRUST_POT_SECS`] of the line,
+/// the next fall is watched instead of shouted, and shouted after all
+/// when HP goes under their usual floor (the lowest of the fights they
+/// handled) by [`TRUST_MARGIN`] — the depth deserves it; potted in time,
+/// it counts like the rest and the floor follows it — or when no potion
+/// comes within the same time of the fall. Only a late potion, none, or
+/// a death ends the trust. A friend stops saying "back off" the fourth
+/// time you handle it (34 beatings in 65 min for a player who potted
+/// within 3 s every time; 9 in 10 handled fights when a deeper one
+/// started the count over).
 const TRUST_FIGHTS: u32 = 3;
 const TRUST_POT_SECS: f64 = 3.0;
 const TRUST_MARGIN: f32 = 5.0;
@@ -791,7 +802,10 @@ const NUMBER_WORDS: &[&str] = &[
 /// Savage stays within the policy in `ai::style`: the play is insulted,
 /// never who they are.
 pub mod lines {
-    /// HP falling fast, said as it happens.
+    /// HP falling fast, said as it happens. Every card stands alone — it
+    /// is a fight's first shout as often as not, so none says "still" or
+    /// "again" — and none puts a number on the fall the rule does not
+    /// check: a fall of a third of the bar was called "half your bar".
     pub const BEATING: [&[&str]; 3] = [
         &[
             "Whoa, you're taking a beating, HP's at {}. Back off and pot!",
@@ -806,9 +820,9 @@ pub mod lines {
             "Back off, you're getting shredded. {} and falling.",
             "Get out of there. Pot.",
             "You're eating every hit. Move.",
-            "Why are you still standing in it? Back up.",
+            "Get out of whatever that is. Back up.",
             "Pot. Now. Not after the next hit.",
-            "That's half your bar in two seconds. Step off.",
+            "That's a chunk of your bar in two seconds. Step off.",
             "Disengage. You can't trade with that thing.",
         ],
         &[
@@ -1216,7 +1230,8 @@ pub mod lines {
         ],
     ];
 
-    /// Alerts held for want of an answer.
+    /// Alerts held for want of an answer. A card that counts the warnings
+    /// counts [`super::UNANSWERED_MAX`] of them.
     pub const HOLD: [&[&str]; 3] = [
         &[
             "You're not answering, so I'll hold my warnings until you say something.",
@@ -1229,7 +1244,7 @@ pub mod lines {
         ],
         &[
             "You're not answering, so I'll hold my warnings until you say something.",
-            "Six warnings, zero answers. I'm done until you talk.",
+            "Four warnings, zero answers. I'm done until you talk.",
             "Fine, I'll shut up about it. Say something when you're back.",
             "Nobody home? Warnings on hold till you speak.",
             "I've said it enough. Holding the rest until I hear from you.",
@@ -1239,7 +1254,7 @@ pub mod lines {
         &[
             "You're not answering, so I'll hold my warnings until you say something.",
             "Talking to a wall here. I'll stop until the wall says something.",
-            "Six warnings and nothing. Lose your HP in peace, I'll wait.",
+            "Four warnings and nothing. Lose your HP in peace, I'll wait.",
             "You're either AFK or ignoring me. Either way, I'm done until you speak.",
             "Fine. Get wrecked quietly. Say something and I'll start caring again.",
             "No answer, no pot, no respect. Warnings on hold.",
@@ -1512,7 +1527,8 @@ impl Companion {
             unanswered: 0,
             alert_at: f64::NEG_INFINITY,
             hp_at_alert: None,
-            hp_peak: None,
+            hp_up_frames: 0,
+            potted: false,
             exp_at_alert: None,
             exp_peak: None,
             level_at_alert: None,
@@ -2029,10 +2045,11 @@ impl Companion {
     }
 
     /// Warnings that nothing answers are held: after [`UNANSWERED_MAX`] of
-    /// them with no sign of life from the player — not a word, no potion,
-    /// no EXP gained, no level — the rest wait [`HOLD_SECS`] (and the
-    /// player is told once why), unless the player turns up sooner. One
-    /// night of a misread bar ran to 3,400 warnings said to an empty room.
+    /// them with no sign of life from the player — not a word, no potion
+    /// (a reading that held, not a frame), no EXP gained, no level — the
+    /// rest wait [`HOLD_SECS`] (and the player is told once why), unless
+    /// the player turns up sooner. One night of a misread bar ran to 3,400
+    /// warnings said to an empty room.
     /// A death and a level-up are news, not a nag: they pass through a
     /// hold (the coach counts the death either way, and would speak of a
     /// third death nobody heard of). Returns the alerts of this frame that
@@ -2046,13 +2063,23 @@ impl Companion {
     ) -> Vec<Alert> {
         let hp = obs.hp.map(|g| g.percent);
         let exp = obs.exp.map(|g| g.percent);
-        let higher = |peak: Option<f32>, value: Option<f32>| match (peak, value) {
-            (Some(p), Some(v)) => Some(p.max(v)),
-            (p, v) => p.or(v),
-        };
+        let above = |value: Option<f32>, then: Option<f32>, by: f32| matches!((value, then), (Some(value), Some(then)) if value >= then + by);
         if obs.game.is_seen() {
-            self.hp_peak = higher(self.hp_peak, hp);
-            self.exp_peak = higher(self.exp_peak, exp);
+            // (A potion's worth back is a sign of life once it has held,
+            // as it answers the warning itself: one frame read high is a
+            // misread, and it lifted the hold.)
+            if above(hp, self.hp_at_alert, POTTED) {
+                self.hp_up_frames += 1;
+                if self.hp_up_frames >= HELD_FRAMES {
+                    self.potted = true;
+                }
+            } else {
+                self.hp_up_frames = 0;
+            }
+            self.exp_peak = match (self.exp_peak, exp) {
+                (Some(p), Some(v)) => Some(p.max(v)),
+                (p, v) => p.or(v),
+            };
         }
         let warnings = alerts.iter().filter(|a| !a.is_news()).count() as u32;
         if warnings == 0 {
@@ -2061,11 +2088,9 @@ impl Companion {
         let news = |alerts: Vec<Alert>| -> Vec<Alert> {
             alerts.into_iter().filter(Alert::is_news).collect()
         };
-        let above = |peak: Option<f32>, then: Option<f32>, by: f32| matches!((peak, then), (Some(peak), Some(then)) if peak >= then + by);
-        let potted = above(self.hp_peak, self.hp_at_alert, POTTED);
         let gained = above(self.exp_peak, self.exp_at_alert, EXP_GAINED);
         let leveled = obs.level.is_some() && obs.level != self.level_at_alert;
-        if self.spoke_at > self.alert_at || potted || gained || leveled {
+        if self.spoke_at > self.alert_at || self.potted || gained || leveled {
             self.unanswered = 0;
             self.hold_until = f64::NEG_INFINITY;
         }
@@ -2080,7 +2105,8 @@ impl Companion {
         self.unanswered += warnings;
         self.alert_at = now;
         self.hp_at_alert = hp;
-        self.hp_peak = hp;
+        self.hp_up_frames = 0;
+        self.potted = false;
         self.exp_at_alert = exp;
         self.exp_peak = exp;
         self.level_at_alert = obs.level;
@@ -2176,6 +2202,7 @@ impl Companion {
                 self.last_death = now;
                 // (A death is the end of trusting them with a beating.)
                 self.trust = 0;
+                self.trust_floor = f32::INFINITY;
                 self.watch = None;
                 // Whether it told them to pot in this fight.
                 let warned = self.low_hp.warned_this_fight(now, self.fall_at);
@@ -2227,6 +2254,7 @@ impl Companion {
             // (A fight over with its beating unanswered: no trust.)
             if self.fight_lines > 0 && !self.fall_answered {
                 self.trust = 0;
+                self.trust_floor = f32::INFINITY;
             }
             self.fight_lines = 0;
         }
@@ -2246,23 +2274,21 @@ impl Companion {
         }
         if self.fall_answered && !was_answered {
             // Handled: a potion within seconds of the beating (or of the
-            // fall watched in its place), no deeper than the fights
-            // before (the bar's flicker allowed). Three in a row and the
-            // player is trusted with it; from then on the floor is theirs
-            // and stays (a watched fall under it by the margin was
-            // shouted, and ended the trust, before it was answered).
+            // fall watched in its place). Every handled fight counts, a
+            // deeper one too — depth is shouted, not distrusted — and the
+            // floor follows the lowest of them; a late potion ends the
+            // trust (so does none, when the fight is over, and a death).
+            // Three in a row and the player is trusted with it. (A deeper
+            // fight started the streak over: two dips under the mark,
+            // both potted in two seconds, had the two fights after them
+            // shouted again — nine shouts in ten handled fights.)
             let since = self.watch.take().unwrap_or(self.fall_told);
-            let quick = now - since <= TRUST_POT_SECS;
-            let trusted = self.trust >= TRUST_FIGHTS;
-            let deeper = !trusted && self.fight_low < self.trust_floor - QUIET_HP_POINTS;
-            if quick && !deeper {
+            if now - since <= TRUST_POT_SECS {
                 self.trust += 1;
-                if !trusted {
-                    self.trust_floor = self.trust_floor.min(self.fight_low);
-                }
+                self.trust_floor = self.trust_floor.min(self.fight_low);
             } else {
-                self.trust = u32::from(quick);
-                self.trust_floor = self.fight_low;
+                self.trust = 0;
+                self.trust_floor = f32::INFINITY;
             }
         }
         let falling = self.falling_frames >= 2;
@@ -2292,15 +2318,18 @@ impl Companion {
             }
         }
         // A fall watched: shouted after all when HP goes under their usual
-        // floor, or no potion has come in the time they usually take —
-        // and the trust is gone.
+        // floor (the depth deserves it; potted in time, it counts like the
+        // rest, and the floor follows it), or when no potion has come in
+        // the time they usually take — and then the trust is gone.
         if let Some(since) = self.watch {
             let under_floor = hp.percent < self.trust_floor - TRUST_MARGIN;
             let late = now - since > TRUST_POT_SECS;
             if wanted && (under_floor || late) {
                 self.watch = None;
-                self.trust = 0;
-                self.trust_floor = self.fight_low;
+                if late {
+                    self.trust = 0;
+                    self.trust_floor = f32::INFINITY;
+                }
                 self.shout_beating(now, hp, exp, alerts);
             }
         }
@@ -3061,27 +3090,38 @@ mod tests {
         // HP read at 20 for five minutes with one frame of 60 at 20 s (a
         // misread): no beating — the bar did not move — and the one frame
         // is no potion either: the unanswered cadence goes on as if it
-        // had not been (0.6, 12.6, 42.6, 102.6, 222.6). One night this was
-        // "Back off, you're getting shredded. 20 percent and falling"
-        // at 20.2 s, and the next low line 38 s late. The same with a
-        // frame of 52 every 15 s at 25%, which had the fight go quiet
-        // for 285 s after the beating.
-        let cadence = |glitch: &dyn Fn(f64) -> Option<f32>, low: f32| -> Vec<(f64, String)> {
+        // had not been (0.6, 12.6, 42.6, 102.6, and the hold where the
+        // fifth line would come, at 222.6 — one frame is no sign of life
+        // to the hold any more than it is an answer to the line). One
+        // night this was "Back off, you're getting shredded. 20 percent
+        // and falling" at 20.2 s, and the next low line 38 s late. The
+        // same with a frame of 52 every 15 s at 25%, which had the fight
+        // go quiet for 285 s after the beating.
+        type Lines = Vec<(f64, String)>;
+        let cadence = |glitch: &dyn Fn(f64) -> Option<f32>, low: f32| -> (Lines, Lines) {
             let mut c = Companion::seeded(Settings::default(), SEED);
-            let mut lines: Vec<(f64, String)> = Vec::new();
+            let mut lines: Lines = Vec::new();
+            let mut holds: Lines = Vec::new();
             for i in 0..3000 {
                 let t = i as f64 * 0.1;
                 let hp = glitch(t).unwrap_or(low);
-                for line in alerts(&c.observe(t, read(hp))) {
-                    lines.push((t, line));
+                for action in c.observe(t, read(hp)) {
+                    let Action::Say(say) = action else { continue };
+                    match say.kind {
+                        Kind::Warning | Kind::Alert => lines.push((t, say.text)),
+                        Kind::Info if from(lines::HOLD, &say.text) => holds.push((t, say.text)),
+                        _ => {}
+                    }
                 }
             }
-            lines
+            (lines, holds)
         };
-        let steady = cadence(&|_| None, 20.0);
-        let expected = [0.6, 12.6, 42.6, 102.6, 222.6];
+        let (steady, held) = cadence(&|_| None, 20.0);
+        let expected = [0.6, 12.6, 42.6, 102.6];
         assert_eq!(steady.len(), expected.len(), "{steady:?}");
-        for (shape, lines) in [
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert!((held[0].0 - 222.6).abs() < 0.15, "{held:?}");
+        for (shape, (lines, holds)) in [
             (
                 "one frame of 60 at 20 s",
                 cadence(&|t| ((t - 20.0).abs() < 0.05).then_some(60.0), 20.0),
@@ -3096,6 +3136,11 @@ mod tests {
                 assert!((at - want).abs() < 0.15, "{shape}: {lines:?}");
                 assert!(!from(lines::BEATING, line), "{shape}: {lines:?}");
             }
+            assert_eq!(holds.len(), 1, "{shape}: {holds:?}");
+            assert!(
+                (holds[0].0 - held[0].0).abs() < 0.15,
+                "{shape}: the hold at {holds:?}, not {held:?}"
+            );
         }
         // A potion that holds (HP read at 100 from the second frame on)
         // answers at once: worn down slowly to 20 again in the same
@@ -3161,10 +3206,12 @@ mod tests {
     fn a_player_who_always_pots_is_not_shouted_at_for_every_beating() {
         // A fight every two minutes for 65 min: hit from 100 to 25 over
         // 1.5 s, 1.5 s there, and potted — within 3 s of the beating,
-        // every time, never deeper. Three beatings, then the player is
-        // trusted with it: nothing for the thirty fights after (no low
-        // line either, in the seconds the potion takes). One night this
-        // was 34 beatings in 65 min, one per fight.
+        // every time. Three beatings, then the player is trusted with it:
+        // nothing for the thirty fights after (no low line either, in the
+        // seconds the potion takes). One night this was 34 beatings in 65
+        // min, one per fight. Only a late potion, none, or a death ends
+        // the trust; a deeper fall is shouted for its depth and, potted in
+        // time, counts like the rest (the floor follows it).
         let fight = |phase: f64, floor: f32| -> f32 {
             if phase < 1.5 {
                 100.0 - (phase / 1.5) as f32 * (100.0 - floor)
@@ -3226,11 +3273,19 @@ mod tests {
         }
         // Trusted again (three more handled); then a fight deeper than
         // their usual floor by more than the margin: shouted the moment
-        // HP goes under it, and the trust is gone.
+        // HP goes under it — the depth deserves that — and, potted in
+        // time, handled like the rest: the trust holds, the floor follows
+        // it down, and the next fight to that depth is watched and silent,
+        // as is one within the margin of the new floor. (A deeper handled
+        // fall started the streak over: the fight after it was shouted.)
         let mut lines: Vec<(f64, String)> = Vec::new();
-        for i in 0..2400 {
+        for i in 0..4800 {
             let t = i as f64 * 0.1;
-            let floor = if t < 120.0 { 25.0 } else { 15.0 };
+            let floor = match (t / 120.0) as u32 {
+                0 => 25.0,
+                1 | 2 => 15.0,
+                _ => 12.0,
+            };
             for line in dealt(&c.observe(9900.0 + t, read(fight(t % 120.0, floor)))) {
                 lines.push((t, line));
             }
@@ -3245,6 +3300,64 @@ mod tests {
                 || (15..20).any(|n| lines[0].1.contains(&format!("{n} percent"))),
             "{lines:?}"
         );
+        // While the trust is built, the same: a fight to 60, then dips to
+        // 25 and to 12, each potted in two seconds — three shouts, the
+        // dips for their depth — and the player is trusted: the fights to
+        // 60 after them are silent. (One evening's grind: the dips started
+        // the count over, and 60, 25, 12, 60, 60 were five shouts.)
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..6000 {
+            let t = i as f64 * 0.1;
+            let floor = match (t / 120.0) as u32 {
+                0 => 60.0,
+                1 => 25.0,
+                2 => 12.0,
+                _ => 60.0,
+            };
+            for line in dealt(&c.observe(t, read(fight(t % 120.0, floor)))) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        for ((at, line), want) in lines.iter().zip([1.3, 120.8, 240.7]) {
+            assert!(from(lines::BEATING, line), "{lines:?}");
+            assert!((at - want).abs() < 0.15, "{lines:?}");
+        }
+        // The trust outlives a shout for depth, not the fight's answer.
+        // Trusted (fights to 60), a fall to 30 is shouted under the floor;
+        // no potion answers it, and the next hit lands thirteen seconds
+        // on: shouted again at once (the beating's second wait) — it is
+        // under the floor too, as a fall from an unanswered one must be —
+        // not watched for three seconds first.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        for i in 0..4800 {
+            let t = i as f64 * 0.1;
+            c.observe(t, read(fight(t % 120.0, 60.0)));
+        }
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..200 {
+            let t = i as f64 * 0.1;
+            let hp = if t < 1.5 {
+                fight(t, 30.0)
+            } else if !(13.0..14.0).contains(&t) {
+                30.0
+            } else {
+                // (Nine points back: not a potion's worth.)
+                62.0
+            };
+            for line in dealt(&c.observe(480.0 + t, read(hp))) {
+                lines.push((t, line));
+            }
+        }
+        let beatings: Vec<f64> = lines
+            .iter()
+            .filter(|(_, l)| from(lines::BEATING, l))
+            .map(|(t, _)| *t)
+            .collect();
+        assert_eq!(beatings.len(), 2, "{lines:?}");
+        assert!((beatings[0] - 1.0).abs() < 0.15, "{beatings:?}");
+        assert!((beatings[1] - 14.1).abs() < 0.15, "{beatings:?}");
         // A fight within the margin of the floor is handled like the rest.
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines: Vec<(f64, String)> = Vec::new();
@@ -3289,11 +3402,17 @@ mod tests {
     fn staying_low_with_no_potion_is_said_again_after_longer_and_longer_waits() {
         // HP at 20% and nothing done about it: said, then again 12 s on,
         // 30 s after that, then 60, then 120 — the beating's waits — and
-        // not for the frames between.
+        // not for the frames between. (The player grumbles at minutes 2.5
+        // and 5 but drinks nothing: a word keeps the lines coming — four
+        // with no sign of life at all would have the rest held, see
+        // `warnings_nobody_answers_are_held…`.)
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut told = Vec::new();
         for i in 0..4000 {
             let t = i as f64 * 0.1;
+            if i == 1500 || i == 3000 {
+                c.player_spoke(t);
+            }
             for line in alerts(&c.observe(t, frame(20.0, 90.0, 10.0))) {
                 // (The first stands alone; the rest repeat it, and may
                 // say so.)
@@ -3634,14 +3753,16 @@ mod tests {
 
     #[test]
     fn warnings_nobody_answers_are_held_and_a_word_lets_them_through_again() {
-        // HP at 20% for half an hour and nothing done about it (the player
-        // is away, or the bar is misread): the low warning comes six times
-        // (after longer and longer waits: 12, 30, 60, 120, 120 s), then one
-        // line saying the rest will wait, then nothing for ten minutes;
-        // then two more, and quiet again.
+        // HP at 20% for twenty-five minutes and nothing done about it (the
+        // player is away, or the bar is misread): the low warning comes
+        // four times (after longer and longer waits: 12, 30, 60 s), then,
+        // where the fifth would come, one line saying the rest will wait,
+        // then nothing for ten minutes; then two more, and quiet again.
+        // (Six, and a pet's death was six lines in six minutes to a room
+        // that may be empty.)
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines: Vec<(f64, String)> = Vec::new();
-        for i in 0..18_600 {
+        for i in 0..15_000 {
             let t = i as f64 * 0.1;
             for line in said(&c.observe(t, frame(20.0, 90.0, 10.0))) {
                 if !from(lines::SEEN, &line) {
@@ -3650,30 +3771,49 @@ mod tests {
             }
         }
         let texts: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
-        assert_eq!(texts.len(), 9, "{lines:?}");
+        assert_eq!(texts.len(), 7, "{lines:?}");
         assert!(from(lines::HP_LOW, texts[0]), "{texts:?}");
         assert!(
-            texts[1..6].iter().all(|l| from(lines::HP_LOW_AGAIN, l)),
+            texts[1..4].iter().all(|l| from(lines::HP_LOW_AGAIN, l)),
             "{texts:?}"
         );
         // The first time, the hold is explained in full.
-        assert_eq!(variant(lines::HOLD, texts[6]), Some(0), "{texts:?}");
-        // Six warnings over 342 s, then the hold ends ten minutes later.
-        assert!((lines[5].0 - lines[0].0 - 342.0).abs() < 0.5, "{lines:?}");
-        assert!(lines[7].0 - lines[6].0 >= 600.0, "{lines:?}");
-        assert!(from(lines::HP_LOW_AGAIN, texts[7]) && from(lines::HP_LOW_AGAIN, texts[8]));
+        assert_eq!(variant(lines::HOLD, texts[4]), Some(0), "{texts:?}");
+        // Four warnings over 102 s, the hold where the fifth would come
+        // (two minutes on), and it ends ten minutes later.
+        assert!((lines[3].0 - lines[0].0 - 102.0).abs() < 0.5, "{lines:?}");
+        assert!((lines[4].0 - lines[3].0 - 120.0).abs() < 0.5, "{lines:?}");
+        assert!(lines[5].0 - lines[4].0 >= 600.0, "{lines:?}");
+        assert!(from(lines::HP_LOW_AGAIN, texts[5]) && from(lines::HP_LOW_AGAIN, texts[6]));
         // (The hold is not announced again so soon.)
-        assert!(c.alerts_held(1860.0));
+        assert!(c.alerts_held(1500.0));
         // The player says something: the warnings come again.
-        c.player_spoke(1860.0);
-        assert!(!c.alerts_held(1860.0));
+        c.player_spoke(1500.0);
+        assert!(!c.alerts_held(1500.0));
         let mut after = Vec::new();
         for i in 0..500 {
             after.extend(said(
-                &c.observe(1860.0 + i as f64 * 0.1, frame(20.0, 90.0, 10.0)),
+                &c.observe(1500.0 + i as f64 * 0.1, frame(20.0, 90.0, 10.0)),
             ));
         }
         assert_eq!(after.len(), 1, "{after:?}");
+        // A card that counts the warnings counts four.
+        for attitude in Attitude::ALL {
+            for card in attitude.lines(lines::HOLD) {
+                let lower = card.to_lowercase();
+                let counts: Vec<&str> = [
+                    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                ]
+                .into_iter()
+                .filter(|w| lower.split(|c: char| !c.is_alphabetic()).any(|x| x == *w))
+                .collect();
+                assert!(
+                    counts.is_empty() || counts == ["four"],
+                    "{}: {card:?} counts {counts:?}",
+                    attitude.word()
+                );
+            }
+        }
     }
 
     #[test]
@@ -3722,10 +3862,15 @@ mod tests {
         );
         assert!(!notes[0].1.contains("MP"), "{notes:?}");
         // EXP flat: nobody is playing (or nothing answers), and the old
-        // rule stands — the cadence to six lines, then the hold.
+        // rule stands — the cadence to four lines, then the hold where the
+        // fifth would come (the two rules count to four, and part there:
+        // EXP gained since the first line is a bar not believed, none is
+        // a room not answering).
         let (warnings, notes) = hour(20.0, 0.0);
         assert!(warnings.len() >= 6, "{warnings:?}");
-        assert!((warnings[5].0 - 342.6).abs() < 0.15, "{warnings:?}");
+        assert!((warnings[3].0 - 102.6).abs() < 0.15, "{warnings:?}");
+        assert!(warnings[4].0 - warnings[3].0 >= 600.0, "{warnings:?}");
+        assert!((notes[0].0 - 222.6).abs() < 0.15, "{notes:?}");
         assert!(notes.iter().all(|(_, n)| from(lines::HOLD, n)), "{notes:?}");
         // Believed again once it has read above the mark for three
         // seconds (2.9 s is not enough — and the drop back to 20 after
@@ -3777,7 +3922,7 @@ mod tests {
 
     #[test]
     fn a_death_and_a_level_up_pass_through_a_hold() {
-        // HP read at 20% for eight minutes and nothing done about it: six
+        // HP read at 20% for eight minutes and nothing done about it: four
         // warnings, then the hold. A death in it is said all the same (the
         // coach counts it either way, and would speak of a third death the
         // player never heard of), and so is a level-up; the warnings stay
@@ -3787,14 +3932,14 @@ mod tests {
         for i in 0..4800 {
             lines.extend(alerts(&c.observe(i as f64 * 0.1, read(20.0))));
         }
-        assert_eq!(lines.len(), 6, "{lines:?}");
+        assert_eq!(lines.len(), 4, "{lines:?}");
         assert!(c.alerts_held(480.0));
         let mut death = Vec::new();
         for i in 0..3 {
             death.extend(alerts(&c.observe(500.0 + i as f64 * 0.1, read(0.0))));
         }
         assert_eq!(death.len(), 1, "{death:?}");
-        // (A warned death: it said to pot six times in this fight.)
+        // (A warned death: it said to pot four times in this fight.)
         assert!(from(lines::DEATH_WARNED, &death[0]), "{death:?}");
         assert_eq!(c.so_far().deaths, 1);
         assert!(c.alerts_held(501.0));
@@ -4077,6 +4222,23 @@ mod tests {
             for attitude in Attitude::ALL {
                 for card in attitude.lines(deck) {
                     assert!(!card.to_lowercase().contains("still at {}"), "{card:?}");
+                }
+            }
+        }
+        // The beating is a fight's first shout as often as not, and it has
+        // one deck: every card stands alone, and none puts a number on the
+        // fall that the rule does not check (a 100→65 fall was "half your
+        // bar"; a fight's first line was "Why are you still standing in
+        // it?").
+        for attitude in Attitude::ALL {
+            for card in attitude.lines(lines::BEATING) {
+                assert!(!presumes(card), "{}: {card:?}", attitude.word());
+                for fraction in ["half", "third", "quarter", "most of"] {
+                    assert!(
+                        !card.to_lowercase().contains(fraction),
+                        "{}: {card:?} sizes the fall",
+                        attitude.word()
+                    );
                 }
             }
         }

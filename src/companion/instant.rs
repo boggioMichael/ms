@@ -179,7 +179,9 @@ pub fn asks(sentence: &str) -> Option<Ask> {
 /// The answers, one list per attitude (friendly, blunt, savage); the first
 /// of each list is the plainest, and leads — never one that presumes an
 /// earlier answer ("Still level 165."): those come later in their list,
-/// after one of the same kind. `{n}` is the bar's name, `{v}` the value.
+/// after one of the same kind. No card names how long ago that was ("same
+/// as five minutes ago"): the answer does not know. `{n}` is the bar's
+/// name, `{v}` the value.
 pub mod lines {
     /// HP or MP asked about, and low (under 30%).
     pub const BAR_LOW_EN: [&[&str]; 3] = [
@@ -360,7 +362,7 @@ pub mod lines {
             "Level {v}. It's on your screen, genius.",
             "{v}. Forgot already?",
             "Level {v}. Still.",
-            "{v}. Same as five minutes ago.",
+            "{v}. Same as last time you asked.",
             "Level {v}. Not changing while you ask.",
             "{v}. Go level instead of asking.",
         ],
@@ -386,7 +388,7 @@ pub mod lines {
             "רמה {v}. זה על המסך שלך, גאון.",
             "{v}. כבר שכחת?",
             "רמה {v}. עדיין.",
-            "{v}. כמו לפני חמש דקות.",
+            "{v}. כמו בפעם האחרונה ששאלת.",
             "רמה {v}. לא משתנה בזמן שאתה שואל.",
             "{v}. לך תעלה רמה במקום לשאול.",
         ],
@@ -873,6 +875,28 @@ mod tests {
     #[test]
     fn every_answer_has_six_ways_and_savage_keeps_to_the_play() {
         const BLOCKLIST: &[&str] = &["retard", "spaz", "fag", "tranny", "nigg", "kys"];
+        // No card names a duration: when the last answer was, how long the
+        // bar has been low, how long they have played — the answer knows
+        // the number on the screen and nothing of the clock ("Same as five
+        // minutes ago" was dealt to a question asked a second ago).
+        const DURATIONS: &[&str] = &[
+            "second",
+            "minute",
+            "hour",
+            "ago",
+            "earlier",
+            "yesterday",
+            "all night",
+            "all day",
+            "שנייה",
+            "שניות",
+            "דקה",
+            "דקות",
+            "שעה",
+            "שעות",
+            "אתמול",
+            "קודם",
+        ];
         for (name, list) in lines::ALL {
             for attitude in Attitude::ALL {
                 let lines = attitude.lines(*list);
@@ -893,6 +917,11 @@ mod tests {
                     assert!(
                         BLOCKLIST.iter().all(|w| !lower.contains(w)),
                         "{name}: {line:?}"
+                    );
+                    assert!(
+                        DURATIONS.iter().all(|w| !lower.contains(w)),
+                        "{name} ({}): {line:?} names a duration",
+                        attitude.word()
                     );
                 }
             }

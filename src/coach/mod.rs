@@ -392,9 +392,11 @@ pub const STREAK_WITHIN: f64 = 600.0;
 pub const MIN_GAP: f64 = 15.0;
 /// Two consults are at least this far apart, in seconds.
 pub const CONSULT_GAP: f64 = 8.0;
-/// EXP unmoved for this long is a stall, in seconds…
+/// EXP unmoved for this long is a stall, in seconds of play — time with
+/// something going on; a stall is fighting with no EXP, and idle minutes
+/// (nobody playing) never count toward one…
 pub const STALL_AFTER: f64 = 180.0;
-/// …said again (with the longer figure) after this long.
+/// …said again (with the longer figure) after this much more play.
 pub const STALL_AGAIN: f64 = 600.0;
 /// The companion cheers a level-up first; the coach's word comes after.
 pub const LEVEL_UP_AFTER: f64 = 6.0;
@@ -459,8 +461,12 @@ pub struct Coach {
     silent_in_a_row: u32,
     /// A consult is under way.
     consulting: bool,
-    /// When the EXP reading last changed, and what it was.
-    exp_changed: Option<(f64, f32)>,
+    /// The EXP reading as it last changed; how much play there has been
+    /// since — seconds with something going on, the game in view: a stall
+    /// is fighting with no EXP, and idle time never counts toward it —
+    /// and how much there had been when the stall was last said.
+    exp_read: Option<f32>,
+    stalled_for: f64,
     stall_told: Option<f64>,
     /// A reason waiting for a quiet moment, and since when.
     pending: Option<(Reason, f64)>,
@@ -506,7 +512,8 @@ impl Coach {
             look_every: LOOK_EVERY,
             silent_in_a_row: 0,
             consulting: false,
-            exp_changed: None,
+            exp_read: None,
+            stalled_for: 0.0,
             stall_told: None,
             pending: None,
             level_up: None,
@@ -530,8 +537,22 @@ impl Coach {
     /// One frame. Returns a reason to consult the model now, if it is time.
     pub fn observe(&mut self, g: &Glance) -> Option<Reason> {
         let now = g.now;
+        let watched = self.on && !g.muted && g.in_view && g.obs.game.is_seen();
+        // A stall is fighting with no EXP: the time since it moved counts
+        // only while something was going on and the game was watched —
+        // the interval this frame ends, a second at most (as `track_talk`
+        // has it), by the last frame's picture; `track` starts the clock
+        // over at a change. Twenty idle minutes and the player back had
+        // "no EXP for 20 min" consulted, with the picture, 18 s after
+        // their "I'm back", with EXP already moving.
+        if watched
+            && self.activity > IDLE_ACTIVITY
+            && let Some(last) = self.last_frame
+        {
+            self.stalled_for += (now - last).clamp(0.0, 1.0);
+        }
         self.track(g);
-        if !self.on || g.muted || !g.in_view || !g.obs.game.is_seen() {
+        if !watched {
             self.pending = None;
             self.level_up = None;
             self.close_call = None;
@@ -579,13 +600,15 @@ impl Coach {
             self.level_up = None;
             self.propose(Reason::LevelUp { level }, now);
         }
-        if let Some((changed, _)) = self.exp_changed
-            && now - changed >= STALL_AFTER
-            && self.stall_told.is_none_or(|t| now - t >= STALL_AGAIN)
+        if self.exp_read.is_some()
+            && self.stalled_for >= STALL_AFTER
+            && self
+                .stall_told
+                .is_none_or(|told| self.stalled_for - told >= STALL_AGAIN)
             && self.activity > IDLE_ACTIVITY
         {
-            self.stall_told = Some(now);
-            let minutes = ((now - changed) / 60.0).floor() as u32;
+            self.stall_told = Some(self.stalled_for);
+            let minutes = (self.stalled_for / 60.0).floor() as u32;
             self.propose(Reason::ExpStalled { minutes }, now);
         }
         if self
@@ -646,10 +669,11 @@ impl Coach {
         if let Some(exp) = g.obs.exp {
             // A printed number moves in hundredths; a bar's fill flickers.
             let tolerance = if exp.read { 0.005 } else { 0.3 };
-            match self.exp_changed {
-                Some((_, before)) if (exp.percent - before).abs() <= tolerance => {}
+            match self.exp_read {
+                Some(before) if (exp.percent - before).abs() <= tolerance => {}
                 _ => {
-                    self.exp_changed = Some((now, exp.percent));
+                    self.exp_read = Some(exp.percent);
+                    self.stalled_for = 0.0;
                     self.stall_told = None;
                 }
             }
@@ -848,7 +872,8 @@ impl Coach {
             same => same,
         };
         // A level-up moves the EXP bar, whatever the readings say.
-        self.exp_changed = Some((now, 0.0));
+        self.exp_read = Some(0.0);
+        self.stalled_for = 0.0;
         self.stall_told = None;
     }
 
@@ -1167,6 +1192,57 @@ mod tests {
         // EXP moving again clears the stall.
         let moving = play(&mut coach, now + 800.0, 150.0, 0.51, true, 0.02, None);
         assert!(moving.iter().all(|(_, r)| *r == Reason::Look), "{moving:?}");
+    }
+
+    #[test]
+    fn a_stall_is_fighting_with_no_exp_and_idle_time_never_counts() {
+        // A minute's grind (EXP creeping), then twenty idle minutes —
+        // nothing moves, EXP flat — then fighting again with nothing
+        // dying: no stall in the first three minutes of fighting (one
+        // evening had "no EXP for 20 min" consulted, with the picture,
+        // 18 s after the player came back from making tea, with EXP
+        // already moving), and the stall three minutes into it, counting
+        // the fighting only.
+        let stalls = |consults: &[(f64, Reason)]| -> Vec<(f64, Reason)> {
+            consults
+                .iter()
+                .filter(|(_, r)| matches!(r, Reason::ExpStalled { .. }))
+                .cloned()
+                .collect()
+        };
+        let mut coach = Coach::new(true);
+        let grinding = play(&mut coach, 0.0, 60.0, 18.99, true, 0.02, None);
+        assert!(
+            grinding.iter().all(|(_, r)| *r == Reason::Look),
+            "{grinding:?}"
+        );
+        // (EXP where the grind left it: 18.99 and 59 hundredths.)
+        let flat = 19.58;
+        let idle = play(&mut coach, 60.0, 1200.0, flat, false, 0.0, None);
+        assert!(idle.is_empty(), "{idle:?}");
+        let back = play(&mut coach, 1260.0, 179.0, flat, false, 0.02, None);
+        assert!(back.iter().all(|(_, r)| *r == Reason::Look), "{back:?}");
+        let fighting = play(&mut coach, 1439.0, 61.0, flat, false, 0.02, None);
+        let first = stalls(&fighting);
+        assert_eq!(first.len(), 1, "{fighting:?}");
+        assert_eq!(first[0].1, Reason::ExpStalled { minutes: 3 });
+        // Three minutes of play with that reading: the grind's last second
+        // (EXP moves once a second there) and 179 s after the tea — at
+        // 1439; a look just before it may hold it the consults' gap.
+        let after = first[0].0 - 1439.0;
+        assert!((-0.5..=CONSULT_GAP + 0.5).contains(&after), "{first:?}");
+        // Twenty idle minutes more, then fighting on: said again after ten
+        // minutes more of fighting, not at the moment they come back, and
+        // the figure counts the fighting only (13 minutes, not 43).
+        let idle = play(&mut coach, 1500.0, 1200.0, flat, false, 0.0, None);
+        assert!(idle.is_empty(), "{idle:?}");
+        let fighting = play(&mut coach, 2700.0, 700.0, flat, false, 0.02, None);
+        let again = stalls(&fighting);
+        assert_eq!(again.len(), 1, "{fighting:?}");
+        assert_eq!(again[0].1, Reason::ExpStalled { minutes: 13 });
+        // (A minute of fighting before the tea, nine after: at 3239.)
+        let after = again[0].0 - 3239.0;
+        assert!((-0.5..=CONSULT_GAP + 0.5).contains(&after), "{again:?}");
     }
 
     #[test]
