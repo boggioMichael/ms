@@ -179,6 +179,19 @@
   .voices li .check { color: var(--syrup); font-weight: 700; visibility: hidden; flex: none; }
   .voices li.sel .check { visibility: visible; }
   .voices li.hidden { display: none; }
+  /* Play stats: sharing them (off unless turned on), what would be shared,
+     and the last sessions in Details. */
+  .linkish { display: block; border: 0; background: none; color: var(--syrup); font-size: 14px; padding: 10px 0 0; text-decoration: underline; }
+  #shareView { background: #120e0a; border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin: 8px 0 0; font-size: 12px;
+    line-height: 1.35; max-height: 45vh; overflow: auto; white-space: pre; direction: ltr; text-align: left; color: var(--dim); }
+  #shareView[hidden], #shareNote[hidden] { display: none; }
+  #shareDelete { border: 1px solid var(--line); background: var(--card2); color: var(--text); border-radius: 12px; padding: 9px 14px;
+    font-size: 14px; margin-top: 10px; }
+  #sessionsTable { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  #sessionsTable[hidden] { display: none; }
+  #sessionsTable th { color: var(--faint); font-weight: 600; text-align: start; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  #sessionsTable td { padding: 6px; border-bottom: 1px solid var(--line); }
+  #sessionsTable td.day { unicode-bidi: isolate; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -271,6 +284,19 @@
       <label class="opt"><span data-t="auto_update">Updates itself when a new version is out</span> <input type="checkbox" id="updateBox" checked></label>
     </section>
 
+    <section class="card" id="shareCard">
+      <h2 data-t="share_title">Play stats</h2>
+      <label class="opt" style="margin-top:0"><span data-t="share_adult">I'm 18 or older</span> <input type="checkbox" id="adultBox"></label>
+      <label class="opt"><span data-t="share_on">Share my play stats (no name, words, voice or screen) with MapleSyrup's partners</span> <input type="checkbox" id="shareBox" disabled></label>
+      <div class="sub" style="margin:8px 0 0" data-t="share_what"></div>
+      <div class="sub" style="margin:6px 0 0" data-t="share_never"></div>
+      <button class="linkish" id="shareSee" data-t="share_see">See what would be shared</button>
+      <div class="sub" id="shareNote" style="margin:6px 0 0" hidden></div>
+      <pre id="shareView" hidden></pre>
+      <button id="shareDelete" data-t="share_delete">Delete it</button>
+      <div class="sub" id="shareState" style="margin:6px 0 0"></div>
+    </section>
+
     <footer>
       <span data-t="footer1"></span><br>
       <span data-t="footer2"></span>
@@ -336,6 +362,16 @@
       <div id="memEmpty" class="sub" data-t="mem_empty"></div>
       <div id="memTuning" class="sub"></div>
     </section>
+
+    <section class="card" id="sessionsCard">
+      <h2 data-t="h_sessions">Your sessions</h2>
+      <table id="sessionsTable" hidden>
+        <thead><tr><th data-t="col_day">Day</th><th data-t="col_min">Minutes</th><th data-t="col_levels">Levels</th><th data-t="col_deaths">Deaths</th><th data-t="col_warnings">Warnings</th></tr></thead>
+        <tbody id="sessionsBody"></tbody>
+      </table>
+      <div class="sub" id="sessionsEmpty" data-t="sessions_empty"></div>
+      <div class="sub" style="margin:6px 0 0" data-t="sessions_note"></div>
+    </section>
   </div>
 </div>
 
@@ -389,6 +425,13 @@
       no_mic: "This browser has no microphone access.", need_https: "The microphone needs the secure (https) link from MapleSyrup's QR code.",
       mic_failed: "The microphone could not start:", mic_refused: "permission was refused. Allow the microphone for this page in the browser's settings, then try again.",
       hearing_hebrew: "Hearing Hebrew now.", hearing_lang: "Hearing: {n}",
+      share_title: "Play stats", share_on: "Share my play stats (no name, words, voice or screen) with MapleSyrup's partners", share_adult: "I'm 18 or older",
+      share_what: "Off unless you turn it on. On, MapleSyrup keeps a file ready on your PC with numbers for each session: minutes played, levels (as ranges like 61–100), deaths, warnings, close calls, your class, how many maps, the week (not the day), the app and Windows version, under a random id made when you turn it on. It may be sold to companies that study gamers. Nothing is sent yet.",
+      share_never: "Never shared: your character's name, what you say or your voice, screenshots, what MapleSyrup learned about you or was taught, your files, your PC's name, your keys or your IP address.",
+      share_see: "See what would be shared", share_delete: "Delete it", share_deleted: "Deleted: sharing is off, and the file and its id are gone.",
+      share_preview: "Sharing is off. If it were on, your last sessions would look like this:", share_failed: "Couldn't change it: {n}",
+      h_sessions: "Your sessions", col_day: "Day", col_min: "Minutes", col_levels: "Levels", col_deaths: "Deaths", col_warnings: "Warnings",
+      sessions_empty: "No sessions yet: each one is added as it goes (every minute) and when it ends.", sessions_note: "Kept on this PC only.",
     },
     he: {
       h_details: "פרטים", done: "סיום", voice_search: "חפש קול…", coach: "מדבר מעצמו בזמן שאתה משחק", coach_hint: "טיפים והערות בלי שתשאל: מפה חדשה, עליית רמה, EXP שלא זז. כבוי: עונה רק כששואלים (ועדיין מזהיר על HP או MP נמוכים).", ws_title: "סדנה", ws_on: "משכתב את עצמו על המחשב הזה כשמבקשים", ws_hint: "תגיד \"תשנה את עצמך: …\" או תכתוב כאן. סוכן קוד שמותקן על המחשב (Claude Code או Codex) משנה את הקוד, הוא נבנה ונבדק, והגרסה החדשה מותקנת בהפעלה הבאה של MapleSyrup. רק על המחשב הזה: שום דבר לא מתפרסם.", ws_coder: "סוכן", ws_ph: "מה לשנות…", ws_build: "בצע את השינוי", ws_undo: "בטל את השינוי האחרון", ws_working: "עובד: {s} ({t})", ws_idle: "פנוי", ws_queued: "{n} ממתינים", ws_none: "לא נמצא סוכן קוד על המחשב: התקן Claude Code או Codex CLI והפעל את MapleSyrup מחדש.", version: "גרסה", update_now: "עדכן עכשיו", auto_update: "מתעדכן לבד כשיוצאת גרסה חדשה", upd_ok: "מעודכן", upd_dl: "מוריד את {v}…", upd_ready: "{v} מוכנה: תותקן בהפעלה הבאה של MapleSyrup", upd_off: "כבוי", upd_blocked: "{v} יצאה, אבל לא עלתה בפעם הקודמת; מחכה לבאה", upd_failed: "הבדיקה נכשלה: {why}",
@@ -427,6 +470,13 @@
       no_mic: "לדפדפן הזה אין גישה למיקרופון.", need_https: "המיקרופון צריך את הקישור המאובטח (https) מקוד ה-QR של MapleSyrup.",
       mic_failed: "המיקרופון לא הצליח להתחיל:", mic_refused: "ההרשאה נדחתה. אשר את המיקרופון לדף הזה בהגדרות הדפדפן ונסה שוב.",
       hearing_hebrew: "שומע עברית עכשיו.", hearing_lang: "שומע: {n}",
+      share_title: "סטטיסטיקות משחק", share_on: "שתף את סטטיסטיקות המשחק שלי (בלי שם, דיבור, קול או מסך) עם השותפים של MapleSyrup", share_adult: "אני בן 18 ומעלה",
+      share_what: "כבוי אלא אם תדליק. כשהוא דלוק, MapleSyrup שומר במחשב קובץ מוכן עם מספרים לכל סשן: דקות משחק, רמות (בטווחים, כמו 61–100), מיתות, אזהרות, מצבים שכמעט מתת בהם, המקצוע שלך, כמה מפות, השבוע (לא היום), גרסת התוכנה וגרסת Windows, תחת מזהה אקראי שנוצר כשאתה מדליק. הקובץ עשוי להימכר לחברות שחוקרות גיימרים. כרגע שום דבר לא נשלח.",
+      share_never: "אף פעם לא משותף: שם הדמות, מה שאתה אומר או הקול שלך, צילומי מסך, מה ש-MapleSyrup למד עליך או מה שלימדת אותו, הקבצים שלך, שם המחשב, המפתחות שלך או כתובת ה-IP שלך.",
+      share_see: "הצג מה ישותף", share_delete: "מחק את זה", share_deleted: "נמחק: השיתוף כבוי, והקובץ והמזהה שלו נמחקו.",
+      share_preview: "השיתוף כבוי. אילו היה דלוק, הסשנים האחרונים שלך היו נראים כך:", share_failed: "לא הצלחתי לשנות: {n}",
+      h_sessions: "הסשנים שלך", col_day: "יום", col_min: "דקות", col_levels: "רמות", col_deaths: "מיתות", col_warnings: "אזהרות",
+      sessions_empty: "עדיין אין סשנים: כל סשן נשמר תוך כדי (כל דקה) וכשהוא נגמר.", sessions_note: "נשמר רק במחשב הזה.",
     },
     es: {
       h_details: "Detalles", done: "Listo", voice_search: "Buscar voces…", coach: "Habla por su cuenta mientras juegas", coach_hint: "Consejos y avisos sin que preguntes: un mapa nuevo, subir de nivel, EXP parada. Apagado: solo responde (y sigue avisando de HP o MP bajos).", version: "Versión", update_now: "Actualizar ahora", auto_update: "Se actualiza solo cuando sale una versión nueva", upd_ok: "al día", upd_dl: "descargando {v}…", upd_ready: "{v} está lista: se instala la próxima vez que inicie MapleSyrup", upd_off: "apagado", upd_blocked: "{v} salió, pero no arrancó la última vez; esperando la siguiente", upd_failed: "no se pudo comprobar: {why}",
@@ -1486,6 +1536,7 @@
     $("tabDetails").classList.toggle("sel", details);
     $("paneSettings").hidden = details;
     $("paneDetails").hidden = !details;
+    if (details) loadSessions(); else loadShare();
   }
   $("gear").addEventListener("click", () => openSheet("settings"));
   $("strip").addEventListener("click", () => openSheet("details"));
@@ -1628,6 +1679,92 @@
     $("updateBtn").disabled = true;
     postJson("/api/update", { action: "install" }).catch(() => {});
   });
+  // Play stats. The PC keeps what each session came to, in numbers
+  // (Details shows the last ones); sharing them with MapleSyrup's partners
+  // is off unless turned on here, what would be shared can be looked at,
+  // and "Delete it" turns it off and deletes the file and its id. Nothing
+  // is sent anywhere: the PC only keeps the file ready.
+  let shareHeldUntil = 0;
+  function renderShare(share) {
+    if (share && Date.now() > shareHeldUntil) $("shareBox").checked = !!share.on;
+    shareGate();
+  }
+  async function loadShare() {
+    try {
+      const r = await api("/api/share");
+      if (!r.ok) return null;
+      const j = await r.json();
+      renderShare(j);
+      return j;
+    } catch (e) { return null; }
+  }
+  async function showShare() {
+    const j = await loadShare();
+    if (!j) return;
+    $("shareNote").textContent = j.preview ? t("share_preview") : "";
+    $("shareNote").hidden = !j.preview;
+    $("shareView").textContent = JSON.stringify(j.export || {}, null, 2);
+    $("shareView").hidden = false;
+  }
+  function hideShare() { $("shareView").hidden = true; $("shareNote").hidden = true; }
+  // Sharing is for adults only: the box that says so comes first, and the
+  // PC refuses an "on" without it.
+  function shareGate() { $("shareBox").disabled = !$("adultBox").checked && !$("shareBox").checked; }
+  $("adultBox").addEventListener("change", shareGate);
+  $("shareBox").addEventListener("change", async () => {
+    shareHeldUntil = Date.now() + 3000;
+    $("shareState").textContent = "";
+    try {
+      const r = await postJson("/api/share", { on: $("shareBox").checked, adult: $("adultBox").checked });
+      const j = await r.json().catch(() => ({}));
+      if (j.share) $("shareBox").checked = !!j.share.on;
+      else if (j.error) { $("shareBox").checked = false; $("shareState").textContent = t("share_failed", j.error); }
+      shareGate();
+      if (!$("shareView").hidden) showShare();
+    } catch (e) {}
+  });
+  $("shareSee").addEventListener("click", () => { if ($("shareView").hidden) showShare(); else hideShare(); });
+  $("shareDelete").addEventListener("click", async () => {
+    shareHeldUntil = Date.now() + 3000;
+    $("shareBox").checked = false;
+    shareGate();
+    hideShare();
+    try {
+      await postJson("/api/share/delete", {});
+      $("shareState").textContent = t("share_deleted");
+    } catch (e) {}
+  });
+  // "9 Oct" (the day the session started, in the page's language).
+  function dayLabel(day) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day || "");
+    if (!m) return day || "—";
+    try { return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(locale, { month: "short", day: "numeric" }); } catch (e) { return day; }
+  }
+  async function loadSessions() {
+    try {
+      const r = await api("/api/stats");
+      if (!r.ok) return;
+      const j = await r.json();
+      const rows = j.sessions || [];
+      const body = $("sessionsBody");
+      body.innerHTML = "";
+      for (const s of rows) {
+        const w = s.warnings || {};
+        const warnings = (w.hp_low || 0) + (w.mp_low || 0) + (w.beating || 0) + (w.taught || 0);
+        const tr = document.createElement("tr");
+        for (const [value, cls] of [[dayLabel(s.day), "day"], [s.minutes || 0], [s.levels_gained || 0], [s.deaths || 0], [warnings]]) {
+          const td = document.createElement("td");
+          td.textContent = String(value);
+          if (cls) td.className = cls;
+          tr.appendChild(td);
+        }
+        body.appendChild(tr);
+      }
+      $("sessionsTable").hidden = !rows.length;
+      $("sessionsEmpty").hidden = !!rows.length;
+      renderShare(j.share);
+    } catch (e) {}
+  }
   // Whether it speaks up on its own (the PC keeps it, for good).
   let coachHeldUntil = 0;
   $("coachBox").addEventListener("change", () => {

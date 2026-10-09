@@ -1867,11 +1867,13 @@ mod tests {
         let line = sight.calibrated(&frame, &c).unwrap();
         assert!(line.contains("found 3 bar(s)"), "{line}");
         assert!(!line.contains("not learned"), "{line}");
-        // Every frame, the numbers in the game's font, the same each time.
+        // Every frame, the numbers in the game's font, the same each time
+        // (on the classic HUD: its style, for the session's stats).
         let t0 = Instant::now();
         let mut seen = Seen::default();
         for i in 0..5 {
             seen = sight.observe(&frame, t0 + Duration::from_millis(100 * i));
+            assert_eq!(sight.numbers.classic(), Some(true));
             assert_eq!(seen.hp_number, Some((178, 178)), "{i}: {seen:?}");
             assert_eq!(seen.mp_number, Some((101, 101)), "{i}: {seen:?}");
             assert_eq!(
@@ -1987,6 +1989,8 @@ mod tests {
         // Another frame: the numbers come from the font, not the bars.
         let (other, _) = numbers::tests::hud((315, 400), (1000, 1351), 40.01);
         let seen = sight.observe(&other, Instant::now());
+        // (Read on the modern HUD: its style, for the session's stats.)
+        assert_eq!(sight.numbers.classic(), Some(false));
         assert_eq!(seen.hp_number, Some((315, 400)), "{seen:?}");
         assert_eq!(seen.mp_number, Some((1000, 1351)));
         assert_eq!(seen.exp_number, Some(Value::Percent(40.01)));

@@ -258,6 +258,13 @@ Privacy
   roughly a dollar or two per hour of play, depending on how much you talk). Without a key, nothing leaves your PC
   except the phone link on your own network.
   Recordings are made and kept on your PC only, and only when you ask for one.
+  Play stats: MapleSyrup keeps numbers about each session on this PC (minutes,
+  levels, deaths, warnings, how fast it answered; in %APPDATA%\MapleSyrup\metrics)
+  and never your character's name, what you say, your voice, pictures or your
+  files. Sharing them with MapleSyrup's partners, who may buy them, is off
+  unless you turn it on (players 18 or older only; Settings on the phone,
+  "Play stats"); there you can see what would be shared, turn it off, and
+  delete it. Nothing is sent anywhere yet.
 
 Files
   Each session is kept in "MapleSyrup sessions" (in Documents when installed,

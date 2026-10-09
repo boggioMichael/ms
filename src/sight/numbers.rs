@@ -276,6 +276,9 @@ pub struct Numbers {
     /// frame, and the line not shown is tried only when the one last read
     /// will not read.
     classic_first: HashSet<Field>,
+    /// Whether the last number read was on the classic HUD's line (None:
+    /// none read yet this run): the HUD's style, for the session's stats.
+    read_classic: Option<bool>,
     state: HashMap<Field, FieldState>,
     /// Crops of lines that could not be learned, saved under
     /// `debug/` for a look: how many so far this run.
@@ -621,6 +624,7 @@ impl Numbers {
             lines: HashMap::new(),
             windows: HashMap::new(),
             classic_first: HashSet::new(),
+            read_classic: None,
             state: HashMap::new(),
             failures_kept: 0,
         };
@@ -682,6 +686,13 @@ impl Numbers {
 
     pub fn samples(&self) -> &[Sample] {
         &self.samples
+    }
+
+    /// The HUD the numbers were last read on: the classic one (Classic
+    /// World's, the numbers above the bars) or the modern one; None until
+    /// a number has been read this run.
+    pub fn classic(&self) -> Option<bool> {
+        self.read_classic
     }
 
     /// Whether anything has been learned for `field`'s line to be read from.
@@ -767,6 +778,7 @@ impl Numbers {
                 } else {
                     self.classic_first.remove(&field);
                 }
+                self.read_classic = Some(place.classic());
                 break;
             }
         }

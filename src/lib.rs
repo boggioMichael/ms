@@ -18,6 +18,8 @@
 //!   the player): where the HUD is, the character's facts, and things it was taught to recognise.
 //! - **perceive**: One frame through the companion's eyes — the detectors it still needs, then the
 //!   sight — the same function for the companion and for `vision_bench`.
+//! - **metrics**: What each session came to, in numbers (kept on the PC), and — only when the
+//!   player turns it on — the same numbers made ready to share with partners; nothing is sent.
 
 pub mod ai;
 pub mod app;
@@ -29,6 +31,7 @@ pub mod game_state;
 pub mod hud;
 pub mod knowledge;
 pub mod logging;
+pub mod metrics;
 pub mod observe;
 pub mod perceive;
 pub mod phone;

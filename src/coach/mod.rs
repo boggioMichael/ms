@@ -429,6 +429,123 @@ const CONSULT_TIMEOUT: f64 = 45.0;
 /// The coach's lines kept for the model (not to repeat itself).
 const KEEP_LINES: usize = 6;
 
+/// Close calls as they happen: HP under [`CLOSE_CALL_UNDER`] (held a
+/// moment), then back above [`CLOSE_CALL_BACK`] (held a moment) within
+/// [`CLOSE_CALL_WITHIN`] of going under, with no death between. A death
+/// ends the scare; so does a dip that drags on (they sat at low HP: the
+/// companion's warnings are for that). The coach remarks on one at most
+/// once in [`CLOSE_CALL_AGAIN`]; the session's stats ([`crate::metrics`])
+/// count every one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CloseCalls {
+    scare: Scare,
+}
+
+impl Default for CloseCalls {
+    fn default() -> Self {
+        Self { scare: Scare::None }
+    }
+}
+
+impl CloseCalls {
+    /// One frame: HP as read (None: no reading), and whether the character
+    /// is dead (the companion's word). Returns the lowest HP got, in
+    /// percent, when a close call ended on this frame.
+    pub fn track(&mut self, now: f64, hp: Option<f32>, dead: bool) -> Option<f32> {
+        if dead {
+            self.scare = Scare::None;
+            return None;
+        }
+        // No reading, or a zero (a dialog over the bar, or a death on its
+        // way: `dead` says which): the scare stands as it is.
+        let hp = hp.filter(|p| *p > 0.5)?;
+        let mut found = None;
+        let under = hp < CLOSE_CALL_UNDER;
+        let back = hp >= CLOSE_CALL_BACK;
+        let held = |since: f64, frames: u32| frames >= HOLD_FRAMES && now - since >= HOLD_SECS;
+        self.scare = match self.scare {
+            Scare::None if under => Scare::Under {
+                since: now,
+                frames: 1,
+                lowest: hp,
+            },
+            Scare::None => Scare::None,
+            Scare::Under {
+                since,
+                frames,
+                lowest,
+            } if under => {
+                let (frames, lowest) = (frames + 1, lowest.min(hp));
+                if held(since, frames) {
+                    Scare::Dipped {
+                        since,
+                        lowest,
+                        back: None,
+                    }
+                } else {
+                    Scare::Under {
+                        since,
+                        frames,
+                        lowest,
+                    }
+                }
+            }
+            // A flicker, not a dip.
+            Scare::Under { .. } => Scare::None,
+            Scare::Dipped { since, lowest, .. } if under => Scare::Dipped {
+                since,
+                lowest: lowest.min(hp),
+                back: None,
+            },
+            Scare::Dipped {
+                since,
+                lowest,
+                back: Some((at, frames)),
+            } if back => {
+                let frames = frames + 1;
+                if !held(at, frames) {
+                    Scare::Dipped {
+                        since,
+                        lowest,
+                        back: Some((at, frames)),
+                    }
+                } else {
+                    if at - since <= CLOSE_CALL_WITHIN {
+                        found = Some(lowest);
+                    }
+                    Scare::None
+                }
+            }
+            Scare::Dipped { since, lowest, .. } if back => {
+                if now - since > CLOSE_CALL_WITHIN {
+                    // Too slow a save to be a close call.
+                    Scare::None
+                } else {
+                    Scare::Dipped {
+                        since,
+                        lowest,
+                        back: Some((now, 1)),
+                    }
+                }
+            }
+            // Between the marks: not back yet; and a dip that drags on is
+            // not a close call.
+            Scare::Dipped { since, lowest, .. } => {
+                if now - since > CLOSE_CALL_WITHIN {
+                    Scare::None
+                } else {
+                    Scare::Dipped {
+                        since,
+                        lowest,
+                        back: None,
+                    }
+                }
+            }
+        };
+        found
+    }
+}
+
 /// A scare under way: HP under the mark, and back from it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Scare {
@@ -486,7 +603,7 @@ pub struct Coach {
     said: VecDeque<String>,
     /// The scare under way, if any; a close call it ended in, this frame
     /// (the lowest HP got); and when one was last remarked on.
-    scare: Scare,
+    scares: CloseCalls,
     close_call: Option<u32>,
     last_close_call: f64,
     /// Whether the character was dead last frame (a death is `dead` going
@@ -526,7 +643,7 @@ impl Coach {
             seen_since: None,
             activity: 0.0,
             said: VecDeque::new(),
-            scare: Scare::None,
+            scares: CloseCalls::default(),
             close_call: None,
             last_close_call: f64::NEG_INFINITY,
             was_dead: false,
@@ -756,108 +873,16 @@ impl Coach {
         }
     }
 
-    /// A close call: HP under [`CLOSE_CALL_UNDER`] (held a moment), then
-    /// back above [`CLOSE_CALL_BACK`] (held a moment) within
-    /// [`CLOSE_CALL_WITHIN`] of going under, with no death between. A
-    /// death ends the scare; so does a dip that drags on (they sat at low
-    /// HP: the companion's warnings are for that). Remarked on at most
-    /// once in [`CLOSE_CALL_AGAIN`].
+    /// A close call ([`CloseCalls`]), remarked on at most once in
+    /// [`CLOSE_CALL_AGAIN`].
     fn track_scare(&mut self, g: &Glance) {
         let now = g.now;
-        if g.dead {
-            self.scare = Scare::None;
-            return;
+        if let Some(lowest) = self.scares.track(now, g.obs.hp.map(|h| h.percent), g.dead)
+            && now - self.last_close_call >= CLOSE_CALL_AGAIN
+        {
+            self.last_close_call = now;
+            self.close_call = Some(lowest.round().max(1.0) as u32);
         }
-        // No reading, or a zero (a dialog over the bar, or a death on its
-        // way: `dead` says which): the scare stands as it is.
-        let Some(hp) = g.obs.hp.map(|h| h.percent).filter(|p| *p > 0.5) else {
-            return;
-        };
-        let under = hp < CLOSE_CALL_UNDER;
-        let back = hp >= CLOSE_CALL_BACK;
-        let held = |since: f64, frames: u32| frames >= HOLD_FRAMES && now - since >= HOLD_SECS;
-        self.scare = match self.scare {
-            Scare::None if under => Scare::Under {
-                since: now,
-                frames: 1,
-                lowest: hp,
-            },
-            Scare::None => Scare::None,
-            Scare::Under {
-                since,
-                frames,
-                lowest,
-            } if under => {
-                let (frames, lowest) = (frames + 1, lowest.min(hp));
-                if held(since, frames) {
-                    Scare::Dipped {
-                        since,
-                        lowest,
-                        back: None,
-                    }
-                } else {
-                    Scare::Under {
-                        since,
-                        frames,
-                        lowest,
-                    }
-                }
-            }
-            // A flicker, not a dip.
-            Scare::Under { .. } => Scare::None,
-            Scare::Dipped { since, lowest, .. } if under => Scare::Dipped {
-                since,
-                lowest: lowest.min(hp),
-                back: None,
-            },
-            Scare::Dipped {
-                since,
-                lowest,
-                back: Some((at, frames)),
-            } if back => {
-                let frames = frames + 1;
-                if !held(at, frames) {
-                    Scare::Dipped {
-                        since,
-                        lowest,
-                        back: Some((at, frames)),
-                    }
-                } else {
-                    if at - since <= CLOSE_CALL_WITHIN
-                        && now - self.last_close_call >= CLOSE_CALL_AGAIN
-                    {
-                        self.last_close_call = now;
-                        self.close_call = Some(lowest.round().max(1.0) as u32);
-                    }
-                    Scare::None
-                }
-            }
-            Scare::Dipped { since, lowest, .. } if back => {
-                if now - since > CLOSE_CALL_WITHIN {
-                    // Too slow a save to be a close call.
-                    Scare::None
-                } else {
-                    Scare::Dipped {
-                        since,
-                        lowest,
-                        back: Some((now, 1)),
-                    }
-                }
-            }
-            // Between the marks: not back yet; and a dip that drags on is
-            // not a close call.
-            Scare::Dipped { since, lowest, .. } => {
-                if now - since > CLOSE_CALL_WITHIN {
-                    Scare::None
-                } else {
-                    Scare::Dipped {
-                        since,
-                        lowest,
-                        back: None,
-                    }
-                }
-            }
-        };
     }
 
     fn propose(&mut self, reason: Reason, now: f64) {
@@ -1732,6 +1757,33 @@ mod tests {
         talked.extend(hp_frames(&mut coach, 1071.0, 60.0, 60.0, false, false));
         assert!(close_calls(&talked).is_empty(), "{talked:?}");
         assert_eq!(coach.pending, None);
+    }
+
+    #[test]
+    fn every_close_call_is_found_though_the_coach_remarks_on_one_in_five_minutes() {
+        // The detector the coach and the session's stats share: a dip to
+        // 8% saved, and the same a minute later, are both close calls (the
+        // coach remarks on the first only: above); a dip that ends in a
+        // death is not one, nor is the revive.
+        let mut calls = CloseCalls::default();
+        let mut found = Vec::new();
+        let mut feed = |from: f64, secs: f64, hp: f32, dead: bool| {
+            for i in 0..(secs * 10.0).round() as u32 {
+                let t = from + i as f64 * 0.1;
+                if let Some(lowest) = calls.track(t, Some(hp), dead) {
+                    found.push((t, lowest));
+                }
+            }
+        };
+        feed(20.0, 1.0, 8.0, false);
+        feed(21.0, 5.0, 60.0, false);
+        feed(80.0, 1.0, 7.0, false);
+        feed(81.0, 5.0, 60.0, false);
+        feed(130.0, 1.0, 8.0, false);
+        feed(131.0, 3.0, 0.0, true);
+        feed(134.0, 5.0, 100.0, false);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!((found[0].1, found[1].1), (8.0, 7.0), "{found:?}");
     }
 
     #[test]

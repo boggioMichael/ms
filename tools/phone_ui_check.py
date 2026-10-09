@@ -1,8 +1,10 @@
 """The phone page against a stand-in PC, in a headless browser: no console
 errors, the main screen shows only the essentials (the language picker
 among them), the gear opens Settings, the voice search narrows the list,
-the live-call toggle flipped before Listen says hello again, the game line
-opens Details, Hebrew is right to left (and at 320 px the game line loses
+the live-call toggle flipped before Listen says hello again, sharing play
+stats starts off (on posts it, the view is JSON with no name in it,
+"Delete it" posts the delete), the game line opens Details (the last
+sessions in a table), Hebrew is right to left (and at 320 px the game line loses
 its end, not the level); then the turn-taking, with a stand-in speech
 recognizer, a stand-in call and a microphone fed from a file: the words so
 far never land after the sentence, a sentence cut off by a clip is still
@@ -95,6 +97,23 @@ INSTRUCTIONS = "You are MapleSyrup. Your attitude: friendly."
 # Whether the stand-in PC can start a call (/api/live): off, a call that
 # fails to open.
 LIVE = {"opens": True}
+# The stand-in PC's play stats: whether the player shares (off unless
+# turned on), a session as the export has it (the fields of
+# `metrics::EXPORT_FIELDS`), and the last sessions for Details.
+SHARE = {"on": False}
+SHARED_SESSION = {"week": "2026-W41", "minutes": 95, "game_minutes": 90, "levels_gained": 2, "level_start_band": "141-200",
+                  "level_end_band": "141-200", "job": "Night Lord", "hud": "modern", "deaths": 1,
+                  "warnings": {"hp_low": 3, "mp_low": 1, "beating": 2, "taught": 0}, "close_calls": 1, "potions_answered": 0.7,
+                  "exp_per_hour": 1.2, "maps": 4, "map_visits": 9, "sentences": 40, "replies": 38, "reply_ms_median": 1200,
+                  "instant_answers": 5, "call_minutes": 60, "clip_minutes": 20, "coach_looks": 30, "coach_lines": 9, "attitude": "savage",
+                  "language": "he", "version": "0.9.0", "windows": "11", "screen": "4K", "ai_errors": 0, "voice_errors": 0}
+SESSIONS = [{"day": "2026-10-09", "minutes": 95, "levels_gained": 2, "deaths": 1, "warnings": {"hp_low": 3, "mp_low": 1, "beating": 2, "taught": 0}},
+            {"day": "2026-10-08", "minutes": 40, "levels_gained": 0, "deaths": 0, "warnings": {}}]
+def share_view():
+    on = SHARE["on"]
+    return {"on": on, "since": "2026-10-09" if on else None, "preview": not on,
+            "export": {"format": 1, "install_id": "6f1c2a9e-3b7d-4c55-9a0e-2d8f1b7c4e31" if on else None, "app_version": "0.9.0",
+                       "sessions": [SHARED_SESSION]}}
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -129,6 +148,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif path == "/api/mouth": self._log(); self._send(200, b'{"step_ms": 40, "levels": []}', "application/json")
         elif path == "/api/eyes": self._log(); self._send(200, json.dumps({"snapshot": EYES, "image": None}).encode(), "application/json")
         elif path == "/api/instructions": self._log(); self._send(200, json.dumps({"instructions": INSTRUCTIONS, "attitude": "friendly"}).encode(), "application/json")
+        elif path == "/api/share": self._log(); self._send(200, json.dumps(share_view()).encode(), "application/json")
+        elif path == "/api/stats": self._log(); self._send(200, json.dumps({"sessions": SESSIONS, "share": {"on": SHARE["on"]}}).encode(), "application/json")
         else: self._log(); self._send(404, b"{}", "application/json")
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0); raw = self.rfile.read(n)
@@ -140,6 +161,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/api/live" and not LIVE["opens"]: self._send(200, b'{"error": "no key"}', "application/json")
         elif path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "attitude": "savage"}).encode(), "application/json")
         elif path == "/sdp": self._send(200, b"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n", "application/sdp")
+        elif path == "/api/share" and isinstance((body or {}).get("on"), bool):
+            SHARE["on"] = body["on"]; self._send(200, json.dumps({"ok": True, "share": {"on": SHARE["on"]}}).encode(), "application/json")
+        elif path == "/api/share/delete":
+            SHARE["on"] = False; self._send(200, json.dumps({"ok": True, "share": {"on": False}}).encode(), "application/json")
         else: self._send(200, b'{"ok":true}', "application/json")
 
 socketserver.ThreadingTCPServer.allow_reuse_address = True
@@ -267,6 +292,37 @@ def ui_checks(browser):
     t_flip = time.time()
     page.check("#liveCall")
     wait_for(lambda: any((r["body"] or {}).get("live") is True for r in requests_since(t_flip, "/api/hello")), 3, "the toggle flipped back did not say hello again")
+    # Play stats, the last card: sharing is off unless turned on, and says
+    # plainly what is shared, that it may be sold, and what never is.
+    # Turned on, it posts /api/share {on: true}; what would be shared is
+    # JSON with no name in it; "Delete it" posts the delete and turns it off.
+    page.locator("#shareCard").scroll_into_view_if_needed()
+    assert page.is_visible("#shareCard") and not page.is_checked("#shareBox"), "sharing must start off"
+    card = page.inner_text("#shareCard")
+    assert "sold to companies that study gamers" in card and "Never shared" in card and "character's name" in card, card
+    # For adults only: the toggle waits for "I'm 18 or older", and says so
+    # to the PC with the "on".
+    assert page.is_disabled("#shareBox"), "sharing could be turned on without the age box"
+    t_share = time.time()
+    page.check("#adultBox")
+    page.check("#shareBox")
+    wait_for(lambda: any((r["body"] or {}).get("on") is True and (r["body"] or {}).get("adult") is True for r in requests_since(t_share, "/api/share")), 3, "turning sharing on did not post /api/share {on: true, adult: true}")
+    page.click("#shareSee")
+    page.wait_for_selector("#shareView:not([hidden])", timeout=3000)
+    shown = json.loads(page.inner_text("#shareView"))
+    def keys_of(value):
+        if isinstance(value, dict): return [k for k, v in value.items() for k in [k] + keys_of(v)]
+        if isinstance(value, list): return [k for v in value for k in keys_of(v)]
+        return []
+    assert shown.get("install_id") and shown.get("sessions"), shown
+    assert not [k for k in keys_of(shown) if "name" in k], keys_of(shown)
+    assert page.is_checked("#shareBox")
+    page.locator("#shareCard").screenshot(path=os.path.join(SHOTS, "phone-share-card.png"))
+    t_delete = time.time()
+    page.click("#shareDelete")
+    wait_for(lambda: requests_since(t_delete, "/api/share/delete"), 3, "Delete it did not post /api/share/delete")
+    page.wait_for_timeout(200)
+    assert not page.is_checked("#shareBox") and page.is_hidden("#shareView") and not SHARE["on"]
     page.click("#sheetDone")
     page.wait_for_timeout(100)
     assert page.is_hidden("#sheet")
@@ -274,6 +330,12 @@ def ui_checks(browser):
     page.click("#strip")
     page.wait_for_timeout(200)
     assert page.is_visible("#paneDetails") and page.is_visible("#game") and page.is_visible("#recBtn")
+    # The last sessions, from the PC's stats: a row each.
+    wait_for(lambda: len(page.query_selector_all("#sessionsBody tr")) == 2, 3, "the sessions table did not fill")
+    assert page.is_hidden("#sessionsEmpty")
+    cells = [td.inner_text() for td in page.query_selector_all("#sessionsBody tr:first-child td")]
+    assert cells[1:] == ["95", "2", "1", "6"], cells
+    page.locator("#sessionsCard").screenshot(path=os.path.join(SHOTS, "phone-sessions-card.png"))
     assert "6,370 / 6,370" in page.inner_text("#hpVal"), page.inner_text("#hpVal")
     # The workshop card: on, both coders to pick from, what it is doing.
     assert page.is_checked("#workshopBox") and page.is_visible("#workshopBody")
@@ -307,8 +369,24 @@ def ui_checks(browser):
     page.click("#gear")
     page.wait_for_timeout(200)
     assert page.inner_text("#tabDetails") == "פרטים" and page.inner_text("#sheetDone") == "סיום"
+    assert page.inner_text("#shareCard h2") == "סטטיסטיקות משחק" and not page.is_checked("#shareBox")
     assert page.get_attribute("#voiceSearch", "placeholder") == "חפש קול…"
     page.screenshot(path=os.path.join(SHOTS, "phone-settings-he.png"), full_page=True)
+    # Without the age box the toggle cannot be turned on — but a share
+    # already on (from the PC) shows on and can always be turned off.
+    page.uncheck("#adultBox")
+    assert page.is_disabled("#shareBox"), "sharing could be turned on without the age box"
+    SHARE["on"] = True
+    def shown_on():
+        page.click("#tabDetails"); page.click("#tabSettings"); page.wait_for_timeout(150)
+        return page.is_checked("#shareBox")
+    wait_for(shown_on, 6, "a share already on did not show on")
+    assert page.is_enabled("#shareBox"), "a share already on could not be turned off"
+    t_off = time.time()
+    page.uncheck("#shareBox")
+    wait_for(lambda: any((r["body"] or {}).get("on") is False for r in requests_since(t_off, "/api/share")), 3, "turning sharing off did not post /api/share {on: false}")
+    wait_for(lambda: page.is_disabled("#shareBox"), 3, "once off, the toggle did not wait for the age box again")
+    assert not SHARE["on"]
     page.close()
 
 def listening_page(browser):

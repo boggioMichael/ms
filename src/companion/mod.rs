@@ -253,6 +253,24 @@ struct Low {
     /// (never: minus infinity).
     doubted: bool,
     above_since: f64,
+    /// Lines of this bar so far this session, and how many of them a
+    /// potion answered (for the session's stats: [`Companion::tally`]).
+    said_total: u32,
+    potted: u32,
+}
+
+/// What the companion's own warnings came to this session, for the
+/// session's stats ([`crate::metrics`]): how many of each were said, the
+/// low-bar lines (HP or MP, said or held) and how many of them a potion
+/// answered, and the deaths.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tally {
+    pub beating: u32,
+    pub hp_low: u32,
+    pub mp_low: u32,
+    pub low_lines: u32,
+    pub potted: u32,
+    pub deaths: u32,
 }
 
 /// What a reading of a low bar calls for.
@@ -294,6 +312,8 @@ impl Low {
             exp_at_first: None,
             doubted: false,
             above_since: f64::NEG_INFINITY,
+            said_total: 0,
+            potted: 0,
         }
     }
 
@@ -316,6 +336,10 @@ impl Low {
         if percent >= self.told_at + POTTED {
             self.up_frames += 1;
             if self.up_frames >= HELD_FRAMES {
+                // (A line of this fight answered: counted once.)
+                if !self.answered && self.lines > 0 {
+                    self.potted += 1;
+                }
                 self.answered = true;
             }
         } else {
@@ -379,6 +403,7 @@ impl Low {
         self.told = now;
         self.told_at = percent;
         self.lines += 1;
+        self.said_total += 1;
         self.answered = false;
         self.up_frames = 0;
     }
@@ -531,6 +556,8 @@ pub struct Companion {
     asked_still_there: bool,
     /// Its own lines are said in Hebrew (see [`Companion::set_language`]).
     hebrew: bool,
+    /// The warnings said so far, by kind (see [`Companion::tally`]).
+    warned: Tally,
 }
 
 /// A bar's readings lately, to tell a bar that is being read from one
@@ -2270,6 +2297,18 @@ impl Alert {
     }
 }
 
+impl Tally {
+    /// A warning said (news is counted elsewhere: deaths, level-ups).
+    fn count(&mut self, alert: &Alert) {
+        match alert {
+            Alert::Beating(_) => self.beating += 1,
+            Alert::HpLow { .. } => self.hp_low += 1,
+            Alert::MpLow { .. } => self.mp_low += 1,
+            Alert::Death { .. } | Alert::LevelUp(_) => {}
+        }
+    }
+}
+
 /// A [`Deck`] per situation, so that each is dealt on its own.
 #[derive(Debug)]
 struct Decks {
@@ -2501,6 +2540,7 @@ impl Companion {
             view_since: f64::NEG_INFINITY,
             asked_still_there: false,
             hebrew: false,
+            warned: Tally::default(),
         }
     }
 
@@ -2848,6 +2888,18 @@ impl Companion {
         }
     }
 
+    /// What its own warnings came to this session, for the session's
+    /// stats: the warnings said by kind, the low-bar lines and how many a
+    /// potion answered, and the deaths. Counts only: no line, no reading.
+    pub fn tally(&self) -> Tally {
+        Tally {
+            low_lines: self.low_hp.said_total + self.low_mp.said_total,
+            potted: self.low_hp.potted + self.low_mp.potted,
+            deaths: self.deaths,
+            ..self.warned
+        }
+    }
+
     /// When HP or EXP last moved by more than the bar's flicker, or MP was
     /// potted: the game is quiet while none does. (MP by a jump — a
     /// potion's worth from one frame to the next, held — not by its slow
@@ -2965,6 +3017,7 @@ impl Companion {
         // A warning (a beating, a low bar) is shouted; news (a death, a
         // level-up) is told.
         for alert in self.pace(now, &obs, alerts, &mut out) {
+            self.warned.count(&alert);
             let news = alert.is_news();
             let line = self.line(alert);
             out.push(Action::Say(if news {
@@ -5855,6 +5908,40 @@ mod tests {
         assert!(
             lines[0].0 < 3.0 && from(lines::MP_LOW, &lines[0].1),
             "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_tally_counts_the_warnings_said_and_the_low_lines_a_potion_answered() {
+        // For the session's stats, counts only: HP left at 20% gets its
+        // line and a repeat 12 s on, and a potion answers the repeat; then
+        // MP low, once, which nothing answers.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        assert_eq!(c.tally(), Tally::default());
+        let mut said = 0;
+        for i in 0..130 {
+            said += alerts(&c.observe(i as f64 * 0.1, frame(20.0, 90.0, 10.0))).len();
+        }
+        assert_eq!(said, 2);
+        let tally = c.tally();
+        assert_eq!((tally.hp_low, tally.low_lines, tally.potted), (2, 2, 0));
+        for i in 130..150 {
+            c.observe(i as f64 * 0.1, frame(90.0, 90.0, 10.0));
+        }
+        assert_eq!(c.tally().potted, 1, "{:?}", c.tally());
+        for i in 150..170 {
+            c.observe(i as f64 * 0.1, frame(90.0, 3.0, 10.0));
+        }
+        assert_eq!(
+            c.tally(),
+            Tally {
+                beating: 0,
+                hp_low: 2,
+                mp_low: 1,
+                low_lines: 3,
+                potted: 1,
+                deaths: c.so_far().deaths,
+            }
         );
     }
 

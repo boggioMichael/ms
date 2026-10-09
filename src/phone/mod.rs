@@ -355,6 +355,9 @@ pub struct Hub {
     service: Mutex<Option<Arc<dyn Service>>>,
     /// Where the phone's sound goes while the session is recorded.
     recording: Mutex<Option<Arc<dyn Recording>>>,
+    /// The session's stats kept on the PC, and the sharing the player
+    /// turns on and off (`crate::metrics`).
+    metrics: Mutex<Option<Arc<crate::metrics::Store>>>,
 }
 
 impl Hub {
@@ -384,6 +387,7 @@ impl Hub {
             changed: Condvar::new(),
             service: Mutex::new(None),
             recording: Mutex::new(None),
+            metrics: Mutex::new(None),
         })
     }
 
@@ -491,6 +495,18 @@ impl Hub {
 
     fn recording(&self) -> Option<Arc<dyn Recording>> {
         self.recording.lock().ok().and_then(|r| r.clone())
+    }
+
+    /// The session's stats and the sharing choice: what the phone's
+    /// Settings and Details show, and what its toggle changes.
+    pub fn set_metrics(&self, store: Arc<crate::metrics::Store>) {
+        if let Ok(mut slot) = self.metrics.lock() {
+            *slot = Some(store);
+        }
+    }
+
+    fn metrics(&self) -> Option<Arc<crate::metrics::Store>> {
+        self.metrics.lock().ok().and_then(|m| m.clone())
     }
 
     /// What a call's model can see now: the frame (None while the game is
@@ -1034,6 +1050,54 @@ impl Hub {
                 }
                 None => Response::json(400, &json!({"error": "lang is a locale such as en-US"})),
             },
+            // The session's stats (kept on the PC: the Details tab's table),
+            // and sharing them with partners — off unless turned on, what
+            // would be shared, and "Delete it". Nothing is sent anywhere.
+            // (Serialized as they are, so the export keeps its fields' order.)
+            ("GET", "/api/stats") => match self.metrics() {
+                Some(store) => Response::new(
+                    200,
+                    "application/json; charset=utf-8",
+                    serde_json::to_vec(&store.stats_view(crate::metrics::SHOWN_SESSIONS))
+                        .unwrap_or_default(),
+                )
+                .with_header("Cache-Control", "no-store"),
+                None => Response::json(503, &json!({"error": "no stats on this PC"})),
+            },
+            ("GET", "/api/share") => match self.metrics() {
+                Some(store) => Response::new(
+                    200,
+                    "application/json; charset=utf-8",
+                    serde_json::to_vec(&store.share_view()).unwrap_or_default(),
+                )
+                .with_header("Cache-Control", "no-store"),
+                None => Response::json(503, &json!({"error": "no stats on this PC"})),
+            },
+            ("POST", "/api/share") => {
+                let body = body();
+                // (Sharing is for adults only: turning it on needs the
+                // player to say they are 18 or older.)
+                let adult = body.get("adult").and_then(Value::as_bool) == Some(true);
+                match (self.metrics(), body.get("on").and_then(Value::as_bool)) {
+                    (None, _) => Response::json(503, &json!({"error": "no stats on this PC"})),
+                    (_, None) => Response::json(400, &json!({"error": "on must be true or false"})),
+                    (Some(_), Some(true)) if !adult => {
+                        Response::json(400, &json!({"error": "sharing is for players 18 or older"}))
+                    }
+                    (Some(store), Some(on)) => {
+                        match store.set_sharing(on, chrono::Local::now().date_naive()) {
+                            Ok(share) => Response::json(200, &json!({"ok": true, "share": share})),
+                            Err(why) => Response::json(500, &json!({"error": why})),
+                        }
+                    }
+                }
+            }
+            ("POST", "/api/share/delete") => match self.metrics() {
+                Some(store) => {
+                    Response::json(200, &json!({"ok": true, "share": store.delete_shared()}))
+                }
+                None => Response::json(503, &json!({"error": "no stats on this PC"})),
+            },
             ("POST", "/api/voice") => match text_field("on").as_deref().and_then(VoiceOn::parse) {
                 Some(on) => {
                     let mut state = self.lock();
@@ -1462,6 +1526,78 @@ mod tests {
 
     fn body(response: &Response) -> Value {
         serde_json::from_slice(&response.body).unwrap()
+    }
+
+    #[test]
+    fn the_stats_and_the_sharing_choice_answer_from_the_pc_and_sharing_starts_off() {
+        let hub = hub();
+        // No stats here (a link without them): said so.
+        assert_eq!(
+            hub.handle(&request("GET", "/api/stats?k=k1", "")).status,
+            503
+        );
+        let dir = std::env::temp_dir().join(format!("ms-phone-share-{}", tls::random_hex(4)));
+        let store = crate::metrics::Store::new(&dir);
+        hub.set_metrics(Arc::clone(&store));
+        let stats = body(&hub.handle(&request("GET", "/api/stats?k=k1", "")));
+        assert_eq!(stats["share"]["on"], false, "{stats}");
+        assert_eq!(stats["sessions"], json!([]));
+        // Off unless turned on: what would be shared is a preview, no id.
+        let share = body(&hub.handle(&request("GET", "/api/share?k=k1", "")));
+        assert_eq!(
+            (share["on"].clone(), share["preview"].clone()),
+            (json!(false), json!(true))
+        );
+        assert!(share["export"]["install_id"].is_null(), "{share}");
+        assert_eq!(
+            hub.handle(&request("POST", "/api/share?k=k1", r#"{"on":"yes"}"#))
+                .status,
+            400
+        );
+        // Only for a player who says they are 18 or older.
+        let refused = hub.handle(&request("POST", "/api/share?k=k1", r#"{"on":true}"#));
+        assert_eq!(refused.status, 400);
+        assert!(String::from_utf8_lossy(&refused.body).contains("18 or older"));
+        assert_eq!(
+            body(&hub.handle(&request("GET", "/api/share?k=k1", "")))["on"],
+            false
+        );
+        // On: an install id, and the export carries it.
+        let on = body(&hub.handle(&request(
+            "POST",
+            "/api/share?k=k1",
+            r#"{"on":true,"adult":true}"#,
+        )));
+        assert_eq!(on["share"]["on"], true, "{on}");
+        let id = on["share"]["id"].as_str().unwrap().to_string();
+        let response = hub.handle(&request("GET", "/api/share?k=k1", ""));
+        let share = body(&response);
+        assert_eq!(share["export"]["install_id"], json!(id), "{share}");
+        // (In the export's own order, for the player to read: not sorted.)
+        let text = String::from_utf8_lossy(&response.body);
+        assert!(
+            text.find("\"format\"") < text.find("\"app_version\""),
+            "{text}"
+        );
+        // "Delete it": off, the export and the id gone.
+        let gone = body(&hub.handle(&request("POST", "/api/share/delete?k=k1", "")));
+        assert_eq!(gone["share"], json!({"on": false}), "{gone}");
+        assert_eq!(store.consent(), crate::metrics::Consent::default());
+        assert!(store.export().is_none());
+        // And none of it without the link's key.
+        for (method, path) in [
+            ("GET", "/api/stats"),
+            ("GET", "/api/share"),
+            ("POST", "/api/share"),
+            ("POST", "/api/share/delete"),
+        ] {
+            assert_eq!(
+                hub.handle(&request(method, path, r#"{"on":true}"#)).status,
+                403
+            );
+        }
+        assert_eq!(store.consent(), crate::metrics::Consent::default());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

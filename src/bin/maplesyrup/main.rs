@@ -2407,6 +2407,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     let settings_dir = tls::settings_dir();
     let session_dir = session::new_dir(&session::sessions_base(&settings_dir));
     let session = Session::open(session_dir.clone());
+    // What the session comes to, in numbers, kept on this PC — and made
+    // ready to share only if the player turned that on (`ms::metrics`).
+    let mut stats = ms::metrics::Stats::start(&settings_dir);
     // What it learned from playing together before: about the player, their
     // corrections, what it looked up, how they like to talk (all on this PC).
     let learning = ai::Learning::load(&settings_dir);
@@ -2714,6 +2717,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     link.hub
                         .set_service(Arc::clone(service) as Arc<dyn phone::Service>);
                 }
+                link.hub.set_metrics(stats.store());
                 Some(link)
             }
             Err(e) => {
@@ -2757,6 +2761,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         }
     }
     println!("{d}Session files: {}{r}", session_dir.display());
+    if stats.sharing() {
+        println!("{d}Sharing play stats with MapleSyrup's partners: on (Settings on the phone){r}");
+    }
     if !console.dpi_aware {
         println!(
             "{d}(This display is scaled and DPI awareness could not be set: the HUD may read worse.){r}"
@@ -2993,6 +3000,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 }
             }
             let actions = companion.observe(tick.at, tick.obs.clone());
+            stats.frame(tick.at, &tick.obs, &companion);
             if actions
                 .iter()
                 .any(|a| matches!(a, Action::Say(s) if s.speak && s.kind != Kind::Heard))
@@ -3073,6 +3081,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             // One past the mark they set ("the boss under 20%") is a
             // warning, shouted; a thing that showed up is news, told.
             for fired in tick.fired {
+                stats.fired(fired.warning);
                 let kind = if fired.warning {
                     Kind::Warning
                 } else {
@@ -3161,6 +3170,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             }
                         };
                         companion.player_spoke(now);
+                        stats.said();
                         if let Some(on) = commands::recording_request(&text) {
                             out.show(Kind::Heard, &text);
                             if on {
@@ -3222,6 +3232,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 // call hears them, and answers.)
                                 if let Some(line) = companion.instant(&text) {
                                     out.session.line("timing", "instant answer");
+                                    stats.instant();
                                     if let Some(worker) = &out.mouth.ai {
                                         let id = worker.send(Job::Say {
                                             heard: Some(text.clone()),
@@ -3278,6 +3289,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     Inbound::Said { who, text } if who == "timing" => {
                         // Where the time went on the call, from the phone.
                         out.session.line("timing", &text);
+                        stats.call_timing(&text);
                     }
                     Inbound::Said { who, text } => {
                         // On a live call: shown here and kept in the log (the
@@ -3286,6 +3298,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         let kind = if who == "player" {
                             player_heard = Some(Instant::now());
                             companion.player_spoke(now);
+                            stats.said();
                             Kind::Heard
                         } else {
                             companion.remember_spoken(now, &text);
@@ -3738,6 +3751,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         (None, Some(error)) => {
                             out.session
                                 .line("coach", &format!("{label}: couldn't look ({error})"));
+                            stats.coach_failed();
                         }
                         (None, None) => {
                             out.session
@@ -3830,6 +3844,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 "timing",
                                 &format!("first words after {:.1} s", after.as_secs_f64()),
                             );
+                            stats.first_words(turns.reply_id() == Some(id), after);
                         }
                     }
                     // A line of its own (not the answer they are waiting
@@ -3856,6 +3871,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 }
                 Done::Failed { id, heard, error } => {
                     turns.finished(id);
+                    stats.failed(heard.is_some(), &error);
                     let message = format!("OpenAI: {error}");
                     if message != ai_error_shown {
                         out.show(Kind::Info, &message);
@@ -4029,6 +4045,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             last_draw = Some(Instant::now());
             let progress = companion.progress();
             let summary = out.phone.as_ref().map(|h| h.summary());
+            // The session's stats: the phone, the screen and the map as they
+            // are now; written every minute.
+            stats.phone(now, summary.as_ref().is_some_and(|s| s.connected), out.live);
+            stats.look(sight.as_ref(), frame_size);
+            stats.save_every(&coach, player_language.as_deref());
             // A call whose phone has gone (pocketed, asleep) is lost.
             if let Some(summary) = &summary {
                 out.watch_call(summary.connected, &mut companion);
@@ -4187,6 +4208,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         print!("\x1b[?7h");
     }
     recording.finish();
+    stats.finish(&coach, player_language.as_deref());
     let progress = companion.progress();
     println!(
         "\nStopped after {}. {} mark{} saved in {}",
