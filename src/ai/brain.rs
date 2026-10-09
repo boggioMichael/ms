@@ -4513,6 +4513,86 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
     }
 
     #[test]
+    fn hebrew_openers_places_and_decimals_do_not_save_a_recital() {
+        // From w32's tables and w33's corpus (round I): a word a sentence
+        // opens with said nothing yet, a cheer of "in" or "to" is no place
+        // (his places are a closed set, or the map he is on), and a decimal
+        // or a Hebrew "in" on an English map is still a reading.
+        let at = |level: u32, hp: f32| Facts {
+            level: Some(level),
+            bars: vec![hp, 100.0, 49.84],
+            ..ellinia()
+        };
+        let modern = Facts {
+            level: Some(167),
+            map: Some("Gate of the Future".into()),
+            name: Some("WanWanBoggi".into()),
+            job: Some("Night Lord".into()),
+            bars: vec![48.0, 90.0, 34.36],
+        };
+        let closed = Facts {
+            bars: vec![],
+            ..modern.clone()
+        };
+        let evening = Facts {
+            level: Some(165),
+            map: Some("Gate of the Future".into()),
+            name: Some("WanWan".into()),
+            job: Some("Night Lord".into()),
+            bars: vec![76.0, 22.0, 34.5],
+        };
+        let (nine, nine_low, ten, ten_low) =
+            (at(9, 100.0), at(9, 48.0), at(10, 100.0), at(10, 48.0));
+        for (heard, reply, facts) in [
+            ("סתם", "תראה, אתה ברמה 9 באליניה.", &nine),
+            ("יאללה", "בוא נראה, אתה ברמה 167.", &modern),
+            ("משעמם לי", "תקשיב, המשחק לא פתוח.", &closed),
+            ("סתם", "תשמע, החלון של המשחק סגור.", &closed),
+            ("סתם", "רגע, המשחק סגור.", &closed),
+            ("סתם", "אז אתה ברמה 9 באליניה.", &nine),
+            ("סתם", "ובכן, אתה ברמה 167.", &modern),
+            ("סתם", "תגיד, אתה ברמה 9, נכון?", &nine),
+            ("סתם", "יש לך 100 אחוז חיים ו-100 אחוז מאנה.", &nine),
+            ("אוי", "החיים שלך על 48 אחוז.", &nine_low),
+            ("פטריות", "רמה 10 בגייט אוף דה פיוצ'ר.", &ten),
+            ("פטריות", "אתה בויקטוריה רואד, רמה 10.", &ten),
+            ("פטריות", "אתה בדרך לאליניה, רמה 10.", &ten),
+            ("פטריות", "רמה 10, באל נאת.", &ten),
+            ("im bored", "You're level 165 with 34.5% EXP.", &evening),
+            ("סתם", "אתה ב-Gate of the Future, רמה 165.", &evening),
+        ] {
+            assert_eq!(unasked(reply, heard, facts), "", "{heard:?} → {reply:?}");
+        }
+        for (heard, reply, facts) in [
+            ("יש!", "רמה 10, לחיים!", &ten),
+            ("יש!", "רמה 10, בטירוף!", &ten),
+            ("יש!", "רמה 10, בכבוד!", &ten),
+            ("אוי", "48 אחוז חיים, לשיקוי!", &ten_low),
+            ("אוי", "48 אחוז, לעיר!", &ten_low),
+            ("אוי", "קח שיקוי, החיים על 48 אחוז.", &nine_low),
+            ("סתם", "המשחק סגור, בוא נדבר על הבוס.", &closed),
+        ] {
+            assert_eq!(unasked(reply, heard, facts), reply, "{heard:?} → {reply:?}");
+        }
+        // What is said beside a recital stays.
+        assert_eq!(
+            unasked(
+                "אז לך לבוס. דרך אגב, אתה רמה 165 ו-EXP 34.5%.",
+                "משעמם לי",
+                &evening
+            ),
+            "אז לך לבוס."
+        );
+        // A numbered list keeps its first item and is said as sentences.
+        assert_eq!(
+            for_speech(
+                "Here's how: 1. Farm Zakum helmets 2. Sell them in the Free Market 3. Repeat every week"
+            ),
+            "Here's how: Farm Zakum helmets. Sell them in the Free Market. Repeat every week."
+        );
+    }
+
+    #[test]
     fn a_word_or_two_that_asks_nothing_needs_no_same_as_before() {
         // The owner's "OK", "Hello", "Danny": a repeat that was all there
         // was got "1 of 1 sentences said before, left out" — and now a card.
