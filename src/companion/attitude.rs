@@ -123,18 +123,31 @@ impl Deck {
 
     /// The next line of `lines` (one list per attitude) in `attitude`.
     pub fn deal<'a>(&mut self, attitude: Attitude, lines: [&[&'a str]; 3]) -> &'a str {
+        let at = self.deal_index(attitude, lines);
+        attitude.lines(lines).get(at).copied().unwrap_or("")
+    }
+
+    /// Where the next line [`deal`](Deck::deal) would deal is in
+    /// `attitude`'s list of `lines`, dealt: its place, not its words. For
+    /// lines with a twin in another language — the same number of cards
+    /// per attitude, card for card the same in meaning — the twin's card
+    /// at that place is the same line in the other language: one deck
+    /// deals both (the order is `lines`' own, whichever language is said),
+    /// and a switch of language mid-session goes on with the deck where it
+    /// was. (0 for an empty list.)
+    pub fn deal_index(&mut self, attitude: Attitude, lines: [&[&str]; 3]) -> usize {
         if self.attitude != Some(attitude) {
             self.attitude = Some(attitude);
             self.dealt = 0;
         }
-        let line = nth_seeded(
+        let at = nth_index(
             attitude.lines(lines),
             self.dealt,
             self.seed,
             self.lead_first,
         );
         self.dealt = self.dealt.wrapping_add(1);
-        line
+        at
     }
 }
 
@@ -144,19 +157,23 @@ impl Deck {
 /// one round and the start of the next. A deck of one line can only repeat
 /// it; a deck of two alternates.
 pub fn nth<'a>(lines: &[&'a str], n: u32) -> &'a str {
-    nth_seeded(lines, n, 0, true)
+    lines
+        .get(nth_index(lines, n, 0, true))
+        .copied()
+        .unwrap_or("")
 }
 
-/// [`nth`], the shuffle seeded by `seed` as well as the lines, and the
-/// first round led by the first line only when `lead_first`.
-fn nth_seeded<'a>(lines: &[&'a str], n: u32, seed: u64, lead_first: bool) -> &'a str {
+/// Where the `n`th line dealt from `lines` is in the list ([`nth`]), the
+/// shuffle seeded by `seed` as well as the lines, and the first round led
+/// by the first line only when `lead_first`. (0 for an empty list.)
+fn nth_index(lines: &[&str], n: u32, seed: u64, lead_first: bool) -> usize {
     let len = lines.len();
     if len == 0 {
-        return "";
+        return 0;
     }
     let round = n / len as u32;
     let at = (n % len as u32) as usize;
-    lines[round_order(len, round, salt(lines) ^ seed.rotate_left(29), lead_first)[at]]
+    round_order(len, round, salt(lines) ^ seed.rotate_left(29), lead_first)[at]
 }
 
 /// The order a deck of `len` lines is dealt in round `round`. The first
@@ -335,6 +352,45 @@ mod tests {
         }
         assert!(led <= 8, "the lead opened {led} of 20 nights");
         assert!(led >= 1, "the lead never opens a night");
+    }
+
+    #[test]
+    fn a_deck_dealt_by_place_deals_a_twin_card_for_card() {
+        // The same deck dealt by place: the places are the lines `deal`
+        // deals, in the same order — so a twin list (the same lines in
+        // another language) dealt at those places is the same deck in the
+        // other language, and switching between the two goes on with it.
+        const TWIN: [&str; 7] = ["ראשון 1", "ב", "ג", "ד", "ה", "ו", "ז"];
+        let lines = [&SEVEN[..], &SEVEN[..], &SEVEN[..]];
+        let twin = [&TWIN[..], &TWIN[..], &TWIN[..]];
+        let mut by_line = Deck::seeded(5);
+        let mut by_place = Deck::seeded(5);
+        let mut mixed = Vec::new();
+        for n in 0..21 {
+            let line = by_line.deal(Attitude::Savage, lines);
+            let at = by_place.deal_index(Attitude::Savage, lines);
+            assert_eq!(SEVEN[at], line, "{n}");
+            mixed.push(if n % 2 == 0 {
+                SEVEN[at]
+            } else {
+                Attitude::Savage.lines(twin)[at]
+            });
+        }
+        // (The lead first, in whichever language.)
+        assert_eq!(mixed[0], "lead 1");
+        let places: Vec<usize> = mixed
+            .iter()
+            .map(|l| SEVEN.iter().chain(&TWIN).position(|x| x == l).unwrap() % 7)
+            .collect();
+        for round in places.chunks(7) {
+            let mut seen = round.to_vec();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), 7, "{places:?}");
+        }
+        let mut empty = Deck::new();
+        assert_eq!(empty.deal_index(Attitude::Blunt, [&[], &[], &[]]), 0);
+        assert_eq!(empty.deal(Attitude::Blunt, [&[], &[], &[]]), "");
     }
 
     #[test]

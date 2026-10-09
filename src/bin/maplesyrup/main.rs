@@ -1529,44 +1529,11 @@ const TERMS: [&[&str]; 3] = [
     ],
 ];
 
-/// The word that the language asked for out loud is taken ("talk to me in
-/// Hebrew"), in that language: one list per attitude. Hebrew's in Hebrew;
-/// the rest in English, `{lang}` its name, translated into it as its own
-/// lines are.
-const LANGUAGE_TAKEN_EN: [&[&str]; 3] = [
-    &[
-        "Sure — {lang} from now on.",
-        "You got it: {lang} it is.",
-        "Love it. {lang} from here on.",
-    ],
-    &[
-        "Fine, {lang} from now on.",
-        "{lang} it is.",
-        "Done. {lang} now.",
-    ],
-    &[
-        "{lang}? Fine, genius.",
-        "Ugh, fine. {lang} it is.",
-        "Whatever you say. {lang} now.",
-    ],
-];
-const LANGUAGE_TAKEN_HE: [&[&str]; 3] = [
-    &[
-        "בטח, מעכשיו בעברית.",
-        "בכיף, עוברים לעברית.",
-        "סגור, מדברים עברית.",
-    ],
-    &["סבבה, עברית מעכשיו.", "עברית. סגור.", "יאללה, בעברית."],
-    &[
-        "עברית? סבבה, גאון.",
-        "אוף, טוב. עברית.",
-        "מה שתגיד. עברית מעכשיו.",
-    ],
-];
-
 /// The word that `locale` is taken, in it (or in English, to be translated
-/// into it), in `attitude`'s voice.
+/// into it), in `attitude`'s voice (the lists are the companion's own
+/// lines, so that the evening example deals them too).
 fn language_taken(locale: &str, attitude: ms::companion::Attitude) -> String {
+    use ms::companion::lines::{LANGUAGE_TAKEN_EN, LANGUAGE_TAKEN_HE};
     let mut deck = ms::companion::Deck::seeded(ai::brain::session_seed());
     deck.lead_first(false);
     match ai::language::name(locale) {
@@ -2158,13 +2125,24 @@ impl Outputs {
         })
     }
 
-    /// The player's language is `locale` now (picked on the phone, or
-    /// asked for out loud): MapleSyrup's own lines are translated into it,
-    /// and the model is told it.
-    fn set_language(&mut self, locale: &str, player_language: &mut Option<String>) {
+    /// The player's language is `locale` now (picked on the phone — its
+    /// first word, at the hello, says it — or asked for out loud): the
+    /// model is told it, and MapleSyrup's own lines are in it — in Hebrew
+    /// dealt from the companion's Hebrew decks, said as they are; in
+    /// another language translated on their way to the voice.
+    fn set_language(
+        &mut self,
+        locale: &str,
+        player_language: &mut Option<String>,
+        companion: &mut Companion,
+    ) {
         let changed = player_language.as_deref() != Some(locale);
         self.language = (!ai::language::is_english(locale)).then(|| locale.to_string());
         *player_language = Some(locale.to_string());
+        // (Its own lines in the player's language need a natural voice to
+        // say them: with no key, the Windows voice speaks English only, and
+        // the lines stay English as they always were.)
+        companion.set_language(self.mouth.ai.is_some().then_some(locale));
         if changed {
             self.session.line(
                 "info",
@@ -2186,7 +2164,7 @@ impl Outputs {
         companion: &mut Companion,
         say: bool,
     ) {
-        self.set_language(locale, player_language);
+        self.set_language(locale, player_language, companion);
         self.lang_asks += 1;
         self.lang_asked = Some(LangAsked {
             locale: locale.to_string(),
@@ -3507,7 +3485,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                     }
                     Inbound::Language(locale) => {
-                        out.set_language(&locale, &mut player_language);
+                        out.set_language(&locale, &mut player_language, &mut companion);
                         out.took_language(&locale);
                     }
                     Inbound::Forget(id) => {
@@ -5457,6 +5435,7 @@ mod tests {
     #[test]
     fn a_language_asked_for_out_loud_is_the_phones_and_its_own_at_once() {
         use ms::companion::Attitude;
+        use ms::companion::lines::{LANGUAGE_TAKEN_EN, LANGUAGE_TAKEN_HE};
         let mut out = outputs();
         let mut companion = Companion::new(Settings::default());
         let mut player_language = None;
@@ -5477,13 +5456,42 @@ mod tests {
         );
         assert_eq!(job(&out), before + 2, "the word was not said");
         assert!(log(&out).contains("[info] language: Hebrew (he-IL)"));
-        // The phone took it (its picker says so): asked no more.
-        out.set_language("he-IL", &mut player_language);
+        // Its own lines are Hebrew from here, shown as they are said (no
+        // Latin letter: the voice's translation lets them through as they
+        // are): the game seen, a level-up.
+        assert!(companion.speaks_hebrew());
+        let seen = |level: u32| ms::companion::Observation {
+            game: ms::companion::GameView::Seen("MapleStory".into()),
+            hp: None,
+            mp: None,
+            exp: None,
+            level: Some(level),
+            name: None,
+            job: None,
+        };
+        let shown = screen(&out).len();
+        for (t, level) in [(0.0, 9), (3.1, 9), (5.0, 10), (8.1, 10)] {
+            let actions = companion.observe(t, seen(level));
+            out.apply(actions, &mut companion, None);
+        }
+        let own = screen(&out)[shown..].to_vec();
+        assert_eq!(own.len(), 2, "{own:?}");
+        assert!(
+            own.iter()
+                .all(|l| !l.chars().any(|c| c.is_ascii_alphabetic())),
+            "{own:?}"
+        );
+        assert_eq!(own[1], "עלית רמה! אתה ברמה 10.");
+        // The phone took it (its picker says so): asked no more. (Its
+        // first word at the hello comes the same way: the companion too.)
+        out.set_language("he-IL", &mut player_language, &mut companion);
         out.took_language("he-IL");
         assert_eq!(out.lang_request(), serde_json::Value::Null);
+        assert!(companion.speaks_hebrew());
         // And back to English: the next number, said in English.
         out.ask_language("en-US", &mut player_language, &mut companion, true);
         assert_eq!(out.language, None);
+        assert!(!companion.speaks_hebrew());
         assert_eq!(out.lang_request(), json!({"lang": "en-US", "seq": 2}));
         let line = screen(&out).last().cloned().unwrap();
         assert!(
@@ -5497,6 +5505,7 @@ mod tests {
         // lines (that one too) translated into Spanish from now on.
         out.ask_language("es-ES", &mut player_language, &mut companion, true);
         assert_eq!(out.language.as_deref(), Some("es-ES"));
+        assert!(!companion.speaks_hebrew());
         assert!(screen(&out).last().unwrap().contains("Spanish"));
         // A request the phone never took is not made forever.
         out.lang_asked.as_mut().unwrap().at = earlier(LANG_ASKED_FOR);
@@ -5510,11 +5519,19 @@ mod tests {
         assert_eq!(screen(&out).len(), shown);
         assert_eq!(out.lang_request()["lang"], "he-IL");
         assert_eq!(out.language.as_deref(), Some("he-IL"));
+        assert!(companion.speaks_hebrew());
         // Every attitude has three ways at least, in Hebrew and English.
         for attitude in Attitude::ALL {
             assert!(attitude.lines(LANGUAGE_TAKEN_HE).len() >= 3);
             assert!(attitude.lines(LANGUAGE_TAKEN_EN).len() >= 3);
         }
+        // With no key there is no voice that speaks Hebrew (the Windows
+        // voice reads English): its own lines stay English.
+        let mut out = outputs();
+        out.mouth.ai = None;
+        let mut companion = Companion::new(Settings::default());
+        out.set_language("he-IL", &mut player_language, &mut companion);
+        assert!(!companion.speaks_hebrew());
     }
 
     /// The size of the phone's clip `seq`, as it would fetch it.

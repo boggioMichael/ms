@@ -524,6 +524,8 @@ pub struct Companion {
     started_at: Option<f64>,
     view_since: f64,
     asked_still_there: bool,
+    /// Its own lines are said in Hebrew (see [`Companion::set_language`]).
+    hebrew: bool,
 }
 
 /// A bar's readings lately, to tell a bar that is being read from one
@@ -888,6 +890,18 @@ const NUMBER_WORDS: &[&str] = &[
 /// opens a session; the rest are dealt from a [`Deck`], every line once
 /// before any again. `{}` is the amount or the level.
 ///
+/// Every deck has a Hebrew twin (`…_HE`), said when the player speaks
+/// Hebrew ([`super::Companion::set_language`]) — at once, where an English
+/// line waited for a model to translate it (and showed in English): the
+/// same number of cards per attitude, card for card the same in meaning,
+/// with the same `{}`. One [`Deck`] deals both by place
+/// ([`Deck::deal_index`]), so a switch of language mid-session goes on with
+/// the deck where it was. They are written as an Israeli gamer says them
+/// on voice chat to a friend, in the masculine; HP is "חיים", MP "מאנה",
+/// EXP "אקספי", an amount "20 אחוז" or "בערך 20 אחוז" — and no card has a
+/// Latin letter in it: a line with one is sent to the model to translate
+/// (`ai::translate` lets a line through only when it has none).
+///
 /// Savage stays within the policy in `ai::style`: the play is insulted,
 /// never who they are.
 pub mod lines {
@@ -922,6 +936,37 @@ pub mod lines {
             "Your HP bar's doing a speedrun. Get out.",
             "Dodging's free, you know. Try it.",
             "Wow, you just stood there and took that. Move, dumbass.",
+        ],
+    ];
+
+    /// [`BEATING`] in Hebrew, card for card.
+    pub const BEATING_HE: [&[&str]; 3] = [
+        &[
+            "וואו, אתה חוטף מכות, נשארו לך {} חיים. תתרחק ותשתה!",
+            "זהירות, החיים שלך יורדים מהר. תתרחק!",
+            "היי היי היי, זה הרבה נזק. תתרחק שנייה.",
+            "אתה נמס! תשתה, ואז תחזור.",
+            "הדבר הזה מרביץ חזק. תן לו קצת מרחק.",
+            "אאוץ'. תתרחק ותשתה משהו לפני שהמכה הבאה נוחתת.",
+            "מכות כבדות נוחתות עליך, אתה יורד מהר. קודם שותים, אחר כך נלחמים.",
+        ],
+        &[
+            "תתרחק, קורעים אותך. {} וממשיך לרדת.",
+            "תצא משם. תשתה.",
+            "אתה אוכל כל מכה. זוז.",
+            "תצא ממה שזה לא יהיה. אחורה.",
+            "שיקוי. עכשיו. לא אחרי המכה הבאה.",
+            "חתיכה מהבר שלך נעלמה בבת אחת. תזוז משם.",
+            "תצא מהקרב. אתה לא יכול להחליף מכות עם הדבר הזה.",
+        ],
+        &[
+            "זוז! אתה נמס, גאון. {} ויורד.",
+            "תתרחק, אידיוט, קורעים אותך.",
+            "אתה סופג את זה בכוונה? תשתה, ליצן.",
+            "תפסיק לספוג הכול בפרצוף ותלחץ על השיקוי המחורבן.",
+            "בר החיים שלך עושה ספידראן. תצא משם.",
+            "להתחמק זה בחינם, אתה יודע. תנסה.",
+            "וואו, פשוט עמדת שם וספגת את זה. זוז, אהבל.",
         ],
     ];
 
@@ -960,6 +1005,36 @@ pub mod lines {
         ],
     ];
 
+    /// [`HP_LOW`] in Hebrew, card for card.
+    pub const HP_LOW_HE: [&[&str]; 3] = [
+        &[
+            "זהירות, נשארו לך {} חיים. תשתה שיקוי!",
+            "{} חיים, זמן לשיקוי!",
+            "וואו, {} חיים. תשתה משהו!",
+            "תשתה, אתה על {}.",
+            "החיים שלך נמוכים, {}. אל תגזים, תשתה.",
+            "היי, בר החיים נהיה מפחיד. שיקוי, בבקשה!",
+            "{} על הבר. תמלא אותו לפני המכה הבאה.",
+        ],
+        &[
+            "{} חיים. תשתה עכשיו!",
+            "שיקוי! אתה על {}.",
+            "{} חיים. תשתה!",
+            "אתה על {}. זה לא הרבה. תשתה.",
+            "חיים נמוכים, {}. תסדר את זה.",
+            "תשתה. אתה על {} ומרביץ כאילו הבר מלא.",
+        ],
+        &[
+            "{} חיים. תשתה, אידיוט!",
+            "תשתה עכשיו, אתה על {}, גאון.",
+            "{} חיים. אתה מנסה למות?",
+            "יש לך {} חיים ואתה תוקף. אמיץ. מטומטם, אבל אמיץ.",
+            "{} חיים זה בשביל להשוויץ? תשתה את השיקוי המחורבן.",
+            "{} חיים. המצבה שלך בטעינה.",
+            "בר אדום, {}, בלי שיקוי. מדהים. תשתה.",
+        ],
+    ];
+
     /// HP still under the threshold, the last line of this fight
     /// unanswered: said again, and the card may say so. Not "still at
     /// {}": the bar may have gone lower since.
@@ -987,6 +1062,34 @@ pub mod lines {
             "Again? {} HP. Drink, clown.",
             "I keep saying it: {}. Pot.",
             "{}. Pot, or die and prove me right.",
+        ],
+    ];
+
+    /// [`HP_LOW_AGAIN`] in Hebrew, card for card.
+    pub const HP_LOW_AGAIN_HE: [&[&str]; 3] = [
+        &[
+            "עדיין נמוך, {}. תשתה משהו, בבקשה.",
+            "אמרתי שיקוי! {} חיים. תשתה.",
+            "היי, {} חיים זה עדיין מפחיד. תשתה!",
+            "הבר עדיין אדום, {}. תשתה.",
+            "לא שמעת אותי? {} חיים. שיקוי, עכשיו.",
+            "אני אומר את זה שוב: {} חיים. תשתה לפני המכה הבאה.",
+        ],
+        &[
+            "עדיין נמוך, {}. תשתה כבר.",
+            "אמרתי לשתות. {}.",
+            "{} חיים. לא אמרתי הרגע לשתות?",
+            "שוב: {} חיים. תשתה.",
+            "שמעת אותי. {}. תשתה.",
+            "{}. אותו בר, אותה תשובה: שיקוי.",
+        ],
+        &[
+            "עדיין נמוך, {}. לא הייתי ברור? תשתה.",
+            "אמרתי לשתות, גאון. {}.",
+            "{} חיים, עדיין. האוזניים שלך עובדות? תשתה.",
+            "שוב? {} חיים. תשתה, ליצן.",
+            "אני כל הזמן אומר את זה: {}. תשתה.",
+            "{}. תשתה, או שתמות ותוכיח שצדקתי.",
         ],
     ];
 
@@ -1022,6 +1125,34 @@ pub mod lines {
         ],
     ];
 
+    /// [`HP_LOW_ASK`] in Hebrew, card for card: every card asks.
+    pub const HP_LOW_ASK_HE: [&[&str]; 3] = [
+        &[
+            "נגמרו השיקויים? אתה על {}.",
+            "אתה מצליח להגיע לשיקוי? יש לך {} חיים.",
+            "משהו מפריע לך לשתות? {} חיים.",
+            "הכול בסדר? אתה על {} ולא שותה.",
+            "נגמרו לך השיקויים? נשארו {}.",
+            "רוצה להתרחק ולשתות? אתה על {}.",
+        ],
+        &[
+            "נגמרו השיקויים, או שאתה פשוט לא לוחץ? {}.",
+            "יש לך שיקויים או לא? {} חיים.",
+            "המקש של השיקוי שבור? {}.",
+            "{} חיים. אתה הולך לשתות או לא?",
+            "למה אתה מחכה? {}. תשתה.",
+            "נגמרו השיקויים? אז תתרחק. {}.",
+        ],
+        &[
+            "איבדת את המקש של השיקוי? {}.",
+            "זה אתגר בלי שיקויים? {} חיים.",
+            "האצבעות שלך יודעות איפה המקש של השיקוי? {}.",
+            "{}. אתה בודק כמה נמוך זה יכול לרדת?",
+            "נגמרו השיקויים, או נגמר השכל? {}.",
+            "מכרת את כל השיקויים? {} חיים.",
+        ],
+    ];
+
     /// MP under the threshold: the first line of a fight (see [`HP_LOW`]).
     pub const MP_LOW: [&[&str]; 3] = [
         &[
@@ -1048,6 +1179,35 @@ pub mod lines {
             "Mana's at {}. Your skills are about to be decorative.",
             "{} MP. Even the mage mules manage better than this.",
             "{} MP. Drink the blue one, genius.",
+        ],
+    ];
+
+    /// [`MP_LOW`] in Hebrew, card for card.
+    pub const MP_LOW_HE: [&[&str]; 3] = [
+        &[
+            "נשארו לך {} מאנה.",
+            "{} מאנה, אולי כדאי שיקוי.",
+            "שים לב, נשארו רק {} מאנה.",
+            "המאנה יורדת, {}. תשתה כחול.",
+            "המאנה כמעט נגמרת לך. תשתה לפני שהסקילים נעצרים.",
+            "{} מאנה. תמלא כשיש לך רגע.",
+            "בדיקת מאנה: {}. זמן לשיקוי.",
+        ],
+        &[
+            "{} מאנה. תשתה.",
+            "המאנה על {}. תשתה.",
+            "נשארו {} מאנה. תשתה.",
+            "אתה עומד להתייבש, {}. שיקוי כחול.",
+            "אין מאנה, אין סקילים. {}. תשתה.",
+            "המאנה על {}. הסקילים צריכים אותה. תשתה.",
+        ],
+        &[
+            "{} מאנה. תשתה לפני שאתה נהיה חסר תועלת.",
+            "{} מאנה. תשתה משהו, ליצן.",
+            "{} מאנה. מה, תהרוג את הבוס במכות רגילות?",
+            "המאנה על {}. הסקילים שלך עומדים להיות קישוט.",
+            "{} מאנה. אפילו מכשף מיול מסתדר יותר טוב מזה.",
+            "{} מאנה. תשתה את הכחול, גאון.",
         ],
     ];
 
@@ -1080,6 +1240,34 @@ pub mod lines {
         ],
     ];
 
+    /// [`MP_LOW_AGAIN`] in Hebrew, card for card.
+    pub const MP_LOW_AGAIN_HE: [&[&str]; 3] = [
+        &[
+            "המאנה עדיין נמוכה, {}. שיקוי כחול!",
+            "עדיין מעט מאנה, {}. תשתה כחול.",
+            "שוב בדיקת מאנה: {}. תמלא.",
+            "אמרתי מאנה, {}. תשתה כשאתה יכול.",
+            "רק {} מאנה, עדיין. תשתה.",
+            "שוב מאנה: {}. שיקוי כחול, בבקשה.",
+        ],
+        &[
+            "עדיין חסרה לך מאנה, {}. תשתה.",
+            "{} מאנה. אני אומר את זה כבר פעמיים. תשתה.",
+            "אמרתי מאנה. {}.",
+            "המאנה עדיין נמוכה, {}. למה זה תמיד מאנה אצלך?",
+            "שוב: {} מאנה. שיקוי כחול.",
+            "{} מאנה. שמעת אותי בפעם הראשונה. תשתה.",
+        ],
+        &[
+            "עדיין בלי מאנה? {}. תשתה, גאון.",
+            "אתה עדיין תקוע עם {} מאנה. תלמד. תשתה.",
+            "אמרתי שיקוי כחול. {} מאנה. ליצן.",
+            "עדיין {} מאנה. הסקילים שלך קישוט, וגם האוזניים.",
+            "מאנה, שוב. {}. תשתה.",
+            "{} מאנה. אמרתי את זה כבר פעם אחת. תשתה.",
+        ],
+    ];
+
     /// MP's third unanswered line of a fight: a question (see
     /// [`HP_LOW_ASK`]).
     pub const MP_LOW_ASK: [&[&str]; 3] = [
@@ -1106,6 +1294,34 @@ pub mod lines {
             "Do you know mana potions exist? {} MP.",
             "Planning to auto-attack your way out? {} MP.",
             "Out of blue pots, or out of ideas? {} MP.",
+        ],
+    ];
+
+    /// [`MP_LOW_ASK`] in Hebrew, card for card: every card asks.
+    pub const MP_LOW_ASK_HE: [&[&str]; 3] = [
+        &[
+            "נגמרו השיקויים הכחולים? אתה על {} מאנה.",
+            "אתה מצליח להגיע לשיקוי כחול? המאנה על {}.",
+            "המקש של שיקוי המאנה תקוע? {} מאנה.",
+            "הכול בסדר? {} מאנה ובלי שיקוי כחול.",
+            "נגמרו הכחולים? המאנה על {}.",
+            "רוצה לשתות שיקוי מאנה? אתה על {} מאנה.",
+        ],
+        &[
+            "נגמרו הכחולים, או שאתה פשוט לא לוחץ? {} מאנה.",
+            "יש לך שיקויי מאנה או לא? {} מאנה.",
+            "המקש של המאנה שבור? {} מאנה.",
+            "המאנה על {}. אתה הולך לשתות או לא?",
+            "איך אתה הולך להטיל סקילים על {} מאנה?",
+            "למה אתה מחכה? {} מאנה. תשתה.",
+        ],
+        &[
+            "איבדת את המקש של הכחול? {} מאנה.",
+            "זה אתגר בלי מאנה? {} מאנה.",
+            "שומר את הכחולים לאירוע מיוחד? {} מאנה.",
+            "אתה יודע ששיקויי מאנה קיימים? {} מאנה.",
+            "מתכנן לצאת מזה במכות רגילות? {} מאנה.",
+            "נגמרו הכחולים, או נגמר השכל? {} מאנה.",
         ],
     ];
 
@@ -1141,6 +1357,36 @@ pub mod lines {
         ],
     ];
 
+    /// [`DEATH`] in Hebrew, card for card: no card claims a warning came, or
+    /// speaks of an earlier death.
+    pub const DEATH_HE: [&[&str]; 3] = [
+        &[
+            "החיים שלך הגיעו לאפס. זמן לקום ולחזור.",
+            "אוי, מתת. תקום ותחזור לשם, אתה יכול.",
+            "נפלת! אוקיי, תקום, תשתה, ועוד ניסיון.",
+            "זה תפס אותך. תקום, לא נורא.",
+            "ריפ. תאסוף את הדברים שלך ותחזור לשם.",
+            "אאוץ'. חזרה לעיר בשבילך. תקום ויוצאים לעוד סיבוב.",
+            "מת. תנער את זה, תקום ותחזור פנימה.",
+        ],
+        &[
+            "מתת. תקום ותחזור לשם.",
+            "טוב, זה מוות. תקום, עוד סיבוב.",
+            "וזהו, נפלת. ריספאון.",
+            "עמדת בתוך זה ומתת. תלמד מזה משהו. תקום.",
+            "שטוח על הרצפה. תקום, והפעם תסתכל על הבר.",
+            "מת. יאללה, למעלה. ובפעם הבאה אל תעמוד בזה.",
+        ],
+        &[
+            "מת. וואו. תקום ותנסה לא להיות גרוע הפעם.",
+            "מתת, גאון. תקום ותחזור פנימה.",
+            "מזל טוב, מצאת את הרצפה. ריספאון.",
+            "מת. המפלצות מתחילות לרחם עליך.",
+            "אפס חיים. אפס כישרון. תקום, אידיוט.",
+            "זה היה מביך. תקום לפני שמישהו רואה.",
+        ],
+    ];
+
     /// HP at zero in a fight a low warning or the beating was said in: it
     /// did say to pot (or to back off), and the line may say so (how long
     /// ago it said it, it may not: the warning can be most of a minute
@@ -1172,6 +1418,34 @@ pub mod lines {
         ],
     ];
 
+    /// [`DEATH_WARNED`] in Hebrew, card for card.
+    pub const DEATH_WARNED_HE: [&[&str]; 3] = [
+        &[
+            "אוי, אמרתי לשתות. תקום ויוצאים לעוד סיבוב.",
+            "זה בדיוק מה שהזהרתי ממנו. חזרה לעיר, תנער את זה.",
+            "אמרתי שזה יקרה, וזה בכל זאת תפס אותך. תקום, ותשתה קצת יותר מוקדם.",
+            "אמרתי לך שזה נהיה נמוך! תקום, ותשים עין על הבר.",
+            "בפעם הבאה, כשאני אומר לשתות, תשתה. תקום, אתה יכול.",
+            "שמעת אותי אומר שיקוי, נכון? אוקיי, תקום, לא קרה כלום.",
+        ],
+        &[
+            "מת. אמרתי לך לשתות.",
+            "מת. בפעם הבאה תשתה כשאני אומר לשתות.",
+            "אמרתי לשתות. לא שתית. תקום.",
+            "ידעתי. ריספאון, ובפעם הבאה תקשיב.",
+            "הזהרתי אותך. תקום ותשתפר.",
+            "שמעת אותי ומתת בכל מקרה. עוד סיבוב.",
+        ],
+        &[
+            "לחצת על כל מקש חוץ מזה של השיקוי. ריספאון.",
+            "אני אמרתי לשתות, אתה אמרת למות. תקום, גאון.",
+            "הוזהרת, התעלמת, מתת. קלאסי. ריספאון.",
+            "ממש אמרתי לך. תקום ותעמיד פנים שאתה מקשיב.",
+            "מת עם שיקוי בתיק והקול שלי באוזן. ריספאון.",
+            "בפעם הבאה שאני אומר שיקוי, תנסה ללחוץ עליו במקום למות. תקום.",
+        ],
+    ];
+
     /// Said after a death no warning came before, when the HP warning
     /// moves sooner: `{}` is the new mark, in percent. One sentence after
     /// the death line, in the same voice — not a settings dialog spliced
@@ -1192,6 +1466,25 @@ pub mod lines {
             "Fine. I scream at {} from now on. Try to hear it.",
             "I'll start yelling at {} percent next time. Not that you'll listen.",
             "New rule: {} and I'm screaming. Maybe that gets through.",
+        ],
+    ];
+
+    /// [`SOONER`] in Hebrew, card for card (`{}` is the new mark).
+    pub const SOONER_HE: [&[&str]; 3] = [
+        &[
+            "בפעם הבאה אצעק מוקדם יותר, מ-{} אחוז.",
+            "בפעם הבאה אגיד משהו מוקדם יותר, ב-{} אחוז.",
+            "מעכשיו אזהיר אותך מוקדם יותר, ב-{} אחוז.",
+        ],
+        &[
+            "חוק חדש: אני צועק ב-{} אחוז.",
+            "בפעם הבאה אגיד את זה מוקדם יותר. {} אחוז.",
+            "מעכשיו אני צועק ב-{} אחוז. תקשיב.",
+        ],
+        &[
+            "יופי. מעכשיו אני צורח ב-{} אחוז. תנסה לשמוע.",
+            "בפעם הבאה אתחיל לצעוק ב-{} אחוז. לא שתקשיב.",
+            "חוק חדש: {} אחוז ואני צורח. אולי ככה זה ייכנס לך.",
         ],
     ];
 
@@ -1226,6 +1519,37 @@ pub mod lines {
         ],
     ];
 
+    /// [`LEVEL_UP`] in Hebrew, card for card.
+    pub const LEVEL_UP_HE: [&[&str]; 3] = [
+        &[
+            "עלית רמה! אתה ברמה {}.",
+            "יש! רמה {}! עבודה יפה.",
+            "דינג! {}. יאללה!",
+            "רמה {}, תראה אותך!",
+            "יוהו, {}! תשמור על הקצב.",
+            "הנה זה, רמה {}. הרווחת את זה.",
+            "{} כבר? אתה טס.",
+        ],
+        &[
+            "רמה {}! יפה.",
+            "רמה {}. הגיע הזמן.",
+            "{}. טוב. אל תאט עכשיו.",
+            "דינג, {}. תמשיך לטחון.",
+            "רמה {}. תשים את הנקודות במקום שימושי.",
+            "זה {}. לקח זמן, אבל הגעת.",
+            "{}, דינג. חזרה לעבודה.",
+        ],
+        &[
+            "רמה {}. לקח לך מספיק זמן.",
+            "רמה {}. סוף סוף.",
+            "{}. לקח לך רק את כל הערב.",
+            "דינג, {}. חילזון עם מקלדת היה עושה את זה יותר מהר.",
+            "רמה {}. כבר התחלתי לחשוב שזה שבור.",
+            "אוי תראו, {}. אל תתלהב, אתה עדיין לא יודע להתחמק.",
+            "{}? מעולה. עכשיו תשחק בהתאם.",
+        ],
+    ];
+
     /// The game window seen for the first time.
     pub const SEEN: [&[&str]; 3] = [
         &[
@@ -1254,6 +1578,37 @@ pub mod lines {
             "MapleStory's on. Time to get carried by my advice.",
             "Window's up. Pot before I have to tell you.",
             "Got the game. I'll be right here, judging.",
+        ],
+    ];
+
+    /// [`SEEN`] in Hebrew, card for card.
+    pub const SEEN_HE: [&[&str]; 3] = [
+        &[
+            "אני רואה את מייפלסטורי.",
+            "המשחק על המסך. בוא נשחק!",
+            "הנה זה, מייפלסטורי פתוח. אני צופה.",
+            "אוקיי, אני רואה את המשחק. קדימה, אני מגבה אותך.",
+            "המשחק אצלי על המסך. תהנה!",
+            "יש לי עין על מייפלסטורי. בוא נעשה את זה.",
+            "מייפלסטורי פתוח ואני רואה אותו. מוכן כשאתה מוכן.",
+        ],
+        &[
+            "אני רואה את מייפלסטורי.",
+            "המשחק פתוח. אני צופה.",
+            "הנה המשחק. אל תבייש אותי.",
+            "יש לי אותו על המסך. קדימה.",
+            "מייפלסטורי פתוח. בוא נראה מה אתה שווה.",
+            "אני רואה את המשחק. תשחק כמו שצריך.",
+            "החלון פתוח. אני בפנים.",
+        ],
+        &[
+            "אני רואה את מייפלסטורי.",
+            "המשחק פתוח. בוא נראה אותך מת.",
+            "הנה המשחק. תנסה להחזיק מעמד חמש דקות.",
+            "אני רואה אותו. אוי ואבוי, מתחילים.",
+            "מייפלסטורי פתוח. זמן שהעצות שלי יסחבו אותך.",
+            "החלון פתוח. תשתה לפני שאני צריך להגיד לך.",
+            "יש לי את המשחק. אני פה, שופט אותך.",
         ],
     ];
 
@@ -1288,6 +1643,37 @@ pub mod lines {
         ],
     ];
 
+    /// [`LOST`] in Hebrew, card for card.
+    pub const LOST_HE: [&[&str]; 3] = [
+        &[
+            "איבדתי את חלון המשחק.",
+            "הממ, המשחק נעלם לי. עשית אלט-טאב?",
+            "אני לא רואה יותר את מייפלסטורי. תחזיר אותו כשאתה מוכן.",
+            "חלון המשחק נעלם. אני מחכה.",
+            "איבדתי את המשחק. מזערת אותו?",
+            "מייפלסטורי נעלם לי מהעין. לוקח הפסקה?",
+            "אני לא רואה את המשחק כרגע. אבל אני עדיין פה.",
+        ],
+        &[
+            "איבדתי את חלון המשחק.",
+            "המשחק נעלם. לאן הלכת?",
+            "לא רואה את מייפלסטורי. תחזיר אותו.",
+            "מזערת אותו. אני עיוור עכשיו.",
+            "איבדתי את החלון. תעשה אלט-טאב בחזרה כשתסיים.",
+            "אין משחק על המסך. אני מחכה.",
+            "מייפלסטורי ירד לי מהמסך. תזדרז.",
+        ],
+        &[
+            "איבדתי את חלון המשחק.",
+            "המשחק נעלם. כבר עשית רייג' קוויט?",
+            "לא רואה את מייפלסטורי. בודק את הרשתות באמצע הגריינד, קלאסי.",
+            "החבאת ממני את המשחק. פחדן.",
+            "החלון נעלם. לוקח הפסקה מלהפסיד?",
+            "אין משחק. אין על מה לרדת עליך. תחזור מהר.",
+            "מייפלסטורי נעלם. וגם קצב האקספי שלך.",
+        ],
+    ];
+
     /// The game window back after it was lost.
     pub const AGAIN: [&[&str]; 3] = [
         &[
@@ -1316,6 +1702,37 @@ pub mod lines {
             "Welcome back. Your HP missed you, apparently.",
             "Game's up. Resume the clown show.",
             "Back already? I was enjoying the quiet.",
+        ],
+    ];
+
+    /// [`AGAIN`] in Hebrew, card for card.
+    pub const AGAIN_HE: [&[&str]; 3] = [
+        &[
+            "אני רואה שוב את המשחק.",
+            "הנה, המשחק חזר.",
+            "ברוך השב! המשחק על המסך.",
+            "תפסתי אותו שוב. בוא נמשיך.",
+            "המשחק שוב מול העיניים. אני צופה.",
+            "וחזרנו. היי!",
+            "אני רואה שוב את מייפלסטורי. תמשיך.",
+        ],
+        &[
+            "אני רואה שוב את המשחק.",
+            "חזר. טוב.",
+            "המשחק חזר. יאללה.",
+            "הנה אתה. תמשיך לשחק.",
+            "החלון חזר. אני שוב צופה.",
+            "לקח לך מספיק זמן. המשחק פתוח.",
+            "המשחק חזר. איפה היינו?",
+        ],
+        &[
+            "אני רואה שוב את המשחק.",
+            "אה, חזרת. מרגש.",
+            "המשחק חזר. בוא נראה כמה מהר תמות הפעם.",
+            "הנה הוא. תנסה לא לצאת שוב באמצע בוס.",
+            "ברוך השב. החיים שלך התגעגעו אליך, כנראה.",
+            "המשחק פתוח. ממשיכים בהופעת הליצנים.",
+            "כבר חזרת? נהניתי מהשקט.",
         ],
     ];
 
@@ -1350,6 +1767,37 @@ pub mod lines {
         ],
     ];
 
+    /// [`MUTED`] in Hebrew, card for card.
+    pub const MUTED_HE: [&[&str]; 3] = [
+        &[
+            "מושתק. אמשיך לכתוב לך בטלפון.",
+            "אוקיי, אני שותק. עדיין אכתוב פה.",
+            "ששש, הבנתי. רק טקסט מעכשיו.",
+            "מושתק! תגיד לי לחזור לדבר כשתרצה אותי בחזרה.",
+            "מצב שקט. עדיין צופה, רק לא מדבר.",
+            "הפה סגור. תראה אותי בטלפון.",
+            "בלי קול, רק טקסט. אני פה אם תרצה אותי בחזרה.",
+        ],
+        &[
+            "מושתק. אמשיך לכתוב לך בטלפון.",
+            "בסדר, שקט. אני אקליד.",
+            "מושתק. עדיין תקבל הכול בכתב.",
+            "אוקיי, פה סגור. הטלפון עדיין פועל.",
+            "שקט. אז תקרא בטלפון.",
+            "מושתק. אל תמות בזמן שאני לא מדבר.",
+            "בלי קול. רק טקסט עד שתגיד לי לחזור לדבר.",
+        ],
+        &[
+            "מושתק. אמשיך לכתוב לך בטלפון.",
+            "מושתק. תהנה למות בשקט.",
+            "יופי, אז אקליד את העלבונות במקום.",
+            "מצב שקט. עדיין תקרא מה עשית לא בסדר.",
+            "מושתק. הטלפון עדיין רואה הכול.",
+            "סותם. לא כי אתה צודק.",
+            "בלי קול. הירידות ממשיכות בכתב.",
+        ],
+    ];
+
     /// Told to talk again.
     pub const UNMUTED: [&[&str]; 3] = [
         &[
@@ -1378,6 +1826,37 @@ pub mod lines {
             "Voice is on. Your HP had better be too.",
             "Miss me? Didn't think so. Pot anyway.",
             "Unmuted, and just in time to watch you mess up.",
+        ],
+    ];
+
+    /// [`UNMUTED`] in Hebrew, card for card.
+    pub const UNMUTED_HE: [&[&str]; 3] = [
+        &[
+            "חזרתי.",
+            "ההשתקה בוטלה! היי שוב.",
+            "הקול חזר. התגעגעתי.",
+            "אוקיי, מדבר שוב.",
+            "ואני חזרתי. מה פספסתי?",
+            "ההשתקה בוטלה. יאללה!",
+            "חזרתי למיקרופון.",
+        ],
+        &[
+            "חזרתי.",
+            "ההשתקה בוטלה. תתנהג יפה.",
+            "מדבר שוב. שתית משהו בזמן שלא הייתי?",
+            "חזרתי. בוא נראה את הנזק.",
+            "הקול פועל. תקשיב.",
+            "אוקיי, אני יכול לדבר. מה שברת?",
+            "המיקרופון חזר. תמשיך לשחק.",
+        ],
+        &[
+            "חזרתי.",
+            "ההשתקה בוטלה. שרדת בלעדיי?",
+            "חזרתי. בוא נראה מה הרסת בשקט.",
+            "יופי, אני יכול לרדת עליך שוב.",
+            "הקול חזר. כדאי שגם בר החיים שלך יהיה למעלה.",
+            "התגעגעת? חשבתי שלא. תשתה בכל מקרה.",
+            "ההשתקה בוטלה, בדיוק בזמן לראות אותך מפשל.",
         ],
     ];
 
@@ -1415,6 +1894,37 @@ pub mod lines {
         ],
     ];
 
+    /// [`HOLD_AWAY`] in Hebrew, card for card.
+    pub const HOLD_AWAY_HE: [&[&str]; 3] = [
+        &[
+            "אתה לא עונה, אז אני עוצר את האזהרות עד שתגיד משהו.",
+            "אין סימן ממך, אז אני אשתוק קצת. תגיד משהו ואני חוזר לזה.",
+            "אני מפסיק לנדנד לזמן מה. פשוט תדבר איתי כשתחזור.",
+            "אף אחד לא שותה, אף אחד לא מדבר. אני משתתק עד שתגיד משהו.",
+            "משתתק עם האזהרות בינתיים. מילה ממך והן חוזרות.",
+            "או שאתה לא פה, או שהבר משקר לי. בכל מקרה, אני שותק עד שתדבר.",
+            "עוצר את האזהרות לרגע. תגיד משהו כשתחזור ואני אמשיך.",
+        ],
+        &[
+            "אתה לא עונה, אז אני עוצר את האזהרות עד שתגיד משהו.",
+            "ארבע אזהרות, אפס תשובות. סיימתי עד שתדבר.",
+            "בסדר, אני סותם על זה. תגיד משהו כשתחזור.",
+            "אין אף אחד בבית? האזהרות בהמתנה עד שתדבר.",
+            "אמרתי את זה מספיק. שומר את השאר עד שאשמע ממך.",
+            "אין שיקוי, אין מילה, אין טעם. אני מחכה.",
+            "האזהרות בהשהיה. תדבר איתי כשאתה באמת פה.",
+        ],
+        &[
+            "אתה לא עונה, אז אני עוצר את האזהרות עד שתגיד משהו.",
+            "אני מדבר פה אל הקיר. אפסיק עד שהקיר יגיד משהו.",
+            "ארבע אזהרות וכלום. תמשיך לחטוף בשקט, אני מחכה.",
+            "או שאתה לא ליד המחשב או שאתה מתעלם ממני. בכל מקרה, סיימתי עד שתדבר.",
+            "יופי. תתרסק בשקט. תגיד משהו ואני אתחיל שוב לדאוג.",
+            "אין תשובה, אין שיקוי, אין כבוד. האזהרות בהמתנה.",
+            "אני מפסיק לבזבז אוויר. תדבר כשתחזור מאיפה שלא תהיה.",
+        ],
+    ];
+
     /// Alerts held for want of an answer, said to a player who spoke
     /// lately: someone is there, and not potting. A friend stops nagging —
     /// no card says they are away, or asks them to come back ("Talk to me
@@ -1447,6 +1957,35 @@ pub mod lines {
         ],
     ];
 
+    /// [`HOLD_HERE`] in Hebrew, card for card: no card says they are away, or
+    /// asks them back.
+    pub const HOLD_HERE_HE: [&[&str]; 3] = [
+        &[
+            "אוקיי, אני מפסיק לנדנד. השיקויים בידיים שלך.",
+            "אמרתי את שלי. משאיר לך את השיקויים.",
+            "טוב, לא עוד דיבורים על שיקויים ממני. ההחלטה שלך.",
+            "ארבע אזהרות זה מספיק. אני נותן לך לשחק.",
+            "בסדר גמור, אתה יודע איפה השיקויים. אני שותק.",
+            "אני עוזב את זה. תשתה כשמתאים לך.",
+        ],
+        &[
+            "בסדר. אני סותם על זה.",
+            "ארבע אזהרות. סיימתי לנדנד.",
+            "הבר שלך, ההחלטה שלך. סיימתי.",
+            "אוקיי. ממני לא תשמע יותר על שיקויים.",
+            "אמרתי את מה שהיה לי. תשתה או אל תשתה.",
+            "לא הבר שלי. אני מפסיק.",
+        ],
+        &[
+            "יופי. תתעלם ממני. סיימתי.",
+            "מגניב, אני מדבר לעצמי. אני מפסיק.",
+            "ארבע אזהרות שהתעלמת מהן. תהנה מהרצפה.",
+            "יופי, תעשה את זה בדרך שלך. אני אצפה.",
+            "רשמתי: שיקויים זה מתחת לכבוד שלך. אני סותם.",
+            "אוקיי, אני מוותר. תשתה מתי שבא לך, או אף פעם.",
+        ],
+    ];
+
     /// A potion at last, while the warnings were held and the player had
     /// been told so lately: one short word that it saw.
     pub const POTTED_AT_LAST: [&[&str]; 3] = [
@@ -1467,6 +2006,23 @@ pub mod lines {
             "Wow, a potion. Character development.",
             "Finally. Was that so hard?",
             "It lives. And it pots.",
+        ],
+    ];
+
+    /// [`POTTED_AT_LAST`] in Hebrew, card for card.
+    pub const POTTED_AT_LAST_HE: [&[&str]; 3] = [
+        &[
+            "הנה, ככה.",
+            "זה יותר טוב.",
+            "פיו. הנה.",
+            "יפה, ככה זה צריך להיות.",
+        ],
+        &["סוף סוף.", "הנה זה.", "יותר טוב.", "טוב. תשאיר את זה ככה."],
+        &[
+            "אוי תראו, הוא מצא את המקש של השיקוי.",
+            "וואו, שיקוי. התפתחות אישית.",
+            "סוף סוף. זה היה כל כך קשה?",
+            "הוא חי. והוא שותה.",
         ],
     ];
 
@@ -1501,6 +2057,34 @@ pub mod lines {
         ],
     ];
 
+    /// [`STILL_THERE`] in Hebrew, card for card.
+    pub const STILL_THERE_HE: [&[&str]; 3] = [
+        &[
+            "אתה עדיין פה? נהיה ממש שקט.",
+            "עדיין איתי? שום דבר לא זז כבר זמן מה.",
+            "היי, אתה בסביבה? המשחק עומד במקום כבר קצת.",
+            "רק בודק. אתה שם?",
+            "נהיה פה שקט. הכול בסדר?",
+            "עדיין שם? תגיד משהו אם חזרת.",
+        ],
+        &[
+            "אתה עדיין שם?",
+            "נהיה שקט פה. עדיין איתי?",
+            "שום דבר לא זז כבר זמן מה. אתה שם?",
+            "הלו? עדיין בסביבה?",
+            "המשחק סתם עומד שם. אתה עדיין פה?",
+            "כבר זמן מה ששום דבר לא זז. אתה שם?",
+        ],
+        &[
+            "הלו? המפלצות מתחילות להשתעמם.",
+            "אתה עדיין שם, או שהכיסא השתלט? שום דבר לא זז.",
+            "הדמות שלך עומדת שם כבר זמן מה. אתה חי?",
+            "שום דבר לא זז כבר נצח. תמצמץ אם אתה שם.",
+            "לעמוד במקום כל כך הרבה זמן זה כישרון. אתה שם?",
+            "הלכת? המשחק סתם עומד שם.",
+        ],
+    ];
+
     /// A bar read low for minutes while EXP came in: it is not believed,
     /// and its warnings are held (see [`super::Low`]). `{}` is the bar.
     pub const MISREAD: [&[&str]; 3] = [
@@ -1521,29 +2105,102 @@ pub mod lines {
         ],
     ];
 
-    /// Every deck, by name, for tests and tools.
-    pub const ALL: &[(&str, [&[&str]; 3])] = &[
-        ("beating", BEATING),
-        ("HP low", HP_LOW),
-        ("HP low, again", HP_LOW_AGAIN),
-        ("HP low, ask", HP_LOW_ASK),
-        ("MP low", MP_LOW),
-        ("MP low, again", MP_LOW_AGAIN),
-        ("MP low, ask", MP_LOW_ASK),
-        ("death", DEATH),
-        ("death, warned", DEATH_WARNED),
-        ("sooner", SOONER),
-        ("level up", LEVEL_UP),
-        ("game seen", SEEN),
-        ("game lost", LOST),
-        ("game seen again", AGAIN),
-        ("muted", MUTED),
-        ("unmuted", UNMUTED),
-        ("warnings held, away", HOLD_AWAY),
-        ("warnings held, here", HOLD_HERE),
-        ("potted at last", POTTED_AT_LAST),
-        ("still there", STILL_THERE),
-        ("misread", MISREAD),
+    /// [`MISREAD`] in Hebrew, card for card. `{}` is the bar's Hebrew name
+    /// (חיים, מאנה), which takes ה before it and nothing that agrees with
+    /// it: the one is plural, the other feminine.
+    pub const MISREAD_HE: [&[&str]; 3] = [
+        &[
+            "נראה לי שאני קורא לא נכון את ה{} שלך. עוצר את אזהרות ה{} בינתיים.",
+            "הבר של ה{} נמוך כבר נצח ואתה ממשיך לצבור אקספי: כנראה אני קורא אותו לא נכון. עוצר את אזהרות ה{}.",
+            "הקריאה הזאת של ה{} לא יכולה להיות נכונה. אעצור את אזהרות ה{} עד שזה ייראה הגיוני.",
+        ],
+        &[
+            "אני קורא את ה{} שלך לא נכון. עוצר את אזהרות ה{}.",
+            "הבר של ה{} אומר נמוך, האקספי אומר שאתה בסדר. אני סותם על ה{} עד שזה ייקרא נכון.",
+            "הבר של ה{} משקר לי. אין יותר אזהרות {} עד שהוא יעלה בחזרה.",
+        ],
+        &[
+            "או שהבר של ה{} שלך שבור או שאתה בן אלמוות. עוצר את אזהרות ה{}.",
+            "ארבע אזהרות ואתה ממשיך להרוג דברים. אני קורא את ה{} שלך לא נכון, אז אני סותם על זה.",
+            "הבר של ה{} שלך אומר שאתה מת ואתה עולה רמות. יופי, אני מפסיק לסמוך עליו.",
+        ],
+    ];
+
+    /// A deck: one list per attitude (friendly, blunt, savage).
+    pub type Cards = [&'static [&'static str]; 3];
+
+    /// Every deck, by name, with its Hebrew twin: for tests and tools.
+    pub const ALL: &[(&str, Cards, Cards)] = &[
+        ("beating", BEATING, BEATING_HE),
+        ("HP low", HP_LOW, HP_LOW_HE),
+        ("HP low, again", HP_LOW_AGAIN, HP_LOW_AGAIN_HE),
+        ("HP low, ask", HP_LOW_ASK, HP_LOW_ASK_HE),
+        ("MP low", MP_LOW, MP_LOW_HE),
+        ("MP low, again", MP_LOW_AGAIN, MP_LOW_AGAIN_HE),
+        ("MP low, ask", MP_LOW_ASK, MP_LOW_ASK_HE),
+        ("death", DEATH, DEATH_HE),
+        ("death, warned", DEATH_WARNED, DEATH_WARNED_HE),
+        ("sooner", SOONER, SOONER_HE),
+        ("level up", LEVEL_UP, LEVEL_UP_HE),
+        ("game seen", SEEN, SEEN_HE),
+        ("game lost", LOST, LOST_HE),
+        ("game seen again", AGAIN, AGAIN_HE),
+        ("muted", MUTED, MUTED_HE),
+        ("unmuted", UNMUTED, UNMUTED_HE),
+        ("warnings held, away", HOLD_AWAY, HOLD_AWAY_HE),
+        ("warnings held, here", HOLD_HERE, HOLD_HERE_HE),
+        ("potted at last", POTTED_AT_LAST, POTTED_AT_LAST_HE),
+        ("still there", STILL_THERE, STILL_THERE_HE),
+        ("misread", MISREAD, MISREAD_HE),
+    ];
+
+    /// A bar's readings swinging (a bar guessed at, not read): its warnings
+    /// are held, and the player is told so on the phone (not aloud). `{}`
+    /// is the bar.
+    pub const UNSTEADY: &str =
+        "My {} readings are jumping around, so I'm holding the {} warnings until they settle.";
+    /// [`UNSTEADY`] in Hebrew (`{}` as in [`MISREAD_HE`]).
+    pub const UNSTEADY_HE: &str =
+        "הקריאות של ה{} שלך קופצות, אז אני עוצר את אזהרות ה{} עד שזה יירגע.";
+
+    /// A moment marked: `{}` is how many this session.
+    pub const MARKED: &str = "Marked. That's mark {}.";
+    pub const MARKED_HE: &str = "סימנתי. זה סימון מספר {}.";
+
+    /// The word that a language asked for out loud is taken ("talk to me
+    /// in Hebrew"), in that language, said by the PC when it switches
+    /// (`ask_language`): Hebrew's in Hebrew; the rest in English, `{lang}`
+    /// its name, translated into it as its own lines are. (No twins: only
+    /// Hebrew has a list of its own. Not among [`ALL`].)
+    pub const LANGUAGE_TAKEN_EN: [&[&str]; 3] = [
+        &[
+            "Sure — {lang} from now on.",
+            "You got it: {lang} it is.",
+            "Love it. {lang} from here on.",
+        ],
+        &[
+            "Fine, {lang} from now on.",
+            "{lang} it is.",
+            "Done. {lang} now.",
+        ],
+        &[
+            "{lang}? Fine, genius.",
+            "Ugh, fine. {lang} it is.",
+            "Whatever you say. {lang} now.",
+        ],
+    ];
+    pub const LANGUAGE_TAKEN_HE: [&[&str]; 3] = [
+        &[
+            "בטח, מעכשיו בעברית.",
+            "בכיף, עוברים לעברית.",
+            "סגור, מדברים עברית.",
+        ],
+        &["סבבה, עברית מעכשיו.", "עברית. סגור.", "יאללה, בעברית."],
+        &[
+            "עברית? סבבה, גאון.",
+            "אוף, טוב. עברית.",
+            "מה שתגיד. עברית מעכשיו.",
+        ],
     ];
 
     /// The decks in [`ALL`] that are dealt a few times a night at most
@@ -1677,6 +2334,44 @@ impl Decks {
     }
 }
 
+/// A bar, as its own lines name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Bar {
+    Hp,
+    Mp,
+}
+
+impl Bar {
+    /// "HP", "MP" — or in Hebrew "חיים", "מאנה" (with no Latin letter, a
+    /// Hebrew line is said as it is: see [`lines`]).
+    fn name(self, hebrew: bool) -> &'static str {
+        match (self, hebrew) {
+            (Bar::Hp, false) => "HP",
+            (Bar::Mp, false) => "MP",
+            (Bar::Hp, true) => "חיים",
+            (Bar::Mp, true) => "מאנה",
+        }
+    }
+}
+
+/// The next card of a deck (`en`, and its Hebrew twin `he`) in `attitude`,
+/// in Hebrew or English: dealt by place in the English list's order, then
+/// read off the list of the language it speaks — so the two languages are
+/// one deck, and a switch between them goes on where it was.
+fn deal(
+    deck: &mut Deck,
+    attitude: Attitude,
+    hebrew: bool,
+    en: lines::Cards,
+    he: lines::Cards,
+) -> &'static str {
+    let at = deck.deal_index(attitude, en);
+    let card = |cards: lines::Cards| attitude.lines(cards).get(at).copied();
+    (if hebrew { card(he) } else { None })
+        .or_else(|| card(en))
+        .unwrap_or("")
+}
+
 /// A seed for the session's decks: the clock and the process, so that no
 /// two nights deal them alike.
 fn session_seed() -> u64 {
@@ -1775,7 +2470,28 @@ impl Companion {
             started_at: None,
             view_since: f64::NEG_INFINITY,
             asked_still_there: false,
+            hebrew: false,
         }
+    }
+
+    /// The player's language is `locale` now (the phone's, or one they
+    /// asked for out loud; `None`: not known yet). Hebrew (`he…`, or the
+    /// old `iw…`) has its own lines dealt from the decks' Hebrew twins
+    /// ([`lines`]), said at once — no model to translate them first, and
+    /// the phone shows them in Hebrew too. Any other language gets the
+    /// English cards (translated on their way to the voice, as before).
+    /// One deck deals both languages, by place: a switch mid-session goes
+    /// on with each deck where it was.
+    pub fn set_language(&mut self, locale: Option<&str>) {
+        self.hebrew = locale.is_some_and(|locale| {
+            let lower = locale.trim().to_ascii_lowercase();
+            matches!(lower.split(['-', '_']).next(), Some("he" | "iw"))
+        });
+    }
+
+    /// Whether its own lines are said in Hebrew.
+    pub fn speaks_hebrew(&self) -> bool {
+        self.hebrew
     }
 
     /// Whether the player is `known` — not on their first sessions with
@@ -2228,65 +2944,112 @@ impl Companion {
             && now - self.alert_at >= STILL_THERE_AFTER_WARNING_SECS
         {
             self.asked_still_there = true;
-            let line = self
-                .decks
-                .still_there
-                .deal(self.settings.attitude, lines::STILL_THERE);
+            let line = deal(
+                &mut self.decks.still_there,
+                self.settings.attitude,
+                self.hebrew,
+                lines::STILL_THERE,
+                lines::STILL_THERE_HE,
+            );
             out.push(Action::Say(Say::alert(line)));
         }
     }
 
-    /// The line for an alert, dealt from its deck.
+    /// The line for an alert, dealt from its deck, in the language it
+    /// speaks.
     fn line(&mut self, alert: Alert) -> String {
         let attitude = self.settings.attitude;
+        let he = self.hebrew;
+        let decks = &mut self.decks;
         match alert {
-            Alert::Beating(hp) => self
-                .decks
-                .beating
-                .deal(attitude, lines::BEATING)
-                .replace("{}", &low_words(hp)),
+            Alert::Beating(hp) => deal(
+                &mut decks.beating,
+                attitude,
+                he,
+                lines::BEATING,
+                lines::BEATING_HE,
+            )
+            .replace("{}", &low_words(hp, he)),
             // A fight's first line stands alone; one that repeats an
             // unanswered line may say "still"; the second repeat asks.
-            Alert::HpLow { hp, cadence } => match cadence {
-                Cadence::First => self.decks.hp_low.deal(attitude, lines::HP_LOW),
-                Cadence::Again => self.decks.hp_low_again.deal(attitude, lines::HP_LOW_AGAIN),
-                Cadence::Ask => self.decks.hp_low_ask.deal(attitude, lines::HP_LOW_ASK),
+            Alert::HpLow { hp, cadence } => {
+                let (deck, en, twin) = match cadence {
+                    Cadence::First => (&mut decks.hp_low, lines::HP_LOW, lines::HP_LOW_HE),
+                    Cadence::Again => (
+                        &mut decks.hp_low_again,
+                        lines::HP_LOW_AGAIN,
+                        lines::HP_LOW_AGAIN_HE,
+                    ),
+                    Cadence::Ask => (
+                        &mut decks.hp_low_ask,
+                        lines::HP_LOW_ASK,
+                        lines::HP_LOW_ASK_HE,
+                    ),
+                };
+                deal(deck, attitude, he, en, twin).replace("{}", &low_words(hp, he))
             }
-            .replace("{}", &low_words(hp)),
-            Alert::MpLow { mp, cadence } => match cadence {
-                Cadence::First => self.decks.mp_low.deal(attitude, lines::MP_LOW),
-                Cadence::Again => self.decks.mp_low_again.deal(attitude, lines::MP_LOW_AGAIN),
-                Cadence::Ask => self.decks.mp_low_ask.deal(attitude, lines::MP_LOW_ASK),
+            Alert::MpLow { mp, cadence } => {
+                let (deck, en, twin) = match cadence {
+                    Cadence::First => (&mut decks.mp_low, lines::MP_LOW, lines::MP_LOW_HE),
+                    Cadence::Again => (
+                        &mut decks.mp_low_again,
+                        lines::MP_LOW_AGAIN,
+                        lines::MP_LOW_AGAIN_HE,
+                    ),
+                    Cadence::Ask => (
+                        &mut decks.mp_low_ask,
+                        lines::MP_LOW_ASK,
+                        lines::MP_LOW_ASK_HE,
+                    ),
+                };
+                deal(deck, attitude, he, en, twin).replace("{}", &low_words(mp, he))
             }
-            .replace("{}", &low_words(mp)),
             Alert::Death { warned, sooner } => {
                 // "Told you to pot" only when it did: a death with no
                 // warning before it is dealt from the deck that makes no
                 // such claim (one night a one-shot from 80% got "Dead. Told
                 // you to pot. I'll warn you sooner from now on").
                 let mut line = if warned {
-                    self.decks.death_warned.deal(attitude, lines::DEATH_WARNED)
+                    deal(
+                        &mut decks.death_warned,
+                        attitude,
+                        he,
+                        lines::DEATH_WARNED,
+                        lines::DEATH_WARNED_HE,
+                    )
                 } else {
-                    self.decks.death.deal(attitude, lines::DEATH)
+                    deal(
+                        &mut decks.death,
+                        attitude,
+                        he,
+                        lines::DEATH,
+                        lines::DEATH_HE,
+                    )
                 }
                 .to_string();
                 // The mark moving, in the same voice.
                 if let Some(sooner) = sooner {
-                    let card = self
-                        .decks
-                        .sooner
-                        .deal(attitude, lines::SOONER)
-                        .replace("{}", &format!("{sooner:.0}"));
+                    let card = deal(
+                        &mut decks.sooner,
+                        attitude,
+                        he,
+                        lines::SOONER,
+                        lines::SOONER_HE,
+                    )
+                    .replace("{}", &format!("{sooner:.0}"));
                     line.push(' ');
                     line.push_str(&card);
                 }
                 line
             }
-            Alert::LevelUp(level) => self
-                .decks
-                .level_up
-                .deal(attitude, lines::LEVEL_UP)
-                .replace("{}", &level.to_string()),
+            Alert::LevelUp(level) => deal(
+                &mut decks.level_up,
+                attitude,
+                he,
+                lines::LEVEL_UP,
+                lines::LEVEL_UP_HE,
+            )
+            .replace("{}", &level.to_string()),
         }
     }
 
@@ -2342,10 +3105,13 @@ impl Companion {
                 if now - self.hold_told <= POTTED_AT_LAST_SECS
                     && now - self.potion_at <= SEEN_POTION_SECS
                 {
-                    let line = self
-                        .decks
-                        .potted_at_last
-                        .deal(self.settings.attitude, lines::POTTED_AT_LAST);
+                    let line = deal(
+                        &mut self.decks.potted_at_last,
+                        self.settings.attitude,
+                        self.hebrew,
+                        lines::POTTED_AT_LAST,
+                        lines::POTTED_AT_LAST_HE,
+                    );
                     out.push(Action::Say(Say::info(line, true)));
                 }
             }
@@ -2392,11 +3158,23 @@ impl Companion {
                 // To someone who spoke lately, not to an empty room ("Just
                 // talk to me when you're back" came three minutes after
                 // "ok, I'm back", to a player being hit).
-                let attitude = self.settings.attitude;
+                let (attitude, he) = (self.settings.attitude, self.hebrew);
                 let line = if now - self.spoke_at <= HOLD_AWAY_SECS {
-                    self.decks.hold_here.deal(attitude, lines::HOLD_HERE)
+                    deal(
+                        &mut self.decks.hold_here,
+                        attitude,
+                        he,
+                        lines::HOLD_HERE,
+                        lines::HOLD_HERE_HE,
+                    )
                 } else {
-                    self.decks.hold_away.deal(attitude, lines::HOLD_AWAY)
+                    deal(
+                        &mut self.decks.hold_away,
+                        attitude,
+                        he,
+                        lines::HOLD_AWAY,
+                        lines::HOLD_AWAY_HE,
+                    )
                 };
                 out.push(Action::Say(Say::info(line, true)));
             }
@@ -2406,7 +3184,7 @@ impl Companion {
     }
 
     fn track_window(&mut self, now: f64, obs: &Observation, out: &mut Vec<Action>) {
-        let attitude = self.settings.attitude;
+        let (attitude, he) = (self.settings.attitude, self.hebrew);
         if let GameView::Seen(title) = &obs.game {
             if !self.ever_seen || self.announced_lost {
                 self.view_since = now;
@@ -2417,13 +3195,26 @@ impl Companion {
                 // player once heard "I can see MapleStory" with the game
                 // closed, and the log did not say what had been taken for it.
                 let line = if title.trim().eq_ignore_ascii_case("maplestory") {
-                    self.decks.seen.deal(attitude, lines::SEEN).to_string()
+                    deal(
+                        &mut self.decks.seen,
+                        attitude,
+                        he,
+                        lines::SEEN,
+                        lines::SEEN_HE,
+                    )
+                    .to_string()
                 } else {
                     format!("I can see MapleStory (the window \"{}\").", title.trim())
                 };
                 out.push(Action::Say(Say::info(line, true)));
             } else if self.announced_lost {
-                let line = self.decks.again.deal(attitude, lines::AGAIN);
+                let line = deal(
+                    &mut self.decks.again,
+                    attitude,
+                    he,
+                    lines::AGAIN,
+                    lines::AGAIN_HE,
+                );
                 out.push(Action::Say(Say::info(line, true)));
             }
             self.announced_lost = false;
@@ -2437,7 +3228,14 @@ impl Companion {
             self.announced_lost = true;
             let why = match &obs.game {
                 GameView::Unavailable(reason) => format!("I lost sight of the game: {reason}."),
-                _ => self.decks.lost.deal(attitude, lines::LOST).to_string(),
+                _ => deal(
+                    &mut self.decks.lost,
+                    attitude,
+                    he,
+                    lines::LOST,
+                    lines::LOST_HE,
+                )
+                .to_string(),
             };
             out.push(Action::Say(Say::info(why, true)));
         }
@@ -2457,18 +3255,23 @@ impl Companion {
         // read: nothing is said from them. A number read in the game's own
         // font is no guess, and in a fight it does swing — a hit, a potion,
         // a hit — so it is trusted as it comes, deaths and all.
-        if !hp.read && self.hp_steady.unsteady(now, hp.percent) {
+        let unsteady = !hp.read && self.hp_steady.unsteady(now, hp.percent);
+        if unsteady {
             self.falling_frames = 0;
             self.low_hp.frames = 0;
-            self.zero_hp_frames = 0;
             if now - self.hp_steady.noted >= UNSTEADY_NOTE_EVERY {
                 self.hp_steady.noted = now;
-                out.push(Action::Say(Say::info(
-                    "My HP readings are jumping around, so I'm holding the HP warnings until they settle.",
-                    false,
-                )));
+                out.push(Action::Say(Say::info(self.unsteady_note(Bar::Hp), false)));
             }
-            return;
+            // …except an empty bar that stays empty: that is no swing, and
+            // a death is counted through the hold as on a steady bar (a
+            // swing that touches 0 for a frame or two starts the count over
+            // at its next reading). The hold lasts 20 s, doubling up to ten
+            // minutes while a cursor sits on the bar: a death waited it out.
+            if hp.percent > 0.5 {
+                self.zero_hp_frames = 0;
+                return;
+            }
         }
         // A death: HP at zero for a moment (longer when that is the bar's
         // fill rather than the printed number: a dialog over the bar reads
@@ -2496,7 +3299,9 @@ impl Companion {
                 // yelled.)
                 let beaten = self.fight_lines > 0 && now - self.fall_at <= FIGHT_OVER_SECS;
                 let warned = beaten || self.low_hp.warned_this_fight(now, self.fall_at);
-                let sooner = if watched {
+                // (Nor for a death seen through a swinging bar: the way down
+                // was a guess, not seen.)
+                let sooner = if watched || unsteady {
                     None
                 } else {
                     self.sooner_warning(warned)
@@ -2643,7 +3448,7 @@ impl Companion {
                 self.low_hp.said(now, hp.percent, exp);
                 alerts.push(Alert::HpLow { hp, cadence });
             }
-            Due::Misread => out.push(Action::Say(self.misread("HP"))),
+            Due::Misread => out.push(Action::Say(self.misread(Bar::Hp))),
             _ => {}
         }
     }
@@ -2666,13 +3471,27 @@ impl Companion {
 
     /// The bar is not believed from now on (see [`Low`]): said once, in
     /// the attitude's voice, as a note about itself.
-    fn misread(&mut self, bar: &str) -> Say {
-        let line = self
-            .decks
-            .misread
-            .deal(self.settings.attitude, lines::MISREAD)
-            .replace("{}", bar);
+    fn misread(&mut self, bar: Bar) -> Say {
+        let line = deal(
+            &mut self.decks.misread,
+            self.settings.attitude,
+            self.hebrew,
+            lines::MISREAD,
+            lines::MISREAD_HE,
+        )
+        .replace("{}", bar.name(self.hebrew));
         Say::info(line, true)
+    }
+
+    /// The bar's readings are swinging, so its warnings are held: the note
+    /// for the phone.
+    fn unsteady_note(&self, bar: Bar) -> String {
+        let note = if self.hebrew {
+            lines::UNSTEADY_HE
+        } else {
+            lines::UNSTEADY
+        };
+        note.replace("{}", bar.name(self.hebrew))
     }
 
     /// Died without a warning, though HP went down through where a sooner
@@ -2723,10 +3542,7 @@ impl Companion {
             self.low_mp.frames = 0;
             if now - self.mp_steady.noted >= UNSTEADY_NOTE_EVERY {
                 self.mp_steady.noted = now;
-                out.push(Action::Say(Say::info(
-                    "My MP readings are jumping around, so I'm holding the MP warnings until they settle.",
-                    false,
-                )));
+                out.push(Action::Say(Say::info(self.unsteady_note(Bar::Mp), false)));
             }
             return;
         }
@@ -2745,7 +3561,7 @@ impl Companion {
                 self.low_mp.said(now, mp.percent, exp);
                 alerts.push(Alert::MpLow { mp, cadence });
             }
-            Due::Misread => out.push(Action::Say(self.misread("MP"))),
+            Due::Misread => out.push(Action::Say(self.misread(Bar::Mp))),
             _ => {}
         }
     }
@@ -2800,18 +3616,29 @@ impl Companion {
                             }
                         } else if let Some(before) = before {
                             let why = if !same_character {
-                                "another character"
+                                ["another character", "דמות אחרת"]
                             } else if lower {
-                                "a lower level: another character, or misread"
+                                [
+                                    "a lower level: another character, or misread",
+                                    "רמה נמוכה יותר: דמות אחרת, או קריאה שגויה",
+                                ]
                             } else if top == Some(level) {
-                                "back to a level seen before: not celebrated again"
+                                [
+                                    "back to a level seen before: not celebrated again",
+                                    "חזרה לרמה שכבר הייתה: לא חוגגים אותה שוב",
+                                ]
                             } else {
-                                "not one level up: not celebrated"
+                                [
+                                    "not one level up: not celebrated",
+                                    "לא עלייה של רמה אחת: לא חוגגים",
+                                ]
                             };
-                            out.push(Action::Say(Say::info(
-                                format!("Level {level} now, from {before} ({why})."),
-                                false,
-                            )));
+                            let note = if self.hebrew {
+                                format!("רמה {level} עכשיו, אחרי {before} ({}).", why[1])
+                            } else {
+                                format!("Level {level} now, from {before} ({}).", why[0])
+                            };
+                            out.push(Action::Say(Say::info(note, false)));
                         }
                     }
                 }
@@ -2919,20 +3746,36 @@ impl Companion {
                 self.marks += 1;
                 vec![
                     Action::Mark,
-                    Action::Say(Say::reply(format!("Marked. That's mark {}.", self.marks))),
+                    Action::Say(Say::reply(
+                        if self.hebrew {
+                            lines::MARKED_HE
+                        } else {
+                            lines::MARKED
+                        }
+                        .replace("{}", &self.marks.to_string()),
+                    )),
                 ]
             }
             Command::Mute => {
                 self.muted = true;
-                let line = self.decks.muted.deal(self.settings.attitude, lines::MUTED);
+                let line = deal(
+                    &mut self.decks.muted,
+                    self.settings.attitude,
+                    self.hebrew,
+                    lines::MUTED,
+                    lines::MUTED_HE,
+                );
                 vec![Action::Say(Say::info(line, false)), Action::SetMuted(true)]
             }
             Command::Unmute => {
                 self.muted = false;
-                let line = self
-                    .decks
-                    .unmuted
-                    .deal(self.settings.attitude, lines::UNMUTED);
+                let line = deal(
+                    &mut self.decks.unmuted,
+                    self.settings.attitude,
+                    self.hebrew,
+                    lines::UNMUTED,
+                    lines::UNMUTED_HE,
+                );
                 vec![Action::SetMuted(false), Action::Say(Say::info(line, true))]
             }
             Command::Help => reply(if self.settings.always_listen {
@@ -2963,13 +3806,15 @@ impl Companion {
 
 /// "82 percent", or "about 82 percent" for a bar estimate.
 /// A low bar the way a person says it: "about 12 percent" (whole numbers;
-/// "about" when it was measured from the bar rather than read).
-fn low_words(gauge: Gauge) -> String {
-    let amount = format!("{} percent", (gauge.percent.round() as i64).max(1));
-    if gauge.read {
-        amount
-    } else {
-        format!("about {amount}")
+/// "about" when it was measured from the bar rather than read) — in
+/// Hebrew "12 אחוז", "בערך 12 אחוז".
+fn low_words(gauge: Gauge, hebrew: bool) -> String {
+    let number = (gauge.percent.round() as i64).max(1);
+    match (gauge.read, hebrew) {
+        (true, false) => format!("{number} percent"),
+        (false, false) => format!("about {number} percent"),
+        (true, true) => format!("{number} אחוז"),
+        (false, true) => format!("בערך {number} אחוז"),
     }
 }
 
@@ -3105,7 +3950,13 @@ mod tests {
     /// default), `{}` standing for the amount or the level; `None` for a
     /// line from elsewhere.
     fn variant(deck: [&[&str]; 3], line: &str) -> Option<usize> {
-        Attitude::Friendly
+        place(Attitude::Friendly, deck, line)
+    }
+
+    /// Which card of `attitude`'s list of `deck` `line` is (`{}` standing
+    /// for the amount or the level); `None` for a line from elsewhere.
+    fn place(attitude: Attitude, deck: [&[&str]; 3], line: &str) -> Option<usize> {
+        attitude
             .lines(deck)
             .iter()
             .position(|pattern| match pattern.split_once("{}") {
@@ -3116,6 +3967,27 @@ mod tests {
                 }
                 None => line == *pattern,
             })
+    }
+
+    /// Whether `phrase` (Hebrew, a word or more) is in `card` as whole
+    /// words, the first also with a prefix of a letter or two (ו, ה, ב, ל,
+    /// מ, ש, כ): "ושוב" says "שוב", "חשוב" does not.
+    fn says_he(card: &str, phrase: &str) -> bool {
+        let words: Vec<&str> = card
+            .split(|c: char| !c.is_alphabetic() && c != '\'')
+            .filter(|w| !w.is_empty())
+            .collect();
+        let want: Vec<&str> = phrase.split(' ').collect();
+        words.windows(want.len()).any(|run| {
+            run.iter().zip(&want).enumerate().all(|(i, (have, want))| {
+                have == want
+                    || (i == 0
+                        && have.strip_suffix(want).is_some_and(|prefix| {
+                            (1..=2).contains(&prefix.chars().count())
+                                && prefix.chars().all(|c| "והבלמשכ".contains(c))
+                        }))
+            })
+        })
     }
 
     /// Whether `line` is one of `deck`'s (the situation, not the words).
@@ -4128,6 +5000,88 @@ mod tests {
     }
 
     #[test]
+    fn a_death_is_seen_through_a_bar_that_swings() {
+        // His cursor over the start of the HP bar (Classic, the number
+        // unread, the bar's fill guessed at): 100, 3, 100, 46, 9… ten
+        // times a second — a swing, held — and now and then an empty bar
+        // for a frame or two. No death in that. Then he dies for real: the
+        // bar reads 0 and stays 0 for 3 s, inside the hold. The death is
+        // said, once, two seconds in — and the mark does not move for it
+        // (the way down was not seen). At a095e2b the hold reset the count
+        // of empty frames every frame: the death waited out the hold, 20 s
+        // that doubles up to ten minutes while the cursor stays.
+        let swing = [
+            100.0, 3.0, 100.0, 46.0, 9.0, 0.0, 100.0, 28.0, 0.0, 0.0, 3.0, 100.0,
+        ];
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.observe(0.0, frame(100.0, 90.0, 10.0));
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        let deaths = |lines: &[(f64, String)]| -> Vec<(f64, String)> {
+            lines
+                .iter()
+                .filter(|(_, l)| from(lines::DEATH, l) || from(lines::DEATH_WARNED, l))
+                .cloned()
+                .collect()
+        };
+        for i in 1..300 {
+            let t = i as f64 * 0.1;
+            let hp = swing[i % swing.len()];
+            for line in dealt(&c.observe(t, frame(hp, 90.0, 10.0))) {
+                lines.push((t, line));
+            }
+        }
+        assert!(deaths(&lines).is_empty(), "{lines:?}");
+        assert!(!c.dead());
+        // (Held: the swing is still being guessed at as it ends.)
+        assert!(c.hp_steady.unsteady_until > 30.0, "{lines:?}");
+        for i in 300..330 {
+            let t = i as f64 * 0.1;
+            for line in dealt(&c.observe(t, frame(0.0, 90.0, 10.0))) {
+                lines.push((t, line));
+            }
+        }
+        let died = deaths(&lines);
+        assert_eq!(died.len(), 1, "{lines:?}");
+        assert!((died[0].0 - 32.0).abs() < 0.15, "{died:?}");
+        assert!(without_sooner(&died[0].1, 35).is_none(), "{died:?}");
+        assert!(c.dead());
+        assert_eq!(c.settings.hp_low, 30.0);
+        // Revived, the cursor gone: the bar steady at full, a new life once
+        // the hold is over — and the death is not said again.
+        for i in 330..1200 {
+            let t = i as f64 * 0.1;
+            for line in dealt(&c.observe(t, frame(100.0, 90.0, 10.0))) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(deaths(&lines).len(), 1, "{lines:?}");
+        assert!(!c.dead());
+        // The bar read steady at 40% — over the mark, in the band where a
+        // sooner warning would have come — then the cursor on it (40, 10,
+        // 40, 10…), then the death: no warning came, but the way down was
+        // a guess, and the mark stays where it is.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..400 {
+            let t = i as f64 * 0.1;
+            let hp = match i {
+                0..50 => 40.0,
+                50..372 if i % 2 == 1 => 10.0,
+                50..372 => 40.0,
+                _ => 0.0,
+            };
+            for line in dealt(&c.observe(t, frame(hp, 90.0, 10.0))) {
+                lines.push((t, line));
+            }
+        }
+        let died = deaths(&lines);
+        assert_eq!(died.len(), 1, "{lines:?}");
+        assert!((died[0].0 - 39.2).abs() < 0.15, "{died:?}");
+        assert!(from(lines::DEATH, &died[0].1), "{died:?}");
+        assert_eq!(c.settings.hp_low, 30.0, "{died:?}");
+    }
+
+    #[test]
     fn numbers_read_off_the_screen_are_trusted_through_a_fast_fight() {
         // HP read from the printed number: every 2.5 s a hit takes it from
         // 100 to 40 in under a second and a potion puts it back — three
@@ -5131,8 +6085,9 @@ mod tests {
 
     #[test]
     fn every_deck_has_six_ways_to_say_it_and_savage_roasts_the_play_only() {
-        // Never said in any voice: these are about who they are, not how
-        // they play (and the last two are not a joke).
+        // Never said in any voice, in either language: these are about
+        // who they are, not how they play (and the last ones are not a
+        // joke).
         const BLOCKLIST: &[&str] = &[
             "retard",
             "spaz",
@@ -5143,12 +6098,24 @@ mod tests {
             "chink",
             "kys",
             "kill yourself",
+            "מפגר",
+            "הומו",
+            "קוקסינל",
+            "כושי",
+            "ערבוש",
+            "פרענק",
+            "אשכנאצי",
+            "שרמוט",
+            "זונה",
+            "נכה",
+            "תתאבד",
+            "לך תמות",
         ];
-        for (name, deck) in lines::ALL {
+        for (name, en, he) in lines::ALL {
             // (A deck dealt a few times a night at most has three.)
             let least = if lines::SHORT.contains(name) { 3 } else { 6 };
-            for attitude in Attitude::ALL {
-                let list = attitude.lines(*deck);
+            for (attitude, deck) in Attitude::ALL.into_iter().flat_map(|a| [(a, *en), (a, *he)]) {
+                let list = attitude.lines(deck);
                 assert!(
                     list.len() >= least,
                     "{name} ({}): {} lines",
@@ -5168,7 +6135,10 @@ mod tests {
                     let lower = line.to_lowercase();
                     assert!(!line.trim().is_empty(), "{name}");
                     // (The wake word in a spoken line: the phone would hear it.)
-                    assert!(!lower.contains("syrup"), "{name}: {line:?}");
+                    assert!(
+                        !lower.contains("syrup") && !line.contains("סירופ"),
+                        "{name}: {line:?}"
+                    );
                     assert!(
                         BLOCKLIST.iter().all(|word| !lower.contains(word)),
                         "{name}: {line:?}"
@@ -5186,6 +6156,11 @@ mod tests {
             lines::MP_LOW,
             lines::LEVEL_UP,
             lines::SOONER,
+            lines::BEATING_HE,
+            lines::HP_LOW_HE,
+            lines::MP_LOW_HE,
+            lines::LEVEL_UP_HE,
+            lines::SOONER_HE,
         ] {
             for attitude in Attitude::ALL {
                 assert!(
@@ -5196,9 +6171,391 @@ mod tests {
             }
         }
         for attitude in Attitude::ALL {
-            for card in attitude.lines(lines::SOONER) {
+            for card in attitude
+                .lines(lines::SOONER)
+                .iter()
+                .chain(attitude.lines(lines::SOONER_HE))
+            {
                 assert!(card.contains("{}"), "{card:?}");
             }
+        }
+    }
+
+    #[test]
+    fn every_deck_has_a_hebrew_twin_card_for_card() {
+        // One deck deals both languages by place, so the card at a place
+        // must be the same line in both: the same number of cards per
+        // attitude, the same `{}` card for card. No Latin letter anywhere
+        // (`ai::translate` lets a line through as it is only when it has
+        // none: one "HP" in a card and every warning waits for a model
+        // again) — HP is חיים, MP מאנה, EXP אקספי. And an amount stands on
+        // its own ("בערך 20 אחוז" glued to a ב- or ל- would not read).
+        let latin = |line: &str| line.chars().any(|c| c.is_ascii_alphabetic());
+        let hebrew = |line: &str| line.chars().any(|c| ('\u{05d0}'..='\u{05ea}').contains(&c));
+        let amounts = [
+            "beating",
+            "HP low",
+            "HP low, again",
+            "HP low, ask",
+            "MP low",
+            "MP low, again",
+            "MP low, ask",
+        ];
+        let mut cards = 0;
+        for (name, en, he) in lines::ALL {
+            for attitude in Attitude::ALL {
+                let (en, he) = (attitude.lines(*en), attitude.lines(*he));
+                assert_eq!(en.len(), he.len(), "{name} ({})", attitude.word());
+                for (e, h) in en.iter().zip(he) {
+                    cards += 1;
+                    assert_eq!(
+                        e.matches("{}").count(),
+                        h.matches("{}").count(),
+                        "{name}: {e:?} / {h:?}"
+                    );
+                    assert!(!latin(h) && hebrew(h), "{name}: {h:?}");
+                    if amounts.contains(name) {
+                        let parts: Vec<&str> = h.split("{}").collect();
+                        for pair in parts.windows(2) {
+                            assert!(
+                                pair[0].is_empty() || pair[0].ends_with(' '),
+                                "{name}: {h:?}"
+                            );
+                            assert!(
+                                pair[1]
+                                    .chars()
+                                    .next()
+                                    .is_none_or(|c| c == ' ' || c.is_ascii_punctuation()),
+                                "{name}: {h:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(cards, 382);
+        // Its notes that are no deck, the same.
+        for (e, h) in [
+            (lines::UNSTEADY, lines::UNSTEADY_HE),
+            (lines::MARKED, lines::MARKED_HE),
+        ] {
+            assert_eq!(e.matches("{}").count(), h.matches("{}").count());
+            assert!(!latin(h) && hebrew(h), "{h:?}");
+        }
+        // Filled in as they are said — an amount read or estimated, a
+        // bar's name — still not a Latin letter.
+        for gauge in [gauge(20.0, true), gauge(19.6, false)] {
+            let amount = low_words(gauge.unwrap(), true);
+            assert!(!latin(&amount), "{amount:?}");
+        }
+        assert_eq!(low_words(gauge(20.0, true).unwrap(), true), "20 אחוז");
+        assert_eq!(low_words(gauge(19.6, false).unwrap(), true), "בערך 20 אחוז");
+        for bar in [Bar::Hp, Bar::Mp] {
+            assert!(!latin(bar.name(true)));
+            for attitude in Attitude::ALL {
+                for card in attitude.lines(lines::MISREAD_HE) {
+                    assert!(!latin(&card.replace("{}", bar.name(true))));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_hebrew_decks_keep_the_rules_of_the_english_ones() {
+        // What a card may presume, claim or count, as the English tests
+        // have it for their decks (`the_first_line_of_a_fight_never_says_
+        // still_or_again`, `a_death_with_no_warning_before_it_never_claims_
+        // one_came`, `no_death_card_speaks_of_an_earlier_death…`, `it_says_
+        // it_twice_then_asks…`), in Hebrew words.
+        const PRESUMES: &[&str] = &[
+            "עדיין",
+            "שוב",
+            "עוד פעם",
+            "פעמיים",
+            "אמרתי",
+            "שמעת",
+            "תמיד",
+            "כל הזמן",
+            "כבר",
+        ];
+        const DURATIONS: &[&str] = &[
+            "שנייה",
+            "שניות",
+            "דקה",
+            "דקות",
+            "שעה",
+            "שעות",
+            "לפני",
+            "קודם",
+            "זמן",
+            "כל הלילה",
+            "כל היום",
+            "כל הערב",
+        ];
+        const FRACTIONS: &[&str] = &["חצי", "שליש", "רבע", "רוב"];
+        const CLAIMS: &[&str] = &[
+            "אמרתי",
+            "הזהרתי",
+            "הוזהרת",
+            "כשאני אומר",
+            "שמעת",
+            "צעקתי",
+            "ידעתי",
+        ];
+        const EARLIER_DEATH: &[&str] = &["שוב", "עוד פעם", "עוד מוות", "עדיין"];
+        const AWAY: &[&str] = &[
+            "לא פה",
+            "לא כאן",
+            "תחזור",
+            "כשתחזור",
+            "חזרת",
+            "אף אחד",
+            "קיר",
+            "איפה אתה",
+            "תגיד משהו",
+            "תדבר",
+            "לשמוע ממך",
+            "ליד המחשב",
+        ];
+        let any = |card: &str, words: &[&'static str]| -> Option<&'static str> {
+            words.iter().find(|w| says_he(card, w)).copied()
+        };
+        // (The helper itself: whole words, with a prefix or two.)
+        assert!(says_he("ושוב: 20 אחוז.", "שוב"));
+        assert!(!says_he("זה חשוב.", "שוב"));
+        assert!(says_he("אני כל הזמן אומר.", "כל הזמן"));
+        assert!(!says_he("ארבע אזהרות.", "רבע"));
+        for attitude in Attitude::ALL {
+            let cards = |deck: [&'static [&'static str]; 3]| attitude.lines(deck).iter().copied();
+            let voice = attitude.word();
+            // A fight's first line stands alone (and the beating sizes no
+            // fall).
+            for card in cards(lines::BEATING_HE)
+                .chain(cards(lines::HP_LOW_HE))
+                .chain(cards(lines::MP_LOW_HE))
+            {
+                assert_eq!(any(card, PRESUMES), None, "{voice}: {card:?}");
+            }
+            for card in cards(lines::BEATING_HE) {
+                assert_eq!(any(card, FRACTIONS), None, "{voice}: {card:?}");
+            }
+            // A repeat may say "still", never "still at" the number.
+            for card in cards(lines::HP_LOW_AGAIN_HE).chain(cards(lines::MP_LOW_AGAIN_HE)) {
+                for still_at in ["עדיין על {}", "עדיין ב-{}", "עדיין ב{}"] {
+                    assert!(!card.contains(still_at), "{voice}: {card:?}");
+                }
+            }
+            // Every card that asks, asks, with the bar in it, and claims no
+            // more than it knows.
+            for card in cards(lines::HP_LOW_ASK_HE).chain(cards(lines::MP_LOW_ASK_HE)) {
+                assert!(card.contains('?') && card.contains("{}"), "{card:?}");
+                for words in [PRESUMES, DURATIONS, FRACTIONS] {
+                    assert_eq!(any(card, words), None, "{voice}: {card:?}");
+                }
+            }
+            // A death with no warning before it claims none, and no death
+            // card speaks of an earlier one; a warned death may say it
+            // warned (and some do), never how long ago.
+            for card in cards(lines::DEATH_HE) {
+                assert_eq!(any(card, CLAIMS), None, "{voice}: {card:?}");
+            }
+            for card in cards(lines::DEATH_HE).chain(cards(lines::DEATH_WARNED_HE)) {
+                assert_eq!(any(card, EARLIER_DEATH), None, "{voice}: {card:?}");
+            }
+            for card in cards(lines::DEATH_WARNED_HE) {
+                assert_eq!(any(card, DURATIONS), None, "{voice}: {card:?}");
+            }
+            assert!(
+                cards(lines::DEATH_WARNED_HE).any(|c| any(c, CLAIMS).is_some()),
+                "{voice}"
+            );
+            // The hold for someone who is there never takes them for away.
+            for card in cards(lines::HOLD_HERE_HE) {
+                assert_eq!(any(card, AWAY), None, "{voice}: {card:?}");
+            }
+            for card in cards(lines::POTTED_AT_LAST_HE) {
+                assert!(card.split_whitespace().count() <= 8, "{card:?}");
+            }
+            // "Still there?" knows nothing moved, not for how long.
+            for card in cards(lines::STILL_THERE_HE) {
+                assert!(!card.chars().any(|c| c.is_ascii_digit()), "{card:?}");
+                for words in [&["דקה", "דקות", "שעה", "שעות"][..], FRACTIONS] {
+                    assert_eq!(any(card, words), None, "{voice}: {card:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_player_who_speaks_hebrew_hears_its_own_lines_in_hebrew() {
+        // He said "talk to me in Hebrew": every line of its own came in
+        // English and went to a model to be translated first — a warning
+        // with its number missed the cache every time — and the phone
+        // showed the English. Now the cards are Hebrew from the start, in
+        // order: the game seen, a beating (HP read off the number), a low
+        // line (the bar's estimate: "בערך"), a sudden death, a level-up.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.set_language(Some("he-IL"));
+        assert!(c.speaks_hebrew());
+        let at = |hp: f32, read: bool, level: u32| -> Observation {
+            let mut obs = frame(hp, 80.0, 10.0);
+            obs.hp = gauge(hp, read);
+            obs.level = Some(level);
+            obs
+        };
+        let mut seen = Vec::new();
+        let mut lines = Vec::new();
+        let mut play = |c: &mut Companion, frames: &[(f64, f32, bool, u32)]| {
+            for &(t, hp, read, level) in frames {
+                let actions = c.observe(t, at(hp, read, level));
+                seen.extend(said(&actions));
+                lines.extend(alerts(&actions));
+            }
+        };
+        play(
+            &mut c,
+            &[
+                (0.0, 100.0, true, 57),
+                (0.5, 100.0, true, 57),
+                (1.0, 100.0, true, 57),
+                (1.5, 65.0, true, 57),
+                (1.6, 64.0, true, 57),
+                (2.0, 64.0, true, 57),
+                (5.0, 100.0, true, 57),
+            ],
+        );
+        play(
+            &mut c,
+            &[
+                (120.0, 90.0, false, 57),
+                (125.0, 70.0, false, 57),
+                (130.0, 50.0, false, 57),
+                (135.0, 35.0, false, 57),
+                (141.0, 20.0, false, 57),
+                (141.1, 20.0, false, 57),
+                (141.3, 20.0, false, 57),
+                (141.7, 20.0, false, 57),
+                (150.0, 90.0, false, 57),
+            ],
+        );
+        play(
+            &mut c,
+            &[
+                (300.0, 100.0, true, 57),
+                (301.0, 0.0, true, 57),
+                (301.1, 0.0, true, 57),
+                (301.2, 0.0, true, 57),
+                (303.0, 100.0, true, 57),
+            ],
+        );
+        play(
+            &mut c,
+            &[
+                (400.0, 100.0, true, 58),
+                (402.0, 100.0, true, 58),
+                (403.1, 100.0, true, 58),
+            ],
+        );
+        let lead = |deck: [&'static [&'static str]; 3]| Attitude::Friendly.lines(deck)[0];
+        assert_eq!(seen[0], lead(lines::SEEN_HE), "{seen:?}");
+        assert_eq!(
+            lines,
+            [
+                lead(lines::BEATING_HE).replace("{}", "64 אחוז"),
+                lead(lines::HP_LOW_HE).replace("{}", "בערך 20 אחוז"),
+                lead(lines::DEATH_HE).to_string(),
+                lead(lines::LEVEL_UP_HE).replace("{}", "58"),
+            ]
+        );
+        assert_eq!(
+            lines[0],
+            "וואו, אתה חוטף מכות, נשארו לך 64 אחוז חיים. תתרחק ותשתה!"
+        );
+        for line in seen.iter().chain(&lines) {
+            assert!(!line.chars().any(|c| c.is_ascii_alphabetic()), "{line:?}");
+        }
+        // A mark, a mute and back: Hebrew too.
+        let marked = said(&c.command(500.0, Command::Mark));
+        assert_eq!(marked, ["סימנתי. זה סימון מספר 1."]);
+        let muted = said(&c.command(501.0, Command::Mute));
+        assert!(
+            Attitude::Friendly
+                .lines(lines::MUTED_HE)
+                .contains(&muted[0].as_str())
+        );
+        // Any other language: the English cards (translated on the way to
+        // the voice); none known: English.
+        for (locale, hebrew) in [
+            (Some("he"), true),
+            (Some("iw-IL"), true),
+            (Some("HE_il"), true),
+            (Some("en-US"), false),
+            (Some("es-ES"), false),
+            (Some("hebrew"), false),
+            (None, false),
+        ] {
+            c.set_language(locale);
+            assert_eq!(c.speaks_hebrew(), hebrew, "{locale:?}");
+        }
+    }
+
+    #[test]
+    fn a_switch_of_language_mid_session_goes_on_with_the_deck() {
+        // One deck deals both languages by place. Fourteen deaths (two
+        // rounds of the friendly deck), the language switched after the
+        // fourth: the fifth is the card the deck had next, in the other
+        // language — the same place a session in one language all along
+        // deals — and no card of the round comes twice (a deck that
+        // started over would deal its lead again).
+        let deaths = |first: &str, then: &str| -> Vec<String> {
+            let mut c = Companion::seeded(Settings::default(), SEED);
+            c.set_language(Some(first));
+            let mut deaths = Vec::new();
+            for minute in 0..14 {
+                if minute == 4 {
+                    c.set_language(Some(then));
+                }
+                let t = minute as f64 * 60.0;
+                for (dt, hp) in [
+                    (0.0, 100.0),
+                    (1.0, 0.0),
+                    (1.1, 0.0),
+                    (1.2, 0.0),
+                    (2.0, 100.0),
+                ] {
+                    deaths.extend(dealt(&c.observe(t + dt, read(hp))));
+                }
+            }
+            deaths
+        };
+        let places = |deaths: &[String]| -> Vec<usize> {
+            deaths
+                .iter()
+                .map(|l| {
+                    place(Attitude::Friendly, lines::DEATH, l)
+                        .or_else(|| place(Attitude::Friendly, lines::DEATH_HE, l))
+                        .unwrap_or_else(|| panic!("not a death card: {l:?}"))
+                })
+                .collect()
+        };
+        let english = deaths("en-US", "en-US");
+        let hebrew = deaths("he-IL", "he-IL");
+        assert_eq!(places(&english), places(&hebrew));
+        for (first, then) in [("he-IL", "en-US"), ("en-US", "he-IL")] {
+            let switched = deaths(first, then);
+            assert_eq!(places(&switched), places(&english), "{first} → {then}");
+            for (i, line) in switched.iter().enumerate() {
+                let he = (i < 4) == (first == "he-IL");
+                assert_eq!(
+                    line.chars().any(|c| c.is_ascii_alphabetic()),
+                    !he,
+                    "{first} → {then}, {i}: {line:?}"
+                );
+            }
+            let mut round = places(&switched)[..7].to_vec();
+            round.sort_unstable();
+            round.dedup();
+            assert_eq!(round.len(), 7, "{switched:?}");
         }
     }
 
