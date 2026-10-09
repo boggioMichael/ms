@@ -24,7 +24,11 @@ keeps what the pixels mean in MapleStory, and the orchestration.
   `mod.rs` finds the HUD from the pixels (`find_hud`) and measures its bars
   on every frame (`syrup::bars::BarModel`); `numbers.rs` reads HP, MP and
   EXP in the game's own font (`syrup::glyphs`, learned from labelled
-  examples, cross-checked against the bars); `things.rs` follows what the
+  examples, cross-checked against the bars) — on or just above the bar
+  (`Line`), or, for a HUD that prints them higher with the field's name
+  and brackets (Classic World: `HP[178/178]`), in a `Window` measured in
+  bar heights, with a font of its own (`classic`, its own thresholds) so
+  the two HUDs' digits are never averaged; `things.rs` follows what the
   player taught it (`syrup::template` sets, `syrup::tracking`, a stripe of
   the frame swept per frame for newcomers); `teacher.rs` is the vision
   model, asked only when the pixels fail, with backoff.
@@ -156,7 +160,14 @@ keeps what the pixels mean in MapleStory, and the orchestration.
   `for_speech`): assistant-speak sentences go, and an opener ("Sure
   thing,", "Of course,") goes only when what follows stands as a sentence
   (`stands_alone`: three words, or a verb) — "Sure thing, boss." stays
-  whole.
+  whole; sentences glued at a full stop get their space (`unglued`). A
+  sentence that only restates the snapshot (the window's state, the level,
+  the map, a bar's percent) is left out when nothing was asked about the
+  game (`unasked`; kept for a question or "talk to me",
+  `wants_an_answer`). A pure greeting is answered from a deck without the
+  model (`companion::instant`, `Ask::Hello`), and a request for a language
+  (`commands::language_request`) switches its lines and the phone at once
+  (`lang_request` in the status).
 - **`phone/`**: the phone link (`Hub`, and the page, `page.html`). What
   it is told and when is decided in `bin/maplesyrup/main.rs`, on
   `Outputs`:

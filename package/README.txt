@@ -75,7 +75,9 @@ How it talks
   your screen (HP, MP, EXP, level, your EXP per hour). If you talk to your
   stream's chat instead, it stays quiet.
   It answers as soon as you stop talking, and its voice starts while the
-  rest of the answer is still being made. It answers from what it knows
+  rest of the answer is still being made; a plain "hey" it answers at once.
+  It doesn't read your level, map or bars back to you unless you ask, and
+  before the game is open it just talks. It answers from what it knows
   rather than stopping to look things up, even when it isn't completely
   sure ("I think..."): when it gets something wrong, just correct it, and
   it remembers (see "It learns as you play"). Talk over it and it stops and
@@ -170,7 +172,8 @@ Languages
   listens in; when a live call hears you speak Hebrew (two sentences, or a
   long one), the phone listens in Hebrew off the call too, shows "Hearing:
   עברית ×" beside the picker (tap × to undo), and goes back after two
-  English ones.
+  English ones. Or just say "talk to me in Hebrew" (or "in English", "in
+  Spanish"...): it switches at once, the phone included.
   MapleSyrup answers in the language you speak to it and says its own lines
   (warnings, level ups) in yours too. The installer speaks yours when Inno
   Setup has it.
