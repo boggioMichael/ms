@@ -1030,6 +1030,30 @@ const FILLER: &[&str] = &[
     "פה",
     "כאן",
     "ממש",
+    // Words a sentence opens with to say nothing yet ("תשמע, החלון של
+    // המשחק סגור.", "רגע, המשחק סגור.", "אז אתה ברמה 9.", "Well, you're
+    // level 167."), a tag question's "right?" ("…, נכון?") and "yes" (as
+    // "yes" and "yeah" are above).
+    "תשמע",
+    "רגע",
+    "אז",
+    "ובכן",
+    "נו",
+    "אגב",
+    "נכון",
+    "כן",
+    "well",
+    "anyway",
+    "btw",
+    // A one-letter prefix a hyphen or a space left alone ("ו-100", "ו
+    // 100", "ב-Gate of the Future"): "and", "in", "the"… ([`words_of`]).
+    "ו",
+    "ב",
+    "ל",
+    "ה",
+    "מ",
+    "ש",
+    "כ",
 ];
 
 /// The level's own words.
@@ -1195,26 +1219,221 @@ fn is_order(word: &str) -> bool {
     verb && !fact && !is_one_of(word, NOT_ORDERS)
 }
 
-/// Whether `word` is a Hebrew place said with "in" or "to" joined to it
-/// ("באליניה", "להנסיס"): the snapshot's map, said in Hebrew (its English
-/// "Ellinia" never matches) — not a word of its own like "תיזהר" or
-/// "שיקוי" (no "in" joined), nor an order or a cheer ("לשתות!",
-/// "ברכות!"). Not "from" (מ): Hebrew's adjectives and participles start
-/// with it — "מצוין", "מגיע לך", "מגניב", "מדהים" were taken for a map and
-/// the cheer beside the level went unsaid.
-fn is_place(word: &str) -> bool {
+/// Verbs a sentence opens with, a comma after them, to call for attention
+/// and not to order anything: "תראה, אתה ברמה 9." recites ("תראה את זה!"
+/// and "תקשיב לי, תשתה." are orders), as "Look, you're level 9." does.
+const ATTENTION: &[&str] = &["תראה", "תקשיב", "תשמע", "תגיד", "look", "listen", "wait"];
+
+/// Phrases that open a sentence and say nothing: "let's see", "by the way".
+const OPENING_PHRASES: &[&[&str]] = &[&["בוא", "נראה"], &["דרך", "אגב"], &["by", "the", "way"]];
+
+/// Words that open a sentence before what it says (an order after them is
+/// still an order: "אז לך לעיר" sends him to town).
+const OPENING_WORDS: &[&str] = &[
+    "אז", "ובכן", "נו", "רגע", "כן", "אגב", "so", "well", "anyway", "btw", "ok", "okay", "yeah",
+    "yep", "yes",
+];
+
+/// `part` without the words it opens with before it says anything: a call
+/// for attention with its comma ([`ATTENTION`]), [`OPENING_PHRASES`] and
+/// [`OPENING_WORDS`] ("תראה, אתה ברמה 9 באליניה." is "אתה ברמה 9
+/// באליניה.").
+fn without_discourse(part: &str) -> &str {
+    let mut rest = part.trim_start();
+    loop {
+        let first = rest.split_whitespace().next().unwrap_or_default();
+        let word = plain_words(first);
+        let mut taken = if (first.ends_with(',') && ATTENTION.contains(&word.as_str()))
+            || OPENING_WORDS.contains(&word.as_str())
+        {
+            1
+        } else {
+            0
+        };
+        for phrase in OPENING_PHRASES {
+            let words: Vec<String> = rest
+                .split_whitespace()
+                .take(phrase.len())
+                .map(plain_words)
+                .collect();
+            if taken == 0 && words == *phrase {
+                taken = phrase.len();
+            }
+        }
+        if taken == 0 {
+            return rest;
+        }
+        for _ in 0..taken {
+            let at = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            rest = rest[at..].trim_start();
+        }
+    }
+}
+
+/// MapleStory's places as Hebrew writes them (plain words: no geresh), the
+/// towns and maps of both his worlds, Classic's and today's: with "in" or
+/// "to" joined to one, a place ([`place_at`]).
+const PLACES: &[&str] = &[
+    "אליניה",
+    "הנסיס",
+    "פריון",
+    "קרנינג",
+    "קרנינג סיטי",
+    "לית",
+    "לית הארבור",
+    "סליפיווד",
+    "נאוטילוס",
+    "ויקטוריה",
+    "ויקטוריה רואד",
+    "ויקטוריה איילנד",
+    "מייפל איילנד",
+    "אמהרסט",
+    "סאות פרי",
+    "אורביס",
+    "אל נאת",
+    "לודיבריום",
+    "אקווריום",
+    "ליפרה",
+    "מו לונג",
+    "הרב טאון",
+    "אריאנט",
+    "מגאטיה",
+    "אומגה סקטור",
+    "טמפל אוף טיים",
+    "גייט",
+    "גייט אוף דה פיוצר",
+    "רוט אביס",
+    "פרי מרקט",
+    "ארקנה",
+    "מורס",
+    "אספרה",
+    "לימינה",
+];
+
+/// The words a place's name takes between its own ("Gate of the Future"
+/// is "גייט אוף דה פיוצ'ר").
+const PLACE_JOINS: &[&str] = &["אוף", "דה", "דא", "אנד"];
+
+/// A name's consonants, the way both scripts write it: "אליניה" and
+/// "Ellinia" are both "LN", "גייט" and "Gate" both "GT". Vowels go, and
+/// the letters Hebrew writes them with (א ה ו י ע), and so do an English
+/// "v" and "w" (Hebrew writes them with a ו); "th" is ת, "c" is ק (ס
+/// before e, i or y), "ch" and "tu" are צ' ("Future" is "פיוצ'ר"); the same
+/// one twice in a row is one.
+fn consonants(word: &str) -> String {
+    let chars: Vec<char> = word.chars().flat_map(char::to_lowercase).collect();
+    let mut out = String::new();
+    for (k, &c) in chars.iter().enumerate() {
+        let next = chars.get(k + 1).copied();
+        let sound = match c {
+            'ב' | 'b' => 'B',
+            'ג' | 'g' | 'j' => 'G',
+            'ד' | 'd' => 'D',
+            'ז' | 'z' => 'Z',
+            'ח' | 'כ' | 'ך' | 'ק' | 'k' | 'q' => 'K',
+            'c' if next == Some('h') => 'C',
+            'c' if matches!(next, Some('e' | 'i' | 'y')) => 'S',
+            'c' => 'K',
+            'ט' | 'ת' => 'T',
+            't' if next == Some('u') => 'C',
+            't' => 'T',
+            'ל' | 'l' => 'L',
+            'מ' | 'ם' | 'm' => 'M',
+            'נ' | 'ן' | 'n' => 'N',
+            'ס' | 'ש' | 's' => 'S',
+            'פ' | 'ף' | 'p' | 'f' => 'P',
+            'צ' | 'ץ' => 'C',
+            'ר' | 'r' => 'R',
+            'x' => {
+                out.push('K');
+                'S'
+            }
+            _ => continue,
+        };
+        if !out.ends_with(sound) {
+            out.push(sound);
+        }
+    }
+    out
+}
+
+/// The consonants of the words of the snapshot's map ([`consonants`]), the
+/// small ones ("of", "the") left out.
+fn map_sounds(facts: &Facts) -> Vec<String> {
+    facts
+        .map
+        .iter()
+        .flat_map(|m| m.split(|c: char| !c.is_alphanumeric()))
+        .filter(|w| w.chars().count() >= 3 && !matches!(w.to_lowercase().as_str(), "the" | "and"))
+        .map(consonants)
+        .filter(|sounds| sounds.chars().count() >= 2)
+        .collect()
+}
+
+/// Whether `word` is a word of the snapshot's map written in Hebrew
+/// ("ויקטוריה", "רואד", "פיוצר" for "Victoria Road", "Gate of the Future").
+fn says_the_map(word: &str, map: &[String]) -> bool {
     let hebrew = |c: char| ('\u{05d0}'..='\u{05ea}').contains(&c);
-    let mut chars = word.chars();
-    matches!(chars.next(), Some('ב' | 'ל'))
-        && chars.clone().count() >= 3
-        && chars.all(hebrew)
-        && !is_one_of_or_plural(word, VERBS)
-        && !is_one_of_or_plural(word, REACTIONS)
+    word.chars().count() >= 3 && word.chars().all(hebrew) && map.contains(&consonants(word))
+}
+
+/// The place said in Hebrew at `words[i]`, with "in" or "to" joined to it
+/// ("באליניה", "להנסיס", "בקרנינג סיטי"), as the range of words it takes:
+/// a town or a map of [`PLACES`], or a word of the snapshot's map written
+/// in Hebrew (`map`, [`map_sounds`]), with the rest of its name after it
+/// ("בויקטוריה רואד", "בגייט אוף דה פיוצ'ר") and an "on the way" before it
+/// ("בדרך לאליניה"). A cheer or an order is no place ("לחיים!",
+/// "לשיקוי!", "לעיר!", "בטירוף!"): Hebrew joins "in" and "to" to anything,
+/// but his places are a closed set, and the map is in the snapshot.
+fn place_at(words: &[(String, bool)], i: usize, map: &[String]) -> Option<(usize, usize)> {
+    let word = words[i].0.as_str();
+    // ("And in": "ובאליניה".)
+    let joined = word
+        .strip_prefix('ו')
+        .filter(|rest| rest.starts_with(['ב', 'ל']))
+        .unwrap_or(word);
+    let to = joined.starts_with('ל');
+    let head = joined.strip_prefix(['ב', 'ל'])?;
+    let name = |at: usize| words.get(at).map(|(w, _)| w.as_str());
+    // The longest name in the list it starts, or a word of the map.
+    let listed = PLACES
+        .iter()
+        .filter_map(|place| {
+            let mut parts = place.split(' ');
+            (parts.next() == Some(head)
+                && parts
+                    .enumerate()
+                    .all(|(k, part)| name(i + 1 + k) == Some(part)))
+            .then(|| i + place.split(' ').count())
+        })
+        .max();
+    let mut end = listed.or_else(|| says_the_map(head, map).then_some(i + 1))?;
+    // The rest of the map's name goes with it.
+    loop {
+        let mut next = end;
+        while name(next).is_some_and(|w| PLACE_JOINS.contains(&w)) {
+            next += 1;
+        }
+        if name(next).is_some_and(|w| says_the_map(w, map)) {
+            end = next + 1;
+        } else {
+            break;
+        }
+    }
+    let start = if to && i > 0 && name(i - 1) == Some("בדרך") {
+        i - 1
+    } else {
+        i
+    };
+    Some((start, end))
 }
 
 /// A sentence (or a part of one) as plain words, for telling the facts
 /// from the rest: lower case, "%" as "percent", "'s" off ("HP's" is "hp");
-/// each with whether it was written with a capital.
+/// each with whether it was written with a capital. A decimal number is
+/// one ("34.5", not 34 and a stray 5), and a Hebrew prefix joined to a
+/// number or an English word is a word of its own ("ו100", "ו-100" and
+/// "ב-Gate" are "ו 100" and "ב gate").
 fn words_of(text: &str) -> Vec<(String, bool)> {
     let text = text.replace('%', " percent ");
     let mut out = Vec::new();
@@ -1228,12 +1447,52 @@ fn words_of(text: &str) -> Vec<(String, bool)> {
             .chars()
             .find(|c| c.is_alphanumeric())
             .is_some_and(char::is_uppercase);
-        out.extend(
-            plain_words(token)
-                .split(' ')
-                .filter(|w| !w.is_empty())
-                .map(|w| (w.to_string(), capital)),
-        );
+        out.extend(token_words(token).into_iter().map(|w| (w, capital)));
+    }
+    out
+}
+
+/// A token's plain words, as [`plain_words`] has them, but a full stop
+/// between two digits stays (a decimal number is one word), and the
+/// one-letter prefixes Hebrew joins to a word are parted from a number or
+/// an English word they are joined to.
+fn token_words(token: &str) -> Vec<String> {
+    let chars: Vec<char> = token
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '’' | '‘' | '׳'))
+        .collect();
+    let mut words: Vec<String> = Vec::new();
+    let mut word = String::new();
+    for (k, &c) in chars.iter().enumerate() {
+        let decimal = c == '.'
+            && k > 0
+            && chars[k - 1].is_ascii_digit()
+            && chars.get(k + 1).is_some_and(char::is_ascii_digit);
+        if c.is_alphanumeric() || decimal {
+            word.extend(c.to_lowercase());
+        } else if !word.is_empty() {
+            words.push(std::mem::take(&mut word));
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    let hebrew = |c: char| ('\u{05d0}'..='\u{05ea}').contains(&c);
+    let mut out = Vec::new();
+    for word in words {
+        // One or two prefixes, then no Hebrew: "ו100", "וב100", "בgate".
+        let prefixes = word
+            .chars()
+            .take_while(|c| "הובלמשכ".contains(*c))
+            .take(2)
+            .count();
+        let rest: String = word.chars().skip(prefixes).collect();
+        if prefixes > 0 && rest.chars().next().is_some_and(|c| !hebrew(c)) {
+            out.extend(word.chars().take(prefixes).map(String::from));
+            out.push(rest);
+        } else {
+            out.push(word);
+        }
     }
     out
 }
@@ -1394,8 +1653,11 @@ pub fn a_word_or_two(heard: &str) -> bool {
 /// a name's), "48 אחוז חיים, שיקוי!" orders, and a number alone said to
 /// someone by name is said for a reason ("48% HP, Einstein." in a fight,
 /// "Level 168, Michael!" at a level-up). A part that opens with an order
-/// is never a status line ("Open the game.").
+/// is never a status line ("Open the game."); what it opens with before it
+/// says anything is left out first ([`without_discourse`]: "תראה, אתה
+/// ברמה 9." recites, "תראה, תשתה!" orders).
 fn restates(part: &str, facts: &Facts) -> bool {
+    let part = without_discourse(part);
     let words = words_of(part);
     if words.first().is_some_and(|(w, _)| is_order(w)) {
         return false;
@@ -1464,11 +1726,21 @@ fn restates(part: &str, facts: &Facts) -> bool {
             .level
             .is_some_and(|l| n > l as f32 && n - l as f32 <= LEVELS_REACHED)
     };
+    // (Near is counted in the words that say something too: filler never
+    // parts a bar from its number. "החיים שלך על 48 אחוז." was said whole:
+    // "שלך על" put the 48 three words from "החיים", which was left over.)
+    let said: Vec<usize> = (0..words.len())
+        .filter(|&i| !is_one_of(word(i), FILLER))
+        .collect();
     for i in 0..words.len() {
         let level = is_one_of(word(i), LEVEL_WORDS);
         let bar = is_one_of(word(i), BAR_WORDS);
         if level || bar {
-            for j in i.saturating_sub(2)..(i + 3).min(words.len()) {
+            let mut near: Vec<usize> = (i.saturating_sub(2)..(i + 3).min(words.len())).collect();
+            if let Some(at) = said.iter().position(|&k| k == i) {
+                near.extend(&said[at.saturating_sub(2)..(at + 3).min(said.len())]);
+            }
+            for j in near {
                 let theirs = match number(j) {
                     Some(n) if level => !reached(n),
                     Some(n) => {
@@ -1486,23 +1758,43 @@ fn restates(part: &str, facts: &Facts) -> bool {
             fact[i] = true;
         }
     }
+    // A place said in Hebrew, with all the words of its name ([`place_at`]):
+    // a name (Hebrew has no capitals).
+    let map = map_sounds(facts);
+    let mut place = vec![false; words.len()];
+    let mut i = 0;
+    while i < words.len() {
+        match place_at(&words, i, &map).filter(|_| !fact[i]) {
+            Some((start, end)) => {
+                place[start..end].fill(true);
+                i = end;
+            }
+            None => i += 1,
+        }
+    }
+    let places = (0..words.len())
+        .filter(|&i| place[i] && (i == 0 || !place[i - 1]))
+        .count();
     let left: Vec<(usize, &str, bool)> = words
         .iter()
         .enumerate()
-        .filter(|(i, (w, _))| !fact[*i] && !is_one_of(w, FILLER))
+        .filter(|(i, (w, _))| !fact[*i] && !place[*i] && !is_one_of(w, FILLER))
         .map(|(i, (w, capital))| (i, w.as_str(), *capital))
         .collect();
     fact.contains(&true)
         && match left.as_slice() {
-            [] => true,
-            // A name, never an order or a cheer: the map in Hebrew (which
-            // has no capitals), or a capitalised word after the first,
-            // beside more than a reading (a number said to someone by name
-            // is said for a reason).
+            // Nothing else, or one place in Hebrew.
+            [] => places <= 1,
+            // A name, never an order or a cheer: a capitalised word after
+            // the first, beside more than a reading (a number said to
+            // someone by name is said for a reason).
             [(at, w, capital)] => {
-                !is_one_of_or_plural(w, VERBS)
+                places == 0
+                    && !is_one_of_or_plural(w, VERBS)
                     && !is_one_of_or_plural(w, REACTIONS)
-                    && (is_place(w) || (*capital && *at > 0 && more_than_a_reading))
+                    && *capital
+                    && *at > 0
+                    && more_than_a_reading
             }
             _ => false,
         }
@@ -1670,9 +1962,21 @@ pub struct Sentences {
     offer: Option<String>,
     /// What went as assistant-speak, in case it is all there was.
     dropped: String,
+    /// A numbered list's items so far: a list said item by item counts on
+    /// from one sentence to the next ("2." is the second item's mark).
+    items: u32,
 }
 
 impl Sentences {
+    /// `chunk` without its marks ([`without_marks`]), a list counted on
+    /// from the chunks before it.
+    fn unmarked(&mut self, chunk: &str) -> String {
+        let mut next = self.items + 1;
+        let out = without_marks_from(chunk, &mut next);
+        self.items = next - 1;
+        out
+    }
+
     /// More of the reply. Returns the sentences it completed.
     pub fn push(&mut self, text: &str) -> Vec<String> {
         self.pending.push_str(text);
@@ -1690,13 +1994,13 @@ impl Sentences {
             self.given += 1;
             out.push(offer);
         }
-        while let Some(end) = sentence_end(&self.pending, SENTENCE_MIN_CHARS) {
+        while let Some(end) = sentence_end_from(&self.pending, SENTENCE_MIN_CHARS, self.items + 1) {
             let chunk: String = self.pending.drain(..end).collect();
             let chunk = chunk.trim();
             if chunk.is_empty() {
                 continue;
             }
-            let kept = without_assistant(&without_marks(chunk));
+            let kept = without_assistant(&self.unmarked(chunk));
             let Some(last) = kept.last() else {
                 self.set_aside(chunk);
                 continue;
@@ -1735,7 +2039,7 @@ impl Sentences {
             .map(|offer| sentences_of(&offer))
             .unwrap_or_default();
         if !rest.is_empty() {
-            let kept = without_assistant(&without_marks(rest));
+            let kept = without_assistant(&self.unmarked(rest));
             if kept.is_empty() {
                 self.set_aside(rest);
             }
@@ -1775,6 +2079,14 @@ impl Sentences {
 /// the speaker is about to do, in a few words — and tells the player
 /// nothing.
 pub fn is_announcement(sentence: &str) -> bool {
+    // What follows a colon is the answer: "Here's how: farm Zakum
+    // helmets." (a list's first item) tells them something.
+    if sentence.match_indices(':').any(|(at, _)| {
+        let after = &sentence[at + 1..];
+        after.starts_with(char::is_whitespace) && after.chars().any(char::is_alphanumeric)
+    }) {
+        return false;
+    }
     let text = crate::companion::commands::normalize(sentence);
     let words = text.split(' ').filter(|w| !w.is_empty()).count();
     if words == 0 || words > 14 {
@@ -1906,11 +2218,27 @@ pub fn without_announcement(reply: &str) -> String {
 /// Where the first complete sentence of `text` ends (at the space after its
 /// punctuation), if it has at least `min` characters. A full stop inside a
 /// number ("2.5") ends nothing, and one at the very end of `text` is not
-/// known to end a sentence until what follows it arrives.
+/// known to end a sentence until what follows it arrives. A list's item
+/// is a sentence: it ends where the next item's mark starts, and the
+/// full stop of a mark ("2.") ends nothing ([`list_marks`]).
 fn sentence_end(text: &str, min: usize) -> Option<usize> {
+    sentence_end_from(text, min, 1)
+}
+
+/// [`sentence_end`], in a numbered list that goes on from `expected`.
+fn sentence_end_from(text: &str, min: usize, expected: u32) -> Option<usize> {
+    let marks = list_marks(text, expected);
     let chars: Vec<(usize, char)> = text.char_indices().collect();
-    for (k, &(_, c)) in chars.iter().enumerate() {
+    for (k, &(at, c)) in chars.iter().enumerate() {
+        if marks.iter().any(|m| m.ends_item && m.start == at)
+            && text[..at].trim().chars().count() >= min
+        {
+            return Some(at);
+        }
         if !matches!(c, '.' | '!' | '?' | '…') {
+            continue;
+        }
+        if marks.iter().any(|m| (m.start..m.end).contains(&at)) {
             continue;
         }
         // "...", "?!" and closing quotes belong to it.
@@ -2064,6 +2392,88 @@ fn list_marker(word: &str) -> Option<Option<u32>> {
     digits.parse().ok().map(Some)
 }
 
+/// A list's mark in a text: its bytes, and whether the item before it
+/// ends there (a sentence of its own: not "1) pot, 2) back off").
+struct Mark {
+    start: usize,
+    end: usize,
+    ends_item: bool,
+}
+
+/// The marks of the lists in `text`, as [`without_marks`] takes them out:
+/// a bullet, or the next number of a list (counting on from `expected`),
+/// that opens a line, follows a sentence's end or goes on with the count
+/// ("1) pot, 2) back off"), with words after it. One last, with nothing
+/// after it yet, may be one when they come: it ends no sentence either
+/// (a reply comes a few letters at a time).
+fn list_marks(text: &str, mut expected: u32) -> Vec<Mark> {
+    // Each word, where it starts, and whether a line break came before it.
+    let mut words: Vec<(usize, &str, bool)> = Vec::new();
+    let mut broke = true;
+    let mut start = None;
+    for (at, c) in text.char_indices() {
+        if c.is_whitespace() {
+            if let Some(from) = start.take() {
+                words.push((from, &text[from..at], broke));
+                broke = false;
+            }
+            broke |= c == '\n';
+        } else if start.is_none() {
+            start = Some(at);
+        }
+    }
+    // (A word still being written is no mark yet.)
+    let written = start.is_none();
+    if let Some(from) = start {
+        words.push((from, &text[from..], broke));
+    }
+    let mut marks = Vec::new();
+    let mut before: Option<String> = None;
+    for (k, &(at, word, broke)) in words.iter().enumerate() {
+        // (Emoji are no words: they go.)
+        let bare: String = word.chars().filter(|c| !is_emoji(*c)).collect();
+        if bare.is_empty() {
+            continue;
+        }
+        let marker = list_marker(&bare);
+        let opens = broke
+            || before.as_deref().is_none_or(ends_sentence)
+            || (expected > 1 && marker == Some(Some(expected)));
+        let mark = opens
+            && match marker {
+                Some(None) => true,
+                Some(Some(number)) => number == expected,
+                None => false,
+            };
+        let more = k + 1 < words.len();
+        if mark && (more || written) {
+            if more && marker.is_some_and(|m| m.is_some()) {
+                expected += 1;
+            }
+            marks.push(Mark {
+                start: at,
+                end: at + word.len(),
+                ends_item: more
+                    && before
+                        .as_deref()
+                        .is_some_and(|b| broke || !b.ends_with([',', ';'])),
+            });
+        } else {
+            before = Some(bare);
+        }
+    }
+    marks
+}
+
+/// Whether `word` ends a list's item as it is: a sentence's end, a colon
+/// (what the list is of), a comma or a semicolon ("1) pot, 2) back off").
+fn ends_item(word: &str) -> bool {
+    ends_sentence(word)
+        || word
+            .trim_end_matches(['"', '\'', '”', '’', ')', ']'])
+            .ends_with([',', ';'])
+}
+
 /// A label a model puts before a sentence: "Note:", "Tip:".
 fn is_label(word: &str) -> bool {
     matches!(
@@ -2118,8 +2528,17 @@ fn capitalised(text: &str) -> String {
 
 /// `text` without emoji, list bullets and numbers (a numbered list counts
 /// from 1; "Level? 20." is an answer) or "Note:"/"Tip:" labels, one space
-/// between words.
+/// between words. A list's items are said as sentences: one that ends
+/// with nothing gets its full stop ("1. Farm Zakum helmets 2. Sell them"
+/// is "Farm Zakum helmets. Sell them.").
 fn without_marks(text: &str) -> String {
+    without_marks_from(text, &mut 1)
+}
+
+/// [`without_marks`], in a numbered list that goes on from `expected` (a
+/// reply cut into sentences as it comes counts on from one to the next),
+/// left at the number the list goes on with.
+fn without_marks_from(text: &str, expected: &mut u32) -> String {
     // Each word, and whether a line break came before it.
     let mut words: Vec<(String, bool)> = Vec::new();
     let mut word = String::new();
@@ -2139,8 +2558,9 @@ fn without_marks(text: &str) -> String {
         words.push((word, broke));
     }
     let mut out: Vec<String> = Vec::new();
-    let mut expected = 1;
     let mut capitalise = false;
+    // Whether a list's mark went: its items are sentences.
+    let mut listed = false;
     let mut i = 0;
     while i < words.len() {
         let (word, broke) = &words[i];
@@ -2148,21 +2568,33 @@ fn without_marks(text: &str) -> String {
         // A list's next number counts wherever it sits ("1) pot, 2) run").
         let opens = *broke
             || out.last().is_none_or(|last| ends_sentence(last))
-            || (expected > 1 && marker == Some(Some(expected)));
+            || (*expected > 1 && marker == Some(Some(*expected)));
         let last = i + 1 == words.len();
-        if opens && !last {
-            match marker {
-                Some(None) => {
-                    i += 1;
-                    continue;
-                }
-                Some(Some(number)) if number == expected => {
-                    expected += 1;
-                    i += 1;
-                    continue;
-                }
-                _ => {}
+        let item = opens
+            && !last
+            && match marker {
+                Some(None) => true,
+                Some(Some(number)) => number == *expected,
+                None => false,
+            };
+        // The item before ends here, as a sentence (at the next item's
+        // mark, or at a line's end once there is a list).
+        if (item || (listed && *broke))
+            && let Some(before) = out.last_mut()
+            && !ends_item(before)
+        {
+            before.push('.');
+            capitalise = true;
+        }
+        if item {
+            if marker.is_some_and(|m| m.is_some()) {
+                *expected += 1;
             }
+            listed = true;
+            i += 1;
+            continue;
+        }
+        if opens && !last {
             if is_label(word) {
                 capitalise = true;
                 i += 1;
@@ -2185,6 +2617,13 @@ fn without_marks(text: &str) -> String {
         });
         capitalise = false;
         i += 1;
+    }
+    // (And so does the last.)
+    if listed
+        && let Some(end) = out.last_mut()
+        && !ends_item(end)
+    {
+        end.push('.');
     }
     out.join(" ")
 }
@@ -2321,6 +2760,18 @@ const OPENERS: &[&str] = &[
     "to summarize",
     "to summarise",
     "to sum up",
+    "בהחלט",
+    "כמובן",
+    "שאלה מצוינת",
+    "שאלה טובה",
+    "שאלה מעולה",
+    "לסיכום",
+];
+
+/// Openers that say it is an AI. What follows one may go with it: a
+/// disclaimer up to its "but" ([`past_disclaimer`]); and it needs no comma
+/// before an "I" ("As an AI I can't…").
+const AI_OPENERS: &[&str] = &[
     "as an ai",
     "as an ai language model",
     "as a language model",
@@ -2340,12 +2791,6 @@ const OPENERS: &[&str] = &[
     "i dont have emotions",
     "i dont have eyes",
     "i dont have a body",
-    "בהחלט",
-    "כמובן",
-    "שאלה מצוינת",
-    "שאלה טובה",
-    "שאלה מעולה",
-    "לסיכום",
     "כבינה מלאכותית",
     "כמודל שפה",
     "אני רק בינה מלאכותית",
@@ -2358,6 +2803,69 @@ const OPENERS: &[&str] = &[
 
 /// A conjunction that may follow an opener ("I'm just an AI, but…").
 const CONJUNCTIONS: &[&str] = &["but ", "and ", "so ", "אבל ", "אז "];
+
+/// How a disclaimer after "As an AI," starts: "I don't play the game
+/// myself", "I can't see your screen", "אני לא רואה את המסך".
+const DISCLAIMERS: &[&str] = &[
+    "i dont ",
+    "i do not ",
+    "i cant ",
+    "i cannot ",
+    "i can not ",
+    "im not ",
+    "i am not ",
+    "i have no ",
+    "i havent ",
+    "i wont ",
+    "i will not ",
+    "im unable ",
+    "i am unable ",
+    "אני לא ",
+    "אינני ",
+    "אין לי ",
+    "לא באמת ",
+];
+
+/// Where a disclaimer gives way to what the sentence says.
+const BUTS: &[&str] = &[
+    ", but ",
+    " but ",
+    ", though ",
+    "; ",
+    " — ",
+    " – ",
+    ", אבל ",
+    " אבל ",
+    ", אך ",
+    " אך ",
+];
+
+/// `rest`, what follows one of the [`AI_OPENERS`], without the disclaimer
+/// it starts with, up to its "but": "I don't play the game myself, but
+/// this map is fine for your level." is "this map is fine for your
+/// level."; nothing when it was all disclaimer; as it is when it starts
+/// with none ("I'd say farm Zakum, but bring pots.").
+fn past_disclaimer(rest: &str) -> String {
+    let plain = format!("{} ", plain_words(rest));
+    if !DISCLAIMERS.iter().any(|d| plain.starts_with(d)) {
+        return rest.to_string();
+    }
+    BUTS.iter()
+        .filter_map(|b| rest.find(b).map(|at| at + b.len()))
+        .min()
+        .map(|at| rest[at..].trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Whether the word that `rest` starts with is "I" ("I", "I'm", "אני",
+/// "אין לי"): an AI opener goes before it without a comma too.
+fn starts_with_i(rest: &str) -> bool {
+    let first = plain_words(rest.split_whitespace().next().unwrap_or_default());
+    matches!(
+        first.as_str(),
+        "i" | "im" | "ive" | "id" | "ill" | "אני" | "אין"
+    )
+}
 
 /// How a sentence that restates the question starts, and whether it must
 /// go on with a question word to count ("You asked for it." is a taunt).
@@ -2717,10 +3225,17 @@ fn stands_alone(rest: &str) -> bool {
 /// after it, and a "but"), or `None` when it starts with none. The opener
 /// goes only when what follows it stands as a sentence of its own
 /// (`stands_alone`): "Sure thing, I'll keep an eye on it." loses its
-/// opener, "Sure thing, boss." keeps it (`Opened::Whole`).
+/// opener, "Sure thing, boss." keeps it (`Opened::Whole`). An AI opener
+/// takes the disclaimer after it too ([`past_disclaimer`]: "As an AI, I
+/// don't play the game myself, but this map is fine…" is "this map is
+/// fine…").
 fn without_opener(sentence: &str) -> Option<Opened> {
     let chars: Vec<char> = sentence.chars().collect();
-    'openers: for opener in OPENERS {
+    let openers = OPENERS
+        .iter()
+        .map(|o| (o, false))
+        .chain(AI_OPENERS.iter().map(|o| (o, true)));
+    'openers: for (opener, ai) in openers {
         let mut at = 0;
         for wanted in opener.chars() {
             // Apostrophes in the sentence are not in the opener.
@@ -2742,7 +3257,11 @@ fn without_opener(sentence: &str) -> Option<Opened> {
             // The opener was the whole sentence.
             return Some(Opened::Rest(String::new()));
         };
-        if !matches!(next, ',' | '!' | ':' | ';' | '.' | '…' | '—' | '–' | '-') {
+        let punctuated = matches!(next, ',' | '!' | ':' | ';' | '.' | '…' | '—' | '–' | '-');
+        // ("As an AI I can't see your screen, but…".)
+        let unpunctuated =
+            ai && next.is_whitespace() && starts_with_i(&chars[at..].iter().collect::<String>());
+        if !punctuated && !unpunctuated {
             continue;
         }
         while chars.get(at).is_some_and(|c| {
@@ -2754,6 +3273,9 @@ fn without_opener(sentence: &str) -> Option<Opened> {
         let lower = rest.to_lowercase();
         if let Some(conjunction) = CONJUNCTIONS.iter().find(|c| lower.starts_with(*c)) {
             rest = rest[conjunction.len()..].trim_start().to_string();
+        }
+        if ai {
+            rest = past_disclaimer(&rest);
         }
         if !rest.trim().is_empty() && !stands_alone(&rest) {
             return Some(Opened::Whole);
@@ -3459,9 +3981,33 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
     /// What models say now and then, whatever they are told, and what the
     /// player hears instead.
     const ASSISTANT_SPEAK: &[(&str, &str)] = &[
+        // An AI's disclaimer goes with the opener, up to its "but" (w33's
+        // "As an AI, I don't play the game myself, but this map is fine…"
+        // kept "I don't play the game myself").
         (
             "As an AI, I can't see your screen, but your HP looks low.",
-            "I can't see your screen, but your HP looks low.",
+            "Your HP looks low.",
+        ),
+        (
+            "As an AI, I don't play the game myself, but this map is fine for your level. Stay till 170.",
+            "This map is fine for your level. Stay till 170.",
+        ),
+        (
+            "Being an AI, I can't feel pain, though that death looked rough.",
+            "That death looked rough.",
+        ),
+        (
+            "As an AI I can't see your screen, but your HP looks low.",
+            "Your HP looks low.",
+        ),
+        // All disclaimer: the sentence goes; what is no disclaimer stays.
+        (
+            "As an AI, I don't play the game myself. Stay till 170.",
+            "Stay till 170.",
+        ),
+        (
+            "As an AI, I'd say farm Zakum, but bring pots.",
+            "I'd say farm Zakum, but bring pots.",
         ),
         (
             "I'm just an AI, but your HP's at 20. Pot.",
@@ -3590,7 +4136,11 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
         // Hebrew.
         (
             "כבינה מלאכותית, אני לא רואה את המסך, אבל ה-HP שלך נמוך.",
-            "אני לא רואה את המסך, אבל ה-HP שלך נמוך.",
+            "ה-HP שלך נמוך.",
+        ),
+        (
+            "כבינה מלאכותית אני לא באמת שומע, אבל אני קורא כל מה שאתה אומר. יאללה נמשיך.",
+            "אני קורא כל מה שאתה אומר. יאללה נמשיך.",
         ),
         (
             "אני רק בינה מלאכותית, אבל ה-HP שלך ב-20. תשתה.",
@@ -4051,7 +4601,8 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             ),
             "Talk to Gardin. Then go right."
         );
-        assert_eq!(for_speech("- **Pot** now\n- Go left"), "Pot now Go left");
+        // A list's items are said as sentences.
+        assert_eq!(for_speech("- **Pot** now\n- Go left"), "Pot now. Go left.");
         assert!(is_offer("Want me to mark this spot?"));
         assert!(is_offer("רוצה שאסמן את המקום?"));
         assert!(!is_offer("Want me to mark this spot."));
