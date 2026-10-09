@@ -173,7 +173,9 @@ Languages
   long one), the phone listens in Hebrew off the call too, shows "Hearing:
   עברית ×" beside the picker (tap × to undo), and goes back after two
   English ones. Or just say "talk to me in Hebrew" (or "in English", "in
-  Spanish"...): it switches at once, the phone included.
+  Spanish"...): it switches at once, the phone included; in Hebrew its own
+  lines (warnings, deaths, level-ups) are its own Hebrew, not a
+  translation.
   MapleSyrup answers in the language you speak to it and says its own lines
   (warnings, level ups) in yours too. The installer speaks yours when Inno
   Setup has it.
