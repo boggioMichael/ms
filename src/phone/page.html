@@ -1061,9 +1061,17 @@
     const h = Math.floor(m / 60);
     return h ? unit(h, "hour") + " " + unit(m % 60, "minute") : unit(m, "minute");
   }
+  // The PC's word on live calls as last seen: when it changes while
+  // listening (Claude came to do the talking, or went), the page follows —
+  // its call ends, or opens again.
+  let statusLive = null;
   function render(state) {
     status = state.status || {};
     if (status.speaking_pc) pcSpokeAt = Date.now();
+    const pcLive = !!status.live;
+    if (statusLive !== null && pcLive !== statusLive && listening
+        && wantLive() !== (liveCall.on || liveCall.starting)) restartListening();
+    statusLive = pcLive;
     const game = status.game || {};
     const seen = game.state === "seen";
     $("gameDot").className = "dot " + (seen ? "on" : "bad");

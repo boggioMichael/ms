@@ -1593,6 +1593,11 @@ cannot read them",
         Ok(reply)
     }
 
+    /// How long ago the map's name ([`Facts::map`]) was read.
+    pub fn map_age(&self) -> Option<Duration> {
+        self.map_at.map(|at| at.elapsed())
+    }
+
     /// Look again soon (asked by the player or the conversation).
     pub fn look_again(&mut self) {
         if self.want.is_none() {

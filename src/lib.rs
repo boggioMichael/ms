@@ -20,10 +20,13 @@
 //!   sight — the same function for the companion and for `vision_bench`.
 //! - **metrics**: What each session came to, in numbers (kept on the PC), and — only when the
 //!   player turns it on — the same numbers made ready to share with partners; nothing is sent.
+//! - **claude**: Claude, live — MapleSyrup as a channel into a Claude Code session: everything it
+//!   reads pushed as it changes, what the player says passed on as said, Claude's words spoken.
 
 pub mod ai;
 pub mod app;
 pub mod capture;
+pub mod claude;
 pub mod coach;
 pub mod companion;
 pub mod config;

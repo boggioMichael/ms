@@ -121,8 +121,23 @@ pub fn request(
 
 /// One request over plain HTTP to `127.0.0.1:port`.
 pub fn request_plain(port: u16, method: &str, target: &str, body: &[u8]) -> Result<Reply, String> {
-    let mut tcp = TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
-    tcp.set_read_timeout(Some(Duration::from_secs(10))).ok();
+    request_plain_waiting(port, method, target, body, Duration::from_secs(10))
+}
+
+/// One request over plain HTTP to `127.0.0.1:port`, waiting up to `wait`
+/// for the answer (a long poll waits for its news).
+pub fn request_plain_waiting(
+    port: u16,
+    method: &str,
+    target: &str,
+    body: &[u8],
+    wait: Duration,
+) -> Result<Reply, String> {
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let mut tcp =
+        TcpStream::connect_timeout(&address, Duration::from_secs(3)).map_err(|e| e.to_string())?;
+    tcp.set_read_timeout(Some(wait)).ok();
+    tcp.set_write_timeout(Some(Duration::from_secs(5))).ok();
     exchange(&mut tcp, method, target, body)
 }
 

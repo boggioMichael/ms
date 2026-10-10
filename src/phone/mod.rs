@@ -360,6 +360,11 @@ pub struct Hub {
     metrics: Mutex<Option<Arc<crate::metrics::Store>>>,
     /// Whether sharing may be turned on here ([`Hub::offer_sharing`]).
     sharing_offered: AtomicBool,
+    /// Claude's channel: what is posted for it, served under `/local/`
+    /// (None: not offered).
+    claude: Mutex<Option<Arc<crate::claude::board::Board>>>,
+    /// Claude is the one talking: the phone opens no live call of its own.
+    live_paused: AtomicBool,
 }
 
 impl Hub {
@@ -391,7 +396,27 @@ impl Hub {
             recording: Mutex::new(None),
             metrics: Mutex::new(None),
             sharing_offered: AtomicBool::new(crate::metrics::SHARING_OFFERED),
+            claude: Mutex::new(None),
+            live_paused: AtomicBool::new(false),
         })
+    }
+
+    /// Serve Claude's channel under `/local/` (on the local listener; a
+    /// request through the tunnel is refused by the board itself).
+    pub fn set_claude(&self, board: Arc<crate::claude::board::Board>) {
+        if let Ok(mut slot) = self.claude.lock() {
+            *slot = Some(board);
+        }
+    }
+
+    fn claude(&self) -> Option<Arc<crate::claude::board::Board>> {
+        self.claude.lock().ok().and_then(|b| b.clone())
+    }
+
+    /// While Claude talks with the player, the phone opens no live call
+    /// (that would be a second voice, and another mind).
+    pub fn pause_live(&self, paused: bool) {
+        self.live_paused.store(paused, Ordering::Relaxed);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -588,6 +613,10 @@ impl Hub {
                 Response::new(200, "image/png", DOG_PARTS).with_header("Cache-Control", "no-cache")
             }
             ("GET", "/favicon.ico") => Response::empty(204),
+            (_, path) if path.starts_with("/local/") => match self.claude() {
+                Some(board) => board.handle(request),
+                None => Response::text(404, "not found"),
+            },
             (_, path) if path.starts_with("/api/") => {
                 let key = request
                     .param("k")
@@ -874,6 +903,12 @@ impl Hub {
                 _ => Response::json(400, &json!({"error": "no text"})),
             },
             ("POST", "/api/live") => {
+                if self.live_paused.load(Ordering::Relaxed) {
+                    return Response::json(
+                        503,
+                        &json!({"error": "Claude is talking with you now: no live call meanwhile"}),
+                    );
+                }
                 let Some(service) = self.service() else {
                     return Response::json(503, &json!({"error": "live calls need an OpenAI key"}));
                 };
@@ -1356,6 +1391,52 @@ mod tests {
                 Some(crate::ai::Effect::Note(format!("ran {name}"))),
             )
         }
+    }
+
+    #[test]
+    fn claudes_channel_is_served_on_this_pc_and_pauses_live_calls() {
+        let hub = Hub::new("k1".into(), None, VoiceOn::Phone);
+        // Not offered: nothing there.
+        assert_eq!(
+            hub.handle(&request("GET", "/local/hello?k=c1", "")).status,
+            404
+        );
+        let key = "0123456789abcdef0123456789abcdef";
+        let board = crate::claude::board::Board::new(key.into());
+        hub.set_claude(Arc::clone(&board));
+        // The phone's key is not the board's.
+        assert_eq!(
+            hub.handle(&request("GET", "/local/hello?k=k1", "")).status,
+            403
+        );
+        // Over the local listener, as the bridge asks.
+        let port = serve_local(Arc::clone(&hub), 0).unwrap();
+        let reply =
+            client::request_plain(port, "GET", &format!("/local/hello?k={key}"), b"").unwrap();
+        assert_eq!(reply.status, 200);
+        let said = client::request_plain(
+            port,
+            "POST",
+            &format!("/local/say?k={key}"),
+            json!({"text": "יאללה, ללכת לאליניה"})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(said.status, 200);
+        assert_eq!(board.take_says(), vec!["יאללה, ללכת לאליניה".to_string()]);
+        // While Claude talks, the phone opens no call of its own.
+        hub.set_service(Arc::new(FakeService));
+        hub.pause_live(true);
+        assert_eq!(
+            hub.handle(&request("POST", "/api/live?k=k1", "{}")).status,
+            503
+        );
+        hub.pause_live(false);
+        assert_eq!(
+            hub.handle(&request("POST", "/api/live?k=k1", "{}")).status,
+            200
+        );
     }
 
     #[test]

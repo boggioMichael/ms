@@ -115,6 +115,13 @@ OPTIONS
   --self-test           check this PC: the engine, the phone link, the voice
   --record-test         check recording on this PC: a few seconds of the screen
                         with a flash and a tone, which must line up
+  --setup-claude        write the Claude folder beside MapleSyrup: Claude Code
+                        started there (Start Claude.cmd) talks with you and
+                        gets everything MapleSyrup reads, live, while
+                        MapleSyrup only watches and speaks for it
+  --no-claude           don't offer Claude the live channel
+  --claude-port N       the channel's port on this PC (default 8790)
+  --claude-channel      (started by Claude Code) the channel itself, on stdio
   --help
 
 The OpenAI key is read from OPENAI_API_KEY, or from openai-key.txt next to
@@ -164,6 +171,13 @@ struct Options {
     /// Grok answers the conversation when there is an xAI key.
     grok: bool,
     grok_model: Option<String>,
+    /// Offer Claude the live channel (`ms::claude`), on this port.
+    claude: bool,
+    claude_port: u16,
+    /// Be the channel Claude Code started (stdio), and nothing else.
+    claude_channel: bool,
+    /// Write the folder Claude Code is started in, and stop.
+    setup_claude: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -202,6 +216,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
         attitude: None,
         grok: true,
         grok_model: None,
+        claude: true,
+        claude_port: ms::claude::link::DEFAULT_PORT,
+        claude_channel: false,
+        setup_claude: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -263,6 +281,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--no-grok" => o.grok = false,
             "--grok-model" => o.grok_model = Some(value("--grok-model")?),
+            "--no-claude" => o.claude = false,
+            "--claude-port" => {
+                o.claude_port = number("--claude-port", value("--claude-port")?)? as u16
+            }
+            "--claude-channel" => o.claude_channel = true,
+            "--setup-claude" => o.setup_claude = true,
             "-h" | "--help" | "/?" => return Err(String::new()),
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             path => o.input = Some(PathBuf::from(path)),
@@ -292,6 +316,14 @@ fn main() {
             std::process::exit(if e.is_empty() { 0 } else { 2 });
         }
     };
+    // Started by Claude Code as its channel: the protocol on stdio, and
+    // nothing else (no console of its own, no update).
+    if options.claude_channel {
+        std::process::exit(ms::claude::channel::run(&tls::settings_dir()));
+    }
+    if options.setup_claude {
+        std::process::exit(setup_claude());
+    }
     if options.self_test {
         std::process::exit(selftest::run());
     }
@@ -316,6 +348,42 @@ fn main() {
         eprintln!("\nMapleSyrup stopped: {e}");
         pause_if_double_clicked();
         std::process::exit(1);
+    }
+}
+
+/// `--setup-claude`: the Claude folder written beside this program, with
+/// what the player wrote about himself (`about-me.txt`) in its brief.
+fn setup_claude() -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            eprintln!("Can't tell where MapleSyrup is: {e}");
+            return 1;
+        }
+    };
+    let Some(dir) = exe.parent().map(|d| d.join(ms::claude::kit::FOLDER)) else {
+        eprintln!("Can't tell where MapleSyrup is.");
+        return 1;
+    };
+    let about = std::fs::read_to_string(tls::settings_dir().join("about-me.txt")).ok();
+    match ms::claude::kit::write(&dir, &exe, about.as_deref()) {
+        Ok(written) => {
+            println!("The Claude folder is ready: {}", dir.display());
+            for path in written {
+                println!("  {}", path.display());
+            }
+            println!(
+                "\nStart MapleSyrup, then \"{}\" in that folder: Claude talks with you and sees the game live.",
+                ms::claude::kit::LAUNCHER
+            );
+            pause_if_double_clicked();
+            0
+        }
+        Err(e) => {
+            eprintln!("Couldn't write the Claude folder: {e}");
+            pause_if_double_clicked();
+            1
+        }
     }
 }
 
@@ -405,6 +473,9 @@ struct Tick {
     note: Option<String>,
     /// What the frame's fingerprint says: how much changed, a new scene.
     scene: Option<ms::coach::scene::Verdict>,
+    /// The frame went through the scene's detectors too (what moves, a
+    /// dialog, the panels): Claude's channel is listening.
+    rich: bool,
 }
 
 /// The newest tick; an unread one is replaced (the main loop is never
@@ -523,6 +594,9 @@ struct Shared {
     sight: Option<Arc<Mutex<Sight>>>,
     latest: Arc<Latest>,
     in_front: Arc<AtomicBool>,
+    /// Look at the whole scene (what moves, dialogs, the panels), not only
+    /// the HUD: Claude is listening, and gets all of it.
+    rich: Arc<AtomicBool>,
 }
 
 /// What the capture thread hands the vision thread: one attempt to
@@ -606,6 +680,10 @@ fn grab(mut source: Source, mailbox: Arc<Mailbox>, running: Arc<AtomicBool>, fps
     }
 }
 
+/// While Claude listens, one frame in this many also goes through the
+/// scene's detectors (what moves, dialogs, the panels).
+const RICH_EVERY: u64 = 3;
+
 /// The vision engine, on a thread of its own: every frame the capture
 /// thread puts in the mailbox goes through `perceive` and out as a tick.
 ///
@@ -623,6 +701,7 @@ fn watch(
         sight,
         latest,
         in_front,
+        rich,
     } = shared;
     let mut pipeline = PerceptionPipeline::new();
     let mut counter = FPSCounter::new(30);
@@ -653,6 +732,20 @@ fn watch(
                 } else {
                     latest.clear();
                 }
+                // While Claude listens, every third frame goes through the
+                // scene's detectors too (they cost a frame's work each).
+                let rich_frame =
+                    in_view && rich.load(Ordering::Relaxed) && frame_id.is_multiple_of(RICH_EVERY);
+                let wanted = if rich_frame {
+                    Detectors {
+                        motion: true,
+                        dialog: true,
+                        panels: true,
+                        ..wanted
+                    }
+                } else {
+                    wanted
+                };
                 let Perceived { world, obs, seen } = {
                     let _frame_span = tracing::trace_span!("frame").entered();
                     let mut sight = sight
@@ -719,6 +812,7 @@ fn watch(
                     muted,
                     note,
                     scene,
+                    rich: rich_frame,
                 });
             }
             Captured::NotFound => {
@@ -731,6 +825,7 @@ fn watch(
                     muted: Vec::new(),
                     note: None,
                     scene: None,
+                    rich: false,
                 });
             }
             Captured::Unavailable(why) => {
@@ -743,6 +838,7 @@ fn watch(
                     muted: Vec::new(),
                     note: None,
                     scene: None,
+                    rich: false,
                 });
             }
         }
@@ -1463,6 +1559,194 @@ fn snapshot_text(
     snapshot
 }
 
+/// A line of Claude's, said in MapleSyrup's voice (the one the player
+/// picked) and shown: by the natural voice when there is one, else by the
+/// PC's own.
+fn claude_says(out: &mut Outputs, text: String) {
+    match &out.mouth.ai {
+        Some(worker) => {
+            worker.send(Job::Say { heard: None, text });
+        }
+        None => {
+            out.show(Kind::Reply, &text);
+            if out.voice_on().pc()
+                && let Some(voice) = &out.mouth.sapi
+            {
+                voice.say(&text);
+                out.mouth.sapi_until = Instant::now() + Mouth::estimate(&text);
+            }
+        }
+    }
+}
+
+/// The HUD's bars as last seen, and when: the reading for Claude says a
+/// number with its age rather than nothing when a frame could not read it.
+#[derive(Default)]
+struct ClaudeBars {
+    hp: Option<(ms::companion::Gauge, Instant)>,
+    mp: Option<(ms::companion::Gauge, Instant)>,
+    exp: Option<(ms::companion::Gauge, Instant)>,
+}
+
+impl ClaudeBars {
+    /// `seen` (this frame's, when read) kept, and the bar as last seen.
+    fn bar(
+        slot: &mut Option<(ms::companion::Gauge, Instant)>,
+        seen: Option<ms::companion::Gauge>,
+    ) -> Option<ms::claude::feed::Bar> {
+        if let Some(gauge) = seen {
+            *slot = Some((gauge, Instant::now()));
+        }
+        slot.as_ref().map(|(g, at)| ms::claude::feed::Bar {
+            percent: g.percent,
+            current: g.current,
+            max: g.max,
+            read: g.read,
+            age: at.elapsed().as_secs_f64(),
+        })
+    }
+}
+
+/// Everything MapleSyrup reads now, for Claude: the game window, the
+/// character, the bars with their age, the map, what moves on the screen
+/// and where, the action, a dialog with text, the buff icons (the scene's
+/// detectors' latest look, while fresh), the things the player taught, and
+/// the session.
+fn claude_scene(
+    at: f64,
+    companion: &Companion,
+    sight: Option<&Arc<Mutex<Sight>>>,
+    world: Option<&(Arc<ms::vision::WorldState>, Instant)>,
+    front: bool,
+    frame_size: Option<(u32, u32)>,
+    bars: &mut ClaudeBars,
+) -> ms::claude::feed::Scene {
+    use ms::claude::feed::{Blob, Dialog, Scene, Session, Taught, Window};
+    use ms::knowledge::dialogs::DialogKind;
+    use ms::vision::detectors::combat::CombatIntensity;
+    let clock = chrono::Local::now().format("%H:%M:%S").to_string();
+    let obs = companion.last();
+    let (window, detail) = match obs.map(|o| &o.game) {
+        Some(GameView::Seen(title)) if front => (Window::InFront, Some(title.clone())),
+        Some(GameView::Seen(title)) => (Window::Behind, Some(title.clone())),
+        Some(GameView::Unavailable(why)) => (Window::Unavailable, Some(why.clone())),
+        _ => (Window::NotOpen, None),
+    };
+    let mut scene = Scene::empty(at, &clock, window);
+    scene.window_detail = detail;
+    scene.dead = companion.dead();
+    let in_front = window == Window::InFront;
+    // The bars: this frame's while the game is in front, else as last seen.
+    let seen = |g: Option<ms::companion::Gauge>| g.filter(|_| in_front);
+    scene.hp = ClaudeBars::bar(&mut bars.hp, seen(obs.and_then(|o| o.hp)));
+    scene.mp = ClaudeBars::bar(&mut bars.mp, seen(obs.and_then(|o| o.mp)));
+    scene.exp = ClaudeBars::bar(&mut bars.exp, seen(obs.and_then(|o| o.exp)));
+    if let Some(obs) = obs.filter(|o| o.game.is_seen()) {
+        scene.level = obs.level;
+        scene.name = obs.name.clone();
+        scene.job = obs.job.clone();
+    }
+    if let Some(sight) = sight {
+        let sight = sight.lock().unwrap_or_else(|e| e.into_inner());
+        scene.classic = sight.numbers.classic() == Some(true);
+        scene.level = scene.level.or(sight.facts.level);
+        scene.name = scene.name.take().or_else(|| sight.facts.name.clone());
+        scene.job = scene.job.take().or_else(|| sight.facts.job.clone());
+        if let Some(map) = &sight.facts.map {
+            scene.map = Some(map.clone());
+            scene.map_age = sight.map_age().map(|d| d.as_secs_f64());
+        }
+        scene.taught = sight
+            .things
+            .list
+            .iter()
+            .filter_map(|t| {
+                let reading = t.live.reading.as_ref()?;
+                Some(Taught {
+                    name: t.name.clone(),
+                    now: reading.describe(),
+                    places: match reading {
+                        ms::sight::things::Reading::Seen { places, .. } => places.clone(),
+                        _ => Vec::new(),
+                    },
+                })
+            })
+            .collect();
+    }
+    // The scene's detectors, while their look is fresh and of the game.
+    if let (true, Some((world, when)), Some((width, height))) = (in_front, world, frame_size)
+        && when.elapsed() <= Duration::from_secs(2)
+    {
+        let (fw, fh) = (width.max(1) as f32, height.max(1) as f32);
+        if let Some(blobs) = &world.motion.value {
+            let mut blobs: Vec<&ms::vision::detectors::motion::MovingEntity> =
+                blobs.iter().collect();
+            blobs.sort_by_key(|b| std::cmp::Reverse(b.bounds.w * b.bounds.h));
+            scene.moving_total = Some(blobs.len());
+            scene.moving = blobs
+                .iter()
+                .take(6)
+                .map(|b| Blob {
+                    id: b.id,
+                    x: (b.bounds.x as f32 + b.bounds.w as f32 / 2.0) / fw,
+                    y: (b.bounds.y as f32 + b.bounds.h as f32 / 2.0) / fh,
+                    w: b.bounds.w as f32 / fw,
+                    h: b.bounds.h as f32 / fh,
+                })
+                .collect();
+        }
+        if let Some(combat) = &world.combat_intensity.value {
+            scene.combat = Some(
+                match combat.intensity {
+                    CombatIntensity::Idle => "calm",
+                    CombatIntensity::Light => "a little",
+                    CombatIntensity::Moderate => "busy",
+                    CombatIntensity::Heavy => "heavy fighting",
+                }
+                .to_string(),
+            );
+        }
+        // A dialog only with its text read: a panel of one colour alone is
+        // too often something else.
+        if let Some(dialog) = &world.dialog.value
+            && let Some(text) = dialog
+                .text
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| t.len() >= 3)
+        {
+            let kind = match dialog.kind {
+                DialogKind::Death => "death prompt",
+                DialogKind::Revive => "revive prompt",
+                DialogKind::LevelUp => "level-up banner",
+                DialogKind::RuneActivation => "rune prompt",
+                DialogKind::Generic | DialogKind::None => "dialog",
+            };
+            scene.dialog = Some(Dialog {
+                kind: kind.to_string(),
+                text: Some(text.chars().take(400).collect()),
+                x: (dialog.bounds.x as f32 + dialog.bounds.w as f32 / 2.0) / fw,
+                y: (dialog.bounds.y as f32 + dialog.bounds.h as f32 / 2.0) / fh,
+            });
+        }
+        if let Some(icons) = &world.icon_row.value {
+            scene.buffs = Some(icons.icons.len());
+        }
+    }
+    let progress = companion.progress();
+    let so_far = companion.so_far();
+    scene.session = Session {
+        minutes: progress.seconds / 60.0,
+        exp_per_hour: progress.exp_per_hour,
+        next_level_minutes: progress.seconds_to_level.map(|s| s / 60.0),
+        deaths: so_far.deaths,
+        minutes_since_death: so_far.since_last_death.map(|s| s / 60.0),
+        level_ups: so_far.level_ups,
+        lowest_hp_lately: so_far.lowest_hp_lately,
+    };
+    scene
+}
+
 /// What the player said, for the model: with what is on screen, and the
 /// screen itself while the game is the window in front.
 fn conversation_job(
@@ -1730,6 +2014,10 @@ struct Outputs {
     /// many were asked for this session (each request's number).
     lang_asked: Option<LangAsked>,
     lang_asks: u64,
+    /// Claude is connected (`ms::claude`): it does the talking. MapleSyrup's
+    /// own lines are shown and passed on to it, never said; what the player
+    /// says goes to Claude as said; only Claude's words are spoken.
+    claude: bool,
 }
 
 /// How long after the clip hello the terms come, so the two do not
@@ -2010,8 +2298,10 @@ impl Outputs {
     fn show(&mut self, kind: Kind, text: &str) {
         self.session.line(kind_label(kind), text);
         if let Some(hub) = &self.phone {
-            // The phone speaks a line itself only without a natural voice.
+            // The phone speaks a line itself only without a natural voice
+            // (and never while Claude does the talking).
             let phone_speaks = self.mouth.ai.is_none()
+                && !self.claude
                 && matches!(kind, Kind::Warning | Kind::Alert | Kind::Reply);
             hub.post(kind, text, phone_speaks);
         }
@@ -2024,6 +2314,12 @@ impl Outputs {
     /// warning neither waits for its translation nor goes with it when
     /// that is called off).
     fn tell(&mut self, kind: Kind, text: &str, speak: bool, companion: &mut Companion) {
+        // Claude does the talking: shown, not said (Claude has the reading
+        // behind it, and decides what is worth saying).
+        if self.claude {
+            self.show(kind, text);
+            return;
+        }
         if self.live
             && let Some(hub) = self.phone.clone()
         {
@@ -2139,7 +2435,7 @@ impl Outputs {
     /// Say `text`, a line of its own of this `kind`, out loud where replies
     /// are spoken. Returns the worker's job when the natural voice says it.
     fn speak(&mut self, kind: Kind, text: &str, companion: &mut Companion) -> Option<u64> {
-        if companion.muted() {
+        if companion.muted() || self.claude {
             return None;
         }
         if self.live && self.phone.is_some() {
@@ -2345,7 +2641,8 @@ impl Outputs {
     /// another page's hello ended it.
     fn call_status(&self) -> serde_json::Value {
         json!({
-            "live": self.live_ok,
+            // (No call of the phone's own while Claude does the talking.)
+            "live": self.live_ok && !self.claude,
             "call_greets": self.call_greets(),
             "new_player": self.call_greets() && self.call_terms,
             "on_call": self.live,
@@ -2961,6 +3258,35 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     } else {
         None
     };
+    // Claude's channel (`ms::claude`): the board, on this PC only, and where
+    // the bridge Claude Code starts finds it.
+    let claude_board: Option<Arc<ms::claude::board::Board>> = match &phone {
+        Some(link) if options.claude => {
+            let key = ms::claude::link::key(&settings_dir);
+            let board = ms::claude::board::Board::new(key.clone());
+            link.hub.set_claude(Arc::clone(&board));
+            match phone::serve_local(Arc::clone(&link.hub), options.claude_port) {
+                Ok(port) => {
+                    let link = ms::claude::link::Link {
+                        port,
+                        key,
+                        pid: std::process::id(),
+                    };
+                    if let Err(e) = ms::claude::link::save(&settings_dir, &link) {
+                        eprintln!("Claude's channel: couldn't write where to find it ({e})");
+                    }
+                    Some(board)
+                }
+                Err(e) => {
+                    eprintln!("Claude's channel could not start: {e}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    // Whether the vision thread looks at the whole scene (Claude listens).
+    let claude_rich = Arc::new(AtomicBool::new(false));
 
     // The header, printed once.
     let (b, d, s, r) = if ansi {
@@ -2992,6 +3318,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 "{d}  Phone on the same Wi-Fi. If Windows asks, allow MapleSyrup on private networks. No luck? Start it with --tunnel.{r}"
             );
         }
+    }
+    if claude_board.is_some() {
+        println!(
+            "{d}Claude: ready for its live channel (start Claude from the Claude folder; --setup-claude writes it){r}"
+        );
     }
     println!("{d}Session files: {}{r}", session_dir.display());
     if ms::metrics::SHARING_OFFERED && stats.sharing() {
@@ -3031,6 +3362,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             sight: sight.clone(),
             latest: Arc::clone(&latest),
             in_front: Arc::clone(&in_front),
+            rich: Arc::clone(&claude_rich),
         };
         // Only the HUD reaches the companion; the other detectors are for
         // the preview window, and run only when it was asked for.
@@ -3119,6 +3451,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         call_terms: false,
         lang_asked: None,
         lang_asks: 0,
+        claude: false,
     };
     let hello = companion.hello();
     out.apply(hello, &mut companion, None);
@@ -3164,6 +3497,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // PC's speakers; and the taught things the player said no to.
     let mut sentence = Sentence::default();
     let mut objections = Objections::default();
+    // Claude's channel: what changed for it, the reading it last got, when
+    // it was made, the bars as last seen, and the scene detectors' latest
+    // look (what moves, a dialog, the panels).
+    let mut claude_feed = ms::claude::feed::Feed::new();
+    let mut claude_reading = String::new();
+    let mut claude_looked: Option<Instant> = None;
+    let mut claude_bars = ClaudeBars::default();
+    let mut scene_world: Option<(Arc<ms::vision::WorldState>, Instant)> = None;
 
     let mut preview: Option<Preview> = None;
     let mut preview_failed = false;
@@ -3223,6 +3564,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 latest_image = Some(Arc::clone(&frame.image));
                 frame_size = Some(frame.frame_size());
                 fps = frame.fps;
+                if tick.rich {
+                    scene_world = Some((Arc::clone(&frame.world), Instant::now()));
+                }
                 if options.preview && preview.is_none() && !preview_failed {
                     let (w, h) = frame.frame_size();
                     match Preview::open(w, h) {
@@ -3253,8 +3597,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 level_up_seen = companion.last_level_up();
                 coach.leveled(now, companion.level());
             }
-            // The coach: is it time for a look at the game, and why?
-            if let Some(worker) = &out.mouth.ai {
+            // The coach: is it time for a look at the game, and why? (Not
+            // while Claude does the talking: it gets the game itself.)
+            if !out.claude
+                && let Some(worker) = &out.mouth.ai
+            {
                 let in_view = in_front.load(Ordering::Relaxed);
                 let talking = out.mouth.speaking()
                     || worker.busy()
@@ -3336,6 +3683,18 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         .line(kind_label(kind), &format!("(muted) {}", fired.say));
                     continue;
                 }
+                // Claude hears of it, with the reading (it decides whether
+                // it is worth a word).
+                if out.claude
+                    && let Some(board) = &claude_board
+                {
+                    let event = claude_feed.thing(&fired.name, &fired.say);
+                    board.post(
+                        event.kind,
+                        &event.headline,
+                        format!("{}\n\n{claude_reading}", event.headline),
+                    );
+                }
                 stats.fired(fired.warning);
                 if companion.alerts_held(now) {
                     out.session
@@ -3376,6 +3735,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         // comes back up.
         if out.mouth.phone_ducked && Instant::now() > out.mouth.phone_until {
             out.phone_talking(false);
+        }
+
+        // What Claude asked to have said: in MapleSyrup's voice.
+        if let Some(board) = &claude_board {
+            for text in board.take_says() {
+                out.session.line("claude", &format!("says: {text}"));
+                claude_says(&mut out, text);
+            }
         }
 
         // What the phone sent.
@@ -3441,6 +3808,21 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         };
                         companion.player_spoke(now);
                         stats.said();
+                        // Claude does the talking: what he said goes to it
+                        // as he said it, with the reading now; nothing of
+                        // MapleSyrup's own answers it.
+                        if out.claude
+                            && let Some(board) = &claude_board
+                        {
+                            out.show(Kind::Heard, &text);
+                            let headline = format!("He said: \"{text}\"");
+                            board.post(
+                                "heard",
+                                &headline,
+                                format!("{headline}\n\n{claude_reading}"),
+                            );
+                            continue;
+                        }
                         if let Some(on) = commands::recording_request(&text) {
                             out.show(Kind::Heard, &text);
                             if on {
@@ -3682,6 +4064,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                     }
                     Inbound::Live(false) => out.call_ended(&mut companion),
+                    // (Claude does the talking: a call the page opened
+                    // before it heard so is not taken up.)
+                    Inbound::Live(true) if out.claude => {
+                        out.session.line(
+                            "claude",
+                            "the phone opened a live call: not taken, Claude talks",
+                        );
+                    }
                     Inbound::Live(true) => {
                         if out.call_opened() {
                             // The PC's own voice gives way to the call.
@@ -4446,6 +4836,57 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     );
                 }
             }
+            // Claude's channel: whether it listens (then MapleSyrup only
+            // watches and speaks for it), the reading now, and what changed.
+            if let Some(board) = &claude_board {
+                let listening = board.connected();
+                if listening != out.claude {
+                    if listening && out.live {
+                        out.call_ended(&mut companion);
+                    }
+                    out.claude = listening;
+                    claude_rich.store(listening, Ordering::Relaxed);
+                    if let Some(hub) = &out.phone {
+                        hub.pause_live(listening);
+                    }
+                    let line = if listening {
+                        "Claude is listening: it talks with you now, and I watch the game and speak for it."
+                    } else {
+                        "Claude went away: I'm talking myself again."
+                    };
+                    out.session.line("claude", line);
+                    out.push(Kind::Info, line.to_string());
+                }
+                if claude_looked.is_none_or(|at| at.elapsed() >= Duration::from_millis(500)) {
+                    claude_looked = Some(Instant::now());
+                    let front = in_front.load(Ordering::Relaxed);
+                    let scene = claude_scene(
+                        start.elapsed().as_secs_f64(),
+                        &companion,
+                        sight.as_ref(),
+                        scene_world.as_ref(),
+                        front,
+                        frame_size,
+                        &mut claude_bars,
+                    );
+                    claude_reading = scene.text();
+                    board.set_status(
+                        serde_json::to_value(&scene).unwrap_or_default(),
+                        claude_reading.clone(),
+                    );
+                    let in_view = scene.window == ms::claude::feed::Window::InFront;
+                    board.set_frame(latest_image.clone().filter(|_| in_view));
+                    for event in claude_feed.update(&scene) {
+                        out.session
+                            .line("claude", &format!("event: {}", event.headline));
+                        board.post(
+                            event.kind,
+                            &event.headline,
+                            format!("{}\n\n{claude_reading}", event.headline),
+                        );
+                    }
+                }
+            }
             if ansi {
                 let recording_label = recording.label();
                 let view = screen::View {
@@ -4526,6 +4967,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
 
     running.store(false, Ordering::Relaxed);
     let _ = vision.join();
+    if claude_board.is_some() {
+        ms::claude::link::remove(&settings_dir, std::process::id());
+    }
     out.mouth.hush();
     ms::platform::sound::restore();
     if ansi {
@@ -4664,6 +5108,7 @@ mod tests {
             call_terms: false,
             lang_asked: None,
             lang_asks: 0,
+            claude: false,
         }
     }
 
