@@ -1,17 +1,53 @@
 //! The folder Claude Code is started in for a game with MapleSyrup: the
 //! MCP config that starts the bridge (`.mcp.json`), the brief Claude reads
-//! (`CLAUDE.md`), the permissions that let it talk and look without asking
-//! each time (`.claude/settings.json`), and a launcher (`Start Claude.cmd`)
-//! that starts MapleSyrup if it is not running and then Claude with the
-//! channel. `MapleSyrup --setup-claude` writes it beside the program.
+//! (`CLAUDE.md`), an output style that makes the session Claude for
+//! anything he asks, as in the Claude app, rather than a coding assistant
+//! (`.claude/output-styles/maplesyrup.md`), the settings that choose it and
+//! let Claude talk, look, search the web and read his folders without
+//! asking each time (`.claude/settings.json`), and a launcher
+//! (`Start Claude.cmd`) that starts MapleSyrup if it is not running and
+//! then Claude with the channel. `MapleSyrup --setup-claude` writes it
+//! beside the program, and the launcher runs that each time, so the folder
+//! keeps up with the program.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
-/// The brief: who Claude is talking to, and how.
+/// The brief: MapleSyrup's channel and tools, and the game.
 pub const BRIEF: &str = include_str!("kit/CLAUDE.md");
+
+/// The output style: Claude for anything, with MapleSyrup besides.
+pub const STYLE: &str = include_str!("kit/style.md");
+
+/// The style's name (its `name:`), as the settings choose it.
+pub const STYLE_NAME: &str = "MapleSyrup";
+
+/// Where the style is, in the folder.
+pub const STYLE_FILE: &str = ".claude/output-styles/maplesyrup.md";
+
+/// How a brief MapleSyrup wrote begins (and so may write again): its
+/// marker line now, the brief's title before there was one.
+const OURS: [&str; 2] = [
+    "<!-- Written by MapleSyrup,",
+    "# You are his MapleStory companion",
+];
+
+/// The folders in his home Claude reads without asking.
+const READABLE: [&str; 7] = [
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Pictures",
+    "Videos",
+    "Music",
+    "OneDrive",
+];
+
+/// Where new projects go (the style says so), under his home: Claude
+/// writes there without asking.
+const PROJECTS: &str = "Documents/Claude projects";
 
 /// The folder's name, beside the program.
 pub const FOLDER: &str = "Claude";
@@ -36,39 +72,73 @@ pub fn mcp_json(exe: &Path) -> String {
     serde_json::to_string_pretty(&config).unwrap_or_default() + "\n"
 }
 
-/// `.claude/settings.json`: the project's server trusted, and its tools
-/// (and looking things up on the web) allowed without a prompt each time.
-pub fn settings_json() -> String {
+/// `.claude/settings.json`: the project's server trusted, the style
+/// chosen, and allowed without a prompt each time: all of MapleSyrup's
+/// tools, the web, reading his folders (in `home`) and writing his new
+/// projects. (Everything else is the permission mode's: the launcher starts
+/// Claude in auto mode, where a check of its own stands in for the prompts.)
+pub fn settings_json(home: Option<&Path>) -> String {
+    let mut allow = vec![
+        format!("mcp__{SERVER}"),
+        "WebSearch".to_string(),
+        "WebFetch".to_string(),
+    ];
+    if let Some(home) = home {
+        let home = rule_path(home);
+        allow.extend(
+            READABLE
+                .iter()
+                .map(|folder| format!("Read({home}/{folder}/**)")),
+        );
+        allow.push(format!("Edit({home}/{PROJECTS}/**)"));
+    }
     let settings = json!({
         "enableAllProjectMcpServers": true,
         "enabledMcpjsonServers": [SERVER],
-        "permissions": {
-            "allow": [
-                format!("mcp__{SERVER}__say"),
-                format!("mcp__{SERVER}__game_status"),
-                format!("mcp__{SERVER}__look_at_screen"),
-                "WebSearch",
-                "WebFetch",
-            ]
-        }
+        "outputStyle": STYLE_NAME,
+        "permissions": {"allow": allow},
     });
     serde_json::to_string_pretty(&settings).unwrap_or_default() + "\n"
 }
 
+/// A path as Claude Code's permission rules write an absolute one: from the
+/// root, with forward slashes, a Windows drive as its lower-case letter
+/// (`C:\Users\x` is `//c/Users/x`).
+pub fn rule_path(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let text = text.trim_end_matches('/');
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
+        format!(
+            "//{}{}",
+            (bytes[0] as char).to_ascii_lowercase(),
+            &text[2..]
+        )
+    } else if text.starts_with('/') {
+        format!("/{text}")
+    } else {
+        text.to_string()
+    }
+}
+
 /// `Start Claude.cmd`: Claude Code found (or, when it is not on this PC,
-/// installed from claude.ai once the player agrees), MapleSyrup (the
-/// program one folder up) started if it is not running — and if an older
-/// one without Claude's channel is, a word to close it — then Claude Code
-/// with the channel: Sonnet at low effort, quick enough to talk with
-/// (`/model` and `/effort` change it), and Remote Control on, so the
-/// session is in the Claude app too. (Claude Code asks each time whether to
-/// load a development channel: custom channels need that while channels
-/// are a research preview.) Plain ASCII: cmd reads it in the console's code
-/// page, and the paths with the player's name in them come from variables.
+/// installed from claude.ai once the player agrees); a new MapleSyrup left
+/// beside the program as `MapleSyrup-new.exe` put in its place while
+/// neither runs; the folder set up again by the program (so it keeps up
+/// with it); MapleSyrup (one folder up) started if it is not running — and
+/// if an older one without Claude's channel is, a word to close it — then
+/// Claude Code with the channel: Sonnet at low effort, quick enough to talk
+/// with (`/model` and `/effort` change it); auto mode, where Claude's own
+/// check of each action stands in for the prompts nobody would answer while
+/// he plays; and Remote Control on, so the session is in the Claude app
+/// too. (Claude Code asks each time whether to load a development channel:
+/// custom channels need that while channels are a research preview.) Plain
+/// ASCII: cmd reads it in the console's code page, and the paths with the
+/// player's name in them come from variables.
 pub fn launcher() -> String {
     [
         "@echo off",
-        "rem Claude with MapleSyrup's live channel: MapleSyrup reads the game, Claude talks with you.",
+        "rem Claude, as in the Claude app, with MapleSyrup's live view of your game and its voice.",
         "cd /d \"%~dp0\"",
         "set \"CLAUDE=claude\"",
         "where claude >nul 2>nul",
@@ -87,8 +157,11 @@ pub fn launcher() -> String {
         "  exit /b 1",
         ")",
         ":maplesyrup",
-        "if exist \"%~dp0.mcp.json\" goto :running",
-        "echo Setting this folder up for Claude, once...",
+        "if not exist \"%~dp0..\\MapleSyrup-new.exe\" goto :setup",
+        "tasklist /FI \"IMAGENAME eq MapleSyrup.exe\" 2>nul | find /I \"MapleSyrup.exe\" >nul",
+        "if not errorlevel 1 goto :setup",
+        "move /y \"%~dp0..\\MapleSyrup-new.exe\" \"%~dp0..\\MapleSyrup.exe\" >nul",
+        ":setup",
         "echo.| \"%~dp0..\\MapleSyrup.exe\" --setup-claude >nul",
         "if exist \"%~dp0.mcp.json\" goto :running",
         "echo MapleSyrup couldn't set this folder up: is MapleSyrup.exe one folder up?",
@@ -105,7 +178,7 @@ pub fn launcher() -> String {
         ":start",
         "start \"MapleSyrup\" \"%~dp0..\\MapleSyrup.exe\"",
         ":claude",
-        "\"%CLAUDE%\" --dangerously-load-development-channels server:maplesyrup --model sonnet --effort low --remote-control MapleSyrup",
+        "\"%CLAUDE%\" --dangerously-load-development-channels server:maplesyrup --model sonnet --effort low --permission-mode auto --remote-control MapleSyrup",
         "",
     ]
     .join("\r\n")
@@ -211,24 +284,37 @@ pub fn installer_cmd() -> String {
     .join("\r\n")
 }
 
-/// The brief, with what the player wrote about himself for MapleSyrup
-/// (`about-me.txt`: his name, his language, how he likes to be helped,
-/// his character) at its end.
+/// The brief, with MapleSyrup's file about the player (`about-me.txt`: what
+/// he told it — his name, his language, how he likes to be helped, his
+/// character) at its end.
 pub fn brief(about: Option<&str>) -> String {
     let about = about.map(str::trim).filter(|a| !a.is_empty());
     match about {
-        Some(about) => format!("{BRIEF}\n## About him (what he wrote for MapleSyrup)\n\n{about}\n"),
+        Some(about) => format!("{BRIEF}\n## About him (MapleSyrup's file about him)\n\n{about}\n"),
         None => BRIEF.to_string(),
     }
 }
 
-/// Write the folder in `dir` for the program at `exe`, with `about` (the
-/// player's own words about himself) in the brief. The brief and the
-/// launcher are kept when they are there already (the player may have made
-/// the brief his own; the launcher may be what is running this); the MCP
-/// config and the settings are written fresh. Returns the files written.
-pub fn write(dir: &Path, exe: &Path, about: Option<&str>) -> std::io::Result<Vec<PathBuf>> {
-    fs::create_dir_all(dir.join(".claude"))?;
+/// Whether a brief is one MapleSyrup wrote, and may write again.
+fn ours(brief: &str) -> bool {
+    let first = brief.trim_start_matches('\u{feff}').trim_start();
+    OURS.iter().any(|start| first.starts_with(start))
+}
+
+/// Write the folder in `dir` for the program at `exe`, with `about` (its
+/// file about the player) in the brief and his `home` folders readable.
+/// The MCP config, the settings and the style are written fresh, and so is
+/// the brief while it is MapleSyrup's own (it starts with its marker line:
+/// a player who deletes that line keeps his own); the launcher is kept when
+/// it is there (it is what runs this, and a batch file rewritten while it
+/// runs is read on from where it was). Returns the files written.
+pub fn write(
+    dir: &Path,
+    exe: &Path,
+    about: Option<&str>,
+    home: Option<&Path>,
+) -> std::io::Result<Vec<PathBuf>> {
+    fs::create_dir_all(dir.join(".claude").join("output-styles"))?;
     let mut written = Vec::new();
     let mut put = |name: &str, text: &str, keep: bool| -> std::io::Result<()> {
         let path = dir.join(name);
@@ -240,11 +326,11 @@ pub fn write(dir: &Path, exe: &Path, about: Option<&str>) -> std::io::Result<Vec
         Ok(())
     };
     put(".mcp.json", &mcp_json(exe), false)?;
-    put(".claude/settings.json", &settings_json(), false)?;
-    // (The launcher runs this when the folder is not set up yet: a batch
-    // file rewritten while it runs is read on from where it was.)
+    put(".claude/settings.json", &settings_json(home), false)?;
+    put(STYLE_FILE, STYLE, false)?;
     put(LAUNCHER, &launcher(), true)?;
-    put("CLAUDE.md", &brief(about), true)?;
+    let mine = fs::read_to_string(dir.join("CLAUDE.md")).is_ok_and(|brief| !ours(&brief));
+    put("CLAUDE.md", &brief(about), mine)?;
     Ok(written)
 }
 
@@ -264,17 +350,29 @@ mod tests {
     }
 
     #[test]
-    fn the_tools_are_allowed_and_the_launcher_needs_no_hebrew() {
-        let settings: serde_json::Value = serde_json::from_str(&settings_json()).unwrap();
+    fn claude_may_use_maplesyrup_the_web_and_his_folders_and_the_launcher_needs_no_hebrew() {
+        let home = Path::new(r"C:\Users\מיכאל");
+        let settings: serde_json::Value = serde_json::from_str(&settings_json(Some(home))).unwrap();
         let allowed: Vec<&str> = settings["permissions"]["allow"]
             .as_array()
             .unwrap()
             .iter()
             .map(|v| v.as_str().unwrap())
             .collect();
-        assert!(allowed.contains(&"mcp__maplesyrup__say"));
-        assert!(allowed.contains(&"mcp__maplesyrup__look_at_screen"));
+        assert!(allowed.contains(&"mcp__maplesyrup"), "all its tools");
+        assert!(allowed.contains(&"WebSearch") && allowed.contains(&"WebFetch"));
+        assert!(
+            allowed.contains(&"Read(//c/Users/מיכאל/Documents/**)"),
+            "{allowed:?}"
+        );
+        assert!(allowed.contains(&"Read(//c/Users/מיכאל/Downloads/**)"));
+        assert!(allowed.contains(&"Edit(//c/Users/מיכאל/Documents/Claude projects/**)"));
         assert_eq!(settings["enabledMcpjsonServers"][0], "maplesyrup");
+        assert_eq!(settings["outputStyle"], STYLE_NAME);
+        // Without a home, the folders are left to the permission mode.
+        let plain: serde_json::Value = serde_json::from_str(&settings_json(None)).unwrap();
+        assert_eq!(plain["permissions"]["allow"].as_array().unwrap().len(), 3);
+
         let launcher = launcher();
         assert!(
             launcher.is_ascii(),
@@ -286,10 +384,39 @@ mod tests {
             "the session is in the Claude app too"
         );
         assert!(
-            launcher.contains("--setup-claude"),
-            "a folder not set up is set up first"
+            launcher.contains("--permission-mode auto"),
+            "no prompt nobody answers while he plays"
         );
+        // The folder is set up each time, after a new program went in.
+        let swap = launcher.find("MapleSyrup-new.exe").unwrap();
+        let setup = launcher.find("--setup-claude").unwrap();
+        let claude = launcher.find("--dangerously-load").unwrap();
+        assert!(swap < setup && setup < claude);
+        assert!(!launcher.contains("if exist \"%~dp0.mcp.json\" goto :running\r\necho Setting"));
         assert!(launcher.contains("\r\n"));
+    }
+
+    #[test]
+    fn a_path_as_permission_rules_write_it() {
+        assert_eq!(rule_path(Path::new(r"C:\Users\מיכאל")), "//c/Users/מיכאל");
+        assert_eq!(rule_path(Path::new(r"D:\Games\")), "//d/Games");
+        assert_eq!(rule_path(Path::new("/home/michael")), "//home/michael");
+    }
+
+    #[test]
+    fn the_style_makes_it_claude_for_anything_and_is_the_one_chosen() {
+        let front = STYLE.split("---").nth(1).unwrap();
+        assert!(front.contains(&format!("name: {STYLE_NAME}\n")), "{front}");
+        assert!(front.contains("keep-coding-instructions: true"));
+        assert!(STYLE.contains("never steer him back to the game"));
+        assert!(STYLE.contains("WebSearch"));
+        assert!(STYLE.contains("Documents\\Claude projects"));
+        assert!(
+            PROJECTS
+                .replace('/', "\\")
+                .ends_with("Documents\\Claude projects"),
+            "the style and the settings name the same folder"
+        );
     }
 
     #[test]
@@ -344,7 +471,12 @@ mod tests {
     fn the_brief_tells_claude_to_talk_through_say_and_keeps_the_players_own() {
         assert!(BRIEF.contains("`say`"));
         assert!(BRIEF.contains("Classic World"));
-        // What he wrote about himself goes at its end; nothing, nothing.
+        assert!(
+            BRIEF.contains("It can be about\n  anything, not only the game"),
+            "what he says isn't only about the game"
+        );
+        assert!(ours(BRIEF), "the brief carries its marker");
+        // MapleSyrup's file about him goes at its end; nothing, nothing.
         let about = "My name is Michael (מיכאל). Talk to me in Hebrew.";
         let with = brief(Some(about));
         assert!(with.starts_with(BRIEF));
@@ -355,21 +487,38 @@ mod tests {
             crate::phone::tls::random_hex(4)
         ));
         let exe = Path::new("/opt/MapleSyrup/maplesyrup");
-        let written = write(&dir, exe, Some(about)).unwrap();
-        assert_eq!(written.len(), 4);
+        let home = Path::new("/home/michael");
+        let written = write(&dir, exe, Some(about), Some(home)).unwrap();
+        assert_eq!(written.len(), 5);
         assert!(dir.join(".claude/settings.json").exists());
+        assert_eq!(fs::read_to_string(dir.join(STYLE_FILE)).unwrap(), STYLE);
         assert!(
             fs::read_to_string(dir.join("CLAUDE.md"))
                 .unwrap()
                 .contains("Michael (מיכאל)")
         );
-        fs::write(dir.join("CLAUDE.md"), "my own brief").unwrap();
-        let again = write(&dir, exe, Some(about)).unwrap();
-        assert_eq!(
-            again.len(),
-            2,
-            "his brief is his, the launcher is left as it is"
+        // Started again, with more in his file: the brief keeps up (it is
+        // MapleSyrup's); the launcher is left as it is.
+        let more = format!("{about}\n- Wants level 30 this week.");
+        let again = write(&dir, exe, Some(&more), Some(home)).unwrap();
+        assert_eq!(again.len(), 4);
+        assert!(
+            fs::read_to_string(dir.join("CLAUDE.md"))
+                .unwrap()
+                .contains("level 30")
         );
+        // The brief of a version before the marker is MapleSyrup's too.
+        fs::write(
+            dir.join("CLAUDE.md"),
+            "# You are his MapleStory companion\n\nOld words.\n",
+        )
+        .unwrap();
+        write(&dir, exe, Some(about), Some(home)).unwrap();
+        assert!(ours(&fs::read_to_string(dir.join("CLAUDE.md")).unwrap()));
+        // One he made his own is his.
+        fs::write(dir.join("CLAUDE.md"), "my own brief").unwrap();
+        let mine = write(&dir, exe, Some(about), Some(home)).unwrap();
+        assert_eq!(mine.len(), 3, "his brief is his");
         assert_eq!(
             fs::read_to_string(dir.join("CLAUDE.md")).unwrap(),
             "my own brief"

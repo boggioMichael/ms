@@ -257,10 +257,18 @@ Claude, live (talk with Claude while it sees the game)
   MapleSyrup by itself when it needs it, and stops it when it is done.
   It needs the Claude desktop app on this PC.
   Claude Code too, with the game pushed to it as it happens (a death, a
-  level-up, a new map, HP in danger): run MapleSyrup.exe --setup-claude
-  once, then "Start Claude.cmd" in the Claude folder it writes beside
-  MapleSyrup.exe. Claude Code asks each time whether to load a
-  "development channel" - choose "I am using this for local development".
+  level-up, a new map, HP in danger) and MapleSyrup's voice to talk through
+  from the phone: run MapleSyrup.exe --setup-claude once, then "Start
+  Claude.cmd" in the Claude folder it writes beside MapleSyrup.exe. That
+  session is Claude for anything, as in the Claude app - talk about
+  anything, search the web, read and open your files (Desktop, Documents,
+  Downloads, Pictures...), build projects (in Documents\Claude projects) -
+  and it is in the Claude app too (Remote Control). It runs in Claude Code's
+  auto mode: instead of asking you about each action, Claude has each one
+  checked first. Claude Code asks each time whether to load a "development
+  channel" - choose "I am using this for local development". Each start
+  sets the folder up again; a MapleSyrup-new.exe left beside MapleSyrup.exe
+  is put in its place first.
 
 Privacy
   Your keys stay on this PC (%APPDATA%\MapleSyrup); a live call uses a key
@@ -294,6 +302,9 @@ Privacy
   and - when Claude asks to look - pictures of the game window, and sends
   them to Anthropic as part of your Claude conversation. MapleSyrup serves
   them on this PC only (127.0.0.1, with a key), never through the tunnel.
+  In the Claude Code session, the files Claude reads for you (your folders
+  are open to it without asking) and its web searches are part of your
+  Claude conversation too, as in the Claude app.
   "The game" is any window whose title contains "MapleStory".
   OpenAI bills your account: a live call costs more than the PC voice (very
   roughly a dollar or two per hour of play, depending on how much you talk).

@@ -77,7 +77,8 @@ pub const CHANNEL_INSTRUCTIONS: &str = "\
 In this session MapleSyrup also pushes what changes in the game as <channel source=\"maplesyrup\" kind=\"...\"> \
 events, each ending with the whole reading at that moment:
 kind=\"hello\": the link to MapleSyrup came up. kind=\"heard\": he said this out loud through MapleSyrup's phone \
-page (speech recognition; may be misheard) — answer him; use say when he can't read the screen. \
+page (speech recognition; may be misheard) — about anything, not only the game: answer him as you would any \
+message, with say when he can't read the screen. \
 kind=\"death\" | \"level_up\" | \"map\" | \"hp\" | \"mp\" | \"dialog\" | \"thing\" | \"window\" | \"state\": something \
 changed. Speak up only when it helps him right now — danger, a real milestone, a quest or dialog you can help \
 with, something he asked you to watch; otherwise stay silent. kind=\"offline\": MapleSyrup stopped.";

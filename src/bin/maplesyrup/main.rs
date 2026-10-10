@@ -398,7 +398,11 @@ fn setup_claude() -> i32 {
         return 1;
     };
     let about = std::fs::read_to_string(tls::settings_dir().join("about-me.txt")).ok();
-    match ms::claude::kit::write(&dir, &exe, about.as_deref()) {
+    // His folders, which Claude may read without asking.
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from);
+    match ms::claude::kit::write(&dir, &exe, about.as_deref(), home.as_deref()) {
         Ok(written) => {
             println!("The Claude folder is ready: {}", dir.display());
             for path in written {
