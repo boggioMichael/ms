@@ -87,6 +87,11 @@ pub struct Facts {
     pub level_from: Option<String>,
     pub name: Option<String>,
     pub job: Option<String>,
+    /// The map's name as last read (or told), this session only: it is
+    /// where they were when it was read, and the player moves on, so it
+    /// is never kept between runs and is said with its age
+    /// ([`Sight::map_at`]) while it is young enough to be worth saying.
+    #[serde(skip)]
     pub map: Option<String>,
     pub hp_max: Option<u64>,
     pub mp_max: Option<u64>,
@@ -97,11 +102,24 @@ pub struct Facts {
     pub corrections: Vec<(String, String)>,
 }
 
+/// A field as the teacher read it off the HUD, and when: the time of the
+/// frame it read (the ask), not of the answer, which comes seconds later.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Told {
+    pub at: Instant,
+    /// 0 to 100.
+    pub percent: f32,
+    /// `current/max`, for HP and MP.
+    pub amount: Option<(u64, u64)>,
+}
+
 /// What the learned sight saw in one frame.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Seen {
     /// Percentages: the number read this frame when there was one, else
-    /// the bar's fill.
+    /// the bar's fill — none when the fill disagrees with the teacher's
+    /// last read by more than [`FILL_AGREES`] points (until it reads
+    /// again).
     pub hp: Option<f32>,
     pub mp: Option<f32>,
     pub exp: Option<f32>,
@@ -166,6 +184,8 @@ pub struct Sight {
     exp_trail: VecDeque<(Instant, f32)>,
     /// The EXP percent as last read from the numbers, and when.
     exp_read_at: Option<(Instant, f32)>,
+    /// When the map's name (`facts.map`) was read or told.
+    map_at: Option<Instant>,
     /// Since when the bars could not be found though the game is seen.
     lost_since: Option<Instant>,
     /// Readings in a row that disagreed with the bars by a lot.
@@ -194,7 +214,55 @@ pub struct Sight {
     /// how many so far, and when the last was.
     debug_saved: u32,
     debug_at: Option<Instant>,
+    /// The teacher's last believed reading of each field (HP, MP, EXP): on
+    /// a HUD whose font is not learned, the numbers to trust.
+    told: [Option<Told>; 3],
+    /// Fields whose fill disagreed with their last read by more than
+    /// [`FILL_AGREES`] points: no reading until the next read.
+    fill_off: [bool; 3],
+    /// When the teacher was asked for the answer still to come: the time
+    /// of the frame it reads.
+    pending_at: Option<Instant>,
+    /// When the font last read each field.
+    font_read_at: [Option<Instant>; 3],
+    /// Since when the font has not read each field, on every frame looked
+    /// at since (None while it reads, or before a frame was looked at).
+    unread_since: [Option<Instant>; 3],
+    /// When a frame was last looked at: the sight looks only while the
+    /// game is in front.
+    observed_at: Option<Instant>,
+    /// A maximum HP and MP read far from the one known, and how many reads
+    /// in a row have said it (see [`Sight::believe`]).
+    far_max: [Option<(u64, u32)>; 2],
 }
+
+/// How far, in points, a bar's fill may be from the teacher's last read
+/// before it is no reading until the next read: between two reads the fill
+/// says how the number moves, never against what was read.
+pub const FILL_AGREES: f32 = 15.0;
+/// A line the font read this recently is being read (for the snapshot).
+const FONT_FRESH: Duration = Duration::from_secs(5);
+/// How long the font must have failed to read the HP or MP line before the
+/// teacher's cadence starts: a cursor over it for a moment is not that,
+/// and a HUD just found from the pixels gives the OCR engine its turn.
+const UNREAD_FOR: Duration = Duration::from_secs(10);
+/// The wait between two reads when a fill has disagreed with the last one:
+/// the brief's lower end, so a real drop is confirmed (and warned) sooner.
+const READ_SOONER: Duration = Duration::from_secs(20);
+/// A frame looked at this recently: the game is in front.
+const IN_FRONT_FOR: Duration = Duration::from_secs(3);
+/// How old a read may be and still judge the fill. Reads come every
+/// [`READ_EVERY`] while they are wanted; one this old means the teacher
+/// cannot answer, and the fill is taken as before.
+const TOLD_JUDGES: Duration = Duration::from_secs(90);
+/// How old a read may be and still be said in the snapshot, with its age.
+const TOLD_SAID: Duration = Duration::from_secs(600);
+/// A maximum HP or MP outside this share of the one known is a misread —
+/// the classic HUD's thin slash read as a 7 made `594/671` "3947/6771" —
+/// unless the level changed with it, or it holds for [`FAR_MAX_HOLDS`]
+/// reads in a row (the same misread came twice in a row: MP "6395").
+const MAX_SHARE: (f64, f64) = (0.75, 1.34);
+const FAR_MAX_HOLDS: u32 = 3;
 
 /// A bar jumping by this much between two frames is a misread (or a
 /// level-up, which the EXP bar does once a session at most): the status
@@ -204,8 +272,23 @@ const JUMP: f32 = 45.0;
 const DEBUG_PICTURES: u32 = 6;
 const DEBUG_EVERY: Duration = Duration::from_secs(60);
 
+/// While the font cannot read a line the HUD has, the teacher reads the
+/// numbers this often, and never more often, while the game is in front
+/// and the HUD in view: its numbers are what the companion trusts, and
+/// they are kept fresh (on the owner's Classic HUD the lines were asked
+/// about after 120, 240, 480, then every 900 s, and the warnings went on
+/// the bars' fill in between). A read is the status strip at "high" detail.
+pub const READ_EVERY: Duration = Duration::from_secs(25);
+
 /// How long the bars may be missing before the HUD is looked for again.
 const LOST_FOR: Duration = Duration::from_secs(20);
+/// A map name read longer ago than this is not said any more: a map is
+/// where they were, not where they are, and the regular check reads the
+/// status strip alone (the name is on the minimap), so a read seldom
+/// refreshes it. Ten minutes is a grinding session on one map; past that
+/// the name is more likely wrong than right, and the model would present
+/// it as fact.
+const MAP_FOR: Duration = Duration::from_secs(600);
 
 fn now_text() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
@@ -347,6 +430,7 @@ impl Sight {
             want: None,
             exp_trail: VecDeque::new(),
             exp_read_at: None,
+            map_at: None,
             lost_since: None,
             disagreements: 0,
             last: Seen::default(),
@@ -362,6 +446,13 @@ impl Sight {
             last_bars: [None; 3],
             debug_saved: 0,
             debug_at: None,
+            told: [None; 3],
+            fill_off: [false; 3],
+            pending_at: None,
+            font_read_at: [None; 3],
+            unread_since: [None; 3],
+            observed_at: None,
+            far_max: [None; 2],
         }
     }
 
@@ -386,7 +477,11 @@ impl Sight {
     /// to read it again for one of the reasons in [`Want`]. Never while a
     /// backoff from the last ask is running.
     pub fn wants(&self, width: u32, height: u32) -> Option<Want> {
-        let now = Instant::now();
+        self.wants_at(width, height, Instant::now())
+    }
+
+    /// [`Sight::wants`] at `now`.
+    fn wants_at(&self, width: u32, height: u32, now: Instant) -> Option<Want> {
         if self
             .asked
             .is_some_and(|t| now.duration_since(t) < self.ask_backoff)
@@ -414,6 +509,9 @@ impl Sight {
         {
             return Some(Want::Calibrate);
         }
+        if self.numbers_due(now) {
+            return Some(Want::Verify);
+        }
         let labels_held_back = self
             .labels_asked
             .is_some_and(|t| now.duration_since(t) < self.label_backoff);
@@ -431,7 +529,45 @@ impl Sight {
     /// waits longer. An answer that helps ([`Sight::calibrated`],
     /// [`Sight::verified`]) resets the wait.
     pub fn asking(&mut self) {
-        self.asked = Some(Instant::now());
+        let now = Instant::now();
+        self.asked = Some(now);
+        self.pending_at = Some(now);
+    }
+
+    /// Whether the numbers are due to be read by the teacher: the HP or MP
+    /// line, whose bar the HUD has, unread by the font for [`UNREAD_FOR`];
+    /// the game in front and the HUD in view; and the last look
+    /// [`READ_EVERY`] ago or more ([`READ_SOONER`] when a fill disagreed
+    /// with the last read). Not held back by how little the reads teach
+    /// the font: while it cannot read the line, the teacher's numbers are
+    /// the ones to trust. (EXP alone, which no warning rests on, is asked
+    /// about for its line's sake only.)
+    fn numbers_due(&self, now: Instant) -> bool {
+        let Some(layout) = &self.layout else {
+            return false;
+        };
+        let in_front = self
+            .observed_at
+            .is_some_and(|t| now.saturating_duration_since(t) <= IN_FRONT_FOR);
+        if !in_front || self.lost_since.is_some() {
+            return false;
+        }
+        let unread = [&layout.hp, &layout.mp]
+            .into_iter()
+            .zip(self.unread_since)
+            .any(|(bar, since)| {
+                bar.is_some()
+                    && since.is_some_and(|t| now.saturating_duration_since(t) >= UNREAD_FOR)
+            });
+        let every = if self.fill_off[..2].contains(&true) {
+            READ_SOONER
+        } else {
+            READ_EVERY
+        };
+        unread
+            && self
+                .last_look
+                .is_none_or(|t| now.saturating_duration_since(t) >= every)
     }
 
     /// The model answered. When its answer `helped` — every line that
@@ -470,6 +606,7 @@ impl Sight {
     /// again later rather than at once, and later still each time.
     pub fn looked(&mut self) {
         self.last_look = Some(Instant::now());
+        self.pending_at = None;
         self.asked = Some(Instant::now());
         self.ask_backoff = (self.ask_backoff * 2).min(ASK_BACKOFF_MAX);
     }
@@ -662,6 +799,7 @@ impl Sight {
 
     pub fn observe(&mut self, frame: &RgbaImage, now: Instant) -> Seen {
         let mut seen = Seen::default();
+        self.observed_at = Some(now);
         // No HUD known for a screen this shape: the pixels look for it,
         // once a second, and the clock runs on how long they fail. A HUD
         // known but for the HP or MP bar: the missing bar is looked for
@@ -780,7 +918,26 @@ impl Sight {
             {
                 refit.push((field, p));
             }
-            let Some(read) = read else { continue };
+            let i = field as usize;
+            let Some(read) = read else {
+                self.unread_since[i].get_or_insert(now);
+                continue;
+            };
+            // The game's own number, read: the last read, as good as the
+            // teacher's (the fill is judged against it until the next).
+            self.unread_since[i] = None;
+            self.font_read_at[i] = Some(now);
+            self.told[i] = Some(Told {
+                at: now,
+                percent: read.value.percent(),
+                amount: match (field, &read.value) {
+                    (Field::Hp | Field::Mp, Value::Amount { current, max }) => {
+                        Some((*current, *max))
+                    }
+                    _ => None,
+                },
+            });
+            self.fill_off[i] = false;
             match (field, &read.value) {
                 (Field::Hp, Value::Amount { current, max }) => {
                     seen.hp_number = Some((*current, *max));
@@ -839,6 +996,22 @@ impl Sight {
             self.unlabelled_since = None;
         }
         drop(numbers_span);
+        // No bar, no line to read.
+        for (i, band) in bands.iter().enumerate() {
+            if band.is_none() {
+                self.unread_since[i] = None;
+            }
+        }
+        // The HP or MP line the font did not read this frame: its fill only
+        // while it agrees with the last read. (EXP's fill is left as it is:
+        // no warning rests on it, and its wrap at a level-up is a fill far
+        // from the last read by nature.)
+        if seen.hp_number.is_none() {
+            seen.hp = self.judge_fill(0, seen.hp, now);
+        }
+        if seen.mp_number.is_none() {
+            seen.mp = self.judge_fill(1, seen.mp, now);
+        }
         // The EXP bar wrapping — from nearly full to nearly empty, and
         // staying there — is most likely a level-up: the level is to be
         // read again (`Want::Verify`), and the number at the bottom left,
@@ -933,6 +1106,125 @@ impl Sight {
         }
     }
 
+    /// The fill of field `i` (0 HP, 1 MP, 2 EXP), on a frame the font did
+    /// not read it, as a reading: none once it has disagreed with the
+    /// teacher's last read by more than [`FILL_AGREES`] points, until the
+    /// next read — so a wrong fill never drives a warning by itself, and
+    /// does not drop in and out either. With no read lately (no teacher,
+    /// or it cannot answer), the fill as it is.
+    fn judge_fill(&mut self, i: usize, fill: Option<f32>, now: Instant) -> Option<f32> {
+        let fill = fill?;
+        let Some(told) =
+            self.told[i].filter(|t| now.saturating_duration_since(t.at) <= TOLD_JUDGES)
+        else {
+            return Some(fill);
+        };
+        if self.fill_off[i] || (fill - told.percent).abs() > FILL_AGREES {
+            self.fill_off[i] = true;
+            return None;
+        }
+        Some(fill)
+    }
+
+    /// `v` as believed: an HP or MP whose maximum is far from the one known
+    /// (outside [`MAX_SHARE`] of it) is left out, with its text, unless the
+    /// level read with it changed or it has held for [`FAR_MAX_HOLDS`]
+    /// reads in a row. A maximum moves at a level-up, a little; the
+    /// classic HUD's thin slash read as a 7 moves it tenfold ("3947/6771"
+    /// for 594/671), and the same misread can come twice in a row. Returns
+    /// the values and a note for each left out.
+    fn believe(&mut self, v: &HudValues) -> (HudValues, Vec<String>) {
+        let mut v = v.clone();
+        let mut notes = Vec::new();
+        let level_changed = matches!((self.facts.level, v.level), (Some(a), Some(b)) if a != b);
+        for i in 0..2 {
+            let (amount, known, name) = if i == 0 {
+                (v.hp, self.facts.hp_max, "HP")
+            } else {
+                (v.mp, self.facts.mp_max, "MP")
+            };
+            let Some((current, max)) = amount else {
+                continue;
+            };
+            let near = known.is_none_or(|k| {
+                let share = max as f64 / k.max(1) as f64;
+                (MAX_SHARE.0..=MAX_SHARE.1).contains(&share)
+            });
+            let held = match self.far_max[i] {
+                Some((m, n)) if m == max => n + 1,
+                _ => 1,
+            };
+            if near || level_changed || held >= FAR_MAX_HOLDS {
+                self.far_max[i] = None;
+                continue;
+            }
+            self.far_max[i] = Some((max, held));
+            notes.push(format!(
+                "{name} {current}/{max} not believed: the maximum known is {} (a misread, unless it holds)",
+                known.unwrap_or_default()
+            ));
+            if i == 0 {
+                v.hp = None;
+                v.hp_text = None;
+            } else {
+                v.mp = None;
+                v.mp_text = None;
+            }
+        }
+        (v, notes)
+    }
+
+    /// The teacher's numbers in `v`, read off the frame taken at `at`: the
+    /// ones to trust while the font cannot read the lines.
+    fn tell(&mut self, v: &HudValues, at: Instant) {
+        let told = [
+            v.hp.map(|(c, m)| (c as f32 / m.max(1) as f32 * 100.0, Some((c, m)))),
+            v.mp.map(|(c, m)| (c as f32 / m.max(1) as f32 * 100.0, Some((c, m)))),
+            v.exp_percent.map(|p| (p, None)),
+        ];
+        for (i, told) in told.into_iter().enumerate() {
+            if let Some((percent, amount)) = told {
+                self.told[i] = Some(Told {
+                    at,
+                    percent: percent.clamp(0.0, 100.0),
+                    amount,
+                });
+                self.fill_off[i] = false;
+            }
+        }
+    }
+
+    /// The numbers as the teacher last read them, with their age, for the
+    /// fields the font is not reading: on a HUD whose font is not learned,
+    /// what the conversation answers from.
+    fn told_line(&self, now: Instant) -> Option<String> {
+        let mut parts = Vec::new();
+        for (i, name) in ["HP", "MP", "EXP"].into_iter().enumerate() {
+            let Some(t) = self.told[i] else { continue };
+            let age = now.saturating_duration_since(t.at);
+            let font_reads = self.font_read_at[i]
+                .is_some_and(|f| now.saturating_duration_since(f) <= FONT_FRESH);
+            if age > TOLD_SAID || font_reads {
+                continue;
+            }
+            let ago = match age.as_secs() {
+                s if s < 120 => format!("{s} s ago"),
+                s => format!("{} min ago", s / 60),
+            };
+            parts.push(match t.amount {
+                Some((c, m)) => format!("{name} {c}/{m} ({:.0}%, {ago})", t.percent),
+                None => format!("{name} {:.2}% ({ago})", t.percent),
+            });
+        }
+        (!parts.is_empty()).then(|| {
+            format!(
+                "{}, as read from the HUD (the numbers then; the bars are measured in between, and a bar that \
+disagrees with them is not believed).",
+                parts.join(", ")
+            )
+        })
+    }
+
     fn take_values(&mut self, v: &HudValues) {
         if let Some(level) = v.level {
             self.facts.level = Some(level);
@@ -947,6 +1239,7 @@ impl Sight {
         }
         if v.map.is_some() {
             self.facts.map = v.map.clone();
+            self.map_at = Some(Instant::now());
         }
         if let Some((_, max)) = v.hp {
             self.facts.hp_max = Some(max);
@@ -962,6 +1255,8 @@ impl Sight {
     /// The teacher found the HUD on `frame`. Returns what was learned, for
     /// the log, or why nothing could be.
     pub fn calibrated(&mut self, frame: &RgbaImage, c: &Calibration) -> Result<String, String> {
+        let at = self.pending_at.take().unwrap_or_else(Instant::now);
+        let (values, disbelieved) = self.believe(&c.values);
         let learn = |b: &Option<NBox>, hue: f32| {
             b.as_ref()
                 .and_then(|b| BarModel::learn(frame, b, Some(hue)))
@@ -980,14 +1275,14 @@ impl Sight {
         let mut hp = learn(&c.hp, 0.0).or(kept.0);
         let mut mp = learn(&c.mp, 215.0).or(kept.1);
         let mut exp = learn(&c.exp, 55.0).or(kept.2);
-        // The game's numbers fix where each track ends.
-        if let (Some(b), Some(p)) = (hp.as_mut(), c.values.hp_percent()) {
+        // The game's numbers fix where each track ends (those believed).
+        if let (Some(b), Some(p)) = (hp.as_mut(), values.hp_percent()) {
             b.reading(frame, p);
         }
-        if let (Some(b), Some(p)) = (mp.as_mut(), c.values.mp_percent()) {
+        if let (Some(b), Some(p)) = (mp.as_mut(), values.mp_percent()) {
             b.reading(frame, p);
         }
-        if let (Some(b), Some(p)) = (exp.as_mut(), c.values.exp_percent) {
+        if let (Some(b), Some(p)) = (exp.as_mut(), values.exp_percent) {
             b.reading(frame, p);
         }
         let found = [hp.is_some(), mp.is_some(), exp.is_some()]
@@ -1027,8 +1322,8 @@ impl Sight {
                 ""
             }
         )];
-        let values = c.values.summary();
-        parts.push(format!("read {values}"));
+        parts.push(format!("read {}", c.values.summary()));
+        parts.extend(disbelieved);
         self.layout = Some(Layout {
             frame: frame.dimensions(),
             hp,
@@ -1039,8 +1334,9 @@ impl Sight {
             status,
             found: now_text(),
         });
-        parts.extend(self.learn_font(frame, &c.values));
-        self.take_values(&c.values);
+        parts.extend(self.learn_font(frame, &values));
+        self.take_values(&values);
+        self.tell(&values, at);
         self.want = None;
         self.disagreements = 0;
         self.lost_since = None;
@@ -1116,8 +1412,12 @@ impl Sight {
     pub fn verified(&mut self, frame: &RgbaImage, v: &HudValues) -> String {
         self.last_look = Some(Instant::now());
         self.want = None;
+        let at = self.pending_at.take().unwrap_or_else(Instant::now);
+        let read = v;
+        let (believed, disbelieved) = self.believe(v);
+        let v = &believed;
         let wanted_labels = self.still_unlabelled();
-        let mut notes = Vec::new();
+        let mut notes = disbelieved;
         let mut off = 0;
         let mut disagreed: Vec<String> = Vec::new();
         if let Some(layout) = self.layout.as_mut() {
@@ -1170,12 +1470,15 @@ impl Sight {
         }
         notes.extend(self.learn_font(frame, v));
         self.take_values(v);
+        self.tell(v, at);
         // The model saw no HUD at all (a cutscene, a dialog over it, the
         // HUD hidden): asking again at once would only ask again at once,
         // every few seconds, for as long as it stays hidden. The next look
-        // waits, and longer each time.
-        let saw_hud =
-            v.level.is_some() || v.hp.is_some() || v.mp.is_some() || v.exp_percent.is_some();
+        // waits, and longer each time. (A read not believed was a HUD seen.)
+        let saw_hud = read.level.is_some()
+            || read.hp.is_some()
+            || read.mp.is_some()
+            || read.exp_percent.is_some();
         if !saw_hud {
             self.looked();
             notes.push(format!(
@@ -1184,13 +1487,15 @@ impl Sight {
             ));
         } else {
             // Asked to spell the lines out and none of them learned: the
-            // next ask waits longer, and says so.
+            // next ask for the lines' sake waits longer; the numbers are
+            // read again on the cadence all the same (`numbers_due`).
             let helped = !wanted_labels || !self.still_unlabelled();
             self.answered(helped);
             if !helped {
                 notes.push(format!(
-                    "no line learned from this; the lines are next asked about in {} s",
-                    self.label_backoff.as_secs()
+                    "no line learned from this; the numbers are read again every {} s while the font \
+cannot read them",
+                    READ_EVERY.as_secs()
                 ));
             }
         }
@@ -1267,6 +1572,7 @@ impl Sight {
             }
             "map" => {
                 self.facts.map = Some(value.to_string());
+                self.map_at = Some(Instant::now());
                 format!("map set to {value}")
             }
             "hp" | "mp" | "exp" => {
@@ -1285,6 +1591,11 @@ impl Sight {
         }
         self.save();
         Ok(reply)
+    }
+
+    /// How long ago the map's name ([`Facts::map`]) was read.
+    pub fn map_age(&self) -> Option<Duration> {
+        self.map_at.map(|at| at.elapsed())
     }
 
     /// Look again soon (asked by the player or the conversation).
@@ -1313,14 +1624,27 @@ impl Sight {
         if let Some(n) = &f.name {
             who.push(format!("named {n}"));
         }
-        if let Some(m) = &f.map {
-            who.push(format!("last seen on the map {m}"));
+        // The map with its age, while it is young enough to be worth
+        // saying: where they were, not where they are.
+        if let (Some(m), Some(at)) = (&f.map, self.map_at) {
+            let age = at.elapsed();
+            if age <= MAP_FOR {
+                let ago = match age.as_secs() / 60 {
+                    0 => "less than a minute ago".to_string(),
+                    1 => "a minute ago".to_string(),
+                    minutes => format!("{minutes} min ago"),
+                };
+                who.push(format!("map {m}, as read {ago} (it may have changed)"));
+            }
         }
         if !who.is_empty() {
             lines.push(format!("Character: {}.", who.join(", ")));
         }
         if let (Some(hp), Some(mp)) = (f.hp_max, f.mp_max) {
             lines.push(format!("Max HP {hp}, max MP {mp} (when last read)."));
+        }
+        if let Some(line) = self.told_line(Instant::now()) {
+            lines.push(line);
         }
         if self.layout.is_none() {
             lines.push(
@@ -1351,6 +1675,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ms-sight-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// `secs` ago — or `None` when the monotonic clock is younger than that
+    /// (a CI runner that booted a minute before the tests), where
+    /// `Instant - Duration` would panic.
+    fn earlier(secs: u64) -> Option<Instant> {
+        Instant::now().checked_sub(Duration::from_secs(secs))
     }
 
     /// A modern status bar: dark background, a red HP bar and a blue MP bar
@@ -1450,10 +1781,12 @@ mod tests {
         let line = sight.calibrated(&frame, &calibration()).unwrap();
         assert!(line.contains("found 2 bar(s) and the level"), "{line}");
         assert_eq!(sight.wants(1280, 720), None);
-        // Measured on other frames, and put into the observation.
-        let seen = sight.observe(&status_bar(25.0, 50.0), Instant::now());
-        assert!((seen.hp.unwrap() - 25.0).abs() < 1.5, "{seen:?}");
-        assert!((seen.mp.unwrap() - 50.0).abs() < 1.5, "{seen:?}");
+        // Measured on other frames, and put into the observation (within
+        // FILL_AGREES of the read, 60% and 100%: a fill farther from it is
+        // no reading until the next read).
+        let seen = sight.observe(&status_bar(50.0, 90.0), Instant::now());
+        assert!((seen.hp.unwrap() - 50.0).abs() < 1.5, "{seen:?}");
+        assert!((seen.mp.unwrap() - 90.0).abs() < 1.5, "{seen:?}");
         let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
         sight.apply(&mut obs, &seen);
         assert_eq!(obs.level, Some(61));
@@ -1477,6 +1810,64 @@ mod tests {
         // Asked, and not again until the backoff has run.
         again.asking();
         assert_eq!(again.wants(1920, 800), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_map_name_is_said_with_its_age_and_not_after_ten_minutes_nor_next_run() {
+        let dir = temp_dir("map");
+        let mut sight = Sight::load(&dir);
+        let frame = status_bar(60.0, 100.0);
+        sight.calibrated(&frame, &calibration()).unwrap();
+        // A read with the map: said with its age, and that it may have
+        // changed (a map is where they were, not where they are).
+        let with_map = HudValues {
+            hp: Some((3000, 5000)),
+            map: Some("Gate of the Future".into()),
+            ..Default::default()
+        };
+        sight.verified(&frame, &with_map);
+        let text = sight.describe().join("\n");
+        assert!(
+            text.contains(
+                "map Gate of the Future, as read less than a minute ago (it may have changed)"
+            ),
+            "{text}"
+        );
+        let (Some(five_min_ago), Some(quarter_hour_ago)) = (earlier(5 * 60), earlier(15 * 60))
+        else {
+            eprintln!("the clock is too young for this test's aged map: skipping the rest");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        sight.map_at = Some(five_min_ago);
+        let text = sight.describe().join("\n");
+        assert!(
+            text.contains("map Gate of the Future, as read 5 min ago (it may have changed)"),
+            "{text}"
+        );
+        // A quarter of an hour on, a read without a map (the regular check
+        // reads the status strip, where the name is not): the name is not
+        // said any more.
+        sight.map_at = Some(quarter_hour_ago);
+        let without_map = HudValues {
+            hp: Some((3000, 5000)),
+            ..Default::default()
+        };
+        sight.verified(&frame, &without_map);
+        let text = sight.describe().join("\n");
+        assert!(!text.contains("Gate of the Future"), "{text}");
+        // The player says where they are: as good as a read, and as fresh.
+        sight.correct("map", "Henesys").unwrap();
+        let text = sight.describe().join("\n");
+        assert!(
+            text.contains("map Henesys, as read less than a minute ago"),
+            "{text}"
+        );
+        // Never kept for the next run.
+        let again = Sight::load(&dir);
+        assert_eq!(again.facts.map, None);
+        assert!(!again.describe().join("\n").contains("Henesys"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1509,11 +1900,15 @@ mod tests {
         assert!((seen.hp.unwrap() - 60.0).abs() < 3.0, "{seen:?}");
         assert!((seen.mp.unwrap() - 100.0).abs() < 3.0, "{seen:?}");
         assert!((seen.exp.unwrap() - 86.25).abs() < 3.0, "{seen:?}");
-        let (other, _) = numbers::tests::hud((100, 400), (675, 1351), 10.0);
+        // (HP and MP within FILL_AGREES of the read: a fill farther from it
+        // is no reading until the next read.)
+        let (other, _) = numbers::tests::hud((200, 400), (1216, 1351), 10.0);
         let seen = sight.observe(&other, Instant::now());
-        assert!((seen.hp.unwrap() - 25.0).abs() < 3.0, "{seen:?}");
-        assert!((seen.mp.unwrap() - 50.0).abs() < 3.0, "{seen:?}");
+        assert!((seen.hp.unwrap() - 50.0).abs() < 3.0, "{seen:?}");
+        assert!((seen.mp.unwrap() - 90.0).abs() < 3.0, "{seen:?}");
         assert!((seen.exp.unwrap() - 10.0).abs() < 3.0, "{seen:?}");
+        let (far, _) = numbers::tests::hud((100, 400), (1216, 1351), 10.0);
+        assert_eq!(sight.observe(&far, Instant::now()).hp, None);
         // What the geometry guessed stays when the sight has nothing better.
         let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
         obs.level = Some(7);
@@ -1732,6 +2127,84 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The bottom of a player's 4K screen on Classic World, whose old
+    /// status bar prints `HP[178/178]`, `MP[101/101]` and `EXP. 619[49.84%]`
+    /// above the bars, small and thin (see `tests/classic_hud.rs`).
+    fn classic_4k_frame() -> RgbaImage {
+        let strip = image::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/resources/hud-classic-4k-strip.png"
+        ))
+        .expect("the classic 4K strip fixture")
+        .to_rgba8();
+        let mut frame = RgbaImage::from_pixel(3840, 2160, image::Rgba([20, 20, 30, 255]));
+        image::imageops::replace(&mut frame, &strip, 0, (2160 - strip.height()) as i64);
+        frame
+    }
+
+    #[test]
+    fn on_the_classic_hud_the_numbers_are_read_every_frame_once_the_teacher_spelled_them_out() {
+        let dir = temp_dir("classic");
+        let mut sight = Sight::load(&dir);
+        let frame = classic_4k_frame();
+        // The bars where the player's sight boxed them, and the lines as the
+        // teacher spelled them on its first look (the session of 9 October,
+        // when every one of them "split into 11 glyphs": the bar's ticks).
+        let c = Calibration {
+            level: None,
+            hp: Some(NBox::new(0.36822918, 0.9777778, 0.4450521, 0.9925926)),
+            mp: Some(NBox::new(0.44739583, 0.9777778, 0.5239583, 0.9930556)),
+            exp: Some(NBox::new(0.53020835, 0.9777778, 0.6132866, 0.9930556)),
+            minimap: None,
+            values: HudValues {
+                level: Some(9),
+                hp: Some((178, 178)),
+                mp: Some((101, 101)),
+                exp_percent: Some(49.84),
+                hp_text: Some("178/178".into()),
+                mp_text: Some("101/101".into()),
+                exp_text: Some("619[49.84%]".into()),
+                ..Default::default()
+            },
+        };
+        let line = sight.calibrated(&frame, &c).unwrap();
+        assert!(line.contains("found 3 bar(s)"), "{line}");
+        assert!(!line.contains("not learned"), "{line}");
+        // Every frame, the numbers in the game's font, the same each time
+        // (on the classic HUD: its style, for the session's stats).
+        let t0 = Instant::now();
+        let mut seen = Seen::default();
+        for i in 0..5 {
+            seen = sight.observe(&frame, t0 + Duration::from_millis(100 * i));
+            assert_eq!(sight.numbers.classic(), Some(true));
+            assert_eq!(seen.hp_number, Some((178, 178)), "{i}: {seen:?}");
+            assert_eq!(seen.mp_number, Some((101, 101)), "{i}: {seen:?}");
+            assert_eq!(
+                seen.exp_number,
+                Some(Value::Percent(49.84)),
+                "{i}: {seen:?}"
+            );
+        }
+        // Read, so the companion trusts them over the bars' fill (which a
+        // cursor over a bar throws off).
+        let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
+        sight.apply(&mut obs, &seen);
+        let (hp, mp, exp) = (obs.hp.unwrap(), obs.mp.unwrap(), obs.exp.unwrap());
+        assert!(
+            hp.read && hp.current == Some(178) && hp.max == Some(178),
+            "{hp:?}"
+        );
+        assert!(mp.read && mp.current == Some(101), "{mp:?}");
+        assert!(exp.read && (exp.percent - 49.84).abs() < 0.001, "{exp:?}");
+        // And after a restart, from what was kept.
+        let mut again = Sight::load(&dir);
+        let seen = again.observe(&frame, t0 + Duration::from_secs(1));
+        assert_eq!(seen.hp_number, Some((178, 178)), "{seen:?}");
+        assert_eq!(seen.mp_number, Some((101, 101)), "{seen:?}");
+        assert_eq!(seen.exp_number, Some(Value::Percent(49.84)), "{seen:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn the_exp_bar_wrapping_is_a_level_up_and_corrections_stick() {
         let dir = temp_dir("level");
@@ -1819,6 +2292,8 @@ mod tests {
         // Another frame: the numbers come from the font, not the bars.
         let (other, _) = numbers::tests::hud((315, 400), (1000, 1351), 40.01);
         let seen = sight.observe(&other, Instant::now());
+        // (Read on the modern HUD: its style, for the session's stats.)
+        assert_eq!(sight.numbers.classic(), Some(false));
         assert_eq!(seen.hp_number, Some((315, 400)), "{seen:?}");
         assert_eq!(seen.mp_number, Some((1000, 1351)));
         assert_eq!(seen.exp_number, Some(Value::Percent(40.01)));
@@ -1832,11 +2307,12 @@ mod tests {
         );
         assert!(obs.exp.unwrap().read);
         assert_eq!(sight.facts.hp_max, Some(400));
-        // A digit the font never saw: the bar's estimate, not a reading.
-        let (unknown, _) = numbers::tests::hud((88, 400), (1000, 1351), 40.01);
+        // A digit the font never saw (6): the bar's estimate, not a reading
+        // (and believed, being near the number last read, 315/400).
+        let (unknown, _) = numbers::tests::hud((260, 400), (1000, 1351), 40.01);
         let seen = sight.observe(&unknown, Instant::now());
         assert_eq!(seen.hp_number, None);
-        assert!((seen.hp.unwrap() - 22.0).abs() < 3.0, "{:?}", seen.hp);
+        assert!((seen.hp.unwrap() - 65.0).abs() < 3.0, "{:?}", seen.hp);
         let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
         sight.apply(&mut obs, &seen);
         assert!(!obs.hp.unwrap().read);
@@ -1931,15 +2407,19 @@ mod tests {
             ..Default::default()
         };
         let first = sight.verified(&frame, &useless);
-        assert!(first.contains("next asked about in 120 s"), "{first}");
+        assert!(
+            first.contains("no line learned from this; the numbers are read again every 25 s"),
+            "{first}"
+        );
         assert_eq!(sight.label_backoff, Duration::from_secs(120));
-        // Held back for the lines' sake only; other reasons still ask.
+        // Held back for the lines' sake only; other reasons still ask (and
+        // the numbers' own cadence: see the test after this one).
         assert_eq!(sight.wants(1280, 720), None);
         sight.want = Some(Want::Verify);
         assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
         sight.want = None;
-        let second = sight.verified(&frame, &useless);
-        assert!(second.contains("next asked about in 240 s"), "{second}");
+        sight.verified(&frame, &useless);
+        assert_eq!(sight.label_backoff, Duration::from_secs(240));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1966,7 +2446,12 @@ mod tests {
         );
         sight.observe(&blank, t0 + LOST_FOR + Duration::from_secs(1));
         assert_eq!(sight.wants(1280, 720), None, "held back");
-        sight.asked = Some(Instant::now() - Duration::from_secs(121));
+        let Some(two_minutes_ago) = earlier(121) else {
+            eprintln!("the clock is younger than two minutes: skipping the rest");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        sight.asked = Some(two_minutes_ago);
         assert_eq!(sight.wants(1280, 720), Some(Want::Verify));
         let second = sight.verified(&blank, &HudValues::default());
         assert!(second.contains("the next look waits 240 s"), "{second}");
@@ -1978,6 +2463,357 @@ mod tests {
         sight.verified(&frame, &values);
         assert_eq!(sight.ask_backoff, ASK_BACKOFF);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The teacher's reads in the owner's Classic World session of 10
+    /// October, as his log has them (`[sight] read …`; Israel time), names
+    /// left out: time, level, HP, MP, EXP %. Checked against the frames he
+    /// sent: 11:48 "659/659" and 11:52 "653/653" were 655/655 on screen;
+    /// 12:21 and 12:36:15 read the classic HUD's thin slash as a 7 —
+    /// `HP[594/671]` (the bar 88% full) came back as 3947/6771 (58%).
+    type SessionRead = (
+        &'static str,
+        Option<u32>,
+        Option<(u64, u64)>,
+        Option<(u64, u64)>,
+        Option<f32>,
+    );
+    const SESSION_READS: &[SessionRead] = &[
+        (
+            "11:46:07",
+            Some(16),
+            Some((655, 655)),
+            Some((671, 671)),
+            Some(80.42),
+        ),
+        (
+            "11:48:10",
+            Some(16),
+            Some((659, 659)),
+            Some((671, 671)),
+            Some(80.42),
+        ),
+        (
+            "11:52:11",
+            Some(16),
+            Some((653, 653)),
+            Some((671, 671)),
+            Some(80.42),
+        ),
+        (
+            "12:00:14",
+            Some(16),
+            Some((659, 659)),
+            Some((649, 671)),
+            Some(84.75),
+        ),
+        (
+            "12:12:36",
+            Some(17),
+            Some((671, 671)),
+            Some((695, 695)),
+            Some(2.16),
+        ),
+        (
+            "12:21:12",
+            Some(17),
+            Some((5837, 7671)),
+            Some((1027, 6395)),
+            Some(7.32),
+        ),
+        (
+            "12:36:15",
+            Some(17),
+            Some((3947, 6771)),
+            Some((1347, 6395)),
+            Some(16.13),
+        ),
+        (
+            "12:36:20",
+            Some(17),
+            Some((576, 671)),
+            Some((139, 695)),
+            Some(16.22),
+        ),
+        (
+            "12:36:37",
+            None,
+            Some((557, 671)),
+            Some((57, 695)),
+            Some(16.6),
+        ),
+        (
+            "12:38:39",
+            None,
+            Some((416, 671)),
+            Some((180, 695)),
+            Some(19.32),
+        ),
+        (
+            "12:38:44",
+            Some(17),
+            Some((416, 671)),
+            Some((189, 695)),
+            Some(19.32),
+        ),
+        (
+            "12:39:02",
+            None,
+            Some((416, 671)),
+            Some((207, 695)),
+            Some(19.32),
+        ),
+        (
+            "12:41:05",
+            None,
+            Some((567, 671)),
+            Some((227, 695)),
+            Some(22.45),
+        ),
+        (
+            "12:45:08",
+            None,
+            Some((565, 671)),
+            Some((695, 695)),
+            Some(28.48),
+        ),
+        (
+            "12:53:10",
+            None,
+            Some((671, 671)),
+            Some((648, 695)),
+            Some(30.82),
+        ),
+        (
+            "13:08:14",
+            None,
+            Some((372, 671)),
+            Some((227, 695)),
+            Some(44.63),
+        ),
+        (
+            "13:23:17",
+            None,
+            Some((306, 671)),
+            Some((695, 695)),
+            Some(44.67),
+        ),
+        (
+            "13:38:21",
+            None,
+            Some((44, 671)),
+            Some((695, 695)),
+            Some(44.67),
+        ),
+        (
+            "13:53:23",
+            None,
+            Some((0, 671)),
+            Some((695, 695)),
+            Some(44.67),
+        ),
+    ];
+
+    fn session_read(row: &SessionRead) -> HudValues {
+        let (_, level, hp, mp, exp) = *row;
+        HudValues {
+            level,
+            hp,
+            mp,
+            exp_percent: exp,
+            hp_text: hp.map(|(c, m)| format!("{c}/{m}")),
+            mp_text: mp.map(|(c, m)| format!("{c}/{m}")),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn while_the_font_cannot_read_a_line_the_teacher_reads_the_numbers_every_25_s() {
+        let dir = temp_dir("cadence");
+        let mut sight = Sight::load(&dir);
+        let frame = status_bar(60.0, 100.0);
+        sight.calibrated(&frame, &calibration()).unwrap();
+        // The lines want examples the font cannot learn from the made-up
+        // bar: as on the owner's Classic HUD, where every read but four
+        // taught nothing and the lines were next asked about in 120, 240,
+        // 480, then 900 s — the warnings went on the bars' fill meanwhile.
+        let read = HudValues {
+            hp: Some((3000, 5000)),
+            mp: Some((2000, 2000)),
+            hp_text: Some("HP [3000/5000]".into()),
+            ..Default::default()
+        };
+        let t0 = Instant::now();
+        sight.observe(&frame, t0);
+        for i in 0..6u32 {
+            let at = t0 + READ_EVERY * i;
+            let line = sight.verified(&frame, &read);
+            sight.last_look = Some(at);
+            assert!(!line.contains("next asked about in"), "{i}: {line}");
+            // Not again within 25 s, never more often…
+            let soon = at + READ_EVERY - Duration::from_secs(1);
+            sight.observe(&frame, soon);
+            assert_eq!(sight.wants_at(1280, 720, soon), None, "{i}: {line}");
+            // …and at 25 s, while the game is in front and the HUD in view.
+            let due = at + READ_EVERY;
+            sight.observe(&frame, due);
+            assert_eq!(
+                sight.wants_at(1280, 720, due),
+                Some(Want::Verify),
+                "read {i}: {line}"
+            );
+        }
+        // The game not in front (no frame looked at lately): no read.
+        let away = t0 + READ_EVERY * 6 + Duration::from_secs(30);
+        assert_eq!(sight.wants_at(1280, 720, away), None);
+        // The HUD not in view (a cutscene): no read for the numbers.
+        let blank = RgbaImage::from_pixel(1280, 720, image::Rgba([20, 20, 20, 255]));
+        sight.observe(&blank, away);
+        assert_eq!(sight.wants_at(1280, 720, away), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_line_the_font_reads_is_not_asked_about_on_the_cadence() {
+        let dir = temp_dir("cadence-read");
+        let mut sight = Sight::load(&dir);
+        let (frame, bands) = numbers::tests::hud((400, 400), (1291, 1351), 37.51);
+        let c = Calibration {
+            level: None,
+            hp: Some(bands[0].grown(0.05, 0.4)),
+            mp: Some(bands[1].grown(0.05, 0.4)),
+            exp: Some(bands[2].grown(0.05, 0.4)),
+            minimap: None,
+            values: HudValues {
+                hp: Some((400, 400)),
+                mp: Some((1291, 1351)),
+                exp_percent: Some(37.51),
+                hp_text: Some("HP [400/400]".into()),
+                mp_text: Some("MP [1291/1351]".into()),
+                exp_text: Some("EXP [37.51%]".into()),
+                ..Default::default()
+            },
+        };
+        sight.calibrated(&frame, &c).unwrap();
+        let t0 = Instant::now();
+        for s in 0..40u64 {
+            let seen = sight.observe(&frame, t0 + Duration::from_secs(s));
+            assert!(seen.hp_number.is_some() && seen.mp_number.is_some());
+        }
+        assert_eq!(
+            sight.wants_at(1280, 720, t0 + Duration::from_secs(40)),
+            None,
+            "the font reads every line: nothing to ask"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fill_that_disagrees_with_the_last_read_is_no_reading_until_the_next_read() {
+        let dir = temp_dir("gated");
+        let mut sight = Sight::load(&dir);
+        let frame = status_bar(60.0, 100.0);
+        sight.calibrated(&frame, &calibration()).unwrap();
+        let t0 = Instant::now();
+        // Read: HP 3000/5000 (60%). The fill a little lower: believed.
+        let seen = sight.observe(&status_bar(52.0, 100.0), t0);
+        assert!((seen.hp.unwrap() - 52.0).abs() < 2.0, "{seen:?}");
+        let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
+        sight.apply(&mut obs, &seen);
+        assert!(!obs.hp.unwrap().read);
+        // 30% against the read's 60%: no reading, and none on the way back
+        // (it does not drop in and out) until the teacher reads again.
+        for (i, fill) in [30.0, 31.0, 58.0, 60.0].into_iter().enumerate() {
+            let at = t0 + Duration::from_secs(1 + i as u64);
+            let seen = sight.observe(&status_bar(fill, 100.0), at);
+            assert_eq!(seen.hp, None, "{fill}: {seen:?}");
+            let mut obs = Observation::unseen(GameView::Seen("MapleStory".into()));
+            sight.apply(&mut obs, &seen);
+            assert_eq!(obs.hp, None, "{fill}: never drives a warning by itself");
+            // MP, which agrees with its read, goes on.
+            assert!(obs.mp.is_some(), "{fill}");
+        }
+        // The next read says 30%: the fill is believed again.
+        sight.verified(
+            &status_bar(30.0, 100.0),
+            &HudValues {
+                hp: Some((1500, 5000)),
+                mp: Some((2000, 2000)),
+                ..Default::default()
+            },
+        );
+        let seen = sight.observe(&status_bar(29.0, 100.0), t0 + Duration::from_secs(6));
+        assert!((seen.hp.unwrap() - 29.0).abs() < 2.0, "{seen:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_read_whose_maximum_is_far_from_the_one_known_is_not_believed_unless_it_holds() {
+        let dir = temp_dir("max");
+        let mut sight = Sight::load(&dir);
+        // HP 594/671 (88%) and MP 194/695 (28%), as on the owner's screen at
+        // 12:36:15 (`hp-disagrees-6.png`), the bars fitted by a good read.
+        let frame = status_bar(88.5, 27.9);
+        let mut c = calibration();
+        c.values.level = Some(17);
+        c.values.hp = Some((594, 671));
+        c.values.mp = Some((194, 695));
+        sight.calibrated(&frame, &c).unwrap();
+        // The slash read as a 7, as at 12:21:12 and then 12:36:15 (MP 6395
+        // both times): not believed, not taken for the facts, no
+        // disagreement with the bars (which were right) and so no new
+        // search for the HUD — at 12:36:20 that search lost the HP bar.
+        for row in &SESSION_READS[5..7] {
+            let line = sight.verified(&frame, &session_read(row));
+            assert!(line.contains("not believed"), "{}: {line}", row.0);
+            assert!(!line.contains("bar said"), "{}: {line}", row.0);
+            assert!(!line.contains("looked for again"), "{}: {line}", row.0);
+            assert_eq!(
+                (sight.facts.hp_max, sight.facts.mp_max),
+                (Some(671), Some(695)),
+                "{}",
+                row.0
+            );
+        }
+        // Every other read of the session is believed — a level-up's new
+        // maximum (655 → 671) at once — and the snapshot says the last,
+        // with its age.
+        let dir2 = temp_dir("max-session");
+        let mut whole = Sight::load(&dir2);
+        whole.calibrated(&frame, &c).unwrap();
+        for row in SESSION_READS {
+            let line = whole.verified(&frame, &session_read(row));
+            let misread = matches!(row.0, "12:21:12" | "12:36:15");
+            assert_eq!(line.contains("not believed"), misread, "{}: {line}", row.0);
+        }
+        assert_eq!(
+            (whole.facts.hp_max, whole.facts.mp_max),
+            (Some(671), Some(695))
+        );
+        let text = whole.describe().join("\n");
+        assert!(text.contains("HP 0/671"), "{text}");
+        assert!(text.contains("as read from the HUD"), "{text}");
+        // Another character (another level): believed at once.
+        let other = HudValues {
+            level: Some(200),
+            hp: Some((4785, 4785)),
+            ..Default::default()
+        };
+        assert!(!whole.verified(&frame, &other).contains("not believed"));
+        assert_eq!(whole.facts.hp_max, Some(4785));
+        // The same level, a far maximum: believed once it has held for
+        // three reads in a row.
+        let back = HudValues {
+            level: Some(200),
+            hp: Some((671, 671)),
+            ..Default::default()
+        };
+        assert!(whole.verified(&frame, &back).contains("not believed"));
+        assert!(whole.verified(&frame, &back).contains("not believed"));
+        assert!(!whole.verified(&frame, &back).contains("not believed"));
+        assert_eq!(whole.facts.hp_max, Some(671));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[test]

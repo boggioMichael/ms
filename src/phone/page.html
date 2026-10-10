@@ -69,13 +69,23 @@
   #micStatus { color: var(--dim); font-size: 14px; min-height: 20px; }
   #heard { margin-top: 4px; font-size: 15px; min-height: 22px; font-style: italic; }
   #note { margin-top: 8px; font-size: 13px; color: var(--warn); display: none; text-align: left; }
+  /* The language, on the main screen: the recogniser's, and the page's. */
+  .mic label.lang { margin-top: 10px; font-size: 13px; }
+  .mic label.lang select { font-size: 13px; padding: 4px 6px; }
+  /* The recogniser's language while it is not the picker's, with a × back. */
+  .mic .hearing { display: block; margin: 6px 0 0; margin-inline-start: auto; border: 1px solid var(--line); background: var(--card2);
+    color: var(--dim); border-radius: 999px; padding: 4px 10px; font-size: 13px; }
+  .mic .hearing[hidden] { display: none; }
 
   /* The conversation */
   #log { list-style: none; margin: 0; padding: 0; max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
   #log li { max-width: 86%; padding: 9px 12px; border-radius: 16px; font-size: 15px; line-height: 1.35; }
   #log li.heard { align-self: flex-end; background: #3b2f20; border-bottom-right-radius: 5px; }
-  #log li.reply, #log li.alert { align-self: flex-start; background: var(--card2); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+  #log li.reply, #log li.alert, #log li.warning { align-self: flex-start; background: var(--card2); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+  /* Its own lines: news (a death, a level-up) in amber; a warning (a low bar,
+     a beating) in red — the eye tells a shout from news as the ear does. */
   #log li.alert { border-color: #8a5a1a; color: #ffd59a; }
+  #log li.warning { border-color: #9b3a35; color: #ffb8b3; }
   #log li.info { align-self: center; background: none; color: var(--faint); font-size: 13px; padding: 2px 6px; }
   #log time { display: block; color: var(--faint); font-size: 11px; margin-top: 2px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 0 0 10px; }
@@ -134,7 +144,11 @@
   .strip { width: 100%; display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--card);
     color: var(--text); border-radius: 14px; padding: 11px 14px; font-size: 14px; margin-bottom: 12px; text-align: start; }
   .strip .dot { flex: none; }
-  .strip #stripText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .strip #stripText { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums;
+    /* "Lv 152 · HP 100% · …" keeps its own direction in a right-to-left page,
+       so a strip too narrow for it loses its end, never the level. */
+    unicode-bidi: plaintext; }
+  [dir=rtl] .strip #stripText { text-align: right; }
   .strip .chev { color: var(--faint); font-size: 20px; line-height: 1; flex: none; }
   [dir=rtl] .strip .chev { transform: scaleX(-1); }
   .buttons.two { grid-template-columns: 1fr 1fr; }
@@ -165,6 +179,19 @@
   .voices li .check { color: var(--syrup); font-weight: 700; visibility: hidden; flex: none; }
   .voices li.sel .check { visibility: visible; }
   .voices li.hidden { display: none; }
+  /* Play stats: sharing them (off unless turned on), what would be shared,
+     and the last sessions in Details. */
+  .linkish { display: block; border: 0; background: none; color: var(--syrup); font-size: 14px; padding: 10px 0 0; text-decoration: underline; }
+  #shareView { background: #120e0a; border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin: 8px 0 0; font-size: 12px;
+    line-height: 1.35; max-height: 45vh; overflow: auto; white-space: pre; direction: ltr; text-align: left; color: var(--dim); }
+  #shareView[hidden], #shareNote[hidden] { display: none; }
+  #shareDelete { border: 1px solid var(--line); background: var(--card2); color: var(--text); border-radius: 12px; padding: 9px 14px;
+    font-size: 14px; margin-top: 10px; }
+  #sessionsTable { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  #sessionsTable[hidden] { display: none; }
+  #sessionsTable th { color: var(--faint); font-weight: 600; text-align: start; padding: 4px 6px; border-bottom: 1px solid var(--line); }
+  #sessionsTable td { padding: 6px; border-bottom: 1px solid var(--line); }
+  #sessionsTable td.day { unicode-bidi: isolate; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -192,6 +219,10 @@
   <div id="micStatus" data-t="mic_idle">Tap, allow the microphone, and talk to me like you would to a friend.</div>
   <div id="heard"></div>
   <div id="note"></div>
+  <label class="opt lang"><span data-t="language">Language</span>
+    <select id="lang"></select>
+  </label>
+  <button id="hearing" class="hearing" hidden></button>
 </section>
 
 <button class="strip" id="strip">
@@ -244,16 +275,29 @@
     </section>
 
     <section class="card">
-      <label class="opt" style="margin-top:0"><span data-t="language">Language</span>
-        <select id="lang"></select>
-      </label>
-      <label class="opt"><span data-t="send_audio">Send the microphone's audio to the PC</span> <input type="checkbox" id="sendAudio" checked></label>
+      <label class="opt" style="margin-top:0"><span data-t="send_audio">Send the microphone's audio to the PC</span> <input type="checkbox" id="sendAudio" checked></label>
     </section>
 
     <section class="card" id="updateCard">
       <div class="sub" style="margin:0" id="updateLine"><span data-t="version">Version</span> <span id="updateVersion">—</span> · <span id="updateState"></span></div>
       <button id="updateBtn" style="display:none; margin-top:10px" data-t="update_now">Update now</button>
       <label class="opt"><span data-t="auto_update">Updates itself when a new version is out</span> <input type="checkbox" id="updateBox" checked></label>
+    </section>
+
+    <section class="card" id="shareCard">
+      <h2 data-t="share_title">Play stats</h2>
+      <div class="sub" id="shareUnavailable" style="margin:0" data-t="share_unavailable" hidden></div>
+      <div id="shareControls">
+      <label class="opt" style="margin-top:0"><span data-t="share_adult">I'm 18 or older</span> <input type="checkbox" id="adultBox"></label>
+      <label class="opt"><span data-t="share_on">Share my play stats (no name, words, voice or screen) with MapleSyrup's partners</span> <input type="checkbox" id="shareBox" disabled></label>
+      <div class="sub" style="margin:8px 0 0" data-t="share_what"></div>
+      <div class="sub" style="margin:6px 0 0" data-t="share_never"></div>
+      <button class="linkish" id="shareSee" data-t="share_see">See what would be shared</button>
+      <div class="sub" id="shareNote" style="margin:6px 0 0" hidden></div>
+      <pre id="shareView" hidden></pre>
+      <button id="shareDelete" data-t="share_delete">Delete it</button>
+      <div class="sub" id="shareState" style="margin:6px 0 0"></div>
+      </div>
     </section>
 
     <footer>
@@ -321,6 +365,16 @@
       <div id="memEmpty" class="sub" data-t="mem_empty"></div>
       <div id="memTuning" class="sub"></div>
     </section>
+
+    <section class="card" id="sessionsCard">
+      <h2 data-t="h_sessions">Your sessions</h2>
+      <table id="sessionsTable" hidden>
+        <thead><tr><th data-t="col_day">Day</th><th data-t="col_min">Minutes</th><th data-t="col_levels">Levels up</th><th data-t="col_deaths">Deaths</th><th data-t="col_warnings">Warnings</th></tr></thead>
+        <tbody id="sessionsBody"></tbody>
+      </table>
+      <div class="sub" id="sessionsEmpty" data-t="sessions_empty"></div>
+      <div class="sub" style="margin:6px 0 0" data-t="sessions_note"></div>
+    </section>
   </div>
 </div>
 
@@ -373,6 +427,19 @@
       rec_offline: "Speech recognition needs the phone to be online.", rec_error: "Speech recognition:", rec_cant_start: "Speech recognition could not start:",
       no_mic: "This browser has no microphone access.", need_https: "The microphone needs the secure (https) link from MapleSyrup's QR code.",
       mic_failed: "The microphone could not start:", mic_refused: "permission was refused. Allow the microphone for this page in the browser's settings, then try again.",
+      hearing_hebrew: "Hearing Hebrew now.", hearing_lang: "Hearing: {n}",
+      share_unavailable: "Your play stats stay on this PC (Details shows your last sessions). Sharing them with anyone isn't available: it first needs a rights review for MapleStory and consent asked for each purpose. Nothing is sent anywhere.",
+      share_title: "Play stats", share_on: "Share my play stats (no name, words, voice or screen) with MapleSyrup's partners", share_adult: "I'm 18 or older",
+      share_what: "Off unless you turn it on. On, MapleSyrup keeps a file ready on your PC with numbers for each session: minutes played, levels (as ranges like 61–100), deaths, warnings, close calls, your class, how many maps, the week (not the day), the app and Windows version, under a random id made when you turn it on. It may be sold to companies that study gamers. Nothing is sent yet.",
+      share_never: "Never shared: your character's name, what you say or your voice, screenshots, what MapleSyrup learned about you or was taught, your files, your PC's name, your keys or your IP address.",
+      share_see: "See what would be shared", share_delete: "Delete it", share_deleted: "Deleted: sharing is off, and the file and its id are gone.",
+      share_preview: "Sharing is off. If it were on, your last sessions would look like this:",
+      share_err: "Couldn't change it. Try again.", share_err_unreached: "Couldn't reach the PC. Try again.",
+      share_err_not_available: "Sharing isn't available yet.", share_err_adult_only: "Tick “I'm 18 or older” first.", share_err_no_stats: "This PC keeps no play stats.",
+      share_err_no_id: "The PC couldn't make a random id, so sharing is still off.", share_err_not_saved: "The PC couldn't save your choice, so sharing is still off.",
+      share_err_not_deleted: "Not deleted: a file of it is still on the PC (another program may be holding it). Try again in a moment.",
+      h_sessions: "Your sessions", col_day: "Day", col_min: "Minutes", col_levels: "Levels up", col_deaths: "Deaths", col_warnings: "Warnings",
+      sessions_empty: "No sessions yet: each one is added as it goes (every minute) and when it ends.", sessions_note: "Kept on this PC only.",
     },
     he: {
       h_details: "פרטים", done: "סיום", voice_search: "חפש קול…", coach: "מדבר מעצמו בזמן שאתה משחק", coach_hint: "טיפים והערות בלי שתשאל: מפה חדשה, עליית רמה, EXP שלא זז. כבוי: עונה רק כששואלים (ועדיין מזהיר על HP או MP נמוכים).", ws_title: "סדנה", ws_on: "משכתב את עצמו על המחשב הזה כשמבקשים", ws_hint: "תגיד \"תשנה את עצמך: …\" או תכתוב כאן. סוכן קוד שמותקן על המחשב (Claude Code או Codex) משנה את הקוד, הוא נבנה ונבדק, והגרסה החדשה מותקנת בהפעלה הבאה של MapleSyrup. רק על המחשב הזה: שום דבר לא מתפרסם.", ws_coder: "סוכן", ws_ph: "מה לשנות…", ws_build: "בצע את השינוי", ws_undo: "בטל את השינוי האחרון", ws_working: "עובד: {s} ({t})", ws_idle: "פנוי", ws_queued: "{n} ממתינים", ws_none: "לא נמצא סוכן קוד על המחשב: התקן Claude Code או Codex CLI והפעל את MapleSyrup מחדש.", version: "גרסה", update_now: "עדכן עכשיו", auto_update: "מתעדכן לבד כשיוצאת גרסה חדשה", upd_ok: "מעודכן", upd_dl: "מוריד את {v}…", upd_ready: "{v} מוכנה: תותקן בהפעלה הבאה של MapleSyrup", upd_off: "כבוי", upd_blocked: "{v} יצאה, אבל לא עלתה בפעם הקודמת; מחכה לבאה", upd_failed: "הבדיקה נכשלה: {why}",
@@ -410,6 +477,19 @@
       rec_offline: "זיהוי הדיבור צריך שהטלפון יהיה מחובר לאינטרנט.", rec_error: "זיהוי דיבור:", rec_cant_start: "זיהוי הדיבור לא הצליח להתחיל:",
       no_mic: "לדפדפן הזה אין גישה למיקרופון.", need_https: "המיקרופון צריך את הקישור המאובטח (https) מקוד ה-QR של MapleSyrup.",
       mic_failed: "המיקרופון לא הצליח להתחיל:", mic_refused: "ההרשאה נדחתה. אשר את המיקרופון לדף הזה בהגדרות הדפדפן ונסה שוב.",
+      hearing_hebrew: "שומע עברית עכשיו.", hearing_lang: "שומע: {n}",
+      share_unavailable: "סטטיסטיקות המשחק שלך נשארות במחשב הזה (בפרטים מופיעים הסשנים האחרונים). שיתוף שלהן עם מישהו לא זמין: קודם צריך בדיקת זכויות ל-MapleStory והסכמה נפרדת לכל מטרה. שום דבר לא נשלח לשום מקום.",
+      share_title: "סטטיסטיקות משחק", share_on: "שתף את סטטיסטיקות המשחק שלי (בלי שם, דיבור, קול או מסך) עם השותפים של MapleSyrup", share_adult: "גילי 18 ומעלה",
+      share_what: "כבוי אלא אם תדליק. כשהוא דלוק, MapleSyrup שומר במחשב קובץ מוכן עם מספרים לכל סשן: דקות משחק, רמות (בטווחים, כמו 61–100), מיתות, אזהרות, מצבים שכמעט מתת בהם, הקלאס שלך, כמה מפות, השבוע (לא היום), גרסת התוכנה וגרסת Windows, תחת מזהה אקראי שנוצר כשאתה מדליק. הקובץ עשוי להימכר לחברות שחוקרות גיימרים. כרגע שום דבר לא נשלח.",
+      share_never: "אף פעם לא משותף: שם הדמות, מה שאתה אומר או הקול שלך, צילומי מסך, מה ש-MapleSyrup למד עליך או מה שלימדת אותו, הקבצים שלך, שם המחשב, המפתחות שלך או כתובת ה-IP שלך.",
+      share_see: "הצג מה ישותף", share_delete: "מחק את זה", share_deleted: "נמחק: השיתוף כבוי, והקובץ והמזהה שלו נמחקו.",
+      share_preview: "השיתוף כבוי. אם הוא היה דלוק, הסשנים האחרונים שלך היו נראים כך:",
+      share_err: "לא הצלחתי לשנות. נסה שוב.", share_err_unreached: "לא הצלחתי להגיע למחשב. נסה שוב.",
+      share_err_not_available: "שיתוף עדיין לא זמין.", share_err_adult_only: "קודם צריך לסמן „גילי 18 ומעלה”.", share_err_no_stats: "המחשב הזה לא שומר סטטיסטיקות משחק.",
+      share_err_no_id: "המחשב לא הצליח ליצור מזהה אקראי, אז השיתוף עדיין כבוי.", share_err_not_saved: "המחשב לא הצליח לשמור את הבחירה שלך, אז השיתוף עדיין כבוי.",
+      share_err_not_deleted: "לא נמחק: קובץ שלו עדיין נמצא במחשב (אולי תוכנה אחרת מחזיקה אותו). נסה שוב עוד רגע.",
+      h_sessions: "הסשנים שלך", col_day: "יום", col_min: "דקות", col_levels: "+רמות", col_deaths: "מיתות", col_warnings: "אזהרות",
+      sessions_empty: "עדיין אין סשנים: כל סשן נשמר תוך כדי (כל דקה) וכשהוא נגמר.", sessions_note: "נשמר רק במחשב הזה.",
     },
     es: {
       h_details: "Detalles", done: "Listo", voice_search: "Buscar voces…", coach: "Habla por su cuenta mientras juegas", coach_hint: "Consejos y avisos sin que preguntes: un mapa nuevo, subir de nivel, EXP parada. Apagado: solo responde (y sigue avisando de HP o MP bajos).", version: "Versión", update_now: "Actualizar ahora", auto_update: "Se actualiza solo cuando sale una versión nueva", upd_ok: "al día", upd_dl: "descargando {v}…", upd_ready: "{v} está lista: se instala la próxima vez que inicie MapleSyrup", upd_off: "apagado", upd_blocked: "{v} salió, pero no arrancó la última vez; esperando la siguiente", upd_failed: "no se pudo comprobar: {why}",
@@ -947,7 +1027,7 @@
     const b = $("bubble"), x = dog.anchor && dog.anchor[0];
     if (x) b.style.setProperty("--tail", Math.round(Math.max(22, Math.min(b.clientWidth - 22, x))) + "px");
   }, 200);
-  // A level up, a death: it joins in. A warning: it barks.
+  // A level up, a death: it joins in. A warning (dogAlert): it barks.
   function dogGame(status) {
     const gained = (status.progress || {}).levels_gained;
     if (prevGained != null && gained > prevGained) dog.react("levelup");
@@ -981,9 +1061,17 @@
     const h = Math.floor(m / 60);
     return h ? unit(h, "hour") + " " + unit(m % 60, "minute") : unit(m, "minute");
   }
+  // The PC's word on live calls as last seen: when it changes while
+  // listening (Claude came to do the talking, or went), the page follows —
+  // its call ends, or opens again.
+  let statusLive = null;
   function render(state) {
     status = state.status || {};
     if (status.speaking_pc) pcSpokeAt = Date.now();
+    const pcLive = !!status.live;
+    if (statusLive !== null && pcLive !== statusLive && listening
+        && wantLive() !== (liveCall.on || liveCall.starting)) restartListening();
+    statusLive = pcLive;
     const game = status.game || {};
     const seen = game.state === "seen";
     $("gameDot").className = "dot " + (seen ? "on" : "bad");
@@ -1030,6 +1118,10 @@
     if (status.attitude && Date.now() > attitudeHeldUntil) {
       for (const b of $("attitudeSeg").children) b.classList.toggle("sel", b.dataset.a === status.attitude);
     }
+    // The attitude changed during a call (the picker, or the player
+    // objecting to the tone): the call gets its instructions again and
+    // goes on in the new tone, without starting over.
+    if (liveCall.on && status.attitude && liveCall.attitude && status.attitude !== liveCall.attitude) retune(status.attitude);
     if (typeof status.always_listen === "boolean" && document.activeElement !== $("always")) $("always").checked = status.always_listen;
     if (typeof status.coach === "boolean" && Date.now() > coachHeldUntil) $("coachBox").checked = status.coach;
     renderUpdate(status.update);
@@ -1053,8 +1145,14 @@
     renderRecording(status.recording);
     // How long to wait after the words stop: adapted to how the player talks.
     if (status.settle_ms) settleMs = Math.max(300, Math.min(1500, status.settle_ms));
+    takeLanguage(status.lang_request);
+    // The PC has this page's call as the page has it.
+    healCall();
   }
   let thinkingShown = false, lastReply = "", quietUntil = 0;
+  // How long after its voice stops on this phone the phone still does not
+  // listen: the room, and the recogniser handing its last words over late.
+  const CLIP_TAIL_MS = 1200;
 
   // ---- what it learned ------------------------------------------------------
   let learnedKey = "";
@@ -1215,10 +1313,16 @@
     return h ? h + ":" + two(m % 60) + ":" + two(s % 60) : two(m) + ":" + two(s % 60);
   }
   let speechUnlocked = false;
+  // The phone's own voice (no natural voice): it does not listen meanwhile,
+  // as while a clip plays — until it ends, or the time the line takes and a
+  // little more (Safari does not always say that it ended).
+  let ownVoice = false, ownVoiceUntil = 0;
   function speakHere(text) {
     if (!speechUnlocked || !("speechSynthesis" in window)) return;
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.05;
+    u.onstart = () => { ownVoice = true; ownVoiceUntil = Date.now() + 2000 + text.length * 120; updateHold(); };
+    u.onend = u.onerror = () => { ownVoice = false; quietUntil = Date.now() + CLIP_TAIL_MS; updateHold(); };
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(u);
   }
@@ -1232,21 +1336,28 @@
     log.prepend(li);
     $("convCard").hidden = false;
     while (log.children.length > 60) log.lastChild.remove();
-    if (live && m.kind === "alert") dogAlert();
-    if (m.kind === "reply" || m.kind === "alert") {
+    // Its own lines, shown in the bubble: a warning (a low bar, a beating)
+    // the dog barks at, as the voice shouts it; news (a death, a level-up)
+    // it takes from the game itself (dogGame: a jump, playing dead), told
+    // at the usual pace — no bark for it.
+    const own = m.kind === "warning" || m.kind === "alert";
+    if (live && m.kind === "warning") dogAlert();
+    if (m.kind === "reply" || own) {
       lastReply = m.text;
       if (!status.thinking) $("bubbleText").textContent = m.text;
     }
-    // On a live call, MapleSyrup's own lines (a warning, a level-up) are
-    // handed to the call to say. Without a natural voice, the phone speaks
-    // them with its own.
-    if (live && m.speak && !status.muted && liveCall.on && (m.kind === "alert" || m.kind === "info")) sayLive(m.text);
+    // On a live call, MapleSyrup's own lines (a warning, a level-up, the
+    // answer to a button) are handed to the call to say, every one of them:
+    // the phone's own voice over the call's would be a second voice.
+    // Without a natural voice, the phone speaks them with its own.
+    if (live && m.speak && !status.muted && liveCall.on) sayLive(m.text, m.fact, m.urgent);
     else if (live && m.speak && !status.muted && (voiceOn === "phone" || voiceOn === "both")) speakHere(m.text);
   }
 
   // ---- the natural voice, when it speaks on this phone --------------------------
   const player = new Audio();
   player.preload = "auto";
+  window.msVoice = player; // (to look at it from the console)
   let lastClip = null;
   function silentWav() {
     const samples = 800, buf = new ArrayBuffer(44 + samples * 2), v = new DataView(buf);
@@ -1258,26 +1369,68 @@
   }
   function unlockAudio() {
     // iOS plays sound from a page only on an element a tap has started once.
-    if (player.dataset.unlocked) return;
+    // A clip refused before this tap (the hello) is tried again: by the
+    // silent clip's end, or now when the element is unlocked already.
+    blocked = false;
+    if (player.dataset.unlocked) { playNextClip(); return; }
     player.dataset.unlocked = "1";
     player.src = silentWav();
     player.play().catch(() => {});
   }
   // Replies come a sentence at a time: each is played after the one before.
   let nextClip = null;
+  // A clip the phone refused to play before a tap (the hello, made before
+  // the first tap): kept for the tap, and not fetched again every poll
+  // until then.
+  let blocked = false;
+  // What each clip is and when it was made, as the PC lists them (seq:
+  // {kind, at}), and the hello: the first clip after this page loaded.
+  const clipInfo = new Map();
+  let helloClip = null;
   function maybePlayClip(seq) {
-    if (lastClip === null) { lastClip = seq; nextClip = seq + 1; return; }
+    if (lastClip === null) { lastClip = seq; nextClip = seq + 1; helloClip = seq + 1; return; }
     if (seq > lastClip) lastClip = seq;
     playNextClip();
   }
+  function noteClips(list) {
+    const now = Date.now();
+    for (const c of list || []) if (!clipInfo.has(c.seq)) clipInfo.set(c.seq, { kind: c.kind, at: now - (c.age_ms || 0) });
+    for (const seq of clipInfo.keys()) if (nextClip !== null && seq < nextClip) clipInfo.delete(seq);
+  }
+  // A clip that waited too long is not news any more (a phone plays none
+  // before a tap: the tap played the hello, the terms, then a beating three
+  // minutes old): a warning past the call's own rule (SAY_STALE_MS), news
+  // past a minute. Never the hello (the first clip after this page loaded,
+  // whatever it is) or the terms (a note right after it).
+  const NEWS_STALE_MS = 60000;
+  function clipKept(seq) {
+    const c = clipInfo.get(seq);
+    return seq === helloClip || (seq === helloClip + 1 && !!c && c.kind === "info");
+  }
+  function clipStale(seq) {
+    const c = clipInfo.get(seq);
+    if (!c || clipKept(seq)) return false;
+    const age = Date.now() - c.at;
+    return (c.kind === "warning" && age >= SAY_STALE_MS) || (c.kind === "alert" && age >= NEWS_STALE_MS);
+  }
   function playNextClip() {
-    if (!player.paused || nextClip === null || nextClip > lastClip) return;
-    // Far behind (the phone slept): only the latest.
-    if (lastClip - nextClip > 3) nextClip = lastClip;
+    if (!player.paused || pausedFor || blocked || nextClip === null || nextClip > lastClip) return;
+    if (!clipKept(nextClip)) {
+      // What is left once stale lines are dropped; and of that, far behind
+      // (the phone slept), only the latest.
+      const left = [];
+      for (let s = nextClip; s <= lastClip; s++) if (!clipStale(s)) left.push(s);
+      if (!left.length) { nextClip = lastClip + 1; return; }
+      nextClip = left.length > 4 ? left[left.length - 1] : left[0];
+    }
     const seq = nextClip++;
     playingClip = seq;
     player.src = "/api/clip?k=" + encodeURIComponent(KEY) + "&seq=" + seq;
-    player.play().catch(() => {});
+    player.play().catch((e) => {
+      // Refused for want of a tap (not a bad clip: the error listener
+      // moves on from those): this clip is still to play, after the tap.
+      if (e && e.name === "NotAllowedError" && nextClip === seq + 1) { nextClip = seq; blocked = true; }
+    });
   }
   // While the session is recorded, the PC is told when a line starts and
   // stops playing here (the microphone doesn't hear this phone's own voice).
@@ -1290,6 +1443,7 @@
   });
   // Talked over: stop now and skip what was still to come.
   function stopClips() {
+    clearTimeout(pausedFor); pausedFor = 0;
     if (lastClip !== null) nextClip = lastClip + 1;
     if (!player.paused && clipsForRecording()) postJson("/api/playing", { on: false, age: halfTrip() }).catch(() => {});
     if (!player.paused) { try { player.pause(); } catch (e) {} }
@@ -1305,13 +1459,13 @@
       if (m && m.levels) clipMouth = { seq, levels: m.levels, step: m.step_ms || 40 };
     }).catch(() => {});
   });
-  player.addEventListener("ended", () => { quietUntil = Date.now() + 500; playNextClip(); updateHold(); });
+  player.addEventListener("ended", () => { quietUntil = Date.now() + CLIP_TAIL_MS; playNextClip(); updateHold(); });
   player.addEventListener("error", () => { playNextClip(); updateHold(); });
 
   // ---- polling ---------------------------------------------------------------
   // The PC answers at once when there is something new (a line, a clip, a
   // reply cut short), else after a moment with the latest figures.
-  let since = 0, first = true, failures = 0, lastCut = null, uptimeAt = { uptime: 0, at: Date.now() };
+  let since = 0, first = true, failures = 0, lastCut = null, uptimeAt = { uptime: 0, at: Date.now() }, boot = null;
   async function poll() {
     if (!KEY) return;
     try {
@@ -1326,6 +1480,15 @@
       const state = await r.json();
       failures = 0;
       if (typeof state.uptime === "number") uptimeAt = { uptime: state.uptime, at: Date.now() };
+      // The PC was started again (it updates itself): its lines and clips
+      // are numbered from one again, and it has not heard this page.
+      if (state.boot && boot && state.boot !== boot) {
+        boot = state.boot;
+        startOver(state);
+        setTimeout(poll, 30);
+        return;
+      }
+      if (state.boot) boot = state.boot;
       banner("");
       setPc(true, state.status && state.status.ai ? "PC · " + state.status.ai : t("pc_connected"));
       render(state);
@@ -1334,6 +1497,7 @@
       const cut = state.cut || 0;
       if (lastCut !== null && cut > lastCut) stopClips();
       lastCut = cut;
+      noteClips(state.clips);
       maybePlayClip(state.clip || 0);
       first = false;
     } catch (e) {
@@ -1345,6 +1509,36 @@
   function setPc(ok, text) {
     $("pcDot").className = "dot " + (ok ? "on" : "bad");
     $("pcText").textContent = text;
+  }
+  // The PC is a new program: this page says hello again (its language with
+  // it, and the call it is on), keeps its choice of where replies are
+  // spoken, and takes the PC's lines and clips from the start, as a page
+  // just opened does.
+  function startOver(state) {
+    since = 0; first = true;
+    lastClip = null; nextClip = null; lastCut = null;
+    clipInfo.clear();
+    // (Its language requests are numbered from one again too.)
+    langTaken = null;
+    // (The call after the hello: to the PC a page that says hello has no
+    // call until it says so, and the two must land in that order — healCall
+    // waits meanwhile.)
+    callToldAt = Date.now();
+    hello().then(() => { if (liveCall.on) tellCallOn(); });
+    if (state.voice_on && state.voice_on !== voiceOn) postJson("/api/voice", { on: voiceOn }).catch(() => {});
+  }
+  // (With the live-call toggle: the PC leaves the hello to the call when
+  // one is coming, and says it itself when not. `live`: the call as it is,
+  // when not the toggle.)
+  function hello(live) {
+    return postJson("/api/hello", { agent: navigator.userAgent, lang: locale, live: live === undefined ? liveWanted : live }).catch(() => {});
+  }
+  // The call did not open, and the PC left the hello to it (this page's
+  // call never greeted): the toggle's own re-hello, with the call off — the
+  // PC says its hello now, not a minute after the page opened, while the
+  // player has been talking in the regular mode all along.
+  function callNotComing() {
+    if (status.call_greets && !liveCall.greeted) hello(false);
   }
 
   // ---- buttons and settings ------------------------------------------------------
@@ -1372,6 +1566,7 @@
     $("tabDetails").classList.toggle("sel", details);
     $("paneSettings").hidden = details;
     $("paneDetails").hidden = !details;
+    if (details) loadSessions(); else loadShare();
   }
   $("gear").addEventListener("click", () => openSheet("settings"));
   $("strip").addEventListener("click", () => openSheet("details"));
@@ -1514,6 +1709,115 @@
     $("updateBtn").disabled = true;
     postJson("/api/update", { action: "install" }).catch(() => {});
   });
+  // Play stats. The PC keeps what each session came to, in numbers
+  // (Details shows the last ones); sharing them with MapleSyrup's partners
+  // is off unless turned on here, what would be shared can be looked at,
+  // and "Delete it" turns it off and deletes the file and its id. Nothing
+  // is sent anywhere: the PC only keeps the file ready.
+  let shareHeldUntil = 0;
+  function renderShare(share) {
+    // (Not offered in this build: the card says why, and has no switch.)
+    const offered = !share || share.available !== false;
+    $("shareControls").hidden = !offered;
+    $("shareUnavailable").hidden = offered;
+    if (share && Date.now() > shareHeldUntil) $("shareBox").checked = !!share.on;
+    shareGate();
+  }
+  async function loadShare() {
+    try {
+      const r = await api("/api/share");
+      if (!r.ok) return null;
+      const j = await r.json();
+      renderShare(j);
+      return j;
+    } catch (e) { return null; }
+  }
+  async function showShare() {
+    const j = await loadShare();
+    if (!j) return;
+    $("shareNote").textContent = j.preview ? t("share_preview") : "";
+    $("shareNote").hidden = !j.preview;
+    $("shareView").textContent = JSON.stringify(j.export || {}, null, 2);
+    $("shareView").hidden = false;
+  }
+  function hideShare() { $("shareView").hidden = true; $("shareNote").hidden = true; }
+  // Sharing is for adults only: the box that says so comes first, and the
+  // PC refuses an "on" without it.
+  function shareGate() { $("shareBox").disabled = !$("adultBox").checked && !$("shareBox").checked; }
+  $("adultBox").addEventListener("change", shareGate);
+  // What the PC answered to a change: its ok, or what went wrong as a code
+  // (also when it could not be reached), whose words are the page's, in
+  // its language — never the PC's own.
+  async function shareAnswer(path, body) {
+    try {
+      const r = await postJson(path, body);
+      const j = await r.json().catch(() => ({}));
+      return r.ok && j.ok ? j : { error: j.error || "unknown" };
+    } catch (e) { return { error: "unreached" }; }
+  }
+  function shareFailed(code) { return t(WORDS.en["share_err_" + code] ? "share_err_" + code : "share_err"); }
+  // A change that failed: said so, and the toggle shows what the PC has.
+  async function shareRefused(code, was) {
+    $("shareState").textContent = shareFailed(code);
+    $("shareBox").checked = was;
+    shareHeldUntil = 0;
+    await loadShare();
+  }
+  $("shareBox").addEventListener("change", async () => {
+    shareHeldUntil = Date.now() + 3000;
+    $("shareState").textContent = "";
+    const on = $("shareBox").checked;
+    const j = await shareAnswer("/api/share", { on, adult: $("adultBox").checked });
+    if (j.ok) $("shareBox").checked = !!(j.share && j.share.on);
+    else await shareRefused(j.error, !on);
+    shareGate();
+    if (!$("shareView").hidden) showShare();
+  });
+  $("shareSee").addEventListener("click", () => { if ($("shareView").hidden) showShare(); else hideShare(); });
+  // "Delete it": "Deleted" only when the PC says it is — nothing of it left.
+  $("shareDelete").addEventListener("click", async () => {
+    shareHeldUntil = Date.now() + 3000;
+    $("shareState").textContent = "";
+    hideShare();
+    const was = $("shareBox").checked;
+    const j = await shareAnswer("/api/share/delete", {});
+    if (j.ok) {
+      $("shareBox").checked = false;
+      $("shareState").textContent = t("share_deleted");
+    } else await shareRefused(j.error, was);
+    shareGate();
+  });
+  // "9 Oct" (the day the session started, in the page's language).
+  function dayLabel(day) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day || "");
+    if (!m) return day || "—";
+    try { return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(locale, { month: "short", day: "numeric" }); } catch (e) { return day; }
+  }
+  async function loadSessions() {
+    try {
+      const r = await api("/api/stats");
+      if (!r.ok) return;
+      const j = await r.json();
+      const rows = j.sessions || [];
+      const body = $("sessionsBody");
+      body.innerHTML = "";
+      for (const s of rows) {
+        const w = s.warnings || {};
+        const warnings = (w.hp_low || 0) + (w.mp_low || 0) + (w.beating || 0) + (w.taught || 0);
+        const tr = document.createElement("tr");
+        for (const [value, cls] of [[dayLabel(s.day), "day"], [s.minutes || 0], [s.levels_gained || 0], [s.deaths || 0], [warnings]]) {
+          const td = document.createElement("td");
+          td.textContent = String(value);
+          if (cls) td.className = cls;
+          tr.appendChild(td);
+        }
+        body.appendChild(tr);
+      }
+      $("sessionsTable").hidden = !rows.length;
+      $("sessionsEmpty").hidden = !!rows.length;
+      renderShare(j.share);
+    } catch (e) {}
+  }
   // Whether it speaks up on its own (the PC keeps it, for good).
   let coachHeldUntil = 0;
   $("coachBox").addEventListener("change", () => {
@@ -1526,14 +1830,18 @@
     liveWanted = liveBox.checked;
     remember("live", liveWanted ? "1" : "0");
     if (listening) restartListening();
+    // Flipped before Listen: the PC decided who says hello from the
+    // toggle as it was (the call about to open, or a clip of its own) —
+    // told again, it decides again.
+    else hello();
   });
-  // How it talks: the PC keeps it; a live call starts again in the new voice.
+  // How it talks: the PC keeps it, and a live call is retuned to it once
+  // the PC reports it (render), the conversation kept.
   let attitudeHeldUntil = 0;
   for (const b of $("attitudeSeg").children) b.addEventListener("click", () => {
     attitudeHeldUntil = Date.now() + 2000;
     for (const x of $("attitudeSeg").children) x.classList.toggle("sel", x === b);
     postJson("/api/attitude", { attitude: b.dataset.a }).catch(() => {});
-    if (listening && (liveCall.on || liveCall.starting)) setTimeout(() => { if (listening) restartListening(); }, 400);
   });
   $("always").addEventListener("change", () => postJson("/api/listen", { always: $("always").checked }).catch(() => {}));
   const lang = $("lang");
@@ -1544,11 +1852,60 @@
     lang.append(option);
   }
   lang.value = locale;
+  // The recogniser's language when the player's own words say it (a call
+  // heard Hebrew), apart from the page's: the owner's phone is en-US and
+  // he speaks Hebrew, and an en-US recogniser makes word salad of that,
+  // a model call and a "didn't catch that" per sentence. Switched by two
+  // Hebrew sentences on the call in a row, or one long one — a "תודה" from
+  // an English speaker switched it for good, and the next evening every
+  // English sentence was Hebrew word salad, with nothing on the screen to
+  // say why — and back by two Latin ones in a row (the picker not Hebrew).
+  // Said once on the screen as it switches; kept for next time, and shown
+  // beside the picker while it differs from it, with a × back to the
+  // picker's; picking a language by hand overrides it too.
+  let recLang = recall("recLang") || "";
+  let hebrewRun = 0, latinRun = 0;
+  function recognitionLanguage() { return recLang || lang.value; }
+  function showHearing() {
+    const b = $("hearing"), differs = !!recLang && recLang !== lang.value;
+    b.hidden = !differs;
+    if (!differs) return;
+    const choice = LANGUAGES.find((l) => l[0] === recLang);
+    b.textContent = t("hearing_lang", choice ? choice[1] : recLang) + " ×";
+  }
+  function setRecLang(value) {
+    recLang = value;
+    remember("recLang", value);
+    showHearing();
+    if ($("note").textContent === t("hearing_hebrew")) note("");
+    if (rec && listening && !liveCall.on && !liveCall.starting) { stopRecognition(); startRecognition(); }
+  }
+  function hearingLanguage(text) {
+    const hebrew = (text.match(/[\u05D0-\u05EA]/g) || []).length;
+    const latin = (text.match(/[A-Za-z]/g) || []).length;
+    if (hebrew > latin) { hebrewRun++; latinRun = 0; }
+    else if (latin > hebrew) { latinRun++; hebrewRun = 0; }
+    else return;
+    if (lang.value === "he-IL") return;
+    if (recLang !== "he-IL" && (hebrewRun >= 2 || hebrew >= 10)) {
+      setRecLang("he-IL");
+      note(t("hearing_hebrew"));
+      addMessage({ kind: "info", text: t("hearing_hebrew"), t: nowT() }, false);
+    } else if (recLang === "he-IL" && latinRun >= 2) {
+      setRecLang("");
+    }
+  }
+  showHearing();
+  $("hearing").addEventListener("click", () => setRecLang(""));
   lang.addEventListener("change", () => {
     setTimeout(() => { dog.bark = t("woof"); }, 0);
     locale = lang.value;
     remember("lang", locale);
+    // (Picked by hand: the recogniser follows the picker again.)
+    recLang = "";
+    remember("recLang", "");
     applyLanguage(locale);
+    showHearing();
     $("listen").textContent = listening ? t("stop") : t("start");
     $("micStatus").textContent = listening ? t("mic_listening") : t("mic_idle");
     learnedKey = "";
@@ -1560,6 +1917,21 @@
     postJson("/api/lang", { lang: locale }).catch(() => {});
     if (listening && !liveCall.on && !liveCall.starting) { stopRecognition(); startRecognition(); }
   });
+  // A language the player asked the PC for out loud ("talk to me in
+  // Hebrew"; status.lang_request): taken once per request (its number),
+  // exactly as if picked in the picker — its words, right to left, the
+  // recogniser (clip mode's, on a call too: the call follows the language
+  // spoken), kept for next time, and the PC told. (The owner asked for
+  // Hebrew and the model answered in it, but this page went on hearing
+  // English.)
+  let langTaken = null;
+  function takeLanguage(request) {
+    if (!request || request.seq === langTaken) return;
+    langTaken = request.seq;
+    if (!LANGUAGES.some((l) => l[0] === request.lang)) return;
+    lang.value = request.lang;
+    lang.dispatchEvent(new Event("change"));
+  }
   const sendAudio = $("sendAudio");
   sendAudio.checked = recall("sendAudio") !== "0";
   sendAudio.addEventListener("change", () => remember("sendAudio", sendAudio.checked ? "1" : "0"));
@@ -1587,8 +1959,11 @@
       note(window.isSecureContext ? t("no_mic") : t("need_https"));
       return false;
     }
+    // (The gain is left to the browser: this one stream is also the live
+    // call's microphone, and a quieter one would be the worse for it. The
+    // talk-over detector takes each clip's own first moments as its floor.)
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false,
+      audio: { echoCancellation: true, noiseSuppression: true }, video: false,
     });
     const Ctx = window.AudioContext || window.webkitAudioContext;
     const ctx = new Ctx();
@@ -1710,23 +2085,29 @@
   // pause (status.settle_ms).
   let settleMs = 550;
 
-  function sendHeard(text) {
+  // `before`: the words were heard before this phone started speaking (a
+  // sentence cut off by a clip is still the player's).
+  function sendHeard(text, before) {
     text = (text || "").trim();
     if (!text) return;
     // While this phone speaks, its microphone mostly hears itself.
-    if (held) return;
+    if (held && !before) return;
     const now = Date.now(), p = plain(text);
     if (!p) return;
     // Safari sometimes hands the same words over twice, or a piece of them again.
     if (now - lastSentAt < 5000 && (" " + lastSent + " ").includes(" " + p + " ")) return;
     lastSent = p; lastSentAt = now;
+    // The words so far, throttled, must not land after the sentence: the
+    // PC would take them for more talking and hold the answer.
+    clearTimeout(hearingTimer);
+    hearingSent = text;
     $("heard").textContent = "“" + text + "”";
     postJson("/api/heard", { text }).catch(() => {});
   }
 
   // The sentence being said: which result it is, how many of its words were
-  // sent already, and the words since.
-  let current = -1, sentWords = 0, sentAll = "", settleTimer = 0, pending = "";
+  // sent already, the words since, and the whole of it as last written.
+  let current = -1, sentWords = 0, sentAll = "", settleTimer = 0, pending = "", said = "";
   let hearingSent = "", hearingAt = 0, hearingTimer = 0, pcSpokeAt = 0;
   const squash = (s) => plain(s).replace(/ /g, "");
   function restOf(index, transcript) {
@@ -1745,8 +2126,15 @@
     postJson("/api/hearing", { text }).catch(() => {});
   }
   function interim(index, transcript) {
+    // While this phone speaks (and a moment after), nothing it writes down
+    // counts — not even more of the sentence it was writing as the voice
+    // began (what waited of it went then): it is its own voice. Half-duplex,
+    // like a walkie-talkie; the player still stops it by talking loud over
+    // it (talkingOver), which lets it listen at once.
+    if (held) return;
     heardAt = Date.now();
     if (index !== current) { current = index; sentWords = 0; sentAll = ""; }
+    said = transcript;
     const rest = restOf(index, transcript);
     pending = rest;
     if (!rest) return;
@@ -1758,31 +2146,46 @@
       // out whose words they are).
       if (status.speaking_pc || Date.now() - pcSpokeAt < 1200) return;
       if (index !== current || pending !== rest) return;
-      sendHeard(rest);
+      sendHeard(rest, index === heldIndex);
       sentWords = wordsOf(transcript).length;
       sentAll = squash(transcript);
       pending = "";
     }, settleMs);
   }
   function final(index, transcript) {
+    if (held) return;
     clearTimeout(settleTimer);
+    clearTimeout(hearingTimer);
     const rest = restOf(index, transcript);
     if (index === current) { current = -1; sentWords = 0; sentAll = ""; }
     pending = "";
     hearingSent = "";
-    if (rest) sendHeard(rest);
+    if (rest) sendHeard(rest, index === heldIndex);
+  }
+  // The words waiting for the rest of their sentence, sent as they are:
+  // the phone stopped writing (a clip starts, recognition ended), and the
+  // PC has seen them already (/api/hearing), so it would answer the start
+  // of the sentence alone otherwise.
+  function sendPending() {
+    if (!pending) return;
+    sendHeard(pending, true);
+    sentWords = wordsOf(said).length;
+    sentAll = squash(said);
+    pending = "";
   }
 
   // While MapleSyrup speaks on this phone, recognition is stopped (the
-  // phone would hear itself) and started again right after; the player can
-  // still talk over it: a loud voice (the phone's echo cancelling takes its
-  // own sound out) stops it.
-  let held = false, holdTimer = 0;
-  function speakingNow() { return !player.paused; }
+  // phone would hear itself) and started again CLIP_TAIL_MS after (the
+  // room, and the recogniser handing over its last words late); whatever
+  // it writes meanwhile is dropped. The player can still talk over it: a
+  // loud voice (the phone's echo cancelling takes its own sound out) pauses
+  // it, and it listens at once.
+  let held = false, holdTimer = 0, heldIndex = -1;
+  function speakingNow() { return !player.paused || (ownVoice && Date.now() < ownVoiceUntil); }
   function updateHold() {
     clearTimeout(holdTimer);
     if (speakingNow()) {
-      quietUntil = Math.max(quietUntil, Date.now() + 600);
+      quietUntil = Math.max(quietUntil, Date.now() + CLIP_TAIL_MS);
       setHeld(true);
       return;
     }
@@ -1793,6 +2196,10 @@
   function setHeld(hold) {
     if (held === hold) return;
     held = hold;
+    // The sentence being written as the clip starts was heard before it:
+    // what waits of it goes now, and the rest of it may still come.
+    heldIndex = hold ? current : -1;
+    if (hold) sendPending();
     if (listening && Recognition) $("micStatus").textContent = hold ? t("mic_talking") : t("mic_listening");
     if (!rec || !wantRec || !listening) return;
     if (hold) { try { rec.abort(); } catch (e) {} }
@@ -1803,16 +2210,44 @@
     try { recStarted = Date.now(); rec.start(); }
     catch (e) { if (tries < 8) setTimeout(() => restartRecognition(tries + 1), 250); }
   }
-  // The player's voice over the phone's own: loud for almost half a second.
-  let floorDb = -60, loudFor = 0;
+  // The player's voice over the phone's own: loud for almost half a second,
+  // well over what the microphone hears in the first moments of the clip
+  // (what is left of the phone's own voice, the game). The clip pauses and
+  // the PC is told; it cuts the reply only once the player's words follow
+  // (status.cut). Otherwise, after a moment, the clip goes on from where it
+  // was, and that loudness no longer counts for it.
+  let floorDb = -60, loudFor = 0, clipFloor = -100, clipAt = 0, measured = null, pausedFor = 0, loudDb = -100;
+  const MEASURE_MS = 300, PAUSE_MS = 1500;
+  player.addEventListener("playing", () => {
+    if (measured !== playingClip) { measured = playingClip; clipFloor = -100; }
+    clipAt = Date.now();
+    loudFor = 0;
+  });
   function talkingOver(db) {
+    if (pausedFor) return;
     if (!speakingNow()) { floorDb = 0.95 * floorDb + 0.05 * db; loudFor = 0; return; }
-    loudFor = db > Math.max(-27, floorDb + 14) ? loudFor + 1 : 0;
+    if (Date.now() - clipAt < MEASURE_MS) { clipFloor = Math.max(clipFloor, db); loudFor = 0; return; }
+    loudFor = db > Math.max(-27, floorDb + 14, clipFloor + 10) ? loudFor + 1 : 0;
     if (loudFor >= 5) {
       loudFor = 0;
-      stopClips();
-      postJson("/api/interrupt", {}).catch(() => {});
+      loudDb = db;
+      pauseClip();
     }
+  }
+  function pauseClip() {
+    if (pausedFor) return;
+    try { player.pause(); } catch (e) {}
+    postJson("/api/interrupt", {}).catch(() => {});
+    // Recognition starts again at once: the PC waits for the words.
+    quietUntil = 0;
+    updateHold();
+    pausedFor = setTimeout(resumeClip, PAUSE_MS);
+  }
+  function resumeClip() {
+    pausedFor = 0;
+    if (!player.getAttribute("src") || !player.paused) return;
+    clipFloor = Math.max(clipFloor, loudDb);
+    player.play().catch(() => {});
   }
 
   function startRecognition() {
@@ -1822,7 +2257,7 @@
     }
     wantRec = true;
     rec = new Recognition();
-    rec.lang = lang.value;
+    rec.lang = recognitionLanguage();
     rec.continuous = true;
     rec.interimResults = true;
     rec.maxAlternatives = 1;
@@ -1850,7 +2285,7 @@
     rec.onend = () => {
       // Words still waiting when recognition stopped are sent as they are.
       clearTimeout(settleTimer);
-      if (pending && !held) sendHeard(pending);
+      sendPending();
       current = -1; sentWords = 0; sentAll = ""; pending = "";
       // While held, it is started again when MapleSyrup stops talking.
       if (!wantRec || !listening || held) return;
@@ -1879,7 +2314,10 @@
   // MapleSyrup's tools, and MapleSyrup's own lines to say.
   const liveCall = { pc: null, dc: null, audio: null, on: false, starting: false, userTalking: false, talking: false,
     pending: [], eyesAt: 0, pictureAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false, hint: "",
-    stoppedAt: 0, firstSoundTold: true };
+    stoppedAt: 0, firstSoundTold: true,
+    // A response under way (since when; 0: none), one asked for while it
+    // was, and the attitude and API the call was started with.
+    responding: 0, respondWanted: false, flushing: false, attitude: "", api: "ga" };
   function canLive() { return !!status.live && !!window.RTCPeerConnection && status.always_listen !== false; }
   // The live call can be turned off (liveWanted, with the settings): then
   // Grok answers and the voice picked speaks, on the phone too.
@@ -1910,6 +2348,8 @@
       const call = await r.json().catch(() => ({}));
       if (!r.ok || !call.key) throw new Error(call.error || ("PC " + r.status));
       liveCall.hint = call.hint || "";
+      liveCall.attitude = call.attitude || "";
+      liveCall.api = call.api || "ga";
       const track = stream && stream.getAudioTracks()[0];
       if (!track) throw new Error("no microphone");
       const pc = new RTCPeerConnection();
@@ -1940,17 +2380,43 @@
     }
   }
 
+  // The PC is told this page's call is on: when it opens, after a hello to
+  // a PC started again, and whenever the PC's status says it has no call
+  // while this page's is on (status.on_call: it took the call as lost — the
+  // link down a while with the page in front, the call itself going on with
+  // OpenAI — or another page's hello ended it), once per mismatch, at most
+  // every 5 s. Else every line of the night goes to its own voice, over the
+  // call's.
+  let callToldAt = 0;
+  function tellCallOn() {
+    callToldAt = Date.now();
+    postJson("/api/mode", { live: true }).catch(() => {});
+  }
+  function healCall() {
+    if (liveCall.on && status.on_call === false && Date.now() - callToldAt >= 5000) tellCallOn();
+  }
+
   function liveOpened() {
     liveCall.on = true;
     liveCall.starting = false;
     liveCall.retries = 0;
     $("micStatus").textContent = t("mic_live");
-    postJson("/api/mode", { live: true }).catch(() => {});
+    tellCallOn();
+    // The call says hello once, when the PC left the phone's hello to it
+    // (status.call_greets): not again on a reconnect, and not at all on a
+    // page reloaded mid-visit, which the PC does not greet twice either. To
+    // a player it does not know (status.new_player) it says what it does
+    // too, as the clip hello's terms would.
     if (!liveCall.greeted) {
       liveCall.greeted = true;
-      liveSend({ type: "conversation.item.create", item: { type: "message", role: "system",
-        content: [{ type: "input_text", text: "[The player just opened the call. Say hi in one short line; if you know what they were up to lately, you may pick up from there.]" }] } });
-      liveSend({ type: "response.create" });
+      if (status.call_greets !== false) {
+        const hi = status.new_player
+          ? "Say hi in one short line; then, in one more short line, say you'll shout if their HP drops and they can ask you anything."
+          : "Say hi in one short line; if you know what they were up to lately, you may pick up from there.";
+        liveSend({ type: "conversation.item.create", item: { type: "message", role: "system",
+          content: [{ type: "input_text", text: "[The player just opened the call. " + hi + "]" }] } });
+        respond();
+      }
     }
     flushSay();
   }
@@ -1962,6 +2428,8 @@
         // PC counts these, and makes calls wait a little longer).
         if (liveCall.talking && Date.now() - liveCall.talkingAt < 1000) postJson("/api/turn", { what: "jumped in" }).catch(() => {});
         liveCall.userTalking = true;
+        // The answer to their words will take in what was added meanwhile.
+        liveCall.respondWanted = false;
         // The PC hears of it too (its coach keeps quiet while they talk).
         postJson("/api/talking", { on: true, who: "player" }).catch(() => {});
         $("heard").textContent = "…";
@@ -1994,13 +2462,39 @@
       case "output_audio_buffer.cleared":
         liveTalking(false);
         break;
+      case "response.created":
+        liveCall.responding = Date.now();
+        break;
       case "response.done":
+        // (Always comes, whatever became of the response.)
+        liveCall.responding = 0;
+        if (liveCall.respondWanted) respond();
         liveCalls(ev.response, Date.now());
+        setTimeout(flushSay, 300);
         break;
       case "error":
+        // A turn asked for while one was under way (the server's own, for
+        // the player's words, created meanwhile): asked again after it.
+        if (ev.error && ev.error.code === "conversation_already_has_active_response") { liveCall.respondWanted = true; break; }
         if (ev.error && ev.error.message) note(ev.error.message);
         break;
     }
+  }
+
+  // How long a response is taken to be under way without word of its end
+  // (an answer runs well under this; the flag must not stick).
+  const RESPONSE_MS = 90000;
+  function responding() { return !!liveCall.responding && Date.now() - liveCall.responding < RESPONSE_MS; }
+  // A turn for the call, once no response is under way: a second one
+  // asked for meanwhile is refused, and the lines added for it would be
+  // lost. While the player talks, the call answers with their next words,
+  // and that answer sees what was added.
+  function respond() {
+    if (liveCall.userTalking) return;
+    if (responding()) { liveCall.respondWanted = true; return; }
+    liveCall.respondWanted = false;
+    liveCall.responding = Date.now();
+    liveSend({ type: "response.create" });
   }
 
   // On silence, the transcriber sometimes hands back its own vocabulary
@@ -2021,6 +2515,7 @@
     text = (text || "").trim();
     if (!text) return;
     if (who === "player" && isHintEcho(text)) return;
+    if (who === "player") hearingLanguage(text);
     liveCall.recent.push((who === "player" ? "Player: " : "MapleSyrup: ") + text);
     if (liveCall.recent.length > 30) liveCall.recent.splice(0, liveCall.recent.length - 30);
     addMessage({ kind: who === "player" ? "heard" : "reply", text, t: nowT() }, false);
@@ -2071,10 +2566,11 @@
     for (const [id, output] of outputs) {
       liveSend({ type: "conversation.item.create", item: { type: "function_call_output", call_id: id, output } });
     }
-    // The player started talking meanwhile: the answer to that will see the
-    // tools' results too, and asking for another response now would only
-    // fight it (and lose: the model drops the thread and never answers).
-    if (!liveCall.userTalking) liveSend({ type: "response.create" });
+    // (The player started talking meanwhile: the answer to that will see
+    // the tools' results too, and asking for another response now would
+    // only fight it, and lose: the model drops the thread and never
+    // answers. `respond` knows.)
+    respond();
     // The call answers again after the tools: the player waits for that too.
     liveCall.stoppedAt = doneAt || Date.now();
     liveCall.firstSoundTold = false;
@@ -2086,20 +2582,70 @@
     postJson("/api/said", { who: "timing", text }).catch(() => {});
   }
 
-  // MapleSyrup's own lines, said by the call at the next quiet moment.
-  function sayLive(text) {
-    liveCall.pending.push(text);
+  // MapleSyrup's own lines, said by the call at the next quiet moment:
+  // nobody talking, no answer under way. A line that waited longer than
+  // SAY_STALE_MS is not news any more ("you're taking a beating" half a
+  // minute late is noise) and is dropped — and the PC is told, so its log
+  // never says a line was said when it was not. The one line that matters
+  // (urgent: a death, a level-up) is said however long it waited, and the
+  // item says how late it is. What goes carries the reading the PC sent
+  // with it and the game as read right now, so the call's picture is as
+  // new as the watcher's and it passes a number on.
+  const SAY_STALE_MS = 6000;
+  function sayLive(text, fact, urgent) {
+    liveCall.pending.push({ text, fact: fact || "", urgent: !!urgent, at: Date.now() });
     flushSay();
   }
-  function flushSay() {
-    if (!liveCall.on || !liveCall.pending.length || liveCall.userTalking || liveCall.talking) return;
+  // Lines handed to the call that it never said.
+  function notSaid(lines) {
+    for (const l of lines) postJson("/api/turn", { what: "dropped", text: l.text }).catch(() => {});
+  }
+  async function flushSay() {
+    if (!liveCall.on || liveCall.flushing || liveCall.userTalking || liveCall.talking || responding()) return;
+    const now = Date.now();
+    const stale = (p) => !p.urgent && now - p.at >= SAY_STALE_MS;
+    notSaid(liveCall.pending.filter(stale));
+    liveCall.pending = liveCall.pending.filter((p) => !stale(p));
+    if (!liveCall.pending.length) return;
     const lines = liveCall.pending.splice(0);
+    liveCall.flushing = true;
+    let snapshot = "";
+    try {
+      const r = await api("/api/eyes?image=0");
+      if (r.ok) snapshot = ((await r.json()).snapshot || "").trim();
+    } catch (x) {}
+    liveCall.flushing = false;
+    if (!liveCall.on) { notSaid(lines); return; }
+    const age = Math.round((Date.now() - lines[0].at) / 1000);
+    const fact = lines.map((l) => l.fact).filter(Boolean).pop();
+    let text = "[MapleSyrup's game watcher, not the player" + (age >= 2 ? ", " + age + " s ago" : "") + ": " +
+      lines.map((l) => l.text).join(" ") + "]";
+    if (fact) text += "\n[Its reading: " + fact + "]";
+    if (snapshot) text += "\n[The game right now, read by your vision engine, not said by the player]\n" + snapshot;
     liveSend({ type: "conversation.item.create", item: { type: "message", role: "system",
-      content: [{ type: "input_text", text: "[MapleSyrup's game watcher: " + lines.join(" ") +
-        "] Tell the player now, briefly, in your own words and in the language you're speaking with them." }] } });
-    liveSend({ type: "response.create" });
+      content: [{ type: "input_text", text }] } });
+    respond();
   }
   setInterval(flushSay, 1000);
+
+  // The call's instructions again, in the attitude the PC reports now,
+  // handed to the call as it goes (session.update): the conversation is
+  // kept, and the next thing it says is in the new tone.
+  async function retune(attitude) {
+    const was = liveCall.attitude;
+    liveCall.attitude = attitude;
+    try {
+      const r = await api("/api/instructions?lang=" + encodeURIComponent(locale));
+      const j = r.ok ? await r.json() : {};
+      if (!liveCall.on) return;
+      if (!j.instructions) throw new Error("no instructions");
+      const session = liveCall.api === "beta" ? { instructions: j.instructions } : { type: "realtime", instructions: j.instructions };
+      liveSend({ type: "session.update", session });
+    } catch (e) {
+      // (The next poll tries again.)
+      if (liveCall.attitude === attitude) liveCall.attitude = was;
+    }
+  }
 
   function liveDropped(why) {
     const wasOn = liveCall.on;
@@ -2108,6 +2654,7 @@
     liveCall.retries++;
     if (liveCall.retries > 3) {
       note(t("live_failed") + " " + why);
+      callNotComing();
       startRecognition();
       $("micStatus").textContent = Recognition ? t("mic_listening") : t("mic_audio_only");
       return;
@@ -2130,6 +2677,11 @@
     liveCall.on = false;
     liveCall.starting = false;
     liveCall.userTalking = false;
+    liveCall.responding = 0;
+    liveCall.respondWanted = false;
+    liveCall.flushing = false;
+    // (The lines waiting for the call went nowhere.)
+    notSaid(liveCall.pending.splice(0));
     if (liveCall.talking) liveTalking(false);
     if (liveCall.audio) liveCall.audio.srcObject = null;
     disconnectPlayed();
@@ -2150,7 +2702,7 @@
     keepAwake();
     if (wantLive() && audio) {
       try { await startLive(audio.stream); return; }
-      catch (e) { note(t("live_failed") + " " + ((e && e.message) || e)); }
+      catch (e) { note(t("live_failed") + " " + ((e && e.message) || e)); callNotComing(); }
     }
     startRecognition();
     $("micStatus").textContent = Recognition ? t("mic_listening") : t("mic_audio_only");
@@ -2162,7 +2714,7 @@
     stopRecognition();
     if (wantLive() && audio) {
       try { await startLive(audio.stream); return; }
-      catch (e) { note(t("live_failed") + " " + ((e && e.message) || e)); }
+      catch (e) { note(t("live_failed") + " " + ((e && e.message) || e)); callNotComing(); }
     }
     startRecognition();
     $("micStatus").textContent = Recognition ? t("mic_listening") : t("mic_audio_only");
@@ -2180,15 +2732,29 @@
   }
 
   $("listen").addEventListener("click", () => (listening ? stop() : start()));
+  // The page going away (closed, reloaded, navigated off): its call goes
+  // with it, and the PC is told as it goes (a beacon: a fetch may not run
+  // by then; best effort). A page only hidden — a glance at another app, a
+  // lock — says nothing: a glance is not the end of the call (it was: the
+  // line waiting for the call's gap went nowhere, and a death meanwhile was
+  // shown and never said); a lock is the PC's to notice, when the phone
+  // stops asking (CALL_LOST_AFTER), and a page back in front with its call
+  // still on tells a PC that took it as lost (healCall).
+  function callGone() {
+    if (!liveCall.on || !navigator.sendBeacon) return;
+    try { navigator.sendBeacon("/api/mode?k=" + encodeURIComponent(KEY), JSON.stringify({ live: false })); } catch (e) {}
+  }
+  window.addEventListener("pagehide", callGone);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState !== "visible" || !listening) return;
+    healCall();
     keepAwake();
     if (audio && audio.ctx.state !== "running") audio.ctx.resume().catch(() => {});
     if (wantRec && rec && !held) { try { rec.start(); } catch (e) {} }
   });
 
   $("listen").textContent = t("start");
-  if (KEY) postJson("/api/hello", { agent: navigator.userAgent, lang: locale }).catch(() => {});
+  if (KEY) hello();
   poll();
 })();
 </script>

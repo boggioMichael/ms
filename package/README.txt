@@ -19,6 +19,12 @@ Start
        Android: Advanced -> Proceed
   4. Tap "Start listening", allow the microphone, and just talk to it:
      "hey, how am I doing?", "how long until I level?", "mark that!".
+     It says hello once per visit (a page reloaded within half an hour is
+     the same visit): the live call's hello when a call is coming, else its
+     own (on the phone, heard once you have tapped). A player it does not
+     know yet hears what it does ("I yell when your HP drops. Ask me
+     stuff."). What waited for your first tap is played only while it is
+     still news.
 
   If Windows asks whether MapleSyrup may use the network, allow private networks.
 
@@ -54,8 +60,13 @@ How it talks
   listens while it talks. Speak any language, switch or mix languages
   mid-sentence (Hebrew and English, say) and it follows you, with no setting.
   Talk over it and it stops and goes with what you said. It sees your screen
-  while MapleStory is the window in front, and says its own warnings (low HP,
-  level up) on the call too, in the language you're speaking. While it talks,
+  while MapleStory is the window in front, and says its own lines (low HP,
+  a level-up) on the call too, in the language you're speaking: handed to
+  the call at most every 20 seconds, with the number only for HP and MP; a
+  death or a level-up goes at once and is said even when it comes late. A
+  glance at another app costs nothing. If the phone sleeps and the call
+  drops, MapleSyrup notices within seconds and its lines go back to its own
+  voice, the one it was about to hand over included. While it talks,
   MapleStory's sound is turned down.
   Prefer its voice on the PC speakers? Choose "PC" under "Replies spoken on"
   on the phone: then it works as below.
@@ -64,21 +75,42 @@ How it talks
   your screen (HP, MP, EXP, level, your EXP per hour). If you talk to your
   stream's chat instead, it stays quiet.
   It answers as soon as you stop talking, and its voice starts while the
-  rest of the answer is still being made. It answers from what it knows
+  rest of the answer is still being made; a plain "hey" it answers at once.
+  It doesn't read your level, map or bars back to you unless you ask, and
+  before the game is open it just talks. It answers from what it knows
   rather than stopping to look things up, even when it isn't completely
   sure ("I think..."): when it gets something wrong, just correct it, and
   it remembers (see "It learns as you play"). Talk over it and it stops and
-  listens ("wait", or just ask something else). Pause mid-sentence and go on,
-  and it waits for the rest instead of answering half of it. The phone keeps
+  listens ("wait", or just ask something else); a warning, or news such as
+  a death, still plays out on the PC. Pause mid-sentence and go on, and it
+  waits for the rest instead of answering half of it. The phone keeps
   listening while it talks on the PC and tells your voice from its own.
   While it speaks, MapleStory's sound is turned down for a moment.
   The OpenAI account needs credit (platform.openai.com/settings/organization/billing);
   without it MapleSyrup says so and goes on with simple answers and the
-  Windows voice. It also speaks up by itself when HP or MP runs low or you level up
-  (a level-up is the level at the bottom left going up by one — nothing else
-  counts). Warnings nobody answers stop after six until you say something, and
-  a bar it can only guess at is not warned from. "Don't talk to me this way"
-  makes it friendly.
+  Windows voice. It also speaks up by itself when HP or MP runs low, when you
+  take a beating, when you die and when you level up (a level-up is the level
+  at the bottom left going up by one — nothing else counts): a warning is
+  shouted, a death or a level-up told.
+  A warning is said once per fight. Pot after it and the beating is not
+  shouted again in that fight, and the low bar not until the fight is over
+  or the bar goes lower; a low bar nothing answers is said again, then
+  asked about ("Are you going to pot or not?"). After four warnings that
+  nothing answers (not a word, no potion for HP or MP, no EXP) it stops
+  ("Okay. No more pot talk from me." — "you're away" words only if you have
+  been silent ten minutes) and holds the rest, and the coach's looks, for
+  ten minutes, until you speak, or until you pot ("There it is."). Pot
+  within three seconds of the shout three fights running and it stops
+  shouting "back off": it watches instead, and shouts when HP goes deeper
+  than you usually let it, when the potion is late, or under half the
+  warning level — never quiet near the bottom of the bar; after a late
+  potion, no potion or a death, it shouts again until you have handled
+  three more. A reading has to hold: one odd frame is neither a
+  potion nor a fall, and a bar it can only guess at is not warned from. A
+  bar that reads low for minutes while your EXP keeps coming is a bar it is
+  reading wrong: it says so once ("I'm reading your HP wrong") and holds
+  that bar's warnings until it reads above the warning level again.
+  "Don't talk to me this way" makes it friendly.
   On the phone you can choose where replies are spoken (PC, phone, both, off)
   and switch to "only after 'syrup'" for streaming.
 
@@ -125,8 +157,8 @@ It learns as you play
   call it waits longer if it keeps jumping in before you finish; if you often
   talk over long answers, it keeps them shorter.
   Warnings too: "warn me at 40%", "no more MP warnings", "warn me like
-  before". If you die without a warning while your HP went down, it warns you
-  sooner from then on (up to half the bar).
+  before". If you die with no warning in that fight while your HP went down,
+  it warns you sooner from then on (up to half the bar), and says so.
   The phone shows what it knows about you ("What I know about you"), with a
   Forget button on each thing. It all stays on your PC, in
   %APPDATA%\MapleSyrup\memory.json and knowledge.json: delete them to make it
@@ -136,9 +168,17 @@ Languages
   The phone page speaks English, Hebrew, Spanish, Portuguese, French, German,
   Korean, Japanese, Chinese (simplified and traditional), Thai, Vietnamese,
   Indonesian and Russian. It follows the phone's language; pick another on the
-  page. That is also the language the phone listens in. MapleSyrup answers in
-  the language you speak to it and says its own lines (warnings, level ups) in
-  yours too. The installer speaks yours when Inno Setup has it.
+  main screen, under "Start listening". That is also the language the phone
+  listens in; when a live call hears you speak Hebrew (two sentences, or a
+  long one), the phone listens in Hebrew off the call too, shows "Hearing:
+  עברית ×" beside the picker (tap × to undo), and goes back after two
+  English ones. Or just say "talk to me in Hebrew" (or "in English", "in
+  Spanish"...): it switches at once, the phone included; in Hebrew its own
+  lines (warnings, deaths, level-ups) are its own Hebrew, not a
+  translation.
+  MapleSyrup answers in the language you speak to it and says its own lines
+  (warnings, level ups) in yours too. The installer speaks yours when Inno
+  Setup has it.
 
 Recording the session
   Tap "Record the session" on the phone (or just say "start recording"; tap
@@ -203,21 +243,81 @@ Workshop (off unless you turn it on)
   Rust toolchain and a coding agent on this PC; the first build fetches the
   dependencies and takes longer.
 
+Claude, live (talk with Claude while it sees the game)
+  Talk with Claude in the Claude app as usual, and Claude sees your game:
+  MapleSyrup works in the background (no window, no voice of its own) and
+  gives Claude what it knows - the screen as it is now (HP/MP/EXP with how
+  old each number is, level, map, what moves on the screen and where, a
+  dialog and its text, the things you taught it), a look at the screen,
+  its own MapleStory wiki (Claude adds the facts it checked), and what it
+  knows about you (your about-me.txt, which Claude can add to).
+  Once: double-click "Add MapleSyrup to Claude.cmd" (or run
+  MapleSyrup.exe --install-claude), then quit the Claude app completely (its
+  icon by the clock -> Quit) and open it again. From then on Claude starts
+  MapleSyrup by itself when it needs it, and stops it when it is done.
+  It needs the Claude desktop app on this PC.
+  Claude Code too, with the game pushed to it as it happens (a death, a
+  level-up, a new map, HP in danger) and MapleSyrup's voice to talk through
+  from the phone: run MapleSyrup.exe --setup-claude once, then "Start
+  Claude.cmd" in the Claude folder it writes beside MapleSyrup.exe. That
+  session is Claude for anything, as in the Claude app - talk about
+  anything, search the web, read and open your files (Desktop, Documents,
+  Downloads, Pictures...), build projects (in Documents\Claude projects) -
+  and it is in the Claude app too (Remote Control). It runs in Claude Code's
+  auto mode: instead of asking you about each action, Claude has each one
+  checked first. Claude Code asks each time whether to load a "development
+  channel" - choose "I am using this for local development". Each start
+  sets the folder up again; a MapleSyrup-new.exe left beside MapleSyrup.exe
+  is put in its place first.
+
 Privacy
-  Your OpenAI key stays on this PC (a live call uses a key that works for a few
-  minutes only, made for it). With a key, what you say to MapleSyrup (on a
-  live call, your voice itself) and pictures of your game window are sent to
-  OpenAI to answer you; pictures only while MapleStory is the window in front.
-  To learn, every few minutes it sends the text of the conversation (not the
-  pictures) to OpenAI to update its notebook; what it learns is kept on your
-  PC only. With an xAI key, what you say and a small picture of the game go to
-  xAI (Grok) for the regular replies. With an ElevenLabs key, what it says
-  goes to ElevenLabs to be spoken. Your keys stay on this PC
-  (%APPDATA%\MapleSyrup).
+  Your keys stay on this PC (%APPDATA%\MapleSyrup); a live call uses a key
+  that works for a few minutes only, made for it.
+  With an OpenAI key, to answer you, OpenAI gets: what you say (on a live
+  call, your voice itself), the conversation, what it reads off the game
+  (level, bars, map), pictures of your game window - only while MapleStory
+  is the window in front - and its notebook about you (memory.json,
+  about-me.txt and the lessons in knowledge.json), with each reply and with
+  each look the coach takes (about every minute or three while you play).
+  Every few minutes it also sends the notebook and the latest conversation
+  (not the pictures) to update the notebook, which is kept on your PC. While
+  it learns to read your HUD, it sends a picture of the game window and
+  crops of the HUD.
+  With an xAI key, the regular replies go to xAI (Grok) with the same: what
+  you say, a small picture of the game and the notebook. With an ElevenLabs
+  key, what it says goes to ElevenLabs to be spoken.
+  Outside a live call, your phone's browser turns your speech into text with
+  its own speech service (Google's on Chrome and Android, Apple's on
+  Safari): your voice goes there, with or without any key. With "phone over
+  the internet", everything the phone and the PC exchange goes through
+  Cloudflare.
+  Updates: it asks datta-syrup.ai for a new version 45 s after it starts and
+  then hourly (a plain request: your IP address, and that MapleSyrup runs);
+  off with --no-update or on the phone.
+  The workshop (off unless you turn it on) hands your request and the end of
+  the session's log to the coding agent on your PC, which sends them to its
+  own provider (Anthropic or OpenAI).
+  Claude, live (only once you add MapleSyrup to Claude): Claude gets what
+  MapleSyrup reads off the game, its wiki, your about-me.txt and notebook,
+  and - when Claude asks to look - pictures of the game window, and sends
+  them to Anthropic as part of your Claude conversation. MapleSyrup serves
+  them on this PC only (127.0.0.1, with a key), never through the tunnel.
+  In the Claude Code session, the files Claude reads for you (your folders
+  are open to it without asking) and its web searches are part of your
+  Claude conversation too, as in the Claude app.
+  "The game" is any window whose title contains "MapleStory".
   OpenAI bills your account: a live call costs more than the PC voice (very
-  roughly a dollar or two per hour of play, depending on how much you talk). Without a key, nothing leaves your PC
-  except the phone link on your own network.
-  Recordings are made and kept on your PC only, and only when you ask for one.
+  roughly a dollar or two per hour of play, depending on how much you talk).
+  Without a key and with updates off, nothing leaves your PC except the
+  phone link on your own network (and the phone's own speech recognition).
+  Recordings are made and kept on your PC only, and only when you ask for one;
+  a recording holds the whole screen and every sound of the PC.
+  Play stats: MapleSyrup keeps numbers about each session on this PC (minutes,
+  levels, deaths, warnings, how fast it answered; in %APPDATA%\MapleSyrup\metrics)
+  and never your character's name, what you say, your voice, pictures or your
+  files. Sharing them with anyone is not offered: it first needs a rights
+  review for MapleStory and consent asked for each purpose. Nothing is sent
+  anywhere.
 
 Files
   Each session is kept in "MapleSyrup sessions" (in Documents when installed,

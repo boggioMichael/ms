@@ -546,8 +546,10 @@
     }
 
     // ---- what happens to it ----
-    // "levelup": jumps for joy; "alert": barks; "death": plays dead;
-    // "hello": a happy hop; "tap" (x): pets or calls it.
+    // "levelup": jumps for joy; "alert": barks, with a "!" (a warning —
+    // a low bar, a beating; news gets no bark: a death and a level-up are
+    // reacted to from the game); "death": plays dead; "hello": a happy
+    // hop; "tap" (x): pets or calls it.
     function react(kind, x) {
       roll = 0; spinAngle = null; act = null;
       if (kind === "tap") {

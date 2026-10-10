@@ -148,11 +148,18 @@ fn value_properties() -> serde_json::Map<String, Value> {
     p
 }
 
+/// (The Classic World HUD's slash is thin and slanted: read as a 7, it made
+/// the owner's `HP[594/671]` "3947/6771" and `MP[194/695]` "1347/6395" on
+/// 10 October.)
 const READING_RULES: &str = "Read numbers exactly as the game prints them. Never guess: if any digit is unclear, \
 give null for that value. HP and MP are [current, max]. exp_percent is the EXP percentage the game shows \
 (for example 86.25). level is the character's level (for example 61 for \"Lv. 61\"). map is the map's name, \
 name the character's name, job the class or job. notes: anything that gets in the way (a window over the HUD, \
-a loading or death screen), or an empty string.";
+a loading or death screen), or an empty string.\n\
+On the Classic World HUD the numbers are small, above the bars, as HP[current/max] and MP[current/max] in a thin \
+font whose slash is slanted and looks like a 7: there is exactly one slash, between current and max — never read \
+it as a digit (HP[594/671] is [594, 671], not [3947, 6771]). Its 3, 5 and 9 differ by one short stroke: look \
+twice.";
 
 /// Find the HUD on a frame and read it: the first look at a new screen.
 pub fn calibrate(frame: &RgbaImage) -> Look {
@@ -462,10 +469,13 @@ mod tests {
                 .unwrap()
                 .contains("Orange Mushroom")
         );
+        let check = verify(&frame, &NBox::new(0.2, 0.9, 0.8, 1.0));
+        assert!(check.schema.is_some());
+        // The classic HUD's slash is not a 7.
         assert!(
-            verify(&frame, &NBox::new(0.2, 0.9, 0.8, 1.0))
-                .schema
-                .is_some()
+            check.instructions.contains("never read it as a digit"),
+            "{}",
+            check.instructions
         );
         assert!(
             closer(

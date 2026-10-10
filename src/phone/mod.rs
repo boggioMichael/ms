@@ -13,13 +13,20 @@
 //!
 //! `/api/state` can wait (`wait=` milliseconds) until there is something
 //! new — a line, a spoken clip, a reply cut short — so the phone hears of
-//! it at once instead of at its next look.
+//! it at once instead of at its next look. It lists the clips the phone can
+//! still fetch with what each is (`kind`) and how old (`age_ms`): a phone
+//! that could play none before a tap plays no stale news at the tap.
 //!
 //! On a live call (`crate::ai::live`) the phone talks to OpenAI itself and
 //! asks the PC for a short-lived key (`/api/live`), the screen
-//! (`/api/eyes`) and MapleSyrup's tools (`/api/tool`); it tells the PC what
-//! was said (`/api/said`) and when MapleSyrup's voice is playing
-//! (`/api/talking`, to turn the game down).
+//! (`/api/eyes`), MapleSyrup's tools (`/api/tool`) and, when the attitude
+//! changes mid-call, the call's instructions again (`/api/instructions`);
+//! it tells the PC what was said (`/api/said`) and when MapleSyrup's voice
+//! is playing (`/api/talking`, to turn the game down). MapleSyrup's own
+//! lines for the call come as messages with `speak` and, behind a
+//! watcher's line, the reading (`fact`) and whether it is said however
+//! late (`urgent`: a death, a level-up); a line the call never said (it
+//! waited too long, or the call ended) is reported back (`/api/turn`).
 //!
 //! While the session is recorded ([`Recording`]), the phone's sound goes
 //! into the recording too: its microphone and what it plays (a live call's
@@ -44,7 +51,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -120,8 +127,15 @@ pub enum Inbound {
     Interrupt,
     /// A button: a command's word.
     Command(String),
-    /// The page opened, from this browser.
-    Hello(String),
+    /// The page opened, from this browser (`agent`), with its live-call
+    /// toggle on or off (`live`: whether it will open a call once the
+    /// player taps Listen), after the phone had been gone this long
+    /// (`away`; None: the link had not seen a phone before).
+    Hello {
+        agent: String,
+        live: bool,
+        away: Option<Duration>,
+    },
     /// Where replies should be spoken now.
     Voice(VoiceOn),
     /// Answer everything said (true), or only after "syrup" (false).
@@ -151,6 +165,10 @@ pub enum Inbound {
     /// How a turn went on a live call ("jumped in": MapleSyrup answered
     /// before the player had finished), for the log it learns from.
     Turn(String),
+    /// A line handed to the call that the call never said: it waited too
+    /// long behind the call's own voice, or the call ended. For the log,
+    /// which must not say it was said.
+    NotSaid(String),
     /// How MapleSyrup should talk to the player from now on.
     Attitude(crate::companion::Attitude),
     /// The voice to speak in: an ElevenLabs voice's id, or "openai".
@@ -184,9 +202,14 @@ pub enum UpdateAsk {
 /// What the phone's live call asks the PC for.
 pub trait Service: Send + Sync {
     /// A short-lived key for the call, and where to connect: `{key, url,
-    /// model}`. `recent`: the last things said (a call picked up again);
-    /// `language`: the phone's language.
+    /// model, attitude}`. `recent`: the last things said (a call picked up
+    /// again); `language`: the phone's language.
     fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String>;
+    /// The call's instructions as they are now: `{instructions, attitude}`.
+    /// The phone asks for them when the attitude changes during a call
+    /// (the picker, or the player objecting to the tone) and hands them to
+    /// the call, which goes on in the new tone without starting over.
+    fn instructions(&self, language: Option<&str>) -> Value;
     /// Run one of MapleSyrup's tools the call's model asked for, on the
     /// frame the player is looking at. Returns what to tell the model.
     fn tool(
@@ -249,6 +272,16 @@ pub struct Message {
     pub text: String,
     /// Whether it is meant to be spoken (when replies are spoken on the phone).
     pub speak: bool,
+    /// On a live call, the reading behind one of MapleSyrup's own lines
+    /// ("HP 11% (read 0 s ago), MP 40% (read 0 s ago)"): the call passes
+    /// the number on, and knows it is newer than any picture it has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fact: Option<String>,
+    /// On a live call, the one line that matters (a death, a level-up):
+    /// the call says it however long it waited behind the call's own
+    /// voice, where a warning that waited too long is dropped as stale.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub urgent: bool,
 }
 
 /// What the console shows about the phone.
@@ -270,9 +303,8 @@ struct State {
     phone_seen: Option<Instant>,
     browser: Option<String>,
     requests: u64,
-    /// The latest spoken lines as WAVs, for the phone to play in turn, with
-    /// their numbers.
-    clips: VecDeque<(u64, Arc<Vec<u8>>)>,
+    /// The latest spoken lines, for the phone to play in turn.
+    clips: VecDeque<Clip>,
     /// How loud each clip is as it goes (for the dog's mouth).
     mouths: VecDeque<(u64, Vec<u8>)>,
     last_clip: u64,
@@ -296,11 +328,26 @@ fn plausible_locale(text: &str) -> bool {
 /// How many spoken lines the phone can still fetch.
 const CLIPS_KEPT: usize = 8;
 
+/// A spoken line for the phone: its number, what it is (a warning, news, a
+/// reply, a note) and when it was made — the page drops a warning or news
+/// that waited too long for the tap — and the WAV.
+struct Clip {
+    seq: u64,
+    kind: Kind,
+    made: Instant,
+    wav: Arc<Vec<u8>>,
+}
+
 /// Everything the phone link shares between the server's threads and the
 /// main loop.
 pub struct Hub {
     key: String,
     started: Instant,
+    /// This run of the program: a page open across a restart (the
+    /// self-updater's) sees it change and starts over with it, since the
+    /// new program numbers its lines and clips from one again and has
+    /// not heard the page's hello.
+    boot: String,
     state: Mutex<State>,
     /// Told when there is something new for the phone.
     changed: Condvar,
@@ -308,6 +355,16 @@ pub struct Hub {
     service: Mutex<Option<Arc<dyn Service>>>,
     /// Where the phone's sound goes while the session is recorded.
     recording: Mutex<Option<Arc<dyn Recording>>>,
+    /// The session's stats kept on the PC, and the sharing the player
+    /// turns on and off (`crate::metrics`).
+    metrics: Mutex<Option<Arc<crate::metrics::Store>>>,
+    /// Whether sharing may be turned on here ([`Hub::offer_sharing`]).
+    sharing_offered: AtomicBool,
+    /// Claude's channel: what is posted for it, served under `/local/`
+    /// (None: not offered).
+    claude: Mutex<Option<Arc<crate::claude::board::Board>>>,
+    /// Claude is the one talking: the phone opens no live call of its own.
+    live_paused: AtomicBool,
 }
 
 impl Hub {
@@ -316,6 +373,7 @@ impl Hub {
         Arc::new(Hub {
             key,
             started: Instant::now(),
+            boot: tls::random_hex(4),
             state: Mutex::new(State {
                 status: json!({}),
                 messages: VecDeque::new(),
@@ -336,7 +394,29 @@ impl Hub {
             changed: Condvar::new(),
             service: Mutex::new(None),
             recording: Mutex::new(None),
+            metrics: Mutex::new(None),
+            sharing_offered: AtomicBool::new(crate::metrics::SHARING_OFFERED),
+            claude: Mutex::new(None),
+            live_paused: AtomicBool::new(false),
         })
+    }
+
+    /// Serve Claude's channel under `/local/` (on the local listener; a
+    /// request through the tunnel is refused by the board itself).
+    pub fn set_claude(&self, board: Arc<crate::claude::board::Board>) {
+        if let Ok(mut slot) = self.claude.lock() {
+            *slot = Some(board);
+        }
+    }
+
+    fn claude(&self) -> Option<Arc<crate::claude::board::Board>> {
+        self.claude.lock().ok().and_then(|b| b.clone())
+    }
+
+    /// While Claude talks with the player, the phone opens no live call
+    /// (that would be a second voice, and another mind).
+    pub fn pause_live(&self, paused: bool) {
+        self.live_paused.store(paused, Ordering::Relaxed);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -357,6 +437,20 @@ impl Hub {
 
     /// Add a line to the phone's screen; returns its id.
     pub fn post(&self, kind: Kind, text: &str, speak: bool) -> u64 {
+        self.post_with_fact(kind, text, speak, None, false)
+    }
+
+    /// Add a line of MapleSyrup's own for a live call to say, with the
+    /// reading behind it (`fact`, when there is one), and whether it is
+    /// said however late it comes (`urgent`: a death, a level-up).
+    pub fn post_with_fact(
+        &self,
+        kind: Kind,
+        text: &str,
+        speak: bool,
+        fact: Option<&str>,
+        urgent: bool,
+    ) -> u64 {
         let t = self.started.elapsed().as_secs_f64();
         let mut state = self.lock();
         let id = state.next_id;
@@ -367,6 +461,8 @@ impl Hub {
             kind,
             text: text.to_string(),
             speak,
+            fact: fact.map(str::to_string),
+            urgent,
         });
         while state.messages.len() > KEEP_MESSAGES {
             state.messages.pop_front();
@@ -381,14 +477,19 @@ impl Hub {
         std::mem::take(&mut self.lock().inbox)
     }
 
-    /// Hand the phone a spoken line (a WAV) to play after the ones before
-    /// it. Returns its number.
-    pub fn set_clip(&self, wav: Vec<u8>) -> u64 {
+    /// Hand the phone a spoken line (a WAV) of this `kind` to play after
+    /// the ones before it. Returns its number.
+    pub fn set_clip(&self, kind: Kind, wav: Vec<u8>) -> u64 {
         let mouth = crate::app::dog::mouth_of_wav(&wav);
         let mut state = self.lock();
         state.last_clip += 1;
         let seq = state.last_clip;
-        state.clips.push_back((seq, Arc::new(wav)));
+        state.clips.push_back(Clip {
+            seq,
+            kind,
+            made: Instant::now(),
+            wav: Arc::new(wav),
+        });
         state.mouths.push_back((seq, mouth));
         while state.clips.len() > CLIPS_KEPT {
             state.clips.pop_front();
@@ -422,6 +523,30 @@ impl Hub {
 
     fn recording(&self) -> Option<Arc<dyn Recording>> {
         self.recording.lock().ok().and_then(|r| r.clone())
+    }
+
+    /// The session's stats and the sharing choice: what the phone's
+    /// Settings and Details show, and what its toggle changes.
+    pub fn set_metrics(&self, store: Arc<crate::metrics::Store>) {
+        if let Ok(mut slot) = self.metrics.lock() {
+            *slot = Some(store);
+        }
+    }
+
+    fn metrics(&self) -> Option<Arc<crate::metrics::Store>> {
+        self.metrics.lock().ok().and_then(|m| m.clone())
+    }
+
+    /// Whether sharing may be turned on from the phone. Off in this build
+    /// ([`crate::metrics::SHARING_OFFERED`]): an "on" is refused
+    /// (`not_available`) and the card says why; turning it off and "Delete
+    /// it" always work.
+    pub fn offer_sharing(&self, offered: bool) {
+        self.sharing_offered.store(offered, Ordering::Relaxed);
+    }
+
+    fn sharing_offered(&self) -> bool {
+        self.sharing_offered.load(Ordering::Relaxed)
     }
 
     /// What a call's model can see now: the frame (None while the game is
@@ -488,6 +613,10 @@ impl Hub {
                 Response::new(200, "image/png", DOG_PARTS).with_header("Cache-Control", "no-cache")
             }
             ("GET", "/favicon.ico") => Response::empty(204),
+            (_, path) if path.starts_with("/local/") => match self.claude() {
+                Some(board) => board.handle(request),
+                None => Response::text(404, "not found"),
+            },
             (_, path) if path.starts_with("/api/") => {
                 let key = request
                     .param("k")
@@ -498,18 +627,22 @@ impl Hub {
                         &json!({"error": "This link is out of date. Scan the code on the PC again."}),
                     );
                 }
-                {
+                // (When the phone was last seen before this request: a
+                // hello tells how long it had been gone.)
+                let seen = {
                     let mut state = self.lock();
+                    let seen = state.phone_seen;
                     state.phone_seen = Some(Instant::now());
                     state.requests += 1;
-                }
-                self.api(method, path, request)
+                    seen
+                };
+                self.api(method, path, request, seen)
             }
             _ => Response::text(404, "not found"),
         }
     }
 
-    fn api(&self, method: &str, path: &str, request: &Request) -> Response {
+    fn api(&self, method: &str, path: &str, request: &Request, seen: Option<Instant>) -> Response {
         let body = || serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
         let text_field = |name: &str| {
             body()
@@ -556,6 +689,17 @@ impl Hub {
                     .skip(skip)
                     .filter(|m| m.id > since)
                     .collect();
+                let clips: Vec<Value> = state
+                    .clips
+                    .iter()
+                    .map(|c| {
+                        json!({
+                            "seq": c.seq,
+                            "kind": c.kind,
+                            "age_ms": now.saturating_duration_since(c.made).as_millis() as u64,
+                        })
+                    })
+                    .collect();
                 Response::json(
                     200,
                     &json!({
@@ -565,7 +709,9 @@ impl Hub {
                         "messages": messages,
                         "last_id": state.next_id - 1,
                         "uptime": self.started.elapsed().as_secs_f64(),
+                        "boot": self.boot,
                         "clip": state.last_clip,
+                        "clips": clips,
                         "cut": state.cut,
                     }),
                 )
@@ -576,12 +722,13 @@ impl Hub {
                 let clip = {
                     let state = self.lock();
                     match wanted {
-                        Some(seq) => state.clips.iter().find(|(n, _)| *n == seq).cloned(),
-                        None => state.clips.back().cloned(),
+                        Some(seq) => state.clips.iter().find(|c| c.seq == seq),
+                        None => state.clips.back(),
                     }
+                    .map(|c| Arc::clone(&c.wav))
                 };
                 match clip {
-                    Some((_, wav)) => Response::new(200, "audio/wav", wav.as_slice()),
+                    Some(wav) => Response::new(200, "audio/wav", wav.as_slice()),
                     None => Response::json(404, &json!({"error": "no such clip"})),
                 }
             }
@@ -727,8 +874,8 @@ impl Hub {
                     .lock()
                     .clips
                     .iter()
-                    .find(|(n, _)| *n == seq)
-                    .map(|(_, wav)| Arc::clone(wav));
+                    .find(|c| c.seq == seq)
+                    .map(|c| Arc::clone(&c.wav));
                 match clip.as_deref().and_then(|wav| audio::wav_samples(wav)) {
                     Some((rate, samples)) => {
                         recording.played(rate, &samples, age);
@@ -756,6 +903,12 @@ impl Hub {
                 _ => Response::json(400, &json!({"error": "no text"})),
             },
             ("POST", "/api/live") => {
+                if self.live_paused.load(Ordering::Relaxed) {
+                    return Response::json(
+                        503,
+                        &json!({"error": "Claude is talking with you now: no live call meanwhile"}),
+                    );
+                }
                 let Some(service) = self.service() else {
                     return Response::json(503, &json!({"error": "live calls need an OpenAI key"}));
                 };
@@ -771,6 +924,19 @@ impl Hub {
                     Ok(call) => Response::json(200, &call).with_header("Cache-Control", "no-store"),
                     Err(why) => Response::json(502, &json!({"error": why})),
                 }
+            }
+            ("GET", "/api/instructions") => {
+                // The call's instructions as they are now (the attitude
+                // changed mid-call): the page hands them to the call.
+                let Some(service) = self.service() else {
+                    return Response::json(503, &json!({"error": "live calls need an OpenAI key"}));
+                };
+                let language = request
+                    .param("lang")
+                    .filter(|l| plausible_locale(l))
+                    .map(str::to_string);
+                Response::json(200, &service.instructions(language.as_deref()))
+                    .with_header("Cache-Control", "no-store")
             }
             ("GET", "/api/eyes") => {
                 let sight = self.lock().sight.clone();
@@ -848,12 +1014,22 @@ impl Hub {
                 }
                 _ => Response::json(400, &json!({"error": "no text"})),
             },
-            ("POST", "/api/turn") => match text_field("what").as_deref() {
-                Some(what @ "jumped in") => {
+            ("POST", "/api/turn") => match (text_field("what").as_deref(), text_field("text")) {
+                (Some(what @ "jumped in"), _) => {
                     self.lock().inbox.push(Inbound::Turn(what.to_string()));
                     Response::json(200, &json!({"ok": true}))
                 }
-                _ => Response::json(400, &json!({"error": "what is \"jumped in\""})),
+                // A line the call was handed and never said.
+                (Some("dropped"), Some(text)) if !text.trim().is_empty() => {
+                    self.lock()
+                        .inbox
+                        .push(Inbound::NotSaid(text.trim().to_string()));
+                    Response::json(200, &json!({"ok": true}))
+                }
+                _ => Response::json(
+                    400,
+                    &json!({"error": "what is \"jumped in\", or \"dropped\" with the line's text"}),
+                ),
             },
             ("POST", "/api/attitude") => match text_field("attitude")
                 .as_deref()
@@ -897,15 +1073,24 @@ impl Hub {
                 None => Response::json(400, &json!({"error": "no command"})),
             },
             ("POST", "/api/hello") => {
+                let body = body();
                 let browser = text_field("agent").unwrap_or_else(|| "a browser".into());
                 let lang = text_field("lang").filter(|l| plausible_locale(l));
+                // (A page that does not say — one from before the toggle
+                // came with the hello — is taken as the toggle on, its default.)
+                let live = body.get("live").and_then(Value::as_bool).unwrap_or(true);
+                let away = seen.map(|at| at.elapsed());
                 let mut state = self.lock();
                 state.browser = Some(browser.clone());
                 // The language first, so the greeting is in it.
                 if let Some(lang) = lang {
                     state.inbox.push(Inbound::Language(lang));
                 }
-                state.inbox.push(Inbound::Hello(browser));
+                state.inbox.push(Inbound::Hello {
+                    agent: browser,
+                    live,
+                    away,
+                });
                 Response::json(200, &json!({"ok": true}))
             }
             ("POST", "/api/lang") => match text_field("lang").filter(|l| plausible_locale(l)) {
@@ -914,6 +1099,61 @@ impl Hub {
                     Response::json(200, &json!({"ok": true}))
                 }
                 None => Response::json(400, &json!({"error": "lang is a locale such as en-US"})),
+            },
+            // The session's stats (kept on the PC: the Details tab's table),
+            // and sharing them with partners — off unless turned on, what
+            // would be shared, and "Delete it". Nothing is sent anywhere.
+            // (Serialized as they are, so the export keeps its fields' order.)
+            // What goes wrong is answered as a code (`no_stats`,
+            // `bad_request`, `not_available`, `adult_only`, `no_id`,
+            // `not_saved`, `not_deleted`): the page has the words, in its
+            // language.
+            ("GET", "/api/stats") => match self.metrics() {
+                Some(store) => Response::new(
+                    200,
+                    "application/json; charset=utf-8",
+                    serde_json::to_vec(&store.stats_view(crate::metrics::SHOWN_SESSIONS))
+                        .unwrap_or_default(),
+                )
+                .with_header("Cache-Control", "no-store"),
+                None => Response::json(503, &json!({"error": "no_stats"})),
+            },
+            ("GET", "/api/share") => match self.metrics() {
+                Some(store) => Response::new(
+                    200,
+                    "application/json; charset=utf-8",
+                    serde_json::to_vec(&crate::metrics::ShareView {
+                        available: self.sharing_offered(),
+                        ..store.share_view()
+                    })
+                    .unwrap_or_default(),
+                )
+                .with_header("Cache-Control", "no-store"),
+                None => Response::json(503, &json!({"error": "no_stats"})),
+            },
+            ("POST", "/api/share") => {
+                let body = body();
+                // (Sharing is for adults only: turning it on needs the
+                // player to say they are 18 or older.)
+                let adult = body.get("adult").and_then(Value::as_bool) == Some(true);
+                match (self.metrics(), body.get("on").and_then(Value::as_bool)) {
+                    (None, _) => Response::json(503, &json!({"error": "no_stats"})),
+                    (_, None) => Response::json(400, &json!({"error": "bad_request"})),
+                    // (Not offered in this build: no approved basis yet.)
+                    (Some(_), Some(true)) if !self.sharing_offered() => {
+                        Response::json(403, &json!({"error": "not_available"}))
+                    }
+                    (Some(_), Some(true)) if !adult => {
+                        Response::json(400, &json!({"error": "adult_only"}))
+                    }
+                    (Some(store), Some(on)) => {
+                        share_answer(store.set_sharing(on, chrono::Local::now().date_naive()))
+                    }
+                }
+            }
+            ("POST", "/api/share/delete") => match self.metrics() {
+                Some(store) => share_answer(store.delete_shared()),
+                None => Response::json(503, &json!({"error": "no_stats"})),
             },
             ("POST", "/api/voice") => match text_field("on").as_deref().and_then(VoiceOn::parse) {
                 Some(on) => {
@@ -929,6 +1169,20 @@ impl Hub {
             },
             _ => Response::json(404, &json!({"error": "no such call"})),
         }
+    }
+}
+
+/// The PC's answer to sharing turned on or off, or "Delete it": ok and the
+/// choice as it now stands — or 500 and what went wrong, as a code, with
+/// the files still on the PC when a deletion failed. Never ok while
+/// anything is left.
+fn share_answer(result: Result<crate::metrics::Consent, crate::metrics::ShareError>) -> Response {
+    match result {
+        Ok(share) => Response::json(200, &json!({"ok": true, "share": share})),
+        Err(crate::metrics::ShareError::NotDeleted(left)) => {
+            Response::json(500, &json!({"error": "not_deleted", "left": left}))
+        }
+        Err(e) => Response::json(500, &json!({"error": e.code()})),
     }
 }
 
@@ -1120,8 +1374,11 @@ mod tests {
     impl Service for FakeService {
         fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String> {
             Ok(
-                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language}),
+                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language, "attitude": "savage"}),
             )
+        }
+        fn instructions(&self, language: Option<&str>) -> Value {
+            json!({"instructions": format!("Your attitude: friendly ({})", language.unwrap_or("-")), "attitude": "friendly"})
         }
         fn tool(
             &self,
@@ -1137,11 +1394,62 @@ mod tests {
     }
 
     #[test]
+    fn claudes_channel_is_served_on_this_pc_and_pauses_live_calls() {
+        let hub = Hub::new("k1".into(), None, VoiceOn::Phone);
+        // Not offered: nothing there.
+        assert_eq!(
+            hub.handle(&request("GET", "/local/hello?k=c1", "")).status,
+            404
+        );
+        let key = "0123456789abcdef0123456789abcdef";
+        let board = crate::claude::board::Board::new(key.into());
+        hub.set_claude(Arc::clone(&board));
+        // The phone's key is not the board's.
+        assert_eq!(
+            hub.handle(&request("GET", "/local/hello?k=k1", "")).status,
+            403
+        );
+        // Over the local listener, as the bridge asks.
+        let port = serve_local(Arc::clone(&hub), 0).unwrap();
+        let reply =
+            client::request_plain(port, "GET", &format!("/local/hello?k={key}"), b"").unwrap();
+        assert_eq!(reply.status, 200);
+        let said = client::request_plain(
+            port,
+            "POST",
+            &format!("/local/say?k={key}"),
+            json!({"text": "יאללה, ללכת לאליניה"})
+                .to_string()
+                .as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(said.status, 200);
+        assert_eq!(board.take_says(), vec!["יאללה, ללכת לאליניה".to_string()]);
+        // While Claude talks, the phone opens no call of its own.
+        hub.set_service(Arc::new(FakeService));
+        hub.pause_live(true);
+        assert_eq!(
+            hub.handle(&request("POST", "/api/live?k=k1", "{}")).status,
+            503
+        );
+        hub.pause_live(false);
+        assert_eq!(
+            hub.handle(&request("POST", "/api/live?k=k1", "{}")).status,
+            200
+        );
+    }
+
+    #[test]
     fn a_live_call_gets_a_key_the_screen_and_the_tools_from_the_pc() {
         let hub = Hub::new("k1".into(), None, VoiceOn::Phone);
         // No key: no calls.
         let r = hub.handle(&request("POST", "/api/live?k=k1", "{}"));
         assert_eq!(r.status, 503);
+        assert_eq!(
+            hub.handle(&request("GET", "/api/instructions?k=k1", ""))
+                .status,
+            503
+        );
         hub.set_service(Arc::new(FakeService));
         let r = hub.handle(&request(
             "POST",
@@ -1155,6 +1463,18 @@ mod tests {
             (Some("ek_1"), Some(2))
         );
         assert_eq!(call["lang"], "he-IL");
+        assert_eq!(call["attitude"], "savage");
+        // The attitude changed mid-call: the instructions as they are now,
+        // for the page to hand to the call.
+        let r = hub.handle(&request("GET", "/api/instructions?k=k1&lang=he-IL", ""));
+        assert_eq!(r.status, 200);
+        let now: Value = serde_json::from_slice(&r.body).unwrap();
+        assert_eq!(now["instructions"], "Your attitude: friendly (he-IL)");
+        assert_eq!(now["attitude"], "friendly");
+        assert_eq!(
+            hub.handle(&request("GET", "/api/instructions", "")).status,
+            403
+        );
         // The screen only once there is one (the game in front); always the snapshot.
         let r = hub.handle(&request("GET", "/api/eyes?k=k1", ""));
         let eyes: Value = serde_json::from_slice(&r.body).unwrap();
@@ -1300,8 +1620,191 @@ mod tests {
         Hub::new("k1".into(), None, VoiceOn::Pc)
     }
 
+    #[test]
+    fn the_pages_last_word_as_it_goes_reaches_the_inbox() {
+        // The page says its call is off as it is suspended (the screen
+        // locks), with a beacon: the key in the query (a beacon sets no
+        // header), the JSON as a plain-text body.
+        let hub = hub();
+        let mut beacon = request("POST", "/api/mode?k=k1", r#"{"live":false}"#);
+        beacon
+            .headers
+            .push(("Content-Type".into(), "text/plain;charset=UTF-8".into()));
+        assert_eq!(hub.handle(&beacon).status, 200);
+        assert_eq!(hub.take_inbox(), vec![Inbound::Live(false)]);
+        // Without the key it is nobody's.
+        let mut stray = request("POST", "/api/mode", r#"{"live":false}"#);
+        stray
+            .headers
+            .push(("Content-Type".into(), "text/plain;charset=UTF-8".into()));
+        assert_eq!(hub.handle(&stray).status, 403);
+        assert!(hub.take_inbox().is_empty());
+    }
+
     fn body(response: &Response) -> Value {
         serde_json::from_slice(&response.body).unwrap()
+    }
+
+    #[test]
+    fn the_stats_and_the_sharing_choice_answer_from_the_pc_and_sharing_starts_off() {
+        let hub = hub();
+        // No stats here (a link without them): said so, as a code (the
+        // page has the words, in its language).
+        let none = hub.handle(&request("GET", "/api/stats?k=k1", ""));
+        assert_eq!(
+            (none.status, body(&none)["error"].clone()),
+            (503, json!("no_stats"))
+        );
+        let dir = std::env::temp_dir().join(format!("ms-phone-share-{}", tls::random_hex(4)));
+        let store = crate::metrics::Store::new(&dir);
+        hub.set_metrics(Arc::clone(&store));
+        // (The mechanism, as it would be once a basis is approved: this
+        // build does not offer it — see the next test.)
+        hub.offer_sharing(true);
+        let stats = body(&hub.handle(&request("GET", "/api/stats?k=k1", "")));
+        assert_eq!(stats["share"]["on"], false, "{stats}");
+        assert_eq!(stats["sessions"], json!([]));
+        // Off unless turned on: what would be shared is a preview, no id.
+        let share = body(&hub.handle(&request("GET", "/api/share?k=k1", "")));
+        assert_eq!(
+            (share["on"].clone(), share["preview"].clone()),
+            (json!(false), json!(true))
+        );
+        assert!(share["export"]["install_id"].is_null(), "{share}");
+        let odd = hub.handle(&request("POST", "/api/share?k=k1", r#"{"on":"yes"}"#));
+        assert_eq!(
+            (odd.status, body(&odd)["error"].clone()),
+            (400, json!("bad_request"))
+        );
+        // Only for a player who says they are 18 or older.
+        let refused = hub.handle(&request("POST", "/api/share?k=k1", r#"{"on":true}"#));
+        assert_eq!(refused.status, 400);
+        assert_eq!(body(&refused), json!({"error": "adult_only"}));
+        assert_eq!(
+            body(&hub.handle(&request("GET", "/api/share?k=k1", "")))["on"],
+            false
+        );
+        // On: an install id, and the export carries it.
+        let on = body(&hub.handle(&request(
+            "POST",
+            "/api/share?k=k1",
+            r#"{"on":true,"adult":true}"#,
+        )));
+        assert_eq!(on["share"]["on"], true, "{on}");
+        let id = on["share"]["id"].as_str().unwrap().to_string();
+        let response = hub.handle(&request("GET", "/api/share?k=k1", ""));
+        let share = body(&response);
+        assert_eq!(share["export"]["install_id"], json!(id), "{share}");
+        // (In the export's own order, for the player to read: not sorted.)
+        let text = String::from_utf8_lossy(&response.body);
+        assert!(
+            text.find("\"format\"") < text.find("\"app_version\""),
+            "{text}"
+        );
+        // "Delete it": off, the export and the id gone.
+        let gone = body(&hub.handle(&request("POST", "/api/share/delete?k=k1", "")));
+        assert_eq!(gone["share"], json!({"on": false}), "{gone}");
+        assert_eq!(store.consent(), crate::metrics::Consent::default());
+        assert!(store.export().is_none());
+        // And none of it without the link's key.
+        for (method, path) in [
+            ("GET", "/api/stats"),
+            ("GET", "/api/share"),
+            ("POST", "/api/share"),
+            ("POST", "/api/share/delete"),
+        ] {
+            assert_eq!(
+                hub.handle(&request(method, path, r#"{"on":true}"#)).status,
+                403
+            );
+        }
+        assert_eq!(store.consent(), crate::metrics::Consent::default());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sharing_is_not_offered_in_this_build_and_an_on_is_refused() {
+        // No approved basis yet (a rights review for MapleStory, consent by
+        // purpose): the card says sharing is not available, and an "on" —
+        // with the age box ticked, from an old page or a script — is
+        // refused; off and "Delete it" still answer ok.
+        const { assert!(!crate::metrics::SHARING_OFFERED) };
+        let hub = hub();
+        let dir = std::env::temp_dir().join(format!("ms-phone-offer-{}", tls::random_hex(4)));
+        let store = crate::metrics::Store::new(&dir);
+        hub.set_metrics(Arc::clone(&store));
+        let share = body(&hub.handle(&request("GET", "/api/share?k=k1", "")));
+        assert_eq!(
+            (share["available"].clone(), share["on"].clone()),
+            (json!(false), json!(false)),
+            "{share}"
+        );
+        let refused = hub.handle(&request(
+            "POST",
+            "/api/share?k=k1",
+            r#"{"on":true,"adult":true}"#,
+        ));
+        assert_eq!(
+            (refused.status, body(&refused)),
+            (403, json!({"error": "not_available"}))
+        );
+        assert_eq!(store.consent(), crate::metrics::Consent::default());
+        assert!(!dir.join("metrics").join("share.json").exists());
+        for (path, sent) in [
+            ("/api/share?k=k1", r#"{"on":false}"#),
+            ("/api/share/delete?k=k1", ""),
+        ] {
+            assert_eq!(
+                hub.handle(&request("POST", path, sent)).status,
+                200,
+                "{path}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_withdrawal_that_leaves_a_file_on_the_pc_is_answered_500_never_ok() {
+        // Turned off, or "Delete it", with the export still on the PC
+        // (held by another program; here a folder that is not empty in its
+        // place, which no deletion of a file takes): the PC answers 500,
+        // with the code the page has words for and what is left — never
+        // "ok", which the page shows as "Deleted".
+        let hub = hub();
+        let dir = std::env::temp_dir().join(format!("ms-phone-withdraw-{}", tls::random_hex(4)));
+        let store = crate::metrics::Store::new(&dir);
+        hub.set_metrics(Arc::clone(&store));
+        hub.offer_sharing(true);
+        let on = hub.handle(&request(
+            "POST",
+            "/api/share?k=k1",
+            r#"{"on":true,"adult":true}"#,
+        ));
+        assert_eq!(on.status, 200);
+        let export = dir.join("metrics").join("share-export.json");
+        std::fs::remove_file(&export).unwrap();
+        std::fs::create_dir_all(export.join("held")).unwrap();
+        for (path, sent) in [
+            ("/api/share/delete?k=k1", ""),
+            ("/api/share?k=k1", r#"{"on":false}"#),
+        ] {
+            let answer = hub.handle(&request("POST", path, sent));
+            assert_eq!(answer.status, 500, "{path}");
+            assert_eq!(
+                body(&answer),
+                json!({"error": "not_deleted", "left": ["share-export.json"]}),
+                "{path}"
+            );
+        }
+        // Let go of, the next "Delete it" takes it: ok, and nothing left.
+        std::fs::remove_dir_all(&export).unwrap();
+        let gone = hub.handle(&request("POST", "/api/share/delete?k=k1", ""));
+        assert_eq!(
+            (gone.status, body(&gone)),
+            (200, json!({"ok": true, "share": {"on": false}}))
+        );
+        assert!(!export.exists() && !dir.join("metrics").join("share.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1328,7 +1831,7 @@ mod tests {
         hub.handle(&request(
             "POST",
             "/api/hello?k=k1",
-            r#"{"agent":"iPhone Safari"}"#,
+            r#"{"agent":"iPhone Safari", "live": true}"#,
         ));
         hub.handle(&request(
             "POST",
@@ -1348,7 +1851,12 @@ mod tests {
         assert_eq!(
             hub.take_inbox(),
             vec![
-                Inbound::Hello("iPhone Safari".into()),
+                // (The first hello: the link had not seen a phone before.)
+                Inbound::Hello {
+                    agent: "iPhone Safari".into(),
+                    live: true,
+                    away: None
+                },
                 Inbound::Heard("syrup status".into()),
                 Inbound::Command("mark".into()),
             ]
@@ -1357,6 +1865,27 @@ mod tests {
         let summary = hub.summary();
         assert!(summary.connected);
         assert_eq!(summary.browser.as_deref(), Some("iPhone Safari"));
+        // The page opened again (a reload): how long the phone was gone
+        // comes with the hello, and the toggle as it is (on when unsaid:
+        // the page's default).
+        hub.handle(&request(
+            "POST",
+            "/api/hello?k=k1",
+            r#"{"agent":"iPhone Safari", "live": false}"#,
+        ));
+        match hub.take_inbox().as_slice() {
+            [
+                Inbound::Hello {
+                    agent,
+                    live: false,
+                    away: Some(away),
+                },
+            ] => {
+                assert_eq!(agent, "iPhone Safari");
+                assert!(*away < Duration::from_secs(5), "{away:?}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -1438,7 +1967,7 @@ mod tests {
         hub.set_recording(Some(Arc::clone(&recording) as Arc<dyn Recording>));
         assert_eq!(hub.handle(&req).status, 204);
         // A spoken line the phone started playing a moment ago, then stopped.
-        let seq = hub.set_clip(crate::ai::wav_bytes(&[100; 2_400], 24_000));
+        let seq = hub.set_clip(Kind::Reply, crate::ai::wav_bytes(&[100; 2_400], 24_000));
         let started = format!(r#"{{"seq": {seq}, "on": true, "age": 80}}"#);
         assert_eq!(
             hub.handle(&request("POST", "/api/playing?k=k1", &started))
@@ -1487,7 +2016,7 @@ mod tests {
         let hub = hub();
         let mut samples = vec![0i16; 960];
         samples.extend((0..960).map(|i| if i % 2 == 0 { 9_000 } else { -9_000 }));
-        let seq = hub.set_clip(crate::ai::wav_bytes(&samples, 24_000));
+        let seq = hub.set_clip(Kind::Reply, crate::ai::wav_bytes(&samples, 24_000));
         let mouth = body(&hub.handle(&request("GET", &format!("/api/mouth?k=k1&seq={seq}"), "")));
         assert_eq!(mouth["step_ms"], 40);
         let levels: Vec<u64> = mouth["levels"]
@@ -1518,10 +2047,30 @@ mod tests {
             hub.handle(&request("GET", "/api/clip?k=k1", "")).status,
             404
         );
-        assert_eq!(hub.set_clip(b"RIFF....WAVE".to_vec()), 1);
-        assert_eq!(hub.set_clip(b"RIFF....WAVE2".to_vec()), 2);
+        assert_eq!(hub.set_clip(Kind::Info, b"RIFF....WAVE".to_vec()), 1);
+        assert_eq!(hub.set_clip(Kind::Warning, b"RIFF....WAVE2".to_vec()), 2);
         let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
         assert_eq!(state["clip"], 2);
+        // Each with what it is and how old: the page plays no stale
+        // warning at the tap.
+        let listed = |state: &Value| -> Vec<(u64, String)> {
+            state["clips"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| {
+                    assert!(c["age_ms"].as_u64().unwrap() < 5_000, "{c}");
+                    (
+                        c["seq"].as_u64().unwrap(),
+                        c["kind"].as_str().unwrap().to_string(),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(
+            listed(&state),
+            [(1, "info".to_string()), (2, "warning".to_string())]
+        );
         let clip = hub.handle(&request("GET", "/api/clip?k=k1&seq=2", ""));
         assert_eq!((clip.status, clip.content_type), (200, "audio/wav"));
         assert_eq!(clip.body, b"RIFF....WAVE2");
@@ -1529,13 +2078,20 @@ mod tests {
         let first = hub.handle(&request("GET", "/api/clip?k=k1&seq=1", ""));
         assert_eq!(first.body, b"RIFF....WAVE");
         for _ in 0..super::CLIPS_KEPT {
-            hub.set_clip(b"RIFF....MORE".to_vec());
+            hub.set_clip(Kind::Alert, b"RIFF....MORE".to_vec());
         }
         assert_eq!(
             hub.handle(&request("GET", "/api/clip?k=k1&seq=1", ""))
                 .status,
             404
         );
+        let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        assert_eq!(listed(&state).len(), super::CLIPS_KEPT);
+        assert_eq!(listed(&state)[0], (3, "alert".to_string()));
+        // Cut: none left to fetch, none listed.
+        hub.cut();
+        let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        assert!(listed(&state).is_empty());
         let dog = hub.handle(&request("GET", "/dog.js", ""));
         assert_eq!(
             (dog.status, dog.content_type),
@@ -1571,13 +2127,96 @@ mod tests {
             "/api/hello?k=k1",
             r#"{"agent":"iPhone","lang":"ko-KR"}"#,
         ));
+        match hub.take_inbox().as_slice() {
+            [
+                Inbound::Language(lang),
+                Inbound::Hello {
+                    agent,
+                    live: true,
+                    away: Some(_),
+                },
+            ] => assert_eq!((lang.as_str(), agent.as_str()), ("ko-KR", "iPhone")),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_line_for_the_call_reaches_the_page_with_the_reading_behind_it() {
+        let hub = hub();
+        hub.post(Kind::Reply, "Marked.", true);
+        hub.post_with_fact(
+            Kind::Warning,
+            "Back off, you're getting shredded.",
+            true,
+            Some("HP 11% (read 0 s ago), MP 40% (read 0 s ago)"),
+            false,
+        );
+        hub.post_with_fact(
+            Kind::Alert,
+            "You died. Revive and get back in there.",
+            true,
+            None,
+            true,
+        );
+        let state = body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        let messages = state["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3);
+        // An ordinary line carries no reading and no urgency at all (not
+        // even a null or a false).
+        assert!(messages[0].get("fact").is_none(), "{}", messages[0]);
+        assert!(messages[0].get("urgent").is_none(), "{}", messages[0]);
+        // A warning carries the reading, and the page knows it for one.
+        assert_eq!(
+            messages[1]["fact"],
+            "HP 11% (read 0 s ago), MP 40% (read 0 s ago)"
+        );
+        assert_eq!(
+            (messages[1]["kind"].as_str(), messages[1]["speak"].as_bool()),
+            (Some("warning"), Some(true))
+        );
+        // A warning waits its turn like any; a death is news, said however
+        // late, and with no reading.
+        assert!(messages[1].get("urgent").is_none(), "{}", messages[1]);
+        assert_eq!(messages[2]["kind"], "alert");
+        assert_eq!(messages[2]["urgent"], true);
+        assert!(messages[2].get("fact").is_none(), "{}", messages[2]);
+        // The page says when a line it was handed was never said.
+        assert_eq!(
+            hub.handle(&request(
+                "POST",
+                "/api/turn?k=k1",
+                r#"{"what": "dropped", "text": "Back off, you're getting shredded."}"#
+            ))
+            .status,
+            200
+        );
+        assert_eq!(
+            hub.handle(&request("POST", "/api/turn?k=k1", r#"{"what": "dropped"}"#))
+                .status,
+            400
+        );
         assert_eq!(
             hub.take_inbox(),
-            vec![
-                Inbound::Language("ko-KR".into()),
-                Inbound::Hello("iPhone".into())
-            ]
+            vec![Inbound::NotSaid(
+                "Back off, you're getting shredded.".into()
+            )]
         );
+    }
+
+    #[test]
+    fn a_page_can_tell_a_restarted_pc_by_its_boot() {
+        // The same page state against two runs of the program in turn.
+        let before = hub();
+        let after = hub();
+        let state = |hub: &Hub| body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        let (first, second) = (
+            state(&before)["boot"].clone(),
+            state(&after)["boot"].clone(),
+        );
+        assert!(first.as_str().is_some_and(|b| b.len() == 8), "{first}");
+        assert_ne!(first, second);
+        // One run keeps its boot from poll to poll.
+        assert_eq!(state(&before)["boot"], first);
     }
 
     #[test]

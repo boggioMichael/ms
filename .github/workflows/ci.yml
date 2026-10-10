@@ -43,5 +43,16 @@ jobs:
           grep -E "(error|warning)(\[[A-Za-z0-9_]+\])?: " clippy.txt | grep -v "^error: could not compile" | awk '!seen[$0]++' | sed -n '1,10p' | sed 's/^/::error::/'
           exit $status
 
+      # A failing test is named in an annotation too (with where it panicked
+      # and why), so it shows on the run page and through the API.
       - name: Tests
-        run: cargo test --release
+        run: |
+          set +e
+          cargo test --release > tests.txt 2>&1
+          status=$?
+          cat tests.txt
+          {
+            grep -E "^test .* \.\.\. FAILED$" tests.txt
+            awk '/panicked at/ { msg = $0; for (i = 0; i < 4 && (getline line) > 0; i++) { if (line ~ /^(note:|stack backtrace:)/ || line == "") break; msg = msg " | " line }; print msg }' tests.txt
+          } | awk '!seen[$0]++' | sed -n '1,12p' | sed -e 's/%/%25/g' -e 's/^/::error::/'
+          exit $status

@@ -24,7 +24,11 @@ keeps what the pixels mean in MapleStory, and the orchestration.
   `mod.rs` finds the HUD from the pixels (`find_hud`) and measures its bars
   on every frame (`syrup::bars::BarModel`); `numbers.rs` reads HP, MP and
   EXP in the game's own font (`syrup::glyphs`, learned from labelled
-  examples, cross-checked against the bars); `things.rs` follows what the
+  examples, cross-checked against the bars) — on or just above the bar
+  (`Line`), or, for a HUD that prints them higher with the field's name
+  and brackets (Classic World: `HP[178/178]`), in a `Window` measured in
+  bar heights, with a font of its own (`classic`, its own thresholds) so
+  the two HUDs' digits are never averaged; `things.rs` follows what the
   player taught it (`syrup::template` sets, `syrup::tracking`, a stripe of
   the frame swept per frame for newcomers); `teacher.rs` is the vision
   model, asked only when the pixels fail, with backoff.
@@ -44,30 +48,172 @@ keeps what the pixels mean in MapleStory, and the orchestration.
 
 - **`companion/`**: what MapleSyrup says and when from the numbers alone —
   warnings, a beating, a death, level-ups, EXP/hour, voice commands, the
-  `Observation` of a frame. It acts only on what is read or learned: the
-  HUD detector's colour-run guesses stay out of the `Observation`
-  (`Reliability::Corroborated` or nothing), a bar whose readings swing
-  back and forth is held until it settles (`Steadiness`), a death read
-  from a bar's fill must last two seconds, and a level-up is the level
-  read at the bottom left going up by one for the same character — the
-  EXP bar's wrap only has the sight read the number again. Alerts that
-  nothing answers (no word, no potion, no EXP gained) stop after six and
-  wait ten minutes (`pace`); the main loop tells it when the player speaks
-  (`player_spoke`) and holds the taught things' alerts with its own
-  (`alerts_held`). A tone complaint ("don't talk to me this way") drops the
-  attitude to friendly (`commands::tone_complaint`).
+  `Observation` of a frame. It has no clock (time is passed in), so each
+  rule is tested by playing a session through `Companion::observe`. It
+  acts only on what is read or learned: the HUD detector's colour-run
+  guesses stay out of the `Observation` (`Reliability::Corroborated` or
+  nothing). The rules, all in `companion/mod.rs`:
+  - **A reading has to hold.** A number read in the game's font is taken
+    as it comes; a bar's fill whose readings swing back and forth (three
+    turns of `SWING` within `SWINGS_WINDOW`) is a guess, held until it
+    settles (`Steadiness`: `SETTLE_SECS`, doubling up to
+    `SETTLE_MAX_SECS`). A fall is measured from `held_readings` (a
+    one-frame spike left out); a potion's worth back (`POTTED`) answers a
+    line only once it has held `HELD_FRAMES`. A death read from the fill
+    must last `ZERO_HOLD_SECS`.
+  - **Once per fight.** The beating (`FALL_POINTS` within `FALL_SECS`,
+    `watch_hp`) is said once per fight — over `FIGHT_OVER_SECS` after the
+    last fast fall — and again only unanswered, after `FALL_COOLDOWNS`;
+    never with `hp_low` at 0. Each bar's low warning is a `Low`: once per
+    fight, again unanswered on the same cadence (dealt from the
+    `*_AGAIN` decks, `Low::repeating`), or once more at once when the bar
+    goes lower than at the last line. `Low::warned_this_fight` is what the
+    death line (`DEATH_WARNED`, also after a beating shouted this fight)
+    and `sooner_warning` go by; the mark moves only when HP spent
+    `SOONER_BAND_SECS` in the `SOONER_BAND` above it on the way down.
+  - **Trust.** After `TRUST_FIGHTS` fights in a row potted within
+    `TRUST_POT_SECS` of the line, a fall is watched (`watch`), not
+    shouted; it is shouted after all under the player's floor by
+    `TRUST_MARGIN` (trust kept if potted in time; the floor follows the
+    lowest fall handled in time), under `TRUST_BOTTOM` of the mark however
+    the floor stands, or when the potion is late (trust gone). A fight over
+    unanswered, and a death, end it too; a death during a watched fall
+    moves no mark.
+  - **A bar read wrong.** `DOUBT_AFTER_LINES` unanswered lines of one fight
+    with EXP gained since the first and `Low::due` returns `Due::Misread`:
+    one note (`lines::MISREAD`), then that bar's warnings (and, for HP,
+    the beating) wait until it reads above the mark for
+    `BELIEVE_AGAIN_SECS`.
+  - **The cadence and the hold.** A fight's unanswered low lines go
+    `Cadence::First`, `Again`, `Ask` (the second repeat is a question, the
+    `*_ASK` decks), times unchanged. In `pace`, after `UNANSWERED_MAX`
+    warnings with no sign of life — a word, an HP or MP potion that held,
+    `EXP_GAINED`, a level — the rest wait `HOLD_SECS`; the note (at most
+    once per `HOLD_TOLD_EVERY`) is `HOLD_HERE` when the player spoke within
+    `HOLD_AWAY_SECS`, else `HOLD_AWAY`. A word or a potion ends the hold at
+    once; a potion seen as one (a jump, `jumped`, within
+    `SEEN_POTION_SECS`) gets one `POTTED_AT_LAST` word when the note was
+    said within `POTTED_AT_LAST_SECS`. Otherwise `AFTER_HOLD` come through
+    when it runs out. News passes a hold. The main loop calls
+    `player_spoke` when the player speaks, holds the taught things' alerts
+    with its own, and the coach's looks and stalls (`alerts_held`,
+    `Glance::held`).
+  - **Shouted or told.** `Kind::Warning` is danger now (a beating, a low
+    bar, a taught thing past the player's mark); `Kind::Alert` is news (a
+    death, a level-up, a thing seen, the coach's word, "still there?").
+    `Kind::kept()` is what outlives a talk-over; the voice shouts only a
+    warning (`ai::openai::Delivery::urgent`); the phone and the console
+    colour the two apart.
+  - **The cards.** `companion::lines` has six or seven cards per attitude
+    for each situation (fewer for the decks in `lines::SHORT`: `SOONER`,
+    `MISREAD`, `POTTED_AT_LAST`),
+    dealt from a `Deck` (`attitude.rs`): every card before any repeats,
+    never one twice running, a fight's first line never a "still/again"
+    card. Decks are seeded per session (`Companion::new`; `seeded` for
+    tests, which replays a session exactly); `Companion::settled(known)`
+    shuffles a known player's first round whole, where a new player hears
+    each deck's lead (its first card, the most informative) first.
+  - **Presence.** `still_there` asks once a session, when the game has sat
+    idle `STILL_THERE_SECS` (HP and EXP unmoved, in view, no word) — never
+    while dead, during a hold, or within `STILL_THERE_AFTER_WARNING_SECS`
+    of a warning. `player_spoke` keeps the silence it ended
+    (`SoFar.quiet_before`: `QUIET_BEFORE_SECS` or longer, reported for
+    `QUIET_BEFORE_KEPT_SECS`) for the reply's snapshot (`so_far`).
+  - **Level-ups.** The level read at the bottom left going one above the
+    highest seen for the character (`top_level`), held `LEVEL_HOLD_SECS`;
+    one below it is a misread until it has held `LOWER_LEVEL_HOLDS` times
+    as long, then taken quietly. The EXP bar's wrap only has the sight
+    read the number again.
+  - A tone complaint ("don't talk to me this way") drops the attitude to
+    friendly (`commands::tone_complaint`).
 - **`coach/`**: when MapleSyrup speaks up on its own beyond that. `Coach`
-  is fed every frame and returns a `Reason` when a model should look (a
-  new scene, a level-up, EXP stalled, a look now and then); the main loop
+  is fed every frame and returns a `Reason` when a model should look:
+  `CloseCall` and `Streak` (reactions: they wait only for the talking to
+  stop and `CONSULT_GAP`, and go without the picture,
+  `Reason::wants_picture`), `NewScene`, `LevelUp` (the companion's
+  verified one, through `Coach::leveled`), `ExpStalled` (seconds of play
+  with EXP unmoved, held minutes not counted: `STALL_AFTER`,
+  `STALL_AGAIN`), `Look` (neither while `Glance::held`). The main loop
   turns it into `ai::Job::Coach`, and the model answers one line or
-  `[silent]`. Pacing lives here and is tested by playing sessions through
-  it (`MIN_GAP`, `CONSULT_GAP`, `LOOK_EVERY` growing to `LOOK_AT_MOST`).
+  `[silent]`, from what happened and a few example lines in the player's
+  attitude (`Reason::describe`, `coach::examples`). Pacing lives here and
+  is tested by playing sessions through it (`MIN_GAP`, `CONSULT_GAP`,
+  `LOOK_EVERY` growing to `LOOK_AT_MOST`, put off by talk in the last
+  `TALK_WINDOW`; `NEW_SCENE_AGAIN`, `NEW_SCENE_HUSH`); a look called off
+  by the player's words (`Coach::called_off`) leaves the pace alone.
   `coach::scene` is the frame fingerprint (32×18 cells of brightness, a
   few thousand samples whatever the frame's size) and what a run of them
-  says: a cut, a new scene once it settled, how much is going on.
+  says: a cut, a new scene once it settled (not a picture seen in the last
+  `SEEN_FOR`), how much is going on.
 - **`ai/`**: the model clients, the teaching loop, the tools, the coach's
-  look (`coach()`).
-- **`phone/`**: the phone link.
+  look (`coach()`). The worker is two lanes (`spawn_brains`):
+  `Worker::send` routes `Job::Speak`, MapleSyrup's own lines, to the mouth
+  lane and every other job (replies, looks, the hello) to the thinking
+  lane, which owns the conversation — so a warning never queues behind a
+  look's model call. The voice is one: `Mouth::floor` is held while a line
+  is made, on either lane, so a warning waits at most for the line being
+  made and clips never interleave. The mouth lane hands each line it said
+  back as `Work::Said`, and the thinking lane puts it in the conversation
+  (`Brain::watched`: "a warning", "news"), so the next reply knows its own
+  last words. A call-off (`Worker::cancel`) does not stop the line of a
+  warning or news (`Job::kept`). Every reply passes `brain::humanise` (in
+  `for_speech`): assistant-speak sentences go, and an opener ("Sure
+  thing,", "Of course,") goes only when what follows stands as a sentence
+  (`stands_alone`: three words, or a verb) — "Sure thing, boss." stays
+  whole; sentences glued at a full stop get their space (`unglued`). A
+  sentence that only restates the snapshot (the window's state, the level,
+  the map, a bar's percent) is left out when nothing was asked about the
+  game (`unasked`; kept for a question or "talk to me",
+  `wants_an_answer`). A pure greeting is answered from a deck without the
+  model (`companion::instant`, `Ask::Hello`), and a request for a language
+  (`commands::language_request`) switches its lines and the phone at once
+  (`lang_request` in the status).
+- **`phone/`**: the phone link (`Hub`, and the page, `page.html`). What
+  it is told and when is decided in `bin/maplesyrup/main.rs`, on
+  `Outputs`:
+  - **The hello** (`Outputs::hello`): one per visit, by whoever will talk —
+    `Hello::Call` when the page is about to open a live call
+    (`call_greets` in the status, which the page reads), else
+    `Hello::Clip`, MapleSyrup's own; `Hello::Quiet` for a page back within
+    `HELLO_AGAIN` unless the live toggle changed who greets (`greeted_by`;
+    a clip hello not heard yet is withdrawn, `withdraw_hello`). A hello
+    left to a call that has not opened within `CALL_GREETS_FOR` is said
+    as a clip after all (`hello_overdue`, `hello_late`); a page whose call
+    failed to open hands the hello back at once. A call that opens on a
+    greeted visit makes the hello final (`call_opened`, `hello_heard`): a
+    reload is Quiet. A player it does not know (`Learning::knows_player`)
+    hears `TERMS` once a session, `TERMS_AFTER` after the clip hello, or
+    from the call's own greeting (`new_player` in the status).
+  - **The call** (`Relay`): its own lines go to a live call at most once
+    per `RELAY_GAP` (a button's answer at once, outside the relay), the
+    newest of each kind waiting for the gap; an
+    urgent line (a death, this frame's level-up) goes at once, and a death
+    drops the warnings and news that waited. `Outputs::hand` puts the
+    reading (`fact`) behind a `Kind::Warning` only, and
+    `Hub::post_with_fact` takes `urgent` to the page, which says the lines
+    at its next quiet moment (`sayLive`, `flushSay`): a line not urgent
+    that waited `SAY_STALE_MS` is dropped and reported (`/api/turn` with
+    `what: "dropped"`, logged "[live] not said, too late"); an urgent one
+    is said however late. A call whose phone is gone `CALL_LOST_AFTER` is
+    lost (`watch_call`, `call_ended`) and the lines go back to its own
+    voice — the parked ones too, a warning or news said, the rest logged.
+    The page says the call is off only when it goes away (`pagehide`, a
+    beacon to `/api/mode`), not when hidden: a glance costs nothing; and
+    the status's `on_call` lets a page whose call is on correct a PC that
+    took it as lost (`healCall`).
+  - **A talk-over** (`Outputs::cut`): a reply or a note is hushed and the
+    rest of it dropped; a warning or news plays out on the PC, and its clip
+    held for the phone goes after the player's turn. Mute (`silence`)
+    stops everything.
+  - **The page**: a clip refused before a tap (`NotAllowedError`) is kept
+    for it (`playNextClip`, `blocked`); at the tap the hello and the terms
+    play, and a clip no longer news is dropped — `/api/state`'s `clips`
+    carry kind and age; a warning past `SAY_STALE_MS`, news past
+    `NEWS_STALE_MS`. `hearingLanguage` turns the clip-mode recogniser to
+    Hebrew after two Hebrew sentences on the call (or one long one) and
+    back after two English ones, shown beside the language picker (`#lang`,
+    on the main screen) with an × to undo; `/api/state` carries a boot id,
+    and a page open across a restart starts over.
 - **`app/`**, **`platform/`**, **`observe/`**, **`overlay/`**: the
   screen, the console and voice, the dashboard and preview, the overlay.
 
@@ -176,7 +322,8 @@ println!("Combat: {:?}", state.combat_intensity.value.unwrap().intensity);
 
 ## Testing
 
-Run all tests (36 unit tests + 1 integration test):
+Run all tests (about 420: the library's, the `maplesyrup` binary's, and
+the integration tests under `tests/`):
 
 ```sh
 cargo test
@@ -198,6 +345,35 @@ Run a specific detector's tests:
 
 ```sh
 cargo test vision::detectors::hud::tests::
+```
+
+The phone page, against a stand-in PC in a headless Chromium (`pip install
+playwright && playwright install chromium`; from the repository root):
+
+```sh
+python3 tools/phone_ui_check.py              # all five scenarios
+python3 tools/phone_ui_check.py live hello   # some of them
+```
+
+`ui` (the main screen, Settings, the toggle's hello), `recognition` and
+`loudness` (turn-taking: a stand-in recognizer, a microphone fed from a
+file), `live` (a stand-in call: the relay, urgency and drops, a warning's
+colour and bark, the recogniser's Hebrew, the call off when the page is
+hidden) and `hello`, which runs under the browser's own autoplay policy
+(no clip before a tap, as on a phone; the other four allow autoplay).
+`PHONE_PAGE=<path>` runs them against another copy of the page, to see a
+check fail against the page as it was.
+
+To read an evening rather than imagine one: `examples/evening.rs` plays
+ninety scripted minutes through the companion and the coach and prints
+everything they would say (`MM:SS  [kind]  text`; a consult prints its
+reason and the example lines, no model text) and a summary — lines per
+kind, warnings per ten minutes, the longest silence, the distinct cards.
+The arguments are the attitude and the deck seed (blunt, 7 by default):
+
+```sh
+cargo run --release --offline --example evening
+cargo run --release --offline --example evening -- savage 20261008
 ```
 
 ## Releasing

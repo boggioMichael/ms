@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::companion::{Attitude, Kind};
+
 /// Models tried for conversation, fastest first; the first one the key can
 /// use is kept. (As of October 2026, gpt-6-luna is OpenAI's efficient model.)
 pub const CHAT_MODELS: &[&str] = &[
@@ -37,6 +39,40 @@ pub const VISION_MODELS: &[&str] = &[
 pub const SPEECH_MODEL: &str = "gpt-4o-mini-tts";
 /// Raw PCM from `/audio/speech` is 24 kHz, 16-bit, mono.
 pub const SPEECH_RATE: u32 = 24_000;
+
+/// A reply of more words than this is a long explanation.
+pub const LONG_WORDS: usize = 20;
+
+/// How a line is to be said: in the attitude the player picked, as the
+/// kind of line it is (a warning is faster and sharper than a chat reply),
+/// and whether it is a long explanation (a touch slower and steadier).
+/// Both voices take it: ElevenLabs as its voice settings, OpenAI's as a
+/// line of its instructions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Delivery {
+    pub attitude: Attitude,
+    pub kind: Kind,
+    /// A reply of more than [`LONG_WORDS`] words.
+    pub long: bool,
+}
+
+impl Delivery {
+    /// How `text` is to be said, as a line of `kind` in `attitude`.
+    pub fn of(attitude: Attitude, kind: Kind, text: &str) -> Delivery {
+        Delivery {
+            attitude,
+            kind,
+            long: kind == Kind::Reply && text.split_whitespace().count() > LONG_WORDS,
+        }
+    }
+
+    /// A warning (a beating, a low bar): said faster and sharper than
+    /// talk. News (a death, a level-up, the coach's word) is not: there is
+    /// nothing to shout about once the character is dead.
+    pub fn urgent(self) -> bool {
+        self.kind == Kind::Warning
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AiError {
@@ -123,6 +159,14 @@ impl Stop {
     /// Work number `id`, called off once `mark` reaches it.
     pub fn new(mark: Arc<AtomicU64>, id: u64) -> Stop {
         Stop { mark, id }
+    }
+
+    /// Work nothing calls off (a mark of its own that nothing raises).
+    pub fn never() -> Stop {
+        Stop {
+            mark: Arc::new(AtomicU64::new(0)),
+            id: 1,
+        }
     }
 
     pub fn stopped(&self) -> bool {
@@ -759,7 +803,9 @@ impl OpenAi {
 
     /// `text` spoken, handed to `on_samples` a piece at a time as the voice
     /// is made (24 kHz mono), so it can be played before it is complete.
-    /// Returns how many samples there were.
+    /// Returns how many samples there were. The voice is given each word as
+    /// it is said ([`super::pronounce`]); the line shown and logged stays as
+    /// it was written.
     pub fn speech_stream(
         &self,
         text: &str,
@@ -767,12 +813,13 @@ impl OpenAi {
         stop: Option<&Stop>,
         on_samples: &mut dyn FnMut(&[i16]),
     ) -> Result<usize, AiError> {
+        let said = super::pronounce::for_voice(text);
         let mut voice = self.voice.clone();
         for attempt in 0..2 {
             let body = json!({
                 "model": SPEECH_MODEL,
                 "voice": voice,
-                "input": text,
+                "input": said.as_str(),
                 "instructions": style,
                 "response_format": "pcm",
             });
@@ -1115,11 +1162,69 @@ mod tests {
     }
 
     #[test]
+    fn a_long_reply_is_an_explanation_and_a_warning_alone_is_urgent() {
+        let short = "Pot now, you're at 20.";
+        let long = "Zakum's arms go down in order, left first, and the body only once all eight \
+arms are gone, so keep hitting the arms until they drop.";
+        assert!(long.split_whitespace().count() > LONG_WORDS);
+        assert!(!Delivery::of(Attitude::Blunt, Kind::Reply, short).long);
+        assert!(Delivery::of(Attitude::Blunt, Kind::Reply, long).long);
+        // A warning is never long, however many words; neither is news.
+        assert!(!Delivery::of(Attitude::Blunt, Kind::Warning, long).long);
+        assert!(!Delivery::of(Attitude::Blunt, Kind::Alert, long).long);
+        assert!(!Delivery::of(Attitude::Blunt, Kind::Info, long).long);
+        // Urgency goes by the situation, not by its being a line of its
+        // own: a warning is shouted; a death, a level-up, the coach's word
+        // are told.
+        assert!(Delivery::of(Attitude::Savage, Kind::Warning, short).urgent());
+        let death = "You died. Revive and get back in there.";
+        assert!(!Delivery::of(Attitude::Savage, Kind::Alert, death).urgent());
+        assert!(!Delivery::of(Attitude::Savage, Kind::Alert, "Level 166! Nice.").urgent());
+        assert!(!Delivery::of(Attitude::Savage, Kind::Alert, "Rebuff.").urgent());
+        assert!(!Delivery::of(Attitude::Savage, Kind::Reply, short).urgent());
+        assert!(!Delivery::of(Attitude::Savage, Kind::Info, short).urgent());
+    }
+
+    #[test]
     fn reads_the_text_out_of_a_responses_answer() {
         let raw = br#"{"id":"r1","output":[{"type":"reasoning","summary":[]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hey! HP looks great."}]}]}"#;
         assert_eq!(output_text(raw).unwrap(), "Hey! HP looks great.");
         assert!(output_text(br#"{"output":[]}"#).is_err());
         assert!(output_text(b"not json").is_err());
+    }
+
+    #[test]
+    fn openais_voice_is_given_each_word_as_it_is_said() {
+        use crate::ai::pronounce::fake;
+        if !fake::have_curl() {
+            return;
+        }
+        let (base, seen) = fake::voices();
+        let openai = OpenAi::new("sk-test", &base, "cedar", None);
+        for (line, said) in [
+            // The owner's session, 12:03:59.
+            (
+                "החנות שמופיעה כאן היא “Lion King’s Castle” ולא Henesys General Store; חזור למפת Henesys וחפש את החנות שם.",
+                "החנות שמופיעה כאן היא “לאיון קינגס קאסל” ולא הֶנֶסִיס ג'נרל סטור; חזור למפת הֶנֶסִיס וחפש את החנות שם.",
+            ),
+            // 12:47:04: the character's name, said as a word.
+            (
+                "השם שלך הוא WANWANBUJIO, לא ANWANBUIIO. תיקנתי.",
+                "השם שלך הוא וונוואן בוג'יו, לא Anwanbuiio. תיקנתי.",
+            ),
+            ("Got it, Mikael.", "Got it, Michael."),
+            ("Pot now, slowly.", "Pot now, slowly."),
+        ] {
+            let from = seen.lock().unwrap().len();
+            openai
+                .speech_stream(line, "Calm.", None, &mut |_| {})
+                .unwrap();
+            assert_eq!(
+                fake::said(&seen, from),
+                [("/v1/audio/speech".to_string(), said.to_string())],
+                "{line}"
+            );
+        }
     }
 
     #[test]

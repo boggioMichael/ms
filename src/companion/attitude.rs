@@ -1,6 +1,8 @@
 //! How MapleSyrup talks to the player, picked on the phone and kept between
 //! sessions: friendly, blunt (the usual) or savage. It shapes what the models
-//! are told and MapleSyrup's own lines (warnings, deaths, level-ups).
+//! are told and MapleSyrup's own lines (warnings, deaths, level-ups) — and
+//! how those lines are dealt, so that a night's grind does not hear the same
+//! one a hundred times ([`Deck`]).
 
 use serde::{Deserialize, Serialize};
 
@@ -41,15 +43,191 @@ impl Attitude {
         }
     }
 
-    /// One of `lines` (one list per attitude: friendly, blunt, savage), the
-    /// `n`th for variety.
-    pub fn pick<'a>(self, lines: [&[&'a str]; 3], n: u32) -> &'a str {
-        let options = match self {
+    /// Its own list out of `lines` (one list per attitude: friendly, blunt,
+    /// savage).
+    pub fn lines<'a, 'b>(self, lines: [&'b [&'a str]; 3]) -> &'b [&'a str] {
+        match self {
             Attitude::Friendly => lines[0],
             Attitude::Blunt => lines[1],
             Attitude::Savage => lines[2],
-        };
-        options[n as usize % options.len().max(1)]
+        }
+    }
+
+    /// The `n`th line dealt from `lines` (one list per attitude), the list
+    /// taken as a deck: see [`nth`]. For a caller that counts its own lines
+    /// and has nowhere to keep a [`Deck`].
+    pub fn pick<'a>(self, lines: [&[&'a str]; 3], n: u32) -> &'a str {
+        nth(self.lines(lines), n)
+    }
+}
+
+/// A situation's lines, dealt like a deck of cards: every line once before
+/// any comes again, never the same line twice in a row, and the first line
+/// of the list — the most informative, the one with the number — first in a
+/// session, while the player is new to it (see [`Deck::lead_first`]). The
+/// order is shuffled from the lines, the round and a seed the session
+/// gives it, so that no two nights hear a deck in the same order (death #2
+/// was the same line every night when the seed was the lines alone); a
+/// deck seeded the same plays out the same way twice, which is how the
+/// tests keep it.
+///
+/// One per situation and per [`Attitude`]: dealt in another attitude, it
+/// starts over in that voice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deck {
+    /// The attitude it was last dealt in.
+    attitude: Option<Attitude>,
+    /// How many lines were dealt in it.
+    dealt: u32,
+    /// The session's seed.
+    seed: u64,
+    /// Whether the first round opens with the list's first line.
+    lead_first: bool,
+}
+
+impl Default for Deck {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Deck {
+    /// A deck with no seed of its own: the lines alone shuffle it (what
+    /// [`Attitude::pick`] deals).
+    pub const fn new() -> Self {
+        Self::seeded(0)
+    }
+
+    /// A deck shuffled by `seed` too.
+    pub const fn seeded(seed: u64) -> Self {
+        Self {
+            attitude: None,
+            dealt: 0,
+            seed,
+            lead_first: true,
+        }
+    }
+
+    /// Whether the first round opens with the list's first line (as a
+    /// fresh deck does). Right for a player's first session, when the
+    /// most informative line should come first; wrong for their fortieth,
+    /// when the first beating, death and level-up of every night were the
+    /// same three lines: `false` shuffles the first round whole, like the
+    /// rest. Takes effect while nothing has been dealt yet; a deck in
+    /// play keeps its order (so that no line comes twice running).
+    pub fn lead_first(&mut self, lead_first: bool) {
+        if self.dealt == 0 {
+            self.lead_first = lead_first;
+        }
+    }
+
+    /// The next line of `lines` (one list per attitude) in `attitude`.
+    pub fn deal<'a>(&mut self, attitude: Attitude, lines: [&[&'a str]; 3]) -> &'a str {
+        let at = self.deal_index(attitude, lines);
+        attitude.lines(lines).get(at).copied().unwrap_or("")
+    }
+
+    /// Where the next line [`deal`](Deck::deal) would deal is in
+    /// `attitude`'s list of `lines`, dealt: its place, not its words. For
+    /// lines with a twin in another language — the same number of cards
+    /// per attitude, card for card the same in meaning — the twin's card
+    /// at that place is the same line in the other language: one deck
+    /// deals both (the order is `lines`' own, whichever language is said),
+    /// and a switch of language mid-session goes on with the deck where it
+    /// was. (0 for an empty list.)
+    pub fn deal_index(&mut self, attitude: Attitude, lines: [&[&str]; 3]) -> usize {
+        if self.attitude != Some(attitude) {
+            self.attitude = Some(attitude);
+            self.dealt = 0;
+        }
+        let at = nth_index(
+            attitude.lines(lines),
+            self.dealt,
+            self.seed,
+            self.lead_first,
+        );
+        self.dealt = self.dealt.wrapping_add(1);
+        at
+    }
+}
+
+/// The `n`th line dealt from `lines` taken as a deck: round by round, every
+/// line once per round in a shuffled order; the first round led by the
+/// first line (the most informative); and never the same line at the end of
+/// one round and the start of the next. A deck of one line can only repeat
+/// it; a deck of two alternates.
+pub fn nth<'a>(lines: &[&'a str], n: u32) -> &'a str {
+    lines
+        .get(nth_index(lines, n, 0, true))
+        .copied()
+        .unwrap_or("")
+}
+
+/// Where the `n`th line dealt from `lines` is in the list ([`nth`]), the
+/// shuffle seeded by `seed` as well as the lines, and the first round led
+/// by the first line only when `lead_first`. (0 for an empty list.)
+fn nth_index(lines: &[&str], n: u32, seed: u64, lead_first: bool) -> usize {
+    let len = lines.len();
+    if len == 0 {
+        return 0;
+    }
+    let round = n / len as u32;
+    let at = (n % len as u32) as usize;
+    round_order(len, round, salt(lines) ^ seed.rotate_left(29), lead_first)[at]
+}
+
+/// The order a deck of `len` lines is dealt in round `round`. The first
+/// round keeps its first line first (when `lead_first`) and shuffles the
+/// rest; later rounds are shuffled whole. A round whose last line would
+/// open the next round swaps its last two (the start of a round never
+/// moves, so a round depends on nothing but itself and the next). `salt`
+/// keeps decks of the same size from being dealt in step.
+fn round_order(len: usize, round: u32, salt: u64, lead_first: bool) -> Vec<usize> {
+    if len < 3 {
+        return (0..len).collect();
+    }
+    let raw = |round: u32| {
+        let mut order: Vec<usize> = (0..len).collect();
+        let from = if round == 0 && lead_first { 1 } else { 0 };
+        shuffle(&mut order[from..], seed(salt, round));
+        order
+    };
+    let mut order = raw(round);
+    if order[len - 1] == raw(round + 1)[0] {
+        order.swap(len - 1, len - 2);
+    }
+    order
+}
+
+/// A number from the lines themselves (their lead line and count), so that
+/// two decks are not shuffled alike.
+fn salt(lines: &[&str]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in lines[0].bytes().chain((lines.len() as u64).to_le_bytes()) {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+fn seed(salt: u64, round: u32) -> u64 {
+    salt ^ (round as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+/// A deterministic shuffle of `items`: Fisher–Yates on a splitmix64 stream
+/// from `seed`.
+fn shuffle<T>(items: &mut [T], seed: u64) {
+    let mut state = seed;
+    let mut next = move || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    for i in (1..items.len()).rev() {
+        let j = (next() % (i as u64 + 1)) as usize;
+        items.swap(i, j);
     }
 }
 
@@ -71,5 +249,197 @@ mod tests {
             serde_json::to_string(&Attitude::Savage).unwrap(),
             "\"savage\""
         );
+    }
+
+    const SEVEN: [&str; 7] = ["lead 1", "2", "3", "4", "5", "6", "7"];
+
+    #[test]
+    fn a_deck_deals_every_line_before_any_again_and_never_one_twice_in_a_row() {
+        let lines = [&SEVEN[..], &SEVEN[..], &SEVEN[..]];
+        let mut deck = Deck::new();
+        let dealt: Vec<&str> = (0..70).map(|_| deck.deal(Attitude::Blunt, lines)).collect();
+        // The most informative line opens the session.
+        assert_eq!(dealt[0], "lead 1");
+        // Each round is every line once…
+        for (r, round) in dealt.chunks(7).enumerate() {
+            let mut seen: Vec<&str> = round.to_vec();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), 7, "round {r}: {round:?}");
+        }
+        // …and no line follows itself, across rounds either.
+        for pair in dealt.windows(2) {
+            assert_ne!(pair[0], pair[1], "{dealt:?}");
+        }
+        // Not the list's own order, and not the same order every round.
+        assert_ne!(&dealt[..7], &SEVEN[..]);
+        assert_ne!(&dealt[7..14], &dealt[14..21]);
+        // The same deck plays the same way twice.
+        let mut again = Deck::new();
+        let replay: Vec<&str> = (0..70)
+            .map(|_| again.deal(Attitude::Blunt, lines))
+            .collect();
+        assert_eq!(dealt, replay);
+        // A caller counting for itself gets the very same sequence.
+        let counted: Vec<&str> = (0..70).map(|n| Attitude::Blunt.pick(lines, n)).collect();
+        assert_eq!(dealt, counted);
+    }
+
+    #[test]
+    fn a_deck_seeded_by_the_session_is_dealt_in_another_order_each_night() {
+        // Two sessions (two seeds — these two were checked to differ, as
+        // nearly any two do): the lead opens both, every rule holds in
+        // both, and the rest comes in another order. Unseeded, a deck is
+        // dealt as `pick` deals it.
+        let lines = [&SEVEN[..], &SEVEN[..], &SEVEN[..]];
+        let deal = |seed: u64| -> Vec<&str> {
+            let mut deck = Deck::seeded(seed);
+            (0..21).map(|_| deck.deal(Attitude::Blunt, lines)).collect()
+        };
+        let (one, two) = (deal(1), deal(2));
+        assert_ne!(one, two);
+        for dealt in [&one, &two] {
+            assert_eq!(dealt[0], "lead 1");
+            for (r, round) in dealt.chunks(7).enumerate() {
+                let mut seen: Vec<&str> = round.to_vec();
+                seen.sort_unstable();
+                seen.dedup();
+                assert_eq!(seen.len(), 7, "round {r}: {round:?}");
+            }
+            for pair in dealt.windows(2) {
+                assert_ne!(pair[0], pair[1], "{dealt:?}");
+            }
+        }
+        assert_eq!(deal(1), deal(1));
+        let counted: Vec<&str> = (0..21).map(|n| Attitude::Blunt.pick(lines, n)).collect();
+        assert_eq!(deal(0), counted);
+        assert_eq!(Deck::new(), Deck::seeded(0));
+    }
+
+    #[test]
+    fn a_settled_deck_shuffles_its_first_round_whole() {
+        // Twenty nights (twenty seeds) of a deck for a player who knows
+        // it: the lead opens only its fair share of them, every round is
+        // still every line once, and no line comes twice running. A deck
+        // in play is not reshuffled by it; a fresh one is dealt as before.
+        let lines = [&SEVEN[..], &SEVEN[..], &SEVEN[..]];
+        let mut led = 0;
+        for seed in 1..=20 {
+            let mut deck = Deck::seeded(seed);
+            deck.lead_first(false);
+            let dealt: Vec<&str> = (0..21).map(|_| deck.deal(Attitude::Blunt, lines)).collect();
+            led += usize::from(dealt[0] == "lead 1");
+            for (r, round) in dealt.chunks(7).enumerate() {
+                let mut seen: Vec<&str> = round.to_vec();
+                seen.sort_unstable();
+                seen.dedup();
+                assert_eq!(seen.len(), 7, "seed {seed}, round {r}: {round:?}");
+            }
+            for pair in dealt.windows(2) {
+                assert_ne!(pair[0], pair[1], "seed {seed}: {dealt:?}");
+            }
+            // Fresh and led, the same seed opens with the lead.
+            let mut led_deck = Deck::seeded(seed);
+            assert_eq!(led_deck.deal(Attitude::Blunt, lines), "lead 1");
+            // In play, the deck keeps its order.
+            led_deck.lead_first(false);
+            let rest: Vec<&str> = (1..7)
+                .map(|_| led_deck.deal(Attitude::Blunt, lines))
+                .collect();
+            let mut again = Deck::seeded(seed);
+            let same: Vec<&str> = (0..7).map(|_| again.deal(Attitude::Blunt, lines)).collect();
+            assert_eq!(rest, same[1..], "seed {seed}");
+        }
+        assert!(led <= 8, "the lead opened {led} of 20 nights");
+        assert!(led >= 1, "the lead never opens a night");
+    }
+
+    #[test]
+    fn a_deck_dealt_by_place_deals_a_twin_card_for_card() {
+        // The same deck dealt by place: the places are the lines `deal`
+        // deals, in the same order — so a twin list (the same lines in
+        // another language) dealt at those places is the same deck in the
+        // other language, and switching between the two goes on with it.
+        const TWIN: [&str; 7] = ["ראשון 1", "ב", "ג", "ד", "ה", "ו", "ז"];
+        let lines = [&SEVEN[..], &SEVEN[..], &SEVEN[..]];
+        let twin = [&TWIN[..], &TWIN[..], &TWIN[..]];
+        let mut by_line = Deck::seeded(5);
+        let mut by_place = Deck::seeded(5);
+        let mut mixed = Vec::new();
+        for n in 0..21 {
+            let line = by_line.deal(Attitude::Savage, lines);
+            let at = by_place.deal_index(Attitude::Savage, lines);
+            assert_eq!(SEVEN[at], line, "{n}");
+            mixed.push(if n % 2 == 0 {
+                SEVEN[at]
+            } else {
+                Attitude::Savage.lines(twin)[at]
+            });
+        }
+        // (The lead first, in whichever language.)
+        assert_eq!(mixed[0], "lead 1");
+        let places: Vec<usize> = mixed
+            .iter()
+            .map(|l| SEVEN.iter().chain(&TWIN).position(|x| x == l).unwrap() % 7)
+            .collect();
+        for round in places.chunks(7) {
+            let mut seen = round.to_vec();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), 7, "{places:?}");
+        }
+        let mut empty = Deck::new();
+        assert_eq!(empty.deal_index(Attitude::Blunt, [&[], &[], &[]]), 0);
+        assert_eq!(empty.deal(Attitude::Blunt, [&[], &[], &[]]), "");
+    }
+
+    #[test]
+    fn two_decks_of_the_same_size_are_not_dealt_in_step() {
+        const OTHER: [&str; 7] = ["lead a", "b", "c", "d", "e", "f", "g"];
+        let one: Vec<usize> = (0..21)
+            .map(|n| SEVEN.iter().position(|l| *l == nth(&SEVEN, n)).unwrap())
+            .collect();
+        let other: Vec<usize> = (0..21)
+            .map(|n| OTHER.iter().position(|l| *l == nth(&OTHER, n)).unwrap())
+            .collect();
+        assert_ne!(one, other);
+    }
+
+    #[test]
+    fn another_attitude_starts_the_deck_over_in_its_voice() {
+        let lines = [
+            &["warm 1", "warm 2", "warm 3"][..],
+            &["blunt 1", "blunt 2", "blunt 3"][..],
+            &["rude 1", "rude 2", "rude 3"][..],
+        ];
+        let mut deck = Deck::new();
+        assert_eq!(deck.deal(Attitude::Friendly, lines), "warm 1");
+        assert_ne!(deck.deal(Attitude::Friendly, lines), "warm 1");
+        // Switched on the phone: the new voice leads with its best line.
+        assert_eq!(deck.deal(Attitude::Savage, lines), "rude 1");
+        assert_ne!(deck.deal(Attitude::Savage, lines), "rude 1");
+        assert_eq!(deck.deal(Attitude::Friendly, lines), "warm 1");
+    }
+
+    #[test]
+    fn small_decks_do_what_they_can() {
+        let one = ["only"];
+        assert_eq!(
+            (0..5).map(|n| nth(&one, n)).collect::<Vec<_>>(),
+            ["only"; 5]
+        );
+        let two = ["first", "second"];
+        let dealt: Vec<&str> = (0..6).map(|n| nth(&two, n)).collect();
+        assert_eq!(
+            dealt,
+            ["first", "second", "first", "second", "first", "second"]
+        );
+        let three = ["lead", "b", "c"];
+        let dealt: Vec<&str> = (0..30).map(|n| nth(&three, n)).collect();
+        assert_eq!(dealt[0], "lead");
+        for pair in dealt.windows(2) {
+            assert_ne!(pair[0], pair[1], "{dealt:?}");
+        }
+        assert_eq!(nth(&[], 3), "");
     }
 }

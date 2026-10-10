@@ -8,6 +8,9 @@
 //! differ a little while the camera scrolls, and a lot when the game cuts
 //! to another map (a loading screen, then a different place). [`Scenes`]
 //! watches a run of them for such cuts, and for how much is going on.
+//! A cut that lands back on a picture seen a little while ago (a dialog
+//! closing, a death screen giving way to the map) is a return, not a new
+//! scene: the pictures the game settled on lately are remembered.
 
 use image::RgbaImage;
 
@@ -104,6 +107,13 @@ pub const CUT: f32 = 0.22;
 const STAYS_AWAY: f32 = 0.15;
 /// …for this long, in seconds.
 const SETTLE_SECS: f64 = 1.5;
+/// The pictures the game settled on are remembered this long, in seconds.
+/// A cut cannot tell a portal from a dialog box, a death screen or a
+/// full-screen effect; but each of those gives the old picture back when
+/// it ends, and a picture seen within the last couple of minutes is a
+/// return, not a new scene. (Long enough for a dialog read at leisure and
+/// a revive; short enough that coming back to a map later still counts.)
+pub const SEEN_FOR: f64 = 120.0;
 /// Frame-to-frame differences are averaged over this long for `activity`,
 /// in seconds.
 const ACTIVITY_SECS: f64 = 5.0;
@@ -117,7 +127,8 @@ pub struct Verdict {
     /// is going on (0 when nothing moves).
     pub activity: f32,
     /// The scene cut to a new one a moment ago and has settled there: a new
-    /// map, or something covering most of the screen.
+    /// map, or something covering most of the screen — and not a picture
+    /// seen lately (a dialog closed, a death screen gave way to the map).
     pub new_scene: bool,
 }
 
@@ -131,9 +142,29 @@ pub struct Scenes {
     cut: Option<(f64, Fingerprint)>,
     /// (when, change) lately.
     changes: std::collections::VecDeque<(f64, f32)>,
+    /// The pictures the game settled on lately (what it cut away from, and
+    /// what it settled on), and when each was last seen; oldest first.
+    seen: std::collections::VecDeque<(f64, Fingerprint)>,
 }
 
 impl Scenes {
+    /// Was a picture like this one settled on within [`SEEN_FOR`]?
+    fn seen_lately(&self, now: f64, fingerprint: &Fingerprint) -> bool {
+        self.seen
+            .iter()
+            .any(|(at, seen)| now - at <= SEEN_FOR && seen.difference(fingerprint) < STAYS_AWAY)
+    }
+
+    /// The game settled on `fingerprint` at `now`: remembered for a while,
+    /// standing in for any picture like it seen before (the newest look of
+    /// a place is the one to compare with).
+    fn remember(&mut self, now: f64, fingerprint: Fingerprint) {
+        self.seen.retain(|(at, seen)| {
+            now - at <= SEEN_FOR && seen.difference(&fingerprint) >= STAYS_AWAY
+        });
+        self.seen.push_back((now, fingerprint));
+    }
+
     /// The next frame's fingerprint, at `now` seconds.
     pub fn observe(&mut self, now: f64, fingerprint: Fingerprint) -> Verdict {
         let change = self
@@ -155,12 +186,17 @@ impl Scenes {
             self.changes.iter().map(|(_, c)| c).sum::<f32>() / self.changes.len() as f32
         };
         let mut new_scene = false;
+        let mut settled = false;
         if change >= CUT {
             // A cut: the settling starts over; what it cut away from is
-            // kept from the first cut of the run.
+            // kept from the first cut of the run (and remembered: the
+            // game was settled on it).
             match (self.cut.take(), self.last.take()) {
                 (Some((_, before)), _) => self.cut = Some((now, before)),
-                (None, Some(before)) => self.cut = Some((now, before)),
+                (None, Some(before)) => {
+                    self.remember(now, before.clone());
+                    self.cut = Some((now, before));
+                }
                 (None, None) => {}
             }
         } else if let Some((at, before)) = &mut self.cut {
@@ -172,8 +208,18 @@ impl Scenes {
                 // Settled on a picture: a new scene if it stayed away from
                 // the old one.
                 new_scene = before.difference(&fingerprint) >= STAYS_AWAY;
-                self.cut = None;
+                settled = true;
             }
+        }
+        if settled {
+            // …and is not one seen lately: a dialog closing, a death screen
+            // giving way to the map, a trip through a portal and back land
+            // on a known picture.
+            self.cut = None;
+            if new_scene && self.seen_lately(now, &fingerprint) {
+                new_scene = false;
+            }
+            self.remember(now, fingerprint.clone());
         }
         self.last = Some(fingerprint);
         Verdict {
@@ -296,6 +342,37 @@ mod tests {
             t += 0.1;
         }
         assert_eq!(told, 1);
+    }
+
+    #[test]
+    fn a_cut_back_to_a_picture_seen_lately_is_a_return_not_a_new_scene() {
+        let mut scenes = Scenes::default();
+        let map = Fingerprint::of(&split(320, 180, 0.5));
+        let dialog = Fingerprint::of(&split(320, 180, 0.9));
+        let mut t = 0.0;
+        let mut play = |scenes: &mut Scenes, picture: &Fingerprint, seconds: f64| -> Vec<f64> {
+            let mut told = Vec::new();
+            for _ in 0..(seconds * 10.0) as usize {
+                if scenes.observe(t, picture.clone()).new_scene {
+                    told.push(t);
+                }
+                t += 0.1;
+            }
+            told
+        };
+        // On a map for a while; then a dialog opens over it and stays: a
+        // cut that settles, which a fingerprint cannot tell from a portal.
+        assert!(play(&mut scenes, &map, 3.0).is_empty());
+        assert_eq!(play(&mut scenes, &dialog, 3.0).len(), 1);
+        // Read for half a minute, then closed: the map again — a picture
+        // seen lately, not a new scene.
+        play(&mut scenes, &dialog, 30.0);
+        assert_eq!(play(&mut scenes, &map, 3.0), Vec::<f64>::new());
+        assert!(scenes.seen.len() <= 2, "{}", scenes.seen.len());
+        // Two and a half minutes on the map: the dialog is forgotten, and
+        // the same cut is a new scene again.
+        play(&mut scenes, &map, 150.0);
+        assert_eq!(play(&mut scenes, &dialog, 3.0).len(), 1);
     }
 
     #[test]

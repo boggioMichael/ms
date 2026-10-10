@@ -13,6 +13,19 @@ fn main() {
     // the workshop starts its local branch from, and what the log shows.
     println!("cargo:rerun-if-env-changed=GITHUB_SHA");
     println!("cargo:rerun-if-changed=.git/HEAD");
+    // A new commit moves the branch HEAD names, not HEAD itself: watch the
+    // branch's ref too (loose or packed), but only files that exist — a
+    // missing one would run this script, and rebuild, every time.
+    let head = std::fs::read_to_string(".git/HEAD").unwrap_or_default();
+    if let Some(branch) = head.strip_prefix("ref: ").map(str::trim) {
+        let loose = Path::new(".git").join(branch);
+        if loose.is_file() {
+            println!("cargo:rerun-if-changed={}", loose.display());
+        }
+    }
+    if Path::new(".git/packed-refs").is_file() {
+        println!("cargo:rerun-if-changed=.git/packed-refs");
+    }
     let commit = std::env::var("GITHUB_SHA")
         .ok()
         .filter(|s| !s.is_empty())

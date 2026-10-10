@@ -115,6 +115,19 @@ OPTIONS
   --self-test           check this PC: the engine, the phone link, the voice
   --record-test         check recording on this PC: a few seconds of the screen
                         with a flash and a tone, which must line up
+  --install-claude      add MapleSyrup to the Claude desktop app: Claude starts
+                        it in the background and sees the game through it
+                        (the screen live, MapleSyrup's MapleStory wiki, what
+                        it knows about you); restart Claude afterwards
+  --setup-claude        write the Claude folder beside MapleSyrup, for Claude
+                        Code: started there (Start Claude.cmd), Claude is also
+                        pushed what changes in the game as it happens
+  --mcp                 (started by Claude) MapleSyrup's MCP server on stdio;
+                        it starts MapleSyrup in the background if need be
+  --background          watch the game with no window, voice or phone: for
+                        Claude (what --mcp starts)
+  --no-claude           don't offer Claude the live channel
+  --claude-port N       the channel's port on this PC (default 8790)
   --help
 
 The OpenAI key is read from OPENAI_API_KEY, or from openai-key.txt next to
@@ -164,6 +177,18 @@ struct Options {
     /// Grok answers the conversation when there is an xAI key.
     grok: bool,
     grok_model: Option<String>,
+    /// Offer Claude the live channel (`ms::claude`), on this port.
+    claude: bool,
+    claude_port: u16,
+    /// Be the MCP server Claude started (stdio), and nothing else.
+    claude_channel: bool,
+    /// Write the folder Claude Code is started in, and stop.
+    setup_claude: bool,
+    /// Add MapleSyrup to the Claude desktop app, and stop.
+    install_claude: bool,
+    /// Watch the game for Claude with no window, voice or phone; stop when
+    /// no Claude has asked for anything for a while.
+    background: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -202,6 +227,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
         attitude: None,
         grok: true,
         grok_model: None,
+        claude: true,
+        claude_port: ms::claude::link::DEFAULT_PORT,
+        claude_channel: false,
+        setup_claude: false,
+        install_claude: false,
+        background: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -263,10 +294,32 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--no-grok" => o.grok = false,
             "--grok-model" => o.grok_model = Some(value("--grok-model")?),
+            "--no-claude" => o.claude = false,
+            "--claude-port" => {
+                o.claude_port = number("--claude-port", value("--claude-port")?)? as u16
+            }
+            "--claude-channel" | "--mcp" => o.claude_channel = true,
+            "--setup-claude" => o.setup_claude = true,
+            "--install-claude" => o.install_claude = true,
+            "--background" => o.background = true,
             "-h" | "--help" | "/?" => return Err(String::new()),
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             path => o.input = Some(PathBuf::from(path)),
         }
+    }
+    // In the background, for Claude: no window of its own to show things
+    // in, no voice, no phone, no update that would restart it from under
+    // the Claude that started it.
+    if o.background {
+        o.phone = false;
+        o.overlay = false;
+        o.voice = false;
+        o.replies = Some(VoiceOn::Off);
+        o.live = false;
+        o.plain = true;
+        o.update = false;
+        o.preview = false;
+        o.claude = true;
     }
     Ok(o)
 }
@@ -292,6 +345,17 @@ fn main() {
             std::process::exit(if e.is_empty() { 0 } else { 2 });
         }
     };
+    // Started by Claude Code as its channel: the protocol on stdio, and
+    // nothing else (no console of its own, no update).
+    if options.claude_channel {
+        std::process::exit(ms::claude::channel::run(&tls::settings_dir(), true));
+    }
+    if options.setup_claude {
+        std::process::exit(setup_claude());
+    }
+    if options.install_claude {
+        std::process::exit(install_claude());
+    }
     if options.self_test {
         std::process::exit(selftest::run());
     }
@@ -317,6 +381,84 @@ fn main() {
         pause_if_double_clicked();
         std::process::exit(1);
     }
+}
+
+/// `--setup-claude`: the Claude folder written beside this program, with
+/// what the player wrote about himself (`about-me.txt`) in its brief.
+fn setup_claude() -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            eprintln!("Can't tell where MapleSyrup is: {e}");
+            return 1;
+        }
+    };
+    let Some(dir) = exe.parent().map(|d| d.join(ms::claude::kit::FOLDER)) else {
+        eprintln!("Can't tell where MapleSyrup is.");
+        return 1;
+    };
+    let about = std::fs::read_to_string(tls::settings_dir().join("about-me.txt")).ok();
+    // His folders, which Claude may read without asking.
+    let home = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from);
+    match ms::claude::kit::write(&dir, &exe, about.as_deref(), home.as_deref()) {
+        Ok(written) => {
+            println!("The Claude folder is ready: {}", dir.display());
+            for path in written {
+                println!("  {}", path.display());
+            }
+            println!(
+                "\nStart MapleSyrup, then \"{}\" in that folder: Claude talks with you and sees the game live.",
+                ms::claude::kit::LAUNCHER
+            );
+            pause_if_double_clicked();
+            0
+        }
+        Err(e) => {
+            eprintln!("Couldn't write the Claude folder: {e}");
+            pause_if_double_clicked();
+            1
+        }
+    }
+}
+
+/// `--install-claude`: MapleSyrup added to the Claude desktop app's config
+/// (each install of the app found on this PC), so that Claude starts it in
+/// the background and sees the game through it.
+fn install_claude() -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            eprintln!("Can't tell where MapleSyrup is: {e}");
+            return 1;
+        }
+    };
+    let configs = ms::claude::kit::desktop_configs();
+    if configs.is_empty() {
+        eprintln!(
+            "The Claude desktop app isn't on this PC (or hasn't been opened yet). Install it from claude.ai/download, open it once, then run this again."
+        );
+        return 1;
+    }
+    let mut failed = false;
+    for config in &configs {
+        match ms::claude::kit::add_to_desktop_config(config, &exe) {
+            Ok(true) => println!("Added MapleSyrup to Claude: {}", config.display()),
+            Ok(false) => println!("MapleSyrup was in Claude already: {}", config.display()),
+            Err(why) => {
+                failed = true;
+                eprintln!("Couldn't add MapleSyrup to Claude: {why}");
+            }
+        }
+    }
+    if failed {
+        return 1;
+    }
+    println!(
+        "\nQuit Claude completely (its icon by the clock -> Quit) and open it again. Then, in any chat, ask Claude about your game: it starts MapleSyrup in the background by itself."
+    );
+    0
 }
 
 /// Started by double-clicking, the console closes with the program: keep
@@ -399,10 +541,15 @@ struct Tick {
     frame: Option<VisionFrameResult>,
     /// Alerts of things the player taught, that fired on this frame.
     fired: Vec<Fired>,
+    /// What muted taught things would have said (logged, never said).
+    muted: Vec<String>,
     /// A line worth showing once: where the frames come from.
     note: Option<String>,
     /// What the frame's fingerprint says: how much changed, a new scene.
     scene: Option<ms::coach::scene::Verdict>,
+    /// The frame went through the scene's detectors too (what moves, a
+    /// dialog, the panels): Claude's channel is listening.
+    rich: bool,
 }
 
 /// The newest tick; an unread one is replaced (the main loop is never
@@ -521,6 +668,9 @@ struct Shared {
     sight: Option<Arc<Mutex<Sight>>>,
     latest: Arc<Latest>,
     in_front: Arc<AtomicBool>,
+    /// Look at the whole scene (what moves, dialogs, the panels), not only
+    /// the HUD: Claude is listening, and gets all of it.
+    rich: Arc<AtomicBool>,
 }
 
 /// What the capture thread hands the vision thread: one attempt to
@@ -604,6 +754,14 @@ fn grab(mut source: Source, mailbox: Arc<Mailbox>, running: Arc<AtomicBool>, fps
     }
 }
 
+/// While Claude listens, one frame in this many also goes through the
+/// scene's detectors (what moves, dialogs, the panels).
+const RICH_EVERY: u64 = 3;
+
+/// In the background, MapleSyrup stops when no Claude has asked it for
+/// anything this long (the Claude that started it went away).
+const BACKGROUND_IDLE: Duration = Duration::from_secs(180);
+
 /// The vision engine, on a thread of its own: every frame the capture
 /// thread puts in the mailbox goes through `perceive` and out as a tick.
 ///
@@ -621,6 +779,7 @@ fn watch(
         sight,
         latest,
         in_front,
+        rich,
     } = shared;
     let mut pipeline = PerceptionPipeline::new();
     let mut counter = FPSCounter::new(30);
@@ -651,6 +810,20 @@ fn watch(
                 } else {
                     latest.clear();
                 }
+                // While Claude listens, every third frame goes through the
+                // scene's detectors too (they cost a frame's work each).
+                let rich_frame =
+                    in_view && rich.load(Ordering::Relaxed) && frame_id.is_multiple_of(RICH_EVERY);
+                let wanted = if rich_frame {
+                    Detectors {
+                        motion: true,
+                        dialog: true,
+                        panels: true,
+                        ..wanted
+                    }
+                } else {
+                    wanted
+                };
                 let Perceived { world, obs, seen } = {
                     let _frame_span = tracing::trace_span!("frame").entered();
                     let mut sight = sight
@@ -670,6 +843,18 @@ fn watch(
                     )
                 };
                 let fired = seen.fired;
+                let muted: Vec<String> = sight
+                    .as_ref()
+                    .map(|s| {
+                        let mut sight = s.lock().unwrap_or_else(|e| e.into_inner());
+                        sight
+                            .things
+                            .take_hushed()
+                            .into_iter()
+                            .map(|f| f.say)
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 // One scene from the next, for the coach (a few thousand
                 // pixels, whatever the frame's size).
                 let scene = in_view.then(|| {
@@ -702,8 +887,10 @@ fn watch(
                     obs,
                     frame: Some(frame),
                     fired,
+                    muted,
                     note,
                     scene,
+                    rich: rich_frame,
                 });
             }
             Captured::NotFound => {
@@ -713,8 +900,10 @@ fn watch(
                     obs: Observation::unseen(GameView::NotFound),
                     frame: None,
                     fired: Vec::new(),
+                    muted: Vec::new(),
                     note: None,
                     scene: None,
+                    rich: false,
                 });
             }
             Captured::Unavailable(why) => {
@@ -724,8 +913,10 @@ fn watch(
                     obs: Observation::unseen(GameView::Unavailable(why)),
                     frame: None,
                     fired: Vec::new(),
+                    muted: Vec::new(),
                     note: None,
                     scene: None,
+                    rich: false,
                 });
             }
         }
@@ -796,15 +987,49 @@ struct Mouth {
     phone_until: Instant,
     /// When the phone is expected to finish the clips it was handed.
     phone_end: Instant,
+    /// The line under way (the last the voice started making, by job) and
+    /// what kind of line it is: a cut lets a warning's play out and hushes
+    /// the rest.
+    line: Option<(u64, Kind)>,
+    /// A line a cut hushed: what was still to come of it is dropped, here
+    /// and on the phone (hushed on its first half, a reply went on from
+    /// its second).
+    hushed: Option<u64>,
     /// The line being made for the phone (it gets a line at a time).
     phone_line: Vec<i16>,
+    /// Lines of its own (a warning, a hello) made while the player was
+    /// talking or their answer was being made, handed over once there is
+    /// room.
+    phone_held: Vec<HeldClip>,
     /// When it was last heard speaking (the phone may still hand its last
-    /// words back for a moment).
-    last_voice: Instant,
+    /// words back for a moment); None: not yet.
+    last_voice: Option<Instant>,
+    /// When it was last speaking on the PC's speakers (None: not yet).
+    last_pc_voice: Option<Instant>,
     /// The game was turned down for the phone's live voice.
     phone_ducked: bool,
     /// The game's process, turned down while the PC speaks.
     game_pid: Option<u32>,
+}
+
+/// A line of its own as a WAV, waiting for room on the phone: what kind of
+/// line it is, how long it plays, and since when it waits.
+struct HeldClip {
+    since: Instant,
+    kind: Kind,
+    wav: Vec<u8>,
+    length: Duration,
+}
+
+/// A piece of a line's voice, as the worker hands it over: which line
+/// (the job), what kind of line, its samples, and whether it opens or
+/// closes the line.
+struct Piece<'a> {
+    id: u64,
+    kind: Kind,
+    samples: &'a [i16],
+    start: bool,
+    end: bool,
 }
 
 impl Mouth {
@@ -816,6 +1041,17 @@ impl Mouth {
     /// Speaking on the PC's speakers (not on the phone).
     fn pc_speaking(&self) -> bool {
         self.player.speaking() || Instant::now() < self.sapi_until
+    }
+
+    /// Its own voice on the PC's speakers is in the room, for the phone's
+    /// microphone: speaking, or stopped less than [`ECHO_TAIL`] ago. (The
+    /// phone keeps its own clips out itself: it does not listen while one
+    /// plays.)
+    fn pc_voice_heard(&self) -> bool {
+        self.pc_speaking()
+            || self
+                .last_pc_voice
+                .is_some_and(|at| at.elapsed() < ECHO_TAIL)
     }
 
     fn hush(&mut self) {
@@ -841,11 +1077,22 @@ struct LiveService {
     learning: ai::Learning,
 }
 
+impl LiveService {
+    /// The call's instructions as of now, and the attitude they carry.
+    fn instructions_with(
+        &self,
+        recent: &[String],
+        language: Option<&str>,
+    ) -> (String, ms::companion::Attitude) {
+        let attitude = self.learning.memory().attitude;
+        let text = ai::live::instructions(&self.learning.prompt(), recent, language, attitude);
+        (text, attitude)
+    }
+}
+
 impl phone::Service for LiveService {
     fn live(&self, recent: &[String], language: Option<&str>) -> Result<serde_json::Value, String> {
-        let attitude = self.learning.memory().attitude;
-        let instructions =
-            ai::live::instructions(&self.learning.prompt(), recent, language, attitude);
+        let (instructions, attitude) = self.instructions_with(recent, language);
         let tools = ai::live::tools(self.toolbox.definitions());
         // How it adapted to the player: how soon to answer, their words.
         let tuning = {
@@ -856,9 +1103,19 @@ impl phone::Service for LiveService {
                 speed: ai::live::SPEED,
             }
         };
-        self.live
+        let mut call = self
+            .live
             .session(&instructions, &tools, &tuning)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        // The page watches for the attitude to change from this one.
+        call["attitude"] = json!(attitude);
+        Ok(call)
+    }
+
+    fn instructions(&self, language: Option<&str>) -> serde_json::Value {
+        // (No "conversation so far": the call has it.)
+        let (instructions, attitude) = self.instructions_with(&[], language);
+        json!({"instructions": instructions, "attitude": attitude})
     }
 
     fn tool(
@@ -887,7 +1144,11 @@ struct Turns {
     /// What the player said before they kept talking (its reply was called
     /// off before a word of it was said): answered together with what they
     /// say next, or alone after a moment.
-    held: Option<(String, Instant)>,
+    held: Option<Held>,
+    /// The phone heard a loud sound over its own voice and paused the clip:
+    /// a talk-over once the player's words follow, else a noise (its own
+    /// echo, the game) and the clip plays on.
+    loud: Option<Instant>,
 }
 
 struct Asked {
@@ -903,13 +1164,182 @@ struct Asked {
     lines: Vec<(Instant, String)>,
 }
 
+/// Words waiting for the rest of their sentence.
+struct Held {
+    words: String,
+    since: Instant,
+    /// The rest as the phone heard it so far: answered with the words when
+    /// no whole sentence follows (the phone's recognition stops when a clip
+    /// starts, and the sentence it was writing is gone).
+    more: Option<String>,
+}
+
 /// How long the player's words wait for the rest of their sentence.
 const HOLD_FOR: Duration = Duration::from_millis(1600);
 
+/// How long a line of its own waits for the player to stop talking (and
+/// their answer to be made) before the phone gets it anyway.
+const CLIP_WAITS: Duration = Duration::from_secs(8);
+
+/// How long a loud sound the phone heard over its own voice waits for the
+/// player's words before it counts as a talk-over. The phone restarts its
+/// recognition the moment it pauses the clip, and a sentence really spoken
+/// over it is written within about a second; its own echo and the game
+/// never are.
+const CORROBORATE_FOR: Duration = Duration::from_millis(1200);
+
+/// What [`Turns::hearing`] says of the player talking over its voice.
+const TALKED_OVER: &str = "talked over: ";
+
+/// How long after its voice on the PC's speakers stops the phone may still
+/// write that voice down as the player's (the room, and the recogniser's
+/// lag over its last words).
+const ECHO_TAIL: Duration = Duration::from_millis(1200);
+
+/// A pause in what the phone writes down this long: the words before were
+/// a sentence it never closed, and the next words start another.
+const SENTENCE_GAP: Duration = Duration::from_secs(3);
+
+/// The sentence the phone is writing down (`/api/hearing`), as far as its
+/// own voice on the PC's speakers goes: whether that voice was playing
+/// when its first words came, and whether the player talked over the voice
+/// in it. Half-duplex, like a person on a walkie-talkie: a sentence begun
+/// while its own voice played, or come whole while that voice is in the
+/// room ([`Mouth::pc_voice_heard`]: playing, or a moment after), is that
+/// voice — unless the player talked over it (and stopped it): then their
+/// words are sorted out from its own ([`Companion::own_words`]). (Replayed
+/// on the owner's session of 10 October: 53 of its 85 echoes, and 5 more
+/// of its own words taken for his — "A little" for "עלית רמה", "Magical"
+/// for "Magic Claw", "MP 23%" — against two or three sentences of his,
+/// said as it stopped, that he says again.)
+#[derive(Default)]
+struct Sentence {
+    /// When its latest words came.
+    last: Option<Instant>,
+    over_voice: bool,
+    talked_over: bool,
+}
+
+impl Sentence {
+    /// Words of it came; `voice`: its own voice is playing now.
+    fn hearing(&mut self, voice: bool) {
+        let now = Instant::now();
+        if self.last.is_none_or(|at| now - at > SENTENCE_GAP) {
+            *self = Sentence {
+                last: Some(now),
+                over_voice: voice,
+                talked_over: false,
+            };
+        } else {
+            self.last = Some(now);
+        }
+    }
+
+    /// The player talked over its voice in this sentence (and stopped it).
+    fn talked_over(&mut self) {
+        self.talked_over = true;
+    }
+
+    /// The sentence came whole (`/api/heard`): whether it is its own voice
+    /// by when it came — begun while that voice played, or come while it is
+    /// in the room (`voice`) — and not talked over. The next words start
+    /// another sentence.
+    fn whole(&mut self, voice: bool) -> bool {
+        let sentence = std::mem::take(self);
+        let begun =
+            sentence.last.is_some_and(|at| at.elapsed() <= SENTENCE_GAP) && sentence.over_voice;
+        (begun || voice) && !sentence.talked_over
+    }
+}
+
+/// How long after a taught thing spoke a plain "no" ("stop", "לא", "די")
+/// is about it — when nothing else was said since.
+const OBJECTION_WITHIN: Duration = Duration::from_secs(20);
+
+/// How long after a taught thing spoke a "no" that names what it said ("I
+/// didn't level up" to "Level up! Congrats.") is about it.
+const NAMED_OBJECTION_WITHIN: Duration = Duration::from_secs(120);
+
+/// What the player said no to: the taught things ("level-up effect") muted
+/// for the session when they said "no", "I didn't", "stop it" right after
+/// one spoke — its alerts are logged, not said — and the last one that
+/// spoke.
+#[derive(Default)]
+struct Objections {
+    muted: std::collections::HashSet<String>,
+    /// The last taught thing said aloud: its name, its line, when.
+    last: Option<(String, String, Instant)>,
+}
+
+impl Objections {
+    /// A taught thing's line was said aloud, `at`.
+    fn spoke(&mut self, name: &str, say: &str, at: Instant) {
+        self.last = Some((name.to_string(), say.to_string(), at));
+    }
+
+    fn muted(&self, name: &str) -> bool {
+        self.muted.contains(name)
+    }
+
+    /// The taught thing `text` says no to ([`commands::objection`]), if
+    /// any: the last one that spoke, when it is the last line said (no
+    /// other since: `said_since`) and spoke within [`OBJECTION_WITHIN`], or
+    /// when the sentence names what it said — a word of its name or its
+    /// line — within [`NAMED_OBJECTION_WITHIN`].
+    fn objected(&self, text: &str, said_since: bool, now: Instant) -> Option<String> {
+        let (name, say, at) = self.last.as_ref()?;
+        if self.muted(name) || !commands::objection(text) {
+            return None;
+        }
+        let age = now.saturating_duration_since(*at);
+        let last = age <= OBJECTION_WITHIN && !said_since;
+        let named = age <= NAMED_OBJECTION_WITHIN && names_any(text, &[name, say]);
+        (last || named).then(|| name.clone())
+    }
+
+    /// Muted for the session; false if it was already.
+    fn mute(&mut self, name: &str) -> bool {
+        self.muted.insert(name.to_string())
+    }
+}
+
+/// Words too common to name a thing by.
+const COMMON_WORDS: &[&str] = &[
+    "the", "and", "you", "your", "for", "are", "was", "not", "but", "its", "now", "that", "this",
+    "with", "what", "just", "got", "did", "didnt", "dont", "have", "has", "had", "all", "any",
+    "about", "from", "she", "her", "him", "his", "they", "them", "one", "out", "can", "cant", "של",
+    "את", "זה", "לא", "כן", "על", "עם", "אני", "אתה", "הוא", "היא", "מה",
+];
+
+/// Whether `text` names one of `names` — a word of it of three letters or
+/// more, not a common one, the same as one of theirs or the one beginning
+/// the other ("leveled" names "level", "עליתי" names "עלית").
+fn names_any(text: &str, names: &[&str]) -> bool {
+    let content = |s: &str| -> Vec<String> {
+        commands::normalize(s)
+            .split(' ')
+            .filter(|w| w.chars().count() >= 3 && !COMMON_WORDS.contains(w))
+            .map(str::to_string)
+            .collect()
+    };
+    let said = content(text);
+    let theirs: Vec<String> = names.iter().flat_map(|n| content(n)).collect();
+    let alike = |a: &str, b: &str| {
+        let (short, long) = if a.chars().count() <= b.chars().count() {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        a == b || (short.chars().count() >= 4 && long.starts_with(short))
+    };
+    said.iter().any(|w| theirs.iter().any(|t| alike(w, t)))
+}
+
 impl Turns {
     /// Stop talking and call off what is being made (the player talked over
-    /// it, or the phone heard them over its own voice).
+    /// it, or kept talking).
     fn interrupt(&mut self, out: &mut Outputs) {
+        self.loud = None;
         let talking = out.mouth.speaking();
         out.cut();
         let Some(worker) = &out.mouth.ai else {
@@ -919,7 +1349,11 @@ impl Turns {
         if let Some(reply) = self.reply.as_mut() {
             if !reply.spoke && !reply.done {
                 // Nothing of it was said: the player's words still count.
-                self.held = Some((reply.heard.clone(), Instant::now()));
+                self.held = Some(Held {
+                    words: reply.heard.clone(),
+                    since: Instant::now(),
+                    more: None,
+                });
             } else if reply.done && talking {
                 // Written in full but cut off while said: the conversation
                 // keeps what was heard.
@@ -938,6 +1372,23 @@ impl Turns {
         }
     }
 
+    /// The phone heard a loud sound over its own voice and paused the clip.
+    /// Nothing is called off yet: the phone fires on its own echo and on
+    /// the game, so only the player's words (`hearing`) make it a
+    /// talk-over; otherwise the phone plays on, that much later.
+    fn loud(&mut self, out: &mut Outputs) {
+        let now = Instant::now();
+        self.loud = Some(now);
+        // (It is playing, whatever was reckoned.)
+        out.mouth.phone_end = out.mouth.phone_end.max(now) + CORROBORATE_FOR;
+        out.mouth.phone_until = out.mouth.phone_until.max(now) + CORROBORATE_FOR;
+    }
+
+    /// A loud sound the phone heard lately, still waiting for words.
+    fn loud_lately(&self) -> bool {
+        self.loud.is_some_and(|at| at.elapsed() < CORROBORATE_FOR)
+    }
+
     /// The phone hears the player now. Returns what happened, for the log.
     fn hearing(
         &mut self,
@@ -946,15 +1397,36 @@ impl Turns {
         now: f64,
         text: &str,
     ) -> Option<String> {
-        if out.mouth.speaking() {
-            let words = companion.barge_in(now, text)?;
-            self.interrupt(out);
-            return Some(format!("talked over: {words}"));
+        if out.mouth.speaking() || self.loud_lately() {
+            if let Some(words) = companion.barge_in(now, text) {
+                self.interrupt(out);
+                return Some(format!("{TALKED_OVER}{words}"));
+            }
+            if out.mouth.speaking() {
+                return None;
+            }
         }
         let waiting = self.reply.as_ref().is_some_and(|r| !r.spoke && !r.done);
-        if waiting && companion.still_talking(now, text) {
-            // Still talking: the answer waits for the rest.
-            self.interrupt(out);
+        if waiting {
+            // The sentence's own words, posted late (the phone throttles
+            // them): not more talking.
+            if self.reply.as_ref().is_some_and(|r| within(&r.heard, text)) {
+                return None;
+            }
+            if companion.still_talking(now, text) {
+                // Still talking: the answer waits for the rest.
+                self.interrupt(out);
+                if let Some(held) = self.held.as_mut() {
+                    held.more = Some(text.to_string());
+                }
+                return Some(format!("still talking: {text}"));
+            }
+        } else if let Some(held) = self.held.as_mut()
+            && companion.still_talking(now, text)
+        {
+            // Still at it: the wait starts over, and this is the rest so far.
+            held.since = Instant::now();
+            held.more = Some(text.to_string());
             return Some(format!("still talking: {text}"));
         }
         None
@@ -968,7 +1440,7 @@ impl Turns {
             self.interrupt(out);
         }
         match self.held.take() {
-            Some((before, _)) => fold(&before, text),
+            Some(held) => fold(&held.words, text),
             None => text,
         }
     }
@@ -976,6 +1448,12 @@ impl Turns {
     /// A reply is being made (or words wait for the rest of a sentence).
     fn busy(&self) -> bool {
         self.held.is_some() || self.reply.as_ref().is_some_and(|r| !r.done)
+    }
+
+    /// The job of the reply the player is waiting for (its voice is not
+    /// held back for anything).
+    fn reply_id(&self) -> Option<u64> {
+        self.reply.as_ref().map(|r| r.id)
     }
 
     fn asked(&mut self, id: u64, heard: &str) {
@@ -1002,14 +1480,19 @@ impl Turns {
         }
     }
 
-    /// Words that waited long enough for more: to be answered now.
+    /// Words that waited long enough for more: to be answered now, with
+    /// the rest as the phone heard it.
     fn overdue(&mut self) -> Option<String> {
         if self
             .held
             .as_ref()
-            .is_some_and(|(_, since)| since.elapsed() >= HOLD_FOR)
+            .is_some_and(|held| held.since.elapsed() >= HOLD_FOR)
         {
-            return self.held.take().map(|(text, _)| text);
+            let held = self.held.take()?;
+            return Some(match held.more {
+                Some(more) => fold(&held.words, more),
+                None => held.words,
+            });
         }
         None
     }
@@ -1023,6 +1506,34 @@ fn fold(before: &str, text: String) -> String {
     } else {
         format!("{before} {text}")
     }
+}
+
+/// The same actions with their lines only shown, not spoken.
+fn unspoken(actions: Vec<Action>) -> Vec<Action> {
+    actions
+        .into_iter()
+        .map(|action| match action {
+            Action::Say(say) => Action::Say(ms::companion::Say {
+                speak: false,
+                ..say
+            }),
+            other => other,
+        })
+        .collect()
+}
+
+/// Whether the player is neither talking (heard this last second) nor
+/// waiting for an answer: a line of its own may start on the phone.
+fn player_quiet(player_heard: Option<Instant>, turns: &Turns) -> bool {
+    player_heard.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) && !turns.busy()
+}
+
+/// Whether `part` is in `sentence`, as whole words ("am I talking to" is
+/// in "am I talking to right").
+fn within(sentence: &str, part: &str) -> bool {
+    let part = commands::normalize(part);
+    !part.is_empty()
+        && format!(" {} ", commands::normalize(sentence)).contains(&format!(" {part} "))
 }
 
 /// How much of `line` was heard after it had played for `played`: speech
@@ -1097,17 +1608,221 @@ fn drop_the_attitude(companion: &mut Companion, learning: &ai::Learning, out: &m
 }
 
 /// What is on screen, as a few lines for a model: what the vision engine
-/// reads, and what MapleSyrup learned about this screen.
-fn snapshot_text(companion: &Companion, sight: Option<&Arc<Mutex<Sight>>>) -> String {
-    let mut snapshot = ai::brain::snapshot(companion.last(), &companion.progress());
+/// reads, what a friend in the room would know of the session so far, and
+/// what MapleSyrup learned about this screen. `in_front`: whether the game
+/// is the window in front (behind another window the picture is withheld,
+/// and the snapshot says so).
+fn snapshot_text(
+    companion: &Companion,
+    sight: Option<&Arc<Mutex<Sight>>>,
+    in_front: bool,
+) -> String {
+    let mut snapshot = ai::brain::snapshot_with_view(
+        companion.last(),
+        in_front,
+        &companion.progress(),
+        &companion.so_far(),
+    );
     if let Some(sight) = sight {
         let sight = sight.lock().unwrap_or_else(|e| e.into_inner());
         for line in sight.describe() {
             snapshot.push('\n');
             snapshot.push_str(&line);
         }
+        if sight.numbers.classic() == Some(true) {
+            snapshot.push('\n');
+            snapshot.push_str(ai::brain::CLASSIC_SNAPSHOT);
+        }
     }
     snapshot
+}
+
+/// A line of Claude's, said in MapleSyrup's voice (the one the player
+/// picked) and shown: by the natural voice when there is one, else by the
+/// PC's own.
+fn claude_says(out: &mut Outputs, text: String) {
+    match &out.mouth.ai {
+        Some(worker) => {
+            worker.send(Job::Say { heard: None, text });
+        }
+        None => {
+            out.show(Kind::Reply, &text);
+            if out.voice_on().pc()
+                && let Some(voice) = &out.mouth.sapi
+            {
+                voice.say(&text);
+                out.mouth.sapi_until = Instant::now() + Mouth::estimate(&text);
+            }
+        }
+    }
+}
+
+/// The HUD's bars as last seen, and when: the reading for Claude says a
+/// number with its age rather than nothing when a frame could not read it.
+#[derive(Default)]
+struct ClaudeBars {
+    hp: Option<(ms::companion::Gauge, Instant)>,
+    mp: Option<(ms::companion::Gauge, Instant)>,
+    exp: Option<(ms::companion::Gauge, Instant)>,
+}
+
+impl ClaudeBars {
+    /// `seen` (this frame's, when read) kept, and the bar as last seen.
+    fn bar(
+        slot: &mut Option<(ms::companion::Gauge, Instant)>,
+        seen: Option<ms::companion::Gauge>,
+    ) -> Option<ms::claude::feed::Bar> {
+        if let Some(gauge) = seen {
+            *slot = Some((gauge, Instant::now()));
+        }
+        slot.as_ref().map(|(g, at)| ms::claude::feed::Bar {
+            percent: g.percent,
+            current: g.current,
+            max: g.max,
+            read: g.read,
+            age: at.elapsed().as_secs_f64(),
+        })
+    }
+}
+
+/// Everything MapleSyrup reads now, for Claude: the game window, the
+/// character, the bars with their age, the map, what moves on the screen
+/// and where, the action, a dialog with text, the buff icons (the scene's
+/// detectors' latest look, while fresh), the things the player taught, and
+/// the session.
+fn claude_scene(
+    at: f64,
+    companion: &Companion,
+    sight: Option<&Arc<Mutex<Sight>>>,
+    world: Option<&(Arc<ms::vision::WorldState>, Instant)>,
+    front: bool,
+    frame_size: Option<(u32, u32)>,
+    bars: &mut ClaudeBars,
+) -> ms::claude::feed::Scene {
+    use ms::claude::feed::{Blob, Dialog, Scene, Session, Taught, Window};
+    use ms::knowledge::dialogs::DialogKind;
+    use ms::vision::detectors::combat::CombatIntensity;
+    let clock = chrono::Local::now().format("%H:%M:%S").to_string();
+    let obs = companion.last();
+    let (window, detail) = match obs.map(|o| &o.game) {
+        Some(GameView::Seen(title)) if front => (Window::InFront, Some(title.clone())),
+        Some(GameView::Seen(title)) => (Window::Behind, Some(title.clone())),
+        Some(GameView::Unavailable(why)) => (Window::Unavailable, Some(why.clone())),
+        _ => (Window::NotOpen, None),
+    };
+    let mut scene = Scene::empty(at, &clock, window);
+    scene.window_detail = detail;
+    scene.dead = companion.dead();
+    let in_front = window == Window::InFront;
+    // The bars: this frame's while the game is in front, else as last seen.
+    let seen = |g: Option<ms::companion::Gauge>| g.filter(|_| in_front);
+    scene.hp = ClaudeBars::bar(&mut bars.hp, seen(obs.and_then(|o| o.hp)));
+    scene.mp = ClaudeBars::bar(&mut bars.mp, seen(obs.and_then(|o| o.mp)));
+    scene.exp = ClaudeBars::bar(&mut bars.exp, seen(obs.and_then(|o| o.exp)));
+    if let Some(obs) = obs.filter(|o| o.game.is_seen()) {
+        scene.level = obs.level;
+        scene.name = obs.name.clone();
+        scene.job = obs.job.clone();
+    }
+    if let Some(sight) = sight {
+        let sight = sight.lock().unwrap_or_else(|e| e.into_inner());
+        scene.classic = sight.numbers.classic() == Some(true);
+        scene.level = scene.level.or(sight.facts.level);
+        scene.name = scene.name.take().or_else(|| sight.facts.name.clone());
+        scene.job = scene.job.take().or_else(|| sight.facts.job.clone());
+        if let Some(map) = &sight.facts.map {
+            scene.map = Some(map.clone());
+            scene.map_age = sight.map_age().map(|d| d.as_secs_f64());
+        }
+        scene.taught = sight
+            .things
+            .list
+            .iter()
+            .filter_map(|t| {
+                let reading = t.live.reading.as_ref()?;
+                Some(Taught {
+                    name: t.name.clone(),
+                    now: reading.describe(),
+                    places: match reading {
+                        ms::sight::things::Reading::Seen { places, .. } => places.clone(),
+                        _ => Vec::new(),
+                    },
+                })
+            })
+            .collect();
+    }
+    // The scene's detectors, while their look is fresh and of the game.
+    if let (true, Some((world, when)), Some((width, height))) = (in_front, world, frame_size)
+        && when.elapsed() <= Duration::from_secs(2)
+    {
+        let (fw, fh) = (width.max(1) as f32, height.max(1) as f32);
+        if let Some(blobs) = &world.motion.value {
+            let mut blobs: Vec<&ms::vision::detectors::motion::MovingEntity> =
+                blobs.iter().collect();
+            blobs.sort_by_key(|b| std::cmp::Reverse(b.bounds.w * b.bounds.h));
+            scene.moving_total = Some(blobs.len());
+            scene.moving = blobs
+                .iter()
+                .take(6)
+                .map(|b| Blob {
+                    id: b.id,
+                    x: (b.bounds.x as f32 + b.bounds.w as f32 / 2.0) / fw,
+                    y: (b.bounds.y as f32 + b.bounds.h as f32 / 2.0) / fh,
+                    w: b.bounds.w as f32 / fw,
+                    h: b.bounds.h as f32 / fh,
+                })
+                .collect();
+        }
+        if let Some(combat) = &world.combat_intensity.value {
+            scene.combat = Some(
+                match combat.intensity {
+                    CombatIntensity::Idle => "calm",
+                    CombatIntensity::Light => "a little",
+                    CombatIntensity::Moderate => "busy",
+                    CombatIntensity::Heavy => "heavy fighting",
+                }
+                .to_string(),
+            );
+        }
+        // A dialog only with its text read: a panel of one colour alone is
+        // too often something else.
+        if let Some(dialog) = &world.dialog.value
+            && let Some(text) = dialog
+                .text
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| t.len() >= 3)
+        {
+            let kind = match dialog.kind {
+                DialogKind::Death => "death prompt",
+                DialogKind::Revive => "revive prompt",
+                DialogKind::LevelUp => "level-up banner",
+                DialogKind::RuneActivation => "rune prompt",
+                DialogKind::Generic | DialogKind::None => "dialog",
+            };
+            scene.dialog = Some(Dialog {
+                kind: kind.to_string(),
+                text: Some(text.chars().take(400).collect()),
+                x: (dialog.bounds.x as f32 + dialog.bounds.w as f32 / 2.0) / fw,
+                y: (dialog.bounds.y as f32 + dialog.bounds.h as f32 / 2.0) / fh,
+            });
+        }
+        if let Some(icons) = &world.icon_row.value {
+            scene.buffs = Some(icons.icons.len());
+        }
+    }
+    let progress = companion.progress();
+    let so_far = companion.so_far();
+    scene.session = Session {
+        minutes: progress.seconds / 60.0,
+        exp_per_hour: progress.exp_per_hour,
+        next_level_minutes: progress.seconds_to_level.map(|s| s / 60.0),
+        deaths: so_far.deaths,
+        minutes_since_death: so_far.since_last_death.map(|s| s / 60.0),
+        level_ups: so_far.level_ups,
+        lowest_hp_lately: so_far.lowest_hp_lately,
+    };
+    scene
 }
 
 /// What the player said, for the model: with what is on screen, and the
@@ -1120,13 +1835,16 @@ fn conversation_job(
     in_view: bool,
     language: Option<String>,
 ) -> Job {
-    let snapshot = snapshot_text(companion, sight);
+    let snapshot = snapshot_text(companion, sight, in_view);
+    // What the snapshot says, for the reply that only says it back.
+    let mut facts = ai::brain::Facts::of(companion.last());
     let status = sight.and_then(|s| {
-        s.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .layout
-            .as_ref()
-            .and_then(|l| l.status)
+        let sight = s.lock().unwrap_or_else(|e| e.into_inner());
+        facts.map = sight.facts.map.clone();
+        facts.level = facts.level.or(sight.facts.level);
+        facts.name = facts.name.take().or_else(|| sight.facts.name.clone());
+        facts.job = facts.job.take().or_else(|| sight.facts.job.clone());
+        sight.layout.as_ref().and_then(|l| l.status)
     });
     let eyes = frame
         .filter(|_| in_view && companion.last().is_some_and(|o| o.game.is_seen()))
@@ -1134,6 +1852,7 @@ fn conversation_job(
     Job::Converse {
         heard: text,
         snapshot,
+        facts,
         speak: true,
         eyes,
         language,
@@ -1155,10 +1874,17 @@ fn recent_log(out: &Outputs) -> String {
         .join("\n")
 }
 
-/// One of MapleSyrup's own lines, said in its voice (and shown): through
-/// the AI worker when there is one (the voice the player picked), else as
-/// the PC says things.
-fn say_line(out: &mut Outputs, line: String) {
+/// One of MapleSyrup's own lines (the workshop's word), said in its voice
+/// (and shown): on a live call the call says it, in its own words (a clip
+/// over the call would be a second voice); else through the AI worker
+/// when there is one (the voice the player picked), else as the PC says
+/// things.
+fn say_line(out: &mut Outputs, companion: &mut Companion, line: String) {
+    if out.live {
+        // (The answer to what they asked for: the call says it at once.)
+        out.tell(Kind::Reply, &line, true, companion);
+        return;
+    }
     match &out.mouth.ai {
         Some(worker) => {
             worker.send(Job::Say {
@@ -1170,16 +1896,71 @@ fn say_line(out: &mut Outputs, line: String) {
     }
 }
 
+/// Whether anything else was said since the last taught thing spoke: a
+/// reply, a warning or news after its line.
+fn said_since(out: &Outputs, objections: &Objections) -> bool {
+    let Some((_, say, at)) = &objections.last else {
+        return false;
+    };
+    out.log.iter().any(|line| {
+        line.at > *at
+            && matches!(line.kind, Kind::Reply | Kind::Warning | Kind::Alert)
+            && line.text != *say
+    })
+}
+
+/// What it says when the player said no to a taught thing.
+const MUTED_THING: &str = "OK, I'll stop saying that.";
+
+/// The player said no to the taught thing `name` right after it spoke: it
+/// is muted for the session (its alerts logged, never said) — here and
+/// where it is watched for (`sight`: [`ms::sight::things::Things::mute`]) —
+/// and they hear so once; on a call, it is shown (the call answers them
+/// itself).
+fn mute_thing(
+    name: &str,
+    objections: &mut Objections,
+    sight: Option<&Arc<Mutex<Sight>>>,
+    out: &mut Outputs,
+    companion: &mut Companion,
+) {
+    if !objections.mute(name) {
+        return;
+    }
+    if let Some(sight) = sight {
+        let _ = sight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .things
+            .mute(name);
+    }
+    out.session.line(
+        "alert",
+        &format!("\"{name}\" muted for this session: the player said no to it (forget the thing if it is mis-taught)"),
+    );
+    let speak = !out.live;
+    out.tell(Kind::Reply, MUTED_THING, speak, companion);
+}
+
 /// Hand the workshop a task and tell the player what happens now.
-fn workshop_ask(workshop: &ms::workshop::Workshop, task: ms::workshop::Task, out: &mut Outputs) {
+fn workshop_ask(
+    workshop: &ms::workshop::Workshop,
+    task: ms::workshop::Task,
+    out: &mut Outputs,
+    companion: &mut Companion,
+) {
     match workshop.ask(task) {
         Ok(line) => {
             out.session.line("workshop", &line);
-            say_line(out, line);
+            say_line(out, companion, line);
         }
         Err(why) => {
             out.session.line("workshop", &why);
-            say_line(out, format!("I can't change myself right now: {why}"));
+            say_line(
+                out,
+                companion,
+                format!("I can't change myself right now: {why}"),
+            );
         }
     }
 }
@@ -1188,9 +1969,73 @@ fn workshop_ask(workshop: &ms::workshop::Workshop, task: ms::workshop::Task, out
 fn kind_label(kind: Kind) -> &'static str {
     match kind {
         Kind::Heard => "heard",
+        Kind::Warning => "warning",
         Kind::Alert => "alert",
         Kind::Reply => "reply",
         Kind::Info => "info",
+    }
+}
+
+/// MapleSyrup's own lines on a live call, as the call gets them to say.
+/// The watcher's lines (a warning, news, the coach's, a look-up's) go at
+/// most once per [`RELAY_GAP`]: what comes meanwhile waits, the newest of
+/// each kind, and goes together when the gap is up. A death or a level-up
+/// goes at once. A warning handed over carries the reading behind it, so
+/// the call passes on a number rather than restating the watcher's mood
+/// in its own words every few seconds, which is what the player shouted
+/// at; the rest ("Rebuff.", "You died.") go without one, so the call does
+/// not say "HP's at 95, rebuff".
+#[derive(Default)]
+struct Relay {
+    /// When lines last went to the call.
+    sent: Option<Instant>,
+    /// The lines waiting for the gap: the newest of each kind (a later
+    /// alert is the state of things now; a correction keeps its place).
+    waiting: Vec<(Kind, String)>,
+}
+
+/// How long the call keeps the watcher to itself after passing a line on.
+/// In a fight the warnings come every 12 to 20 s; once in that time the
+/// call says the number, and the rest of the time is the player's.
+const RELAY_GAP: Duration = Duration::from_secs(20);
+
+impl Relay {
+    fn open(&self) -> bool {
+        self.sent.is_none_or(|at| at.elapsed() >= RELAY_GAP)
+    }
+
+    /// A line for the call: the lines to hand over now (this one with
+    /// those that waited, each with whether it is said however late it
+    /// comes: only an urgent one is), or none while it waits for the gap.
+    /// Parked or going, it takes the place of the line of its kind that
+    /// waited: the newest is the state of things.
+    fn offer(&mut self, kind: Kind, text: &str, urgent: bool) -> Vec<(Kind, String, bool)> {
+        self.waiting.retain(|(k, _)| *k != kind);
+        if !urgent && !self.open() {
+            self.waiting.push((kind, text.to_string()));
+            return Vec::new();
+        }
+        self.sent = Some(Instant::now());
+        let mut lines = self.take_waiting();
+        lines.push((kind, text.to_string(), urgent));
+        lines
+    }
+
+    /// What waited, once the gap is up.
+    fn due(&mut self) -> Vec<(Kind, String, bool)> {
+        if self.waiting.is_empty() || !self.open() {
+            return Vec::new();
+        }
+        self.sent = Some(Instant::now());
+        self.take_waiting()
+    }
+
+    /// The lines that waited (none of them urgent: an urgent line never waits).
+    fn take_waiting(&mut self) -> Vec<(Kind, String, bool)> {
+        std::mem::take(&mut self.waiting)
+            .into_iter()
+            .map(|(kind, text)| (kind, text, false))
+            .collect()
     }
 }
 
@@ -1211,6 +2056,129 @@ struct Outputs {
     /// A live call is on: MapleSyrup's own lines are handed to the call to
     /// say (in its voice and the language being spoken), not to the PC.
     live: bool,
+    /// Since when the phone has not been heard from while a call is on
+    /// (None: it is here, or there is no call): gone for
+    /// [`CALL_LOST_AFTER`], the call is lost with it.
+    phone_gone: Option<Instant>,
+    /// How they are handed over.
+    relay: Relay,
+    /// When the phone was last said hello to (None: not yet), and by whom
+    /// (the call, or a clip): the toggle flipped before Listen changes who
+    /// can.
+    greeted: Option<Instant>,
+    greeted_by: Option<Hello>,
+    /// When the hello was left to the call the page is about to open
+    /// (None: nobody's): the call says hi when it opens (the page reads it
+    /// off the status), unless it has not opened within
+    /// [`CALL_GREETS_FOR`] — then it is not coming, and MapleSyrup says
+    /// hello itself.
+    call_greets: Option<Instant>,
+    /// The clip hello's job for this visit (None: none, or heard by now):
+    /// withdrawn when the call takes the hello over before the tap.
+    hello_job: Option<u64>,
+    /// The visit's hello was heard: a call opened after it (the call said
+    /// it, or the clip played at the tap that opened the call). Final: a
+    /// reload or a toggle flip within the visit is greeted by nobody.
+    hello_heard: bool,
+    /// When to say what it does, to a player it does not know (None: not
+    /// due), and whether it did this session.
+    terms_due: Option<Instant>,
+    terms_said: bool,
+    /// The call the hello was left to says what it does too (a player it
+    /// does not know; the page reads `new_player` off the status).
+    call_terms: bool,
+    /// A language the player asked for out loud, for the phone to take
+    /// (`lang_request` on its status, until it says it took it), and how
+    /// many were asked for this session (each request's number).
+    lang_asked: Option<LangAsked>,
+    lang_asks: u64,
+    /// Claude is connected (`ms::claude`): it does the talking. MapleSyrup's
+    /// own lines are shown and passed on to it, never said; what the player
+    /// says goes to Claude as said; only Claude's words are spoken.
+    claude: bool,
+}
+
+/// How long after the clip hello the terms come, so the two do not
+/// collide (the hello's voice is made in about a second).
+const TERMS_AFTER: Duration = Duration::from_secs(3);
+
+/// What it does, told once to a player it does not know, after the hello:
+/// nothing else in the first five minutes says it. One list per attitude.
+const TERMS: [&[&str]; 3] = [
+    &[
+        "I'll shout if your HP drops, and you can ask me anything.",
+        "I'll yell if your HP gets low. Ask me whatever you like.",
+        "If your HP drops I'll shout, and you can ask me anything, any time.",
+    ],
+    &[
+        "I yell when your HP drops. Ask me stuff.",
+        "Low HP, I shout. Anything else, just ask.",
+        "HP drops, I yell. Got a question, ask it.",
+    ],
+    &[
+        "I scream when you're dying. Try to keep up.",
+        "When you're about to die, I scream. The rest, you ask.",
+        "You start dying, I scream. Questions, ask. Keep up.",
+    ],
+];
+
+/// The word that `locale` is taken, in it (or in English, to be translated
+/// into it), in `attitude`'s voice (the lists are the companion's own
+/// lines, so that the evening example deals them too).
+fn language_taken(locale: &str, attitude: ms::companion::Attitude) -> String {
+    use ms::companion::lines::{LANGUAGE_TAKEN_EN, LANGUAGE_TAKEN_HE};
+    let mut deck = ms::companion::Deck::seeded(ai::brain::session_seed());
+    deck.lead_first(false);
+    match ai::language::name(locale) {
+        "Hebrew" => deck.deal(attitude, LANGUAGE_TAKEN_HE).to_string(),
+        name => deck
+            .deal(attitude, LANGUAGE_TAKEN_EN)
+            .replace("{lang}", name),
+    }
+}
+
+/// A language the player asked for out loud, for the phone to take as if
+/// picked in its picker: its locale, its number (the page takes each
+/// number once) and when.
+struct LangAsked {
+    locale: String,
+    seq: u64,
+    at: Instant,
+}
+
+/// How long the phone's status asks it to take a language, at most: the
+/// page takes it within a poll or two and says so (`/api/lang`); a page
+/// not there then is not switched an hour later.
+const LANG_ASKED_FOR: Duration = Duration::from_secs(30);
+
+/// How long the phone must be gone before it is said hello to again: a
+/// page reloaded sooner (iOS Safari does that on its own) is the same
+/// visit, and a hello on every reload is a bot's tic.
+const HELLO_AGAIN: Duration = Duration::from_secs(30 * 60);
+
+/// How long the hello waits for the call it was left to. The page opens
+/// its call when Listen is tapped; a call that has not opened this long
+/// after the hello is not coming (Listen not tapped, the toggle turned
+/// off), and the hello is said as a clip — which the phone keeps for the
+/// tap — rather than never, or an hour later when a call first opens.
+const CALL_GREETS_FOR: Duration = Duration::from_secs(60);
+
+/// How long the phone may go unheard from on a live call before the call
+/// is taken as lost. On a call the page asks the PC for something every
+/// half second; pocketed, the phone locks its screen, Safari suspends the
+/// page and the call dies with it, with no word to the PC — which would
+/// otherwise hand every line of the night to a call nobody is on.
+const CALL_LOST_AFTER: Duration = Duration::from_secs(10);
+
+/// Who said hello to the phone that just connected.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Hello {
+    /// The call the page is about to open, when it opens.
+    Call,
+    /// A line of MapleSyrup's own, as a clip.
+    Clip,
+    /// Nobody: the phone is back from a reload, greeted already.
+    Quiet,
 }
 
 impl Outputs {
@@ -1221,70 +2189,347 @@ impl Outputs {
             .unwrap_or(self.replies)
     }
 
+    /// The phone's page opened (`agent`: its browser; `live`: its live-call
+    /// toggle is on; `away`: how long the phone had been gone, None the
+    /// first time): "Connected" on its screen, and a hello in its ear once
+    /// per visit, like a person's — the call's own when the page is about
+    /// to open one (it reads that off the status), else a clip of
+    /// MapleSyrup's own (`knows_player`: picking up from last time). A
+    /// reload within [`HELLO_AGAIN`] is the same visit: no second hello —
+    /// unless the toggle changed who greets (the page says hello again
+    /// when it is flipped before Listen): the call that was to say it is
+    /// not coming, so a clip says it; or a call is coming after all, and
+    /// takes over a clip hello not heard yet.
+    fn hello(
+        &mut self,
+        companion: &mut Companion,
+        knows_player: bool,
+        agent: &str,
+        live: bool,
+        away: Option<Duration>,
+        language: Option<String>,
+    ) -> Hello {
+        // A page just opened has no call: the one that was on is over (a
+        // page reloaded mid-call; a PC started again mid-call hears of the
+        // page's call right after its hello).
+        self.call_ended(companion);
+        let device = device_of(agent);
+        self.push(Kind::Info, format!("{device} connected"));
+        // (In another language the page says it itself.)
+        if self.language.is_none()
+            && let Some(hub) = &self.phone
+        {
+            hub.post(
+                Kind::Info,
+                &format!("Connected to MapleSyrup on this {device}."),
+                false,
+            );
+        }
+        let would = if self.live_ok
+            && self.voice_on().phone()
+            && live
+            && companion.settings.always_listen
+        {
+            Hello::Call
+        } else {
+            Hello::Clip
+        };
+        let back = self.greeted.is_some() && away.is_some_and(|gone| gone < HELLO_AGAIN);
+        // (Re-decided only while not heard: a heard hello is final.)
+        let hello = if back && (self.hello_heard || self.greeted_by == Some(would)) {
+            Hello::Quiet
+        } else {
+            would
+        };
+        self.session.line(
+            "info",
+            &format!(
+                "{device} connected: {}",
+                match (hello, back) {
+                    (Hello::Call, true) => "the call takes the hello over, when it opens",
+                    (Hello::Call, false) => "the call says hello when it opens",
+                    (Hello::Clip, true) => "no call coming for the hello: saying it",
+                    (Hello::Clip, false) => "saying hello",
+                    (Hello::Quiet, _) => "back from a reload, no second hello",
+                }
+            ),
+        );
+        match hello {
+            Hello::Quiet => {}
+            Hello::Call => {
+                // A clip hello of this visit the phone has not played yet
+                // (it keeps a clip for the tap) would come right before
+                // the call's: withdrawn. (An earlier visit's is long heard.)
+                if back {
+                    self.withdraw_hello();
+                } else {
+                    self.hello_job = None;
+                }
+                self.greeted = Some(Instant::now());
+                self.greeted_by = Some(Hello::Call);
+                self.hello_heard = false;
+                self.call_greets = Some(Instant::now());
+                self.call_terms = !knows_player && !self.terms_said && !companion.muted();
+            }
+            Hello::Clip => {
+                self.greeted = Some(Instant::now());
+                self.greeted_by = Some(Hello::Clip);
+                self.hello_heard = false;
+                self.call_greets = None;
+                self.say_hello(companion, knows_player, language);
+            }
+        }
+        hello
+    }
+
+    /// The hello as a clip of MapleSyrup's own: from the model when it
+    /// knows the player (picking up from last time), else the usual line
+    /// — and, once a session, for a player it does not know, what it does
+    /// (`terms_due`: a moment after, so the two do not collide).
+    fn say_hello(
+        &mut self,
+        companion: &mut Companion,
+        knows_player: bool,
+        language: Option<String>,
+    ) {
+        self.hello_job = match &self.mouth.ai {
+            Some(worker) if knows_player && !companion.muted() => {
+                Some(worker.send(Job::Greet { language }))
+            }
+            Some(_) => self.speak(Kind::Info, "Hey! I'm here. Just talk to me.", companion),
+            None => self.speak(Kind::Info, "Phone connected.", companion),
+        };
+        if !knows_player && !self.terms_said && !companion.muted() {
+            self.terms_due = Some(Instant::now() + TERMS_AFTER);
+        }
+    }
+
+    /// Whether the terms are due to be said now.
+    fn terms_due(&self) -> bool {
+        self.terms_due.is_some_and(|at| Instant::now() >= at)
+    }
+
+    /// What it does, in its attitude, to a player it does not know: said
+    /// once a session, after the hello.
+    fn say_terms(&mut self, companion: &mut Companion) {
+        self.terms_due = None;
+        self.terms_said = true;
+        let mut deck = ms::companion::Deck::seeded(ai::brain::session_seed());
+        deck.lead_first(false);
+        let line = deck.deal(companion.settings.attitude, TERMS);
+        self.session
+            .line("info", "a player I don't know: saying what I do");
+        self.tell(Kind::Info, line, true, companion);
+    }
+
+    /// The clip hello of this visit, not heard yet: called off, and taken
+    /// back from the phone (which keeps a clip for the tap), so that the
+    /// call's hello is the one. (A hello heard already is past
+    /// withdrawing: the cut finds nothing.)
+    fn withdraw_hello(&mut self) {
+        // (The call says the terms itself: `call_terms`.)
+        self.terms_due = None;
+        let Some(id) = self.hello_job.take() else {
+            return;
+        };
+        if let Some(worker) = &self.mouth.ai {
+            worker.cancel(id);
+        }
+        self.cut();
+        self.session
+            .line("info", "the call says hello instead: the clip is withdrawn");
+    }
+
+    /// Whether the call the page is about to open says the hello (the
+    /// page reads it off the status when its call opens).
+    fn call_greets(&self) -> bool {
+        self.call_greets
+            .is_some_and(|since| since.elapsed() < CALL_GREETS_FOR)
+    }
+
+    /// Whether the hello was left to a call that has not opened in
+    /// [`CALL_GREETS_FOR`]: it is not coming (Listen not tapped, the toggle
+    /// turned off on a page that does not say so).
+    fn hello_overdue(&self) -> bool {
+        !self.live
+            && self
+                .call_greets
+                .is_some_and(|since| since.elapsed() >= CALL_GREETS_FOR)
+    }
+
+    /// The hello the call never came for, said by MapleSyrup itself — a
+    /// clip the phone keeps for the tap.
+    fn hello_late(
+        &mut self,
+        companion: &mut Companion,
+        knows_player: bool,
+        language: Option<String>,
+    ) {
+        self.call_greets = None;
+        self.greeted_by = Some(Hello::Clip);
+        self.session
+            .line("info", "no call opened for the hello: saying it myself");
+        self.say_hello(companion, knows_player, language);
+    }
+
     /// Show a line everywhere (console, phone, session log).
     fn show(&mut self, kind: Kind, text: &str) {
         self.session.line(kind_label(kind), text);
         if let Some(hub) = &self.phone {
-            // The phone speaks a line itself only without a natural voice.
-            let phone_speaks = self.mouth.ai.is_none() && matches!(kind, Kind::Alert | Kind::Reply);
+            // The phone speaks a line itself only without a natural voice
+            // (and never while Claude does the talking).
+            let phone_speaks = self.mouth.ai.is_none()
+                && !self.claude
+                && matches!(kind, Kind::Warning | Kind::Alert | Kind::Reply);
             hub.post(kind, text, phone_speaks);
         }
         self.push(kind, text.to_string());
     }
 
-    /// One of MapleSyrup's own lines (not the model's): shown, and spoken
-    /// when `speak`, in the player's language: when that is not English it
-    /// is translated first and shown when ready (Done::Shown).
+    /// One of MapleSyrup's own lines (not the model's): shown and logged
+    /// at once, and spoken when `speak`, in the player's language (the
+    /// voice is translated; the line on the screen is not, so that a
+    /// warning neither waits for its translation nor goes with it when
+    /// that is called off).
     fn tell(&mut self, kind: Kind, text: &str, speak: bool, companion: &mut Companion) {
+        // Claude does the talking: shown, not said (Claude has the reading
+        // behind it, and decides what is worth saying).
+        if self.claude {
+            self.show(kind, text);
+            return;
+        }
         if self.live
             && let Some(hub) = self.phone.clone()
         {
             // The call says it, in its voice and the language being spoken.
             self.session.line(kind_label(kind), text);
             self.push(kind, text.to_string());
-            hub.post(kind, text, speak && !companion.muted());
-            return;
-        }
-        if self.language.is_some()
-            && let Some(worker) = &self.mouth.ai
-        {
-            let speak = speak && !companion.muted();
-            worker.send(Job::Speak {
-                text: text.to_string(),
-                language: self.language.clone(),
-                show: Some(kind),
-                speak,
-            });
+            if !speak || companion.muted() {
+                hub.post(kind, text, false);
+            } else if kind == Kind::Reply {
+                // The answer to something they did (a button): theirs at once.
+                hub.post(kind, text, true);
+            } else {
+                self.relay(kind, text, companion);
+            }
             return;
         }
         self.show(kind, text);
         if speak {
-            self.speak(text, companion);
+            self.speak(kind, text, companion);
         }
     }
 
-    /// Say `text` out loud, where replies are spoken.
-    fn speak(&mut self, text: &str, companion: &mut Companion) {
-        if companion.muted() {
-            return;
+    /// A watcher line for the call to say: handed over now, or when the
+    /// call has said one lately, at the next gap (`relay_due`), the newest
+    /// of its kind. A death or a level-up goes at once. (While the
+    /// character is dead the only news is the death's — a look-up's
+    /// correction or "Marked." meanwhile is not urgent for it; a level-up
+    /// is the one announced from the frame being acted on.)
+    fn relay(&mut self, kind: Kind, text: &str, companion: &Companion) {
+        let dead = companion.dead();
+        let urgent = (dead && kind == Kind::Alert)
+            || companion.last_level_up() >= companion.progress().seconds;
+        // What this line takes the place of: the line of its kind that
+        // waited (the newest is the state of things), and, at a death,
+        // every warning that waited (about a bar that no longer matters)
+        // and every piece of news (about a fight that is over).
+        let superseded = |k: Kind| k == kind || (dead && matches!(k, Kind::Warning | Kind::Alert));
+        for (_, old) in self.relay.waiting.iter().filter(|(k, _)| superseded(*k)) {
+            self.session
+                .line("live", &format!("not said, a newer line came: {old}"));
         }
-        if self.live
-            && let Some(hub) = &self.phone
-        {
-            hub.post(Kind::Info, text, true);
+        self.relay.waiting.retain(|(k, _)| !superseded(*k));
+        let lines = self.relay.offer(kind, text, urgent);
+        if lines.is_empty() {
+            self.session
+                .line("live", "waits: the call said a line of mine lately");
+        }
+        self.hand(lines, companion);
+    }
+
+    /// The lines that waited for the gap, once it is up.
+    fn relay_due(&mut self, companion: &Companion) {
+        let lines = self.relay.due();
+        self.hand(lines, companion);
+    }
+
+    /// Hand lines to the call (shown only, when muted meanwhile), a
+    /// warning with the reading behind it — it is about the number, and
+    /// the call says the number — and the rest without (a death, a
+    /// correction, the coach's "Rebuff." are not about HP); each with
+    /// whether it is said however late it comes (the page drops a line
+    /// that waited too long behind the call's own voice, and says so; an
+    /// urgent one it says when the voice stops).
+    fn hand(&mut self, lines: Vec<(Kind, String, bool)>, companion: &Companion) {
+        let Some(hub) = &self.phone else {
             return;
+        };
+        let reading = self.fact(companion);
+        for (kind, text, urgent) in lines {
+            let fact = reading.as_deref().filter(|_| kind == Kind::Warning);
+            self.session.line(
+                "live",
+                &format!(
+                    "to the call{}: {text}{}",
+                    if urgent { ", urgent" } else { "" },
+                    match (kind, &fact) {
+                        (_, Some(fact)) => format!(" [{fact}]"),
+                        (Kind::Warning, None) => " [no reading]".to_string(),
+                        _ => String::new(),
+                    }
+                ),
+            );
+            hub.post_with_fact(kind, &text, !companion.muted(), fact, urgent);
+        }
+    }
+
+    /// The reading behind a watcher line, for the call: HP and MP as last
+    /// seen, each read (the number in the game's font) or estimated (the
+    /// bar's fill), and how old the frame is. The call's own picture is
+    /// from the last time the player spoke; this is newer, and a number.
+    fn fact(&self, companion: &Companion) -> Option<String> {
+        let obs = companion.last().filter(|o| o.game.is_seen())?;
+        let age = (self.start.elapsed().as_secs_f64() - companion.progress().seconds).max(0.0);
+        let gauge = |name: &str, g: ms::companion::Gauge| {
+            let pct = if g.percent >= 10.0 {
+                format!("{:.0}%", g.percent)
+            } else {
+                format!("{:.1}%", g.percent)
+            };
+            if g.read {
+                format!("{name} {pct} (read {age:.0} s ago)")
+            } else {
+                format!("{name} about {pct} (estimated {age:.0} s ago)")
+            }
+        };
+        let parts: Vec<String> = [("HP", obs.hp), ("MP", obs.mp)]
+            .into_iter()
+            .filter_map(|(name, g)| g.map(|g| gauge(name, g)))
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(", "))
+    }
+
+    /// Say `text`, a line of its own of this `kind`, out loud where replies
+    /// are spoken. Returns the worker's job when the natural voice says it.
+    fn speak(&mut self, kind: Kind, text: &str, companion: &mut Companion) -> Option<u64> {
+        if companion.muted() || self.claude {
+            return None;
+        }
+        if self.live && self.phone.is_some() {
+            self.relay(Kind::Info, text, companion);
+            return None;
         }
         let now = self.start.elapsed().as_secs_f64();
         companion.remember_spoken(now, text);
         match &self.mouth.ai {
-            Some(worker) => {
-                worker.send(Job::Speak {
-                    text: text.to_string(),
-                    language: self.language.clone(),
-                    show: None,
-                    speak: true,
-                });
-            }
+            Some(worker) => Some(worker.send(Job::Speak {
+                text: text.to_string(),
+                language: self.language.clone(),
+                kind,
+                show: false,
+                speak: true,
+            })),
             None => {
                 if self.voice_on().pc()
                     && let Some(voice) = &self.mouth.sapi
@@ -1292,16 +2537,30 @@ impl Outputs {
                     voice.say(text);
                     self.mouth.sapi_until = Instant::now() + Mouth::estimate(text);
                 }
+                None
             }
         }
     }
 
     /// A piece of natural-voice speech, played as it comes where replies
     /// are spoken: on the PC at once (a new line after a short pause), on
-    /// the phone a line at a time, once the line is complete.
-    fn play_piece(&mut self, samples: &[i16], start: bool, end: bool, companion: &Companion) {
-        if companion.muted() {
+    /// the phone a line at a time, once the line is complete — or, with
+    /// `hold`, once the player has stopped talking (`release_clips`): a
+    /// clip starting on the phone stops its recognition. A piece of a line
+    /// a cut hushed is dropped.
+    fn play_piece(&mut self, piece: Piece, hold: bool, companion: &Companion) {
+        let Piece {
+            id,
+            kind,
+            samples,
+            start,
+            end,
+        } = piece;
+        if companion.muted() || self.mouth.hushed == Some(id) {
             return;
+        }
+        if start {
+            self.mouth.line = Some((id, kind));
         }
         let voice_on = self.voice_on();
         let rate = ai::openai::SPEECH_RATE;
@@ -1315,25 +2574,240 @@ impl Outputs {
                 self.mouth.player.flush(pid);
             }
         }
-        if voice_on.phone()
-            && let Some(hub) = &self.phone
-        {
+        if voice_on.phone() && self.phone.is_some() {
             if start {
                 self.mouth.phone_line.clear();
             }
             self.mouth.phone_line.extend_from_slice(samples);
             if end && !self.mouth.phone_line.is_empty() {
                 let line = std::mem::take(&mut self.mouth.phone_line);
-                hub.set_clip(ai::wav_bytes(&line, rate));
                 let length = Duration::from_secs_f64(line.len() as f64 / rate as f64);
-                // The phone fetches it at once and plays it after the last.
-                let begins = self
-                    .mouth
-                    .phone_end
-                    .max(Instant::now() + Duration::from_millis(300));
-                self.mouth.phone_end = begins + length;
-                self.mouth.phone_until = self.mouth.phone_end + Duration::from_millis(600);
+                let wav = ai::wav_bytes(&line, rate);
+                if hold {
+                    self.mouth.phone_held.push(HeldClip {
+                        since: Instant::now(),
+                        kind,
+                        wav,
+                        length,
+                    });
+                } else {
+                    self.hand_clip(kind, wav, length);
+                }
             }
+        }
+    }
+
+    /// Hand the phone a clip of this `kind` (its page drops a warning or
+    /// news that waited too long for the tap), to play after the ones
+    /// before it.
+    fn hand_clip(&mut self, kind: Kind, wav: Vec<u8>, length: Duration) {
+        let Some(hub) = &self.phone else {
+            return;
+        };
+        hub.set_clip(kind, wav);
+        // The phone fetches it at once and plays it after the last.
+        let begins = self
+            .mouth
+            .phone_end
+            .max(Instant::now() + Duration::from_millis(300));
+        self.mouth.phone_end = begins + length;
+        self.mouth.phone_until = self.mouth.phone_end + Duration::from_millis(600);
+    }
+
+    /// The clips held back while the player was talking: handed over now
+    /// that it is `quiet`, or once one has waited long enough (a warning
+    /// cannot wait out a long story).
+    fn release_clips(&mut self, quiet: bool) {
+        while let Some(clip) = self.mouth.phone_held.first() {
+            if !quiet && clip.since.elapsed() < CLIP_WAITS {
+                return;
+            }
+            let HeldClip {
+                kind, wav, length, ..
+            } = self.mouth.phone_held.remove(0);
+            self.hand_clip(kind, wav, length);
+        }
+    }
+
+    /// The page's call is on (it opened, or the page says so again).
+    /// Returns whether it is a new one: the PC's own voice gives way to it.
+    /// The visit's hello was heard by now — the call said it, or the clip
+    /// played at the tap that opened the call — and is final: the call
+    /// holds the voice, and a reload is greeted by nobody (it was taken for
+    /// a clip not heard yet: a cut, and the reopened call said hi again).
+    fn call_opened(&mut self) -> bool {
+        // (The call that opens says the hello left to it, and to a player
+        // it does not know, what it does.)
+        if self.call_greets() && self.call_terms {
+            self.terms_said = true;
+            self.terms_due = None;
+            self.session
+                .line("info", "a player I don't know: the call says what I do");
+        }
+        self.call_greets = None;
+        self.call_terms = false;
+        self.phone_gone = None;
+        if self.greeted.is_some() {
+            self.greeted_by = Some(Hello::Call);
+            self.hello_job = None;
+            self.hello_heard = true;
+        }
+        if self.live {
+            return false;
+        }
+        self.live = true;
+        // (Lines waiting for the old call are not for the new.)
+        self.relay = Relay::default();
+        self.session
+            .line("info", "live call on the phone: talking in real time");
+        true
+    }
+
+    /// A live call ended (the page said so, or the phone is gone):
+    /// MapleSyrup's own lines go to its own voice again, and the game comes
+    /// back up. The lines that waited for the call's gap are not for the
+    /// next call, nor lost without a word (the companion counted each said
+    /// as it dealt it): a warning or news is still true, and its own voice
+    /// says it now; the rest is logged as not said. (The log's "live call
+    /// ended" is what the learner reads a call's end from.)
+    fn call_ended(&mut self, companion: &mut Companion) {
+        self.phone_gone = None;
+        if !self.live {
+            return;
+        }
+        self.live = false;
+        let waiting = std::mem::take(&mut self.relay).waiting;
+        self.session.line("info", "live call ended");
+        self.phone_talking(false);
+        for (kind, text) in waiting {
+            if kind.kept() {
+                self.session
+                    .line("live", &format!("the call ended before saying it: {text}"));
+                self.tell(kind, &text, true, companion);
+            } else {
+                self.session
+                    .line("live", &format!("not said, the call ended: {text}"));
+            }
+        }
+    }
+
+    /// Whether the phone is still there, on a call (`connected`: it asked
+    /// the PC for something lately). Gone for [`CALL_LOST_AFTER`], the
+    /// call is taken as lost: the page is not there to say the lines
+    /// handed to it, nor to say that the call ended. When the phone comes
+    /// back, its page says so if its call is still on (it reads `on_call`
+    /// off the status), and opens a new one if not.
+    fn watch_call(&mut self, connected: bool, companion: &mut Companion) {
+        if !self.live || connected {
+            self.phone_gone = None;
+            return;
+        }
+        let since = *self.phone_gone.get_or_insert_with(Instant::now);
+        if since.elapsed() >= CALL_LOST_AFTER {
+            self.session.line("live", "call lost: the phone is gone");
+            self.call_ended(companion);
+        }
+    }
+
+    /// The call's part of the phone's status: live calls can be made
+    /// (`live`); the next call to open says hello (`call_greets`: the
+    /// phone's hello was left to it), and what it does after it to a
+    /// player it does not know (`new_player`: the clip hello's terms, the
+    /// call's way); and whether the PC has the page's call on (`on_call`)
+    /// — a page whose call is on and reads otherwise says so again: the PC
+    /// took it as lost while the link was down with the page in front, or
+    /// another page's hello ended it.
+    fn call_status(&self) -> serde_json::Value {
+        json!({
+            // (No call of the phone's own while Claude does the talking.)
+            "live": self.live_ok && !self.claude,
+            "call_greets": self.call_greets(),
+            "new_player": self.call_greets() && self.call_terms,
+            "on_call": self.live,
+        })
+    }
+
+    /// The player's language is `locale` now (picked on the phone — its
+    /// first word, at the hello, says it — or asked for out loud): the
+    /// model is told it, and MapleSyrup's own lines are in it — in Hebrew
+    /// dealt from the companion's Hebrew decks, said as they are; in
+    /// another language translated on their way to the voice.
+    fn set_language(
+        &mut self,
+        locale: &str,
+        player_language: &mut Option<String>,
+        companion: &mut Companion,
+    ) {
+        let changed = player_language.as_deref() != Some(locale);
+        self.language = (!ai::language::is_english(locale)).then(|| locale.to_string());
+        *player_language = Some(locale.to_string());
+        // (Its own lines in the player's language need a natural voice to
+        // say them: with no key, the Windows voice speaks English only, and
+        // the lines stay English as they always were.)
+        companion.set_language(self.mouth.ai.is_some().then_some(locale));
+        if changed {
+            self.session.line(
+                "info",
+                &format!("language: {} ({locale})", ai::language::name(locale)),
+            );
+        }
+    }
+
+    /// The player asked out loud for another language ("talk to me in
+    /// Hebrew"): theirs from now on, at once and without a model — as if
+    /// picked on the phone, which is told to take it (`lang_request` on its
+    /// status: its words, and what it hears, in it), and MapleSyrup's own
+    /// lines in it. They hear so in a word, in that language (`say`: off a
+    /// call; on one the call answers them itself).
+    fn ask_language(
+        &mut self,
+        locale: &str,
+        player_language: &mut Option<String>,
+        companion: &mut Companion,
+        say: bool,
+    ) {
+        self.set_language(locale, player_language, companion);
+        self.lang_asks += 1;
+        self.lang_asked = Some(LangAsked {
+            locale: locale.to_string(),
+            seq: self.lang_asks,
+            at: Instant::now(),
+        });
+        if say {
+            let line = language_taken(locale, companion.settings.attitude);
+            self.tell(Kind::Reply, &line, true, companion);
+        }
+    }
+
+    /// The language `text` asks for ([`commands::language_request`]),
+    /// unless it is the one in use: the player's, taken by the phone (no
+    /// request of it waiting). A request for the language spoken changes
+    /// nothing and is not made — the "taken" line said again, the phone's
+    /// recogniser restarted, the sentence never reaching the model — so it
+    /// goes on like any other sentence ("in English", heard in English, as
+    /// likely ends one about the game). One the phone has not taken yet is
+    /// made again.
+    fn language_asked(&self, text: &str, player_language: Option<&str>) -> Option<&'static str> {
+        commands::language_request(text)
+            .filter(|locale| player_language != Some(*locale) || self.lang_asked.is_some())
+    }
+
+    /// The phone took `locale` (its picker says so): it is no longer asked
+    /// to.
+    fn took_language(&mut self, locale: &str) {
+        if self.lang_asked.as_ref().is_some_and(|a| a.locale == locale) {
+            self.lang_asked = None;
+        }
+    }
+
+    /// The language the phone is asked to take, for its status (`null`:
+    /// none, or one it did not take in [`LANG_ASKED_FOR`]).
+    fn lang_request(&self) -> serde_json::Value {
+        match &self.lang_asked {
+            Some(asked) if asked.at.elapsed() < LANG_ASKED_FOR => {
+                json!({"lang": asked.locale, "seq": asked.seq})
+            }
+            _ => serde_json::Value::Null,
         }
     }
 
@@ -1358,10 +2832,38 @@ impl Outputs {
     }
 
     /// Stop talking at once (the player talked over it), here and on the
-    /// phone.
+    /// phone, and drop what was still to come — except a warning's line or
+    /// news: a warning the player talked over (or that waited for their
+    /// turn) is still true. On the PC's speakers it plays out; on the
+    /// phone it is finished whole and goes after their turn, as it would
+    /// have. Any other line is hushed, and what was still to come of it
+    /// dropped: hushed on its first half, a reply went on from its
+    /// second, and a warning was cut like chat. (The PC has one queue: the
+    /// line under way is the last one started; a reply's tail still
+    /// sounding when a warning starts behind it is let play out with it.)
     fn cut(&mut self) {
+        let line_kept = self.mouth.line.is_some_and(|(_, kind)| kind.kept());
+        if !line_kept {
+            self.mouth.hush();
+            self.mouth.phone_line.clear();
+            self.mouth.hushed = self.mouth.line.map(|(id, _)| id);
+        }
+        self.mouth.phone_held.retain(|clip| clip.kind.kept());
+        self.mouth.phone_until = Instant::now();
+        self.mouth.phone_end = Instant::now();
+        if let Some(hub) = &self.phone {
+            hub.cut();
+        }
+    }
+
+    /// Told to be quiet (muted): everything stops, here and on the phone,
+    /// a warning too — they asked for quiet, not for a word in — and
+    /// nothing waits to go on after.
+    fn silence(&mut self) {
         self.mouth.hush();
+        self.mouth.hushed = self.mouth.line.map(|(id, _)| id);
         self.mouth.phone_line.clear();
+        self.mouth.phone_held.clear();
         self.mouth.phone_until = Instant::now();
         self.mouth.phone_end = Instant::now();
         if let Some(hub) = &self.phone {
@@ -1394,7 +2896,8 @@ impl Outputs {
                         None => self.push(Kind::Info, "marked (no game frame to save)".into()),
                     }
                 }
-                Action::SetMuted(true) => self.mouth.hush(),
+                // (Here and on the phone, the clips queued there too.)
+                Action::SetMuted(true) => self.silence(),
                 Action::SetMuted(false) => {}
             }
         }
@@ -1405,7 +2908,7 @@ impl Outputs {
         if self.plain {
             let who = match kind {
                 Kind::Heard => "you",
-                Kind::Alert => "syrup!",
+                Kind::Warning | Kind::Alert => "syrup!",
                 Kind::Reply => "syrup",
                 Kind::Info => "·",
             };
@@ -1439,20 +2942,17 @@ fn set_warning(
     let usual = if hp {
         options.hp_low.unwrap_or(30.0)
     } else {
-        options.mp_low.unwrap_or(15.0)
+        options.mp_low.unwrap_or(Settings::default().mp_low)
     };
     let at = below.unwrap_or(usual);
-    let rearm = (at + 15.0).min(95.0);
     {
         let mut memory = learning.memory();
         if hp {
             companion.settings.hp_low = at;
-            companion.settings.hp_rearm = rearm;
             warn_at.0 = at;
             memory.adapt.hp_low = below;
         } else {
             companion.settings.mp_low = at;
-            companion.settings.mp_rearm = rearm;
             warn_at.1 = at;
             memory.adapt.mp_low = below;
         }
@@ -1507,8 +3007,17 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     let ansi = console.ansi && !options.plain;
     let start = Instant::now();
     let settings_dir = tls::settings_dir();
+    ai::pronounce::load(&settings_dir);
     let session_dir = session::new_dir(&session::sessions_base(&settings_dir));
     let session = Session::open(session_dir.clone());
+    // What the session comes to, in numbers, kept on this PC — and made
+    // ready to share only if the player turned that on (`ms::metrics`).
+    let mut stats = ms::metrics::Stats::start(&settings_dir);
+    // (Sharing is not offered in this build: a choice made with an earlier
+    // one is withdrawn — the export and its id deleted.)
+    if !ms::metrics::SHARING_OFFERED {
+        let _ = stats.store().delete_shared();
+    }
     // What it learned from playing together before: about the player, their
     // corrections, what it looked up, how they like to talk (all on this PC).
     let learning = ai::Learning::load(&settings_dir);
@@ -1816,6 +3325,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     link.hub
                         .set_service(Arc::clone(service) as Arc<dyn phone::Service>);
                 }
+                link.hub.set_metrics(stats.store());
                 Some(link)
             }
             Err(e) => {
@@ -1826,6 +3336,47 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     } else {
         None
     };
+    // Claude's channel (`ms::claude`): the board, on this PC only, and where
+    // the bridge Claude Code starts finds it.
+    // (Without the phone — in the background — a hub of its own serves it.)
+    let claude_hub: Option<Arc<Hub>> =
+        phone
+            .as_ref()
+            .map(|link| Arc::clone(&link.hub))
+            .or_else(|| {
+                options
+                    .claude
+                    .then(|| Hub::new(tls::random_hex(8), None, VoiceOn::Off))
+            });
+    let claude_board: Option<Arc<ms::claude::board::Board>> = match &claude_hub {
+        Some(hub) if options.claude => {
+            let key = ms::claude::link::key(&settings_dir);
+            let board = ms::claude::board::Board::new(key.clone());
+            board.set_learning(learning.clone());
+            hub.set_claude(Arc::clone(&board));
+            match phone::serve_local(Arc::clone(hub), options.claude_port) {
+                Ok(port) => {
+                    let link = ms::claude::link::Link {
+                        port,
+                        key,
+                        pid: std::process::id(),
+                    };
+                    if let Err(e) = ms::claude::link::save(&settings_dir, &link) {
+                        eprintln!("Claude's channel: couldn't write where to find it ({e})");
+                    }
+                    Some(board)
+                }
+                Err(e) => {
+                    eprintln!("Claude's channel could not start: {e}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    // Whether the vision thread looks at the whole scene (Claude listens).
+    // (In the background it is there for Claude only: always.)
+    let claude_rich = Arc::new(AtomicBool::new(options.background));
 
     // The header, printed once.
     let (b, d, s, r) = if ansi {
@@ -1858,7 +3409,15 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             );
         }
     }
+    if claude_board.is_some() {
+        println!(
+            "{d}Claude: ready for its live channel (start Claude from the Claude folder; --setup-claude writes it){r}"
+        );
+    }
     println!("{d}Session files: {}{r}", session_dir.display());
+    if ms::metrics::SHARING_OFFERED && stats.sharing() {
+        println!("{d}Sharing play stats with MapleSyrup's partners: on (Settings on the phone){r}");
+    }
     if !console.dpi_aware {
         println!(
             "{d}(This display is scaled and DPI awareness could not be set: the HUD may read worse.){r}"
@@ -1893,6 +3452,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             sight: sight.clone(),
             latest: Arc::clone(&latest),
             in_front: Arc::clone(&in_front),
+            rich: Arc::clone(&claude_rich),
         };
         // Only the HUD reaches the companion; the other detectors are for
         // the preview window, and run only when it was asked for.
@@ -1921,25 +3481,28 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         let memory = learning.memory();
         (
             options.hp_low.or(memory.adapt.hp_low).unwrap_or(30.0),
-            options.mp_low.or(memory.adapt.mp_low).unwrap_or(15.0),
+            options
+                .mp_low
+                .or(memory.adapt.mp_low)
+                .unwrap_or(Settings::default().mp_low),
         )
     };
     let mut companion = Companion::new(Settings {
         hp_low,
-        hp_rearm: (hp_low + 15.0).min(95.0),
         mp_low,
-        mp_rearm: (mp_low + 15.0).min(95.0),
         always_listen: !options.wake_word,
         ..Settings::default()
     });
     companion.settings.attitude = learning.memory().attitude;
+    // A player it knows has heard each deck's lead line enough: their
+    // nights open in another order (before the first line is dealt).
+    companion.settled(learning.knows_player());
     // The warnings as kept (a death no warning came before moves them).
     let mut warn_at = (hp_low, mp_low);
-    // Answers said at once (varied by how many there were).
-    let mut instant_count = 0u32;
-    // What the phone shows of what it learned (looked at every few seconds).
+    // What the phone shows of what it learned (looked at every few seconds;
+    // None: at the next chance).
     let mut memory_status = serde_json::Value::Null;
-    let mut memory_checked = Instant::now() - Duration::from_secs(60);
+    let mut memory_checked: Option<Instant> = None;
     let mut out = Outputs {
         mouth: Mouth {
             ai: worker,
@@ -1948,8 +3511,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             sapi_until: Instant::now(),
             phone_until: Instant::now(),
             phone_end: Instant::now(),
+            line: None,
+            hushed: None,
             phone_line: Vec::new(),
-            last_voice: Instant::now() - Duration::from_secs(60),
+            phone_held: Vec::new(),
+            last_voice: None,
+            last_pc_voice: None,
             phone_ducked: false,
             game_pid: None,
         },
@@ -1962,6 +3529,19 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         language: None,
         live_ok: live_service.is_some(),
         live: false,
+        phone_gone: None,
+        relay: Relay::default(),
+        greeted: None,
+        greeted_by: None,
+        call_greets: None,
+        hello_job: None,
+        hello_heard: false,
+        terms_due: None,
+        terms_said: false,
+        call_terms: false,
+        lang_asked: None,
+        lang_asks: 0,
+        claude: false,
     };
     let hello = companion.hello();
     out.apply(hello, &mut companion, None);
@@ -1993,15 +3573,28 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // The coach: MapleSyrup speaking up on its own (off when the player
     // asked for that, for good).
     let mut coach = ms::coach::Coach::new(learning.memory().coach.unwrap_or(true));
-    // When the player was last heard (talking, or talked), and the last
-    // level-up the companion announced: the coach keeps out of the way.
-    let mut player_heard = Instant::now() - Duration::from_secs(60);
+    // When the player was last heard (talking, or talked; None: not yet),
+    // and the last level-up the companion announced: the coach keeps out of
+    // the way.
+    let mut player_heard: Option<Instant> = None;
     // Since when the player has been talking on a call (None: they aren't;
     // a start the phone never ends is forgotten after a while).
     let mut player_talking_since: Option<Instant> = None;
     let mut level_up_seen = f64::NEG_INFINITY;
     // The coach's look under way, to call it off when the player talks.
     let mut coach_job: Option<u64> = None;
+    // The sentence the phone is writing down, against its own voice on the
+    // PC's speakers; and the taught things the player said no to.
+    let mut sentence = Sentence::default();
+    let mut objections = Objections::default();
+    // Claude's channel: what changed for it, the reading it last got, when
+    // it was made, the bars as last seen, and the scene detectors' latest
+    // look (what moves, a dialog, the panels).
+    let mut claude_feed = ms::claude::feed::Feed::new();
+    let mut claude_reading = String::new();
+    let mut claude_looked: Option<Instant> = None;
+    let mut claude_bars = ClaudeBars::default();
+    let mut scene_world: Option<(Arc<ms::vision::WorldState>, Instant)> = None;
 
     let mut preview: Option<Preview> = None;
     let mut preview_failed = false;
@@ -2009,8 +3602,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     let mut frame_size = None;
     let mut fps = 0.0;
     let mut drawn_lines = 0usize;
-    let mut last_draw = Instant::now() - Duration::from_secs(1);
-    let mut last_panel = Instant::now() - Duration::from_secs(1);
+    let mut last_draw: Option<Instant> = None;
+    let mut last_panel: Option<Instant> = None;
     let mut last_plain_status = Instant::now();
     let block_height = qr_lines.len().max(screen::HEIGHT);
     let mut game_area: Option<overlay::GameArea> = None;
@@ -2024,6 +3617,17 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         }
         if relaunch_as.is_some() {
             break;
+        }
+        // The Claude that started it in the background is done with it, or
+        // no Claude has asked for anything for a while.
+        if let Some(board) = &claude_board {
+            if board.quit_requested() {
+                break;
+            }
+            let idle = board.bridge_seen_ago().unwrap_or_else(|| start.elapsed());
+            if options.background && idle >= BACKGROUND_IDLE {
+                break;
+            }
         }
         let now = start.elapsed().as_secs_f64();
         // What the updater did; and this version, once it has run long
@@ -2041,7 +3645,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             match event {
                 ms::workshop::Event::Said(line) => {
                     out.session.line("workshop", &line);
-                    say_line(&mut out, line);
+                    say_line(&mut out, &mut companion, line);
                 }
                 ms::workshop::Event::Noted(line) => out.session.line("workshop", &line),
                 ms::workshop::Event::Staged => updater.refresh(),
@@ -2061,6 +3665,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 latest_image = Some(Arc::clone(&frame.image));
                 frame_size = Some(frame.frame_size());
                 fps = frame.fps;
+                if tick.rich {
+                    scene_world = Some((Arc::clone(&frame.world), Instant::now()));
+                }
                 if options.preview && preview.is_none() && !preview_failed {
                     let (w, h) = frame.frame_size();
                     match Preview::open(w, h) {
@@ -2079,6 +3686,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 }
             }
             let actions = companion.observe(tick.at, tick.obs.clone());
+            stats.frame(tick.at, &tick.obs, &companion);
             if actions
                 .iter()
                 .any(|a| matches!(a, Action::Say(s) if s.speak && s.kind != Kind::Heard))
@@ -2090,13 +3698,18 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 level_up_seen = companion.last_level_up();
                 coach.leveled(now, companion.level());
             }
-            // The coach: is it time for a look at the game, and why?
-            if let Some(worker) = &out.mouth.ai {
+            // The coach: is it time for a look at the game, and why? (Not
+            // while Claude does the talking: it gets the game itself; nor
+            // in the background, where nobody would hear it.)
+            if !out.claude
+                && !options.background
+                && let Some(worker) = &out.mouth.ai
+            {
                 let in_view = in_front.load(Ordering::Relaxed);
                 let talking = out.mouth.speaking()
                     || worker.busy()
                     || turns.busy()
-                    || player_heard.elapsed() < Duration::from_secs(3)
+                    || player_heard.is_some_and(|at| at.elapsed() < Duration::from_secs(3))
                     || player_talking_since.is_some_and(|t| t.elapsed() < Duration::from_secs(30));
                 let glance = ms::coach::Glance {
                     now,
@@ -2105,9 +3718,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     in_view,
                     talking,
                     muted: companion.muted(),
+                    dead: companion.dead(),
+                    held: companion.alerts_held(now),
                 };
                 if let Some(reason) = coach.observe(&glance) {
-                    let snapshot = snapshot_text(&companion, sight.as_ref());
+                    let snapshot = snapshot_text(&companion, sight.as_ref(), in_view);
                     let status = sight.as_ref().and_then(|s| {
                         s.lock()
                             .unwrap_or_else(|e| e.into_inner())
@@ -2115,9 +3730,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             .as_ref()
                             .and_then(|l| l.status)
                     });
+                    // (A reaction — a close call, a streak — goes without
+                    // the picture: it is about what just happened, and a
+                    // second sooner.)
                     let eyes = latest_image
                         .clone()
-                        .filter(|_| in_view)
+                        .filter(|_| in_view && reason.wants_picture())
                         .map(|frame| Eyes { frame, status });
                     out.session.line(
                         "coach",
@@ -2128,7 +3746,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         ),
                     );
                     coach_job = Some(worker.send(Job::Coach {
-                        reason: reason.describe(),
+                        reason: reason.describe(companion.settings.attitude),
                         label: reason.label(),
                         snapshot,
                         eyes,
@@ -2151,11 +3769,42 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             }
             // The things the player taught: their alerts (held with the
             // companion's own while nothing the player does answers them).
+            // One past the mark they set ("the boss under 20%") is a
+            // warning, shouted; a thing that showed up is news, told.
+            for say in tick.muted {
+                out.session.line("alert", &format!("(muted) {say}"));
+            }
             for fired in tick.fired {
-                if companion.alerts_held(now) {
-                    out.session.line("alert", &format!("(held) {}", fired.say));
+                let kind = if fired.warning {
+                    Kind::Warning
                 } else {
-                    out.tell(Kind::Alert, &fired.say, true, &mut companion);
+                    Kind::Alert
+                };
+                // One the player said no to: logged, never said again.
+                if objections.muted(&fired.name) {
+                    out.session
+                        .line(kind_label(kind), &format!("(muted) {}", fired.say));
+                    continue;
+                }
+                // Claude hears of it, with the reading (it decides whether
+                // it is worth a word).
+                if out.claude
+                    && let Some(board) = &claude_board
+                {
+                    let event = claude_feed.thing(&fired.name, &fired.say);
+                    board.post(
+                        event.kind,
+                        &event.headline,
+                        format!("{}\n\n{claude_reading}", event.headline),
+                    );
+                }
+                stats.fired(fired.warning);
+                if companion.alerts_held(now) {
+                    out.session
+                        .line(kind_label(kind), &format!("(held) {}", fired.say));
+                } else {
+                    out.tell(kind, &fired.say, true, &mut companion);
+                    objections.spoke(&fired.name, &fired.say, Instant::now());
                 }
                 if let Some(waits) = fired.waits {
                     out.session.line(
@@ -2180,7 +3829,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         }
         out.mouth.player.tick();
         if out.mouth.speaking() {
-            out.mouth.last_voice = Instant::now();
+            out.mouth.last_voice = Some(Instant::now());
+        }
+        if out.mouth.pc_speaking() {
+            out.mouth.last_pc_voice = Some(Instant::now());
         }
         // The phone never said its voice stopped (it went away): the game
         // comes back up.
@@ -2188,12 +3840,20 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             out.phone_talking(false);
         }
 
+        // What Claude asked to have said: in MapleSyrup's voice.
+        if let Some(board) = &claude_board {
+            for text in board.take_says() {
+                out.session.line("claude", &format!("says: {text}"));
+                claude_says(&mut out, text);
+            }
+        }
+
         // What the phone sent.
         if let Some(hub) = out.phone.clone() {
             for inbound in hub.take_inbox() {
                 match inbound {
                     Inbound::Heard(heard) => {
-                        player_heard = Instant::now();
+                        player_heard = Some(Instant::now());
                         coach.someone_spoke(now);
                         // A look under way gives way to the player.
                         if let (Some(id), Some(worker)) = (coach_job.take(), &out.mouth.ai) {
@@ -2205,20 +3865,40 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         // own words in it.
                         let need = if out.mouth.speaking() {
                             2
-                        } else if out.mouth.last_voice.elapsed() < Duration::from_millis(2500) {
+                        } else if out
+                            .mouth
+                            .last_voice
+                            .is_some_and(|at| at.elapsed() < Duration::from_millis(2500))
+                        {
                             1
                         } else {
                             0
                         };
                         // ("mute" or "mark that" said over it still counts.)
-                        let own = companion.own_words(now, &heard, need).or_else(|| {
+                        let command = || {
                             companion
                                 .own_words(now, &heard, 0)
                                 .filter(|t| commands::local_command(t).is_some())
-                        });
+                        };
+                        // Half-duplex: a sentence begun while its own voice
+                        // played on the PC's speakers, or come while that
+                        // voice is in the room, is that voice — but for
+                        // "mute", "mark that", or when the player talked
+                        // over it and stopped it ([`Sentence`]).
+                        let over_voice = sentence.whole(out.mouth.pc_voice_heard());
+                        let own = if over_voice {
+                            command()
+                        } else {
+                            companion.own_words(now, &heard, need).or_else(command)
+                        };
                         let text = match own {
                             None => {
-                                out.session.line("echo", &heard);
+                                if over_voice {
+                                    out.session
+                                        .line("echo", &format!("{heard}  (over my voice)"));
+                                } else {
+                                    out.session.line("echo", &heard);
+                                }
                                 continue;
                             }
                             Some(rest) => {
@@ -2230,6 +3910,22 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             }
                         };
                         companion.player_spoke(now);
+                        stats.said();
+                        // Claude does the talking: what he said goes to it
+                        // as he said it, with the reading now; nothing of
+                        // MapleSyrup's own answers it.
+                        if out.claude
+                            && let Some(board) = &claude_board
+                        {
+                            out.show(Kind::Heard, &text);
+                            let headline = format!("He said: \"{text}\"");
+                            board.post(
+                                "heard",
+                                &headline,
+                                format!("{headline}\n\n{claude_reading}"),
+                            );
+                            continue;
+                        }
                         if let Some(on) = commands::recording_request(&text) {
                             out.show(Kind::Heard, &text);
                             if on {
@@ -2254,7 +3950,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             };
                             if let Some(task) = task {
                                 out.show(Kind::Heard, &text);
-                                workshop_ask(&workshop, task, &mut out);
+                                workshop_ask(&workshop, task, &mut out, &mut companion);
                                 continue;
                             }
                         }
@@ -2268,6 +3964,34 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             drop_the_attitude(&mut companion, &learning, &mut out);
                             continue;
                         }
+                        // "Talk to me in Hebrew": from now on, the phone's
+                        // language and its own — at once, no model asked.
+                        if let Some(locale) = out.language_asked(&text, player_language.as_deref())
+                        {
+                            out.show(Kind::Heard, &text);
+                            out.ask_language(locale, &mut player_language, &mut companion, true);
+                            continue;
+                        }
+                        // "No" to a taught thing that just spoke ("I didn't
+                        // level up" to "Level up! Congrats."): it is muted
+                        // for the session, and that is the answer.
+                        if commands::local_command(&text).is_none()
+                            && let Some(name) = objections.objected(
+                                &text,
+                                said_since(&out, &objections),
+                                Instant::now(),
+                            )
+                        {
+                            out.show(Kind::Heard, &text);
+                            mute_thing(
+                                &name,
+                                &mut objections,
+                                sight.as_ref(),
+                                &mut out,
+                                &mut companion,
+                            );
+                            continue;
+                        }
                         if out.mouth.ai.is_some() {
                             out.show(Kind::Heard, &text);
                             if let Some(command) = commands::local_command(&text) {
@@ -2277,26 +4001,35 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 || !matches!(commands::interpret(&text, false), Heard::NotForUs)
                             {
                                 let text = turns.heard(&mut out, text);
-                                // Their own numbers: answered at once, without
-                                // a model.
-                                let instant = ms::companion::instant::asks(&text).and_then(|ask| {
-                                    ms::companion::instant::answer(
-                                        ask,
-                                        &text,
-                                        companion.last(),
-                                        &companion.progress(),
-                                        companion.settings.attitude,
-                                        instant_count,
-                                    )
-                                });
-                                if let Some(line) = instant {
-                                    instant_count += 1;
-                                    out.session.line("timing", "instant answer");
+                                // "Say X like Y": kept, and used by the
+                                // voice from now on.
+                                if let Some(answer) = ai::pronounce::heard(&settings_dir, &text) {
+                                    out.session
+                                        .line("learned", &format!("pronunciation: {answer}"));
                                     if let Some(worker) = &out.mouth.ai {
-                                        worker.send(Job::Say {
-                                            heard: Some(text),
+                                        let id = worker.send(Job::Say {
+                                            heard: Some(text.clone()),
+                                            text: answer,
+                                        });
+                                        turns.asked(id, &text);
+                                    }
+                                    continue;
+                                }
+                                // Their own numbers, and a hello on its own:
+                                // answered at once, without a model. (On a
+                                // live call no sentence comes this way: the
+                                // call hears them, and answers.)
+                                if let Some(line) = companion.instant(&text) {
+                                    out.session.line("timing", "instant answer");
+                                    stats.instant();
+                                    if let Some(worker) = &out.mouth.ai {
+                                        let id = worker.send(Job::Say {
+                                            heard: Some(text.clone()),
                                             text: line,
                                         });
+                                        // Its turn, like any reply's: talked
+                                        // over, it is the one cut short.
+                                        turns.asked(id, &text);
                                     }
                                     continue;
                                 }
@@ -2319,7 +4052,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                     }
                     Inbound::Hearing(text) => {
-                        player_heard = Instant::now();
+                        player_heard = Some(Instant::now());
+                        // (Whether its own voice is playing as the
+                        // sentence begins.)
+                        sentence.hearing(out.mouth.pc_speaking());
                         // Words as they are said: talked over, or still
                         // talking. (Without a natural voice there is nothing
                         // to stop.)
@@ -2329,26 +4065,35 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 || commands::local_command(&text).is_some())
                             && let Some(what) = turns.hearing(&mut out, &companion, now, &text)
                         {
+                            if what.starts_with(TALKED_OVER) {
+                                sentence.talked_over();
+                            }
                             out.session.line("turn", &what);
                         }
                     }
                     Inbound::Interrupt => {
-                        if out.mouth.speaking() {
-                            turns.interrupt(&mut out);
-                            out.session.line("turn", "talked over (heard by the phone)");
-                        }
+                        // The phone's own detection (a loud sound over its
+                        // voice; it only reports one while a clip plays)
+                        // is not trusted on its own: it fires on its echo
+                        // and on the game. The player's words, if they
+                        // follow, make it a talk-over (`Turns::hearing`).
+                        turns.loud(&mut out);
+                        out.session
+                            .line("turn", "loud over the phone's voice: waiting for words");
                     }
                     Inbound::Said { who, text } if who == "timing" => {
                         // Where the time went on the call, from the phone.
                         out.session.line("timing", &text);
+                        stats.call_timing(&text);
                     }
                     Inbound::Said { who, text } => {
                         // On a live call: shown here and kept in the log (the
                         // phone shows it itself).
                         coach.someone_spoke(now);
                         let kind = if who == "player" {
-                            player_heard = Instant::now();
+                            player_heard = Some(Instant::now());
                             companion.player_spoke(now);
+                            stats.said();
                             Kind::Heard
                         } else {
                             companion.remember_spoken(now, &text);
@@ -2372,8 +4117,25 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 set_coaching(&mut coach, &learning, &mut out, on);
                             } else if commands::tone_complaint(&text) {
                                 drop_the_attitude(&mut companion, &learning, &mut out);
+                            } else if let Some(locale) =
+                                out.language_asked(&text, player_language.as_deref())
+                            {
+                                // (The call follows the language spoken; the
+                                // phone's own words and its recogniser for
+                                // after the call follow the request.)
+                                out.ask_language(
+                                    locale,
+                                    &mut player_language,
+                                    &mut companion,
+                                    false,
+                                );
                             } else if workshop.is_on() && ms::workshop::undo_request(&text) {
-                                workshop_ask(&workshop, ms::workshop::Task::Undo, &mut out);
+                                workshop_ask(
+                                    &workshop,
+                                    ms::workshop::Task::Undo,
+                                    &mut out,
+                                    &mut companion,
+                                );
                             } else if workshop.is_on()
                                 && let Some(instruction) = ms::workshop::request(&text)
                             {
@@ -2381,7 +4143,21 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                     instruction,
                                     context: recent_log(&out),
                                 };
-                                workshop_ask(&workshop, task, &mut out);
+                                workshop_ask(&workshop, task, &mut out, &mut companion);
+                            } else if commands::local_command(&text).is_none()
+                                && let Some(name) = objections.objected(
+                                    &text,
+                                    said_since(&out, &objections),
+                                    Instant::now(),
+                                )
+                            {
+                                mute_thing(
+                                    &name,
+                                    &mut objections,
+                                    sight.as_ref(),
+                                    &mut out,
+                                    &mut companion,
+                                );
                             } else if let Some(command) = commands::local_command(&text)
                                 && matches!(command, Command::Mute | Command::Unmute)
                             {
@@ -2390,23 +4166,19 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             }
                         }
                     }
-                    Inbound::Live(on) => {
-                        if on != out.live {
-                            out.live = on;
-                            out.session.line(
-                                "info",
-                                if on {
-                                    "live call on the phone: talking in real time"
-                                } else {
-                                    "live call ended"
-                                },
-                            );
-                            if on {
-                                // The PC's own voice gives way to the call.
-                                turns.interrupt(&mut out);
-                            } else {
-                                out.phone_talking(false);
-                            }
+                    Inbound::Live(false) => out.call_ended(&mut companion),
+                    // (Claude does the talking: a call the page opened
+                    // before it heard so is not taken up.)
+                    Inbound::Live(true) if out.claude => {
+                        out.session.line(
+                            "claude",
+                            "the phone opened a live call: not taken, Claude talks",
+                        );
+                    }
+                    Inbound::Live(true) => {
+                        if out.call_opened() {
+                            // The PC's own voice gives way to the call.
+                            turns.interrupt(&mut out);
                         }
                     }
                     Inbound::Talking(on) => out.phone_talking(on),
@@ -2418,12 +4190,17 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             player_talking_since = Some(Instant::now());
                         } else {
                             player_talking_since = None;
-                            player_heard = Instant::now();
+                            player_heard = Some(Instant::now());
                         }
                         coach.someone_spoke(now);
                     }
                     // (The learner reads it from the log.)
                     Inbound::Turn(what) => out.session.line("turn", &what),
+                    // A line the call was handed and never said: the log
+                    // must not say it was.
+                    Inbound::NotSaid(text) => out
+                        .session
+                        .line("live", &format!("not said, too late: {text}")),
                     Inbound::Speaker(id) => {
                         let openai = id == "openai";
                         let known = openai
@@ -2446,7 +4223,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 worker.send(Job::Speak {
                                     text: "This is my voice now.".into(),
                                     language: out.language.clone(),
-                                    show: None,
+                                    kind: Kind::Info,
+                                    show: false,
                                     speak: true,
                                 });
                             }
@@ -2459,7 +4237,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             memory.save();
                         }
                         companion.settings.attitude = attitude;
-                        memory_checked = Instant::now() - Duration::from_secs(60);
+                        memory_checked = None;
                         out.session
                             .line("info", &format!("attitude: {}", attitude.word()));
                         out.push(Kind::Info, format!("attitude: {}", attitude.word()));
@@ -2505,7 +4283,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                         ai::Effect::Command(word) => {
                             if let Some(command) = Command::from_word(&word) {
-                                let actions = companion.command(now, command);
+                                // The call's model tells the player what its
+                                // tool did; the companion's word on it is
+                                // shown, not said again.
+                                let actions = unspoken(companion.command(now, command));
                                 out.apply(actions, &mut companion, latest_image.clone());
                             }
                         }
@@ -2527,33 +4308,15 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             out.apply(actions, &mut companion, latest_image.clone());
                         }
                     }
-                    Inbound::Hello(agent) => {
-                        let device = device_of(&agent);
-                        out.push(Kind::Info, format!("{device} connected"));
-                        // (In another language the page says it itself.)
-                        if out.language.is_none() {
-                            hub.post(
-                                Kind::Info,
-                                &format!("Connected to MapleSyrup on this {device}."),
-                                false,
-                            );
-                        }
-                        // (On a live call the call itself says hello.)
-                        if !(out.live_ok && out.voice_on().phone()) {
-                            match &out.mouth.ai {
-                                // Knowing the player: a hello of its own,
-                                // picking up from last time.
-                                Some(worker) if learning.knows_player() && !companion.muted() => {
-                                    worker.send(Job::Greet {
-                                        language: player_language.clone(),
-                                    });
-                                }
-                                Some(_) => {
-                                    out.speak("Hey! I'm here. Just talk to me.", &mut companion)
-                                }
-                                None => out.speak("Phone connected.", &mut companion),
-                            }
-                        }
+                    Inbound::Hello { agent, live, away } => {
+                        out.hello(
+                            &mut companion,
+                            learning.knows_player(),
+                            &agent,
+                            live,
+                            away,
+                            player_language.clone(),
+                        );
                     }
                     Inbound::Voice(on) => {
                         let place = match on {
@@ -2568,16 +4331,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         }
                     }
                     Inbound::Language(locale) => {
-                        let english = ai::language::is_english(&locale);
-                        let changed = out.language.as_deref() != Some(locale.as_str());
-                        out.language = (!english).then(|| locale.clone());
-                        player_language = Some(locale.clone());
-                        if changed {
-                            out.session.line(
-                                "info",
-                                &format!("language: {} ({locale})", ai::language::name(&locale)),
-                            );
-                        }
+                        out.set_language(&locale, &mut player_language, &mut companion);
+                        out.took_language(&locale);
                     }
                     Inbound::Forget(id) => {
                         // What it learned about the player, or a thing on screen.
@@ -2591,7 +4346,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             })
                         });
                         if let Some(name) = forgotten {
-                            memory_checked = Instant::now() - Duration::from_secs(60);
+                            memory_checked = None;
                             out.tell(
                                 Kind::Info,
                                 &format!("I forgot \"{name}\"."),
@@ -2637,11 +4392,17 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                     context: recent_log(&out),
                                 },
                                 &mut out,
+                                &mut companion,
                             );
                         }
                         phone::WorkshopAsk::Undo => {
                             out.show(Kind::Heard, "[phone] undo the last change");
-                            workshop_ask(&workshop, ms::workshop::Task::Undo, &mut out);
+                            workshop_ask(
+                                &workshop,
+                                ms::workshop::Task::Undo,
+                                &mut out,
+                                &mut companion,
+                            );
                         }
                         phone::WorkshopAsk::Coder(name) => {
                             match ms::workshop::Coder::parse(&name) {
@@ -2712,6 +4473,23 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         }
 
         recording.tick(&mut out, panel_window.as_mut());
+        out.release_clips(player_quiet(player_heard, &turns));
+        // On a call, the watcher's lines that waited for their turn.
+        if out.live {
+            out.relay_due(&companion);
+        }
+        // The hello left to a call that never opened: said as a clip.
+        if out.hello_overdue() {
+            out.hello_late(
+                &mut companion,
+                learning.knows_player(),
+                player_language.clone(),
+            );
+        }
+        // A player it does not know: what it does, a moment after the hello.
+        if out.terms_due() {
+            out.say_terms(&mut companion);
+        }
 
         // Words that waited for the rest of a sentence that never came.
         if let Some(text) = turns.overdue() {
@@ -2760,13 +4538,22 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     label,
                     text,
                     error,
+                    called_off,
                     took,
                 } => {
                     if coach_job == Some(id) {
                         coach_job = None;
                     }
-                    coach.answered(now, text.as_deref());
                     let took = took.as_secs_f64();
+                    // A look the player's words called off never answered:
+                    // the coach looks again at the next gap, no slower.
+                    if called_off {
+                        coach.called_off();
+                        out.session
+                            .line("coach", &format!("{label}: called off ({took:.1} s)"));
+                        continue;
+                    }
+                    coach.answered(now, text.as_deref());
                     match (text, error) {
                         (Some(line), _) => {
                             companion.remember_spoken(now, &line);
@@ -2781,6 +4568,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         (None, Some(error)) => {
                             out.session
                                 .line("coach", &format!("{label}: couldn't look ({error})"));
+                            stats.coach_failed();
                         }
                         (None, None) => {
                             out.session
@@ -2847,6 +4635,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 }
                 Done::Audio {
                     id,
+                    kind,
                     text,
                     samples,
                     after,
@@ -2872,9 +4661,26 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 "timing",
                                 &format!("first words after {:.1} s", after.as_secs_f64()),
                             );
+                            stats.first_words(turns.reply_id() == Some(id), after);
                         }
                     }
-                    out.play_piece(&samples, start, end, &companion);
+                    // A line of its own (not the answer they are waiting
+                    // for) waits while they are talking, and for their
+                    // answer: a clip starting on the phone cuts off the
+                    // sentence it is writing down.
+                    let own = turns.reply_id() != Some(id);
+                    let hold = own && !player_quiet(player_heard, &turns);
+                    out.play_piece(
+                        Piece {
+                            id,
+                            kind,
+                            samples: &samples,
+                            start,
+                            end,
+                        },
+                        hold,
+                        &companion,
+                    );
                 }
                 Done::Silent { id, heard } => {
                     turns.finished(id);
@@ -2882,6 +4688,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 }
                 Done::Failed { id, heard, error } => {
                     turns.finished(id);
+                    stats.failed(heard.is_some(), &error);
                     let message = format!("OpenAI: {error}");
                     if message != ai_error_shown {
                         out.show(Kind::Info, &message);
@@ -2892,7 +4699,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         out.mouth.ai = None;
                         out.show(Kind::Info, "The OpenAI key was refused; going on with simple answers. Start MapleSyrup again to paste a new key.");
                     }
-                    // Answer anyway, simply, in the Windows voice.
+                    // Answer anyway, simply, in the Windows voice (where
+                    // the PC is to speak at all).
                     if let Some(heard) = heard {
                         let fallback: Vec<Action> = companion
                             .heard(now, &heard)
@@ -2904,6 +4712,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 out.show(say.kind, &say.text);
                                 if say.speak
                                     && !companion.muted()
+                                    && out.voice_on().pc()
                                     && let Some(voice) = &out.mouth.sapi
                                 {
                                     voice.say(&say.text);
@@ -2952,8 +4761,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 ai::lookup::Found::Say(text) => {
                     out.session.line("lookup", &text);
                     if out.live {
-                        // The call says it, in its own words.
-                        out.tell(Kind::Info, &text, true, &mut companion);
+                        // (Shown on the phone; never a second answer said.)
+                        out.tell(Kind::Info, &text, false, &mut companion);
                     } else if let Some(worker) = &out.mouth.ai {
                         worker.send(Job::Say { heard: None, text });
                     }
@@ -2974,7 +4783,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             out.push(Kind::Info, line);
         }
         while let Ok(line) = learned_rx.try_recv() {
-            memory_checked = Instant::now() - Duration::from_secs(60);
+            memory_checked = None;
             if line.starts_with("learned from") || line.starts_with("adapted") {
                 out.tell(Kind::Info, &line, false, &mut companion);
             } else {
@@ -2984,7 +4793,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         }
 
         // Where the game is (for the panel, and whose sound to turn down).
-        if last_draw.elapsed() >= Duration::from_millis(250) {
+        if last_draw.is_none_or(|at| at.elapsed() >= Duration::from_millis(250)) {
             game_area = match companion.last().map(|o| &o.game) {
                 Some(GameView::Seen(title)) if options.input.is_none() => overlay::game_area(title),
                 _ => None,
@@ -2997,8 +4806,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         }
 
         // The panel and the dog, about twelve times a second.
-        if last_panel.elapsed() >= Duration::from_millis(80) {
-            last_panel = Instant::now();
+        if last_panel.is_none_or(|at| at.elapsed() >= Duration::from_millis(80)) {
+            last_panel = Some(Instant::now());
             let speaking = out.mouth.speaking();
             if let Some(window) = panel_window.as_mut() {
                 match game_area {
@@ -3017,7 +4826,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             .log
                             .iter()
                             .rev()
-                            .find(|l| matches!(l.kind, Kind::Reply | Kind::Alert))
+                            .find(|l| matches!(l.kind, Kind::Reply | Kind::Warning | Kind::Alert))
                             .filter(|l| l.at.elapsed() < Duration::from_secs(15))
                             .map(|l| l.text.as_str());
                         let summary = out.phone.as_ref().map(|h| h.summary());
@@ -3049,17 +4858,28 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             }
         }
 
-        if last_draw.elapsed() >= Duration::from_millis(250) {
-            last_draw = Instant::now();
+        if last_draw.is_none_or(|at| at.elapsed() >= Duration::from_millis(250)) {
+            last_draw = Some(Instant::now());
             let progress = companion.progress();
             let summary = out.phone.as_ref().map(|h| h.summary());
+            // The session's stats: the phone, the screen and the map as they
+            // are now; written every minute.
+            stats.phone(now, summary.as_ref().is_some_and(|s| s.connected), out.live);
+            stats.look(sight.as_ref(), frame_size);
+            stats.save_every(&coach, player_language.as_deref());
+            // A call whose phone has gone (pocketed, asleep) is lost.
+            if let Some(summary) = &summary {
+                out.watch_call(summary.connected, &mut companion);
+            }
             if let Some(hub) = &out.phone {
-                if out.mouth.ai.is_some() && memory_checked.elapsed() >= Duration::from_secs(3) {
-                    memory_checked = Instant::now();
+                if out.mouth.ai.is_some()
+                    && memory_checked.is_none_or(|at| at.elapsed() >= Duration::from_secs(3))
+                {
+                    memory_checked = Some(Instant::now());
                     memory_status = learning.status();
                 }
                 let obs = companion.last();
-                hub.set_status(json!({
+                let mut status = json!({
                     "game": obs.map(|o| o.game.clone()).unwrap_or(GameView::NotFound),
                     "hp": obs.and_then(|o| o.hp),
                     "mp": obs.and_then(|o| o.mp),
@@ -3086,8 +4906,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     "thinking": out.mouth.ai.as_ref().is_some_and(|w| w.busy()),
                     "ai": out.mouth.ai.as_ref().map(|w| w.model.lock().ok().and_then(|m| m.clone()).unwrap_or_else(|| "OpenAI".into())),
                     "learned": learned_status(sight.as_ref(), hub),
-                    // Live calls can be made.
-                    "live": out.live_ok,
                     "recording": recording.status(),
                     // How it talks, and who answers.
                     "attitude": companion.settings.attitude,
@@ -3099,16 +4917,81 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     // What it learned about the player (with an OpenAI key).
                     "memory": if out.mouth.ai.is_some() { memory_status.clone() } else { serde_json::Value::Null },
                     "warn": {"hp": companion.settings.hp_low, "mp": companion.settings.mp_low},
-                }));
+                    // A language the player asked for out loud, for the
+                    // phone to take once (by its number).
+                    "lang_request": out.lang_request(),
+                });
+                // (And the call's: `live`, `call_greets`, `new_player`, `on_call`.)
+                if let (Some(fields), serde_json::Value::Object(call)) =
+                    (status.as_object_mut(), out.call_status())
+                {
+                    fields.extend(call);
+                }
+                hub.set_status(status);
                 // What a live call can see: the screen only while the game is
                 // the window in front.
                 if out.live_ok {
-                    let in_view = in_front.load(Ordering::Relaxed)
-                        && companion.last().is_some_and(|o| o.game.is_seen());
+                    let front = in_front.load(Ordering::Relaxed);
+                    let in_view = front && companion.last().is_some_and(|o| o.game.is_seen());
                     hub.set_sight(
                         latest_image.clone().filter(|_| in_view),
-                        snapshot_text(&companion, sight.as_ref()),
+                        snapshot_text(&companion, sight.as_ref(), front),
                     );
+                }
+            }
+            // Claude's channel: whether it listens (then MapleSyrup only
+            // watches and speaks for it), the reading now, and what changed.
+            if let Some(board) = &claude_board {
+                let listening = board.connected();
+                if listening != out.claude {
+                    if listening && out.live {
+                        out.call_ended(&mut companion);
+                    }
+                    out.claude = listening;
+                    if let Some(hub) = &out.phone {
+                        hub.pause_live(listening);
+                    }
+                    let line = if listening {
+                        "Claude is listening: it talks with you now, and I watch the game and speak for it."
+                    } else {
+                        "Claude went away: I'm talking myself again."
+                    };
+                    out.session.line("claude", line);
+                    out.push(Kind::Info, line.to_string());
+                }
+                // The whole scene is looked at while any Claude uses MapleSyrup.
+                let used = board
+                    .bridge_seen_ago()
+                    .is_some_and(|ago| ago < Duration::from_secs(45));
+                claude_rich.store(used || options.background, Ordering::Relaxed);
+                if claude_looked.is_none_or(|at| at.elapsed() >= Duration::from_millis(500)) {
+                    claude_looked = Some(Instant::now());
+                    let front = in_front.load(Ordering::Relaxed);
+                    let scene = claude_scene(
+                        start.elapsed().as_secs_f64(),
+                        &companion,
+                        sight.as_ref(),
+                        scene_world.as_ref(),
+                        front,
+                        frame_size,
+                        &mut claude_bars,
+                    );
+                    claude_reading = scene.text();
+                    board.set_status(
+                        serde_json::to_value(&scene).unwrap_or_default(),
+                        claude_reading.clone(),
+                    );
+                    let in_view = scene.window == ms::claude::feed::Window::InFront;
+                    board.set_frame(latest_image.clone().filter(|_| in_view));
+                    for event in claude_feed.update(&scene) {
+                        out.session
+                            .line("claude", &format!("event: {}", event.headline));
+                        board.post(
+                            event.kind,
+                            &event.headline,
+                            format!("{}\n\n{claude_reading}", event.headline),
+                        );
+                    }
                 }
             }
             if ansi {
@@ -3191,12 +5074,16 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
 
     running.store(false, Ordering::Relaxed);
     let _ = vision.join();
+    if claude_board.is_some() {
+        ms::claude::link::remove(&settings_dir, std::process::id());
+    }
     out.mouth.hush();
     ms::platform::sound::restore();
     if ansi {
         print!("\x1b[?7h");
     }
     recording.finish();
+    stats.finish(&coach, player_language.as_deref());
     let progress = companion.progress();
     println!(
         "\nStopped after {}. {} mark{} saved in {}",
@@ -3231,6 +5118,23 @@ mod tests {
         assert_eq!(heard_of(line, Duration::ZERO), "");
     }
 
+    /// An instant `d` ago. (`Instant - Duration` panics when the monotonic
+    /// clock is younger than `d`, as on a runner that just booted; every
+    /// `d` here is seconds, and no runner is that young.)
+    fn earlier(d: Duration) -> Instant {
+        Instant::now()
+            .checked_sub(d)
+            .unwrap_or_else(|| panic!("the clock is younger than {d:?}: too soon for this test"))
+    }
+
+    fn held(words: &str, since: Instant) -> Held {
+        Held {
+            words: words.into(),
+            since,
+            more: None,
+        }
+    }
+
     #[test]
     fn words_held_for_the_rest_of_a_sentence_join_it() {
         assert_eq!(
@@ -3245,12 +5149,1915 @@ mod tests {
             "What should I do with the quest?"
         );
         let mut turns = Turns {
-            held: Some(("hello".into(), Instant::now())),
+            held: Some(held("hello", Instant::now())),
             ..Default::default()
         };
         assert!(turns.overdue().is_none());
-        turns.held = Some(("hello".into(), Instant::now() - HOLD_FOR));
+        turns.held = Some(held("hello", earlier(HOLD_FOR)));
         assert_eq!(turns.overdue().as_deref(), Some("hello"));
         assert!(turns.held.is_none());
+    }
+
+    /// The outputs as the turn-taking sees them: a phone link, and a worker
+    /// that never reaches OpenAI (nothing here asks it to). Replies are
+    /// spoken on the phone.
+    fn outputs() -> Outputs {
+        let hub = Hub::new("k1".into(), None, VoiceOn::Phone);
+        let worker = ai::spawn(
+            OpenAi::new("sk-test", "http://127.0.0.1:9/v1", "cedar", None),
+            Brain::new(),
+        );
+        let now = Instant::now();
+        // (A session folder of this fixture's own, with a fresh log.)
+        static FIXTURES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let session_dir = std::env::temp_dir().join(format!(
+            "ms-turns-{}-{:?}-{}",
+            std::process::id(),
+            std::thread::current().id(),
+            FIXTURES.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = std::fs::remove_dir_all(&session_dir);
+        Outputs {
+            mouth: Mouth {
+                ai: Some(worker),
+                sapi: None,
+                player: Player::new(),
+                sapi_until: now,
+                phone_until: now,
+                phone_end: now,
+                line: None,
+                hushed: None,
+                phone_line: Vec::new(),
+                phone_held: Vec::new(),
+                last_voice: None,
+                last_pc_voice: None,
+                phone_ducked: false,
+                game_pid: None,
+            },
+            phone: Some(hub),
+            session: Session::open(session_dir),
+            log: Vec::new(),
+            plain: true,
+            start: now,
+            replies: VoiceOn::Phone,
+            language: None,
+            live_ok: false,
+            live: false,
+            phone_gone: None,
+            relay: Relay::default(),
+            greeted: None,
+            greeted_by: None,
+            call_greets: None,
+            hello_job: None,
+            hello_heard: false,
+            terms_due: None,
+            terms_said: false,
+            call_terms: false,
+            lang_asked: None,
+            lang_asks: 0,
+            claude: false,
+        }
+    }
+
+    /// The session log so far.
+    fn log(out: &Outputs) -> String {
+        std::fs::read_to_string(out.session.dir.join("log.txt")).unwrap_or_default()
+    }
+
+    /// A job the worker has nothing to do for, numbered like any.
+    fn job(out: &Outputs) -> u64 {
+        out.mouth.ai.as_ref().unwrap().send(Job::Say {
+            heard: None,
+            text: String::new(),
+        })
+    }
+
+    fn cancelled(out: &Outputs, id: u64) -> bool {
+        out.mouth.ai.as_ref().unwrap().cancelled(id)
+    }
+
+    /// How many times the phone was told to stop its clips.
+    fn cuts(out: &Outputs) -> u64 {
+        let hub = out.phone.as_ref().unwrap();
+        let state = hub.handle(&phone::http::Request {
+            method: "GET".into(),
+            path: "/api/state".into(),
+            query: vec![("k".into(), "k1".into())],
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["cut"]
+            .as_u64()
+            .unwrap()
+    }
+
+    /// The phone plays a reply for a while.
+    fn playing(out: &mut Outputs, turns: &mut Turns, id: u64, line: &str) {
+        turns.asked(id, "what's my level");
+        turns.spoke(id, Instant::now(), line);
+        turns.finished(id);
+        out.mouth.phone_end = Instant::now() + Duration::from_secs(3);
+        out.mouth.phone_until = out.mouth.phone_end + Duration::from_millis(600);
+    }
+
+    #[test]
+    fn the_sentences_own_words_posted_late_are_not_more_talking() {
+        let mut out = outputs();
+        let companion = Companion::new(Settings::default());
+        let mut turns = Turns::default();
+        let id = job(&out);
+        turns.asked(id, "am I talking to right");
+        // The phone's throttled "words so far" landing after the sentence.
+        for late in ["am I talking to right", "am I talking to", "talking"] {
+            assert_eq!(turns.hearing(&mut out, &companion, 1.0, late), None);
+        }
+        assert!(!cancelled(&out, id));
+        assert!(turns.busy() && turns.held.is_none());
+        // Going on is.
+        assert_eq!(
+            turns
+                .hearing(&mut out, &companion, 1.0, "am I talking to right now")
+                .as_deref(),
+            Some("still talking: am I talking to right now")
+        );
+        assert!(cancelled(&out, id));
+        assert_eq!(
+            turns.held.as_ref().map(|h| h.words.as_str()),
+            Some("am I talking to right")
+        );
+    }
+
+    #[test]
+    fn words_overdue_are_answered_with_the_rest_the_phone_heard() {
+        let mut out = outputs();
+        let companion = Companion::new(Settings::default());
+        let mut turns = Turns::default();
+        turns.asked(job(&out), "No take a look");
+        assert!(
+            turns
+                .hearing(&mut out, &companion, 1.0, "at yourself")
+                .is_some()
+        );
+        // Still at it after the answer was called off: the wait starts over.
+        turns.held.as_mut().unwrap().since = earlier(HOLD_FOR);
+        assert_eq!(
+            turns
+                .hearing(
+                    &mut out,
+                    &companion,
+                    2.0,
+                    "at yourself where am I right now"
+                )
+                .as_deref(),
+            Some("still talking: at yourself where am I right now")
+        );
+        assert!(turns.overdue().is_none());
+        turns.held.as_mut().unwrap().since = earlier(HOLD_FOR);
+        assert_eq!(
+            turns.overdue().as_deref(),
+            Some("No take a look at yourself where am I right now")
+        );
+        // A whole sentence meanwhile takes the words with it instead.
+        turns.asked(job(&out), "No take a look");
+        turns.hearing(&mut out, &companion, 3.0, "at yourself");
+        assert_eq!(
+            turns.heard(&mut out, "at yourself where am I".into()),
+            "No take a look at yourself where am I"
+        );
+        assert!(turns.overdue().is_none());
+    }
+
+    #[test]
+    fn a_loud_sound_on_the_phone_cuts_the_reply_only_once_words_follow() {
+        let mut out = outputs();
+        let companion = Companion::new(Settings::default());
+        let mut turns = Turns::default();
+        let id = job(&out);
+        playing(
+            &mut out,
+            &mut turns,
+            id,
+            "You're level 165, with 74 percent.",
+        );
+        let ends = out.mouth.phone_end;
+        // The phone heard something loud and paused: nothing is called off
+        // (no cut, so no Job::Cut either), the clip plays on, that much later.
+        turns.loud(&mut out);
+        assert!(!cancelled(&out, id));
+        assert_eq!(cuts(&out), 0);
+        assert!(out.mouth.speaking());
+        assert_eq!(out.mouth.phone_end, ends + CORROBORATE_FOR);
+        // Its own echo, nothing of the player's: still nothing.
+        let mut echoing = Companion::new(Settings::default());
+        echoing.remember_spoken(1.0, "You're level 165, with 74 percent.");
+        assert_eq!(
+            turns.hearing(&mut out, &echoing, 1.0, "level 165 percent"),
+            None
+        );
+        assert!(!cancelled(&out, id) && cuts(&out) == 0);
+        // The player's words: a talk-over after all.
+        assert_eq!(
+            turns
+                .hearing(&mut out, &companion, 1.5, "wait stop")
+                .as_deref(),
+            Some("talked over: wait stop")
+        );
+        assert!(cancelled(&out, id));
+        assert_eq!(cuts(&out), 1);
+        assert!(turns.loud.is_none());
+    }
+
+    #[test]
+    fn a_loud_sound_nobody_spoke_over_is_forgotten() {
+        let mut out = outputs();
+        let companion = Companion::new(Settings::default());
+        let mut turns = Turns::default();
+        let id = job(&out);
+        playing(&mut out, &mut turns, id, "You're level 165.");
+        turns.loud(&mut out);
+        // Too late to be about that sound: the clip ended meanwhile.
+        turns.loud = Some(earlier(CORROBORATE_FOR));
+        out.mouth.phone_until = Instant::now();
+        assert!(!turns.loud_lately());
+        assert_eq!(turns.hearing(&mut out, &companion, 5.0, "wait stop"), None);
+        assert!(!cancelled(&out, id));
+        assert_eq!(cuts(&out), 0);
+    }
+
+    /// The lines on the phone's screen that the call is to say, in order,
+    /// with the reading behind each.
+    fn said(out: &Outputs) -> Vec<(String, Option<String>)> {
+        let hub = out.phone.as_ref().unwrap();
+        let state = hub.handle(&phone::http::Request {
+            method: "GET".into(),
+            path: "/api/state".into(),
+            query: vec![("k".into(), "k1".into())],
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["speak"] == true)
+            .map(|m| {
+                (
+                    m["text"].as_str().unwrap().to_string(),
+                    m["fact"].as_str().map(str::to_string),
+                )
+            })
+            .collect()
+    }
+
+    /// The lines on the phone's screen the call is to say however late
+    /// they come (a death, a level-up).
+    fn urgent(out: &Outputs) -> Vec<String> {
+        let hub = out.phone.as_ref().unwrap();
+        let state = hub.handle(&phone::http::Request {
+            method: "GET".into(),
+            path: "/api/state".into(),
+            query: vec![("k".into(), "k1".into())],
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|m| m["urgent"] == true)
+            .map(|m| m["text"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn frame(hp: f32, read: bool, level: u32) -> Observation {
+        let gauge = |percent: f32, read: bool| ms::companion::Gauge {
+            percent,
+            current: None,
+            max: None,
+            read,
+        };
+        Observation {
+            game: GameView::Seen("MapleStory".into()),
+            hp: Some(gauge(hp, read)),
+            mp: Some(gauge(40.0, false)),
+            exp: None,
+            level: Some(level),
+            name: None,
+            job: None,
+        }
+    }
+
+    #[test]
+    fn on_a_call_the_watcher_speaks_once_per_gap_and_with_a_number() {
+        let mut out = outputs();
+        out.live = true;
+        let mut companion = Companion::new(Settings::default());
+        let now = |out: &Outputs| out.start.elapsed().as_secs_f64();
+        companion.observe(now(&out), frame(11.0, true, 165));
+        // Six beatings in a few seconds: the first goes, with the reading
+        // behind it; the rest wait, and only the newest of them.
+        for i in 0..6 {
+            out.tell(Kind::Warning, &format!("beating {i}"), true, &mut companion);
+        }
+        assert_eq!(
+            said(&out),
+            [(
+                "beating 0".to_string(),
+                Some("HP 11% (read 0 s ago), MP about 40% (estimated 0 s ago)".to_string())
+            )]
+        );
+        // A correction from a look-up waits alongside: a warning does not
+        // push it out. Nothing goes before the gap is up.
+        out.tell(
+            Kind::Info,
+            "Actually, Zakum is level 110.",
+            true,
+            &mut companion,
+        );
+        out.tell(Kind::Warning, "beating 6", true, &mut companion);
+        out.relay_due(&companion);
+        assert_eq!(said(&out).len(), 1);
+        // The answer to a button is theirs at once, gap or no gap.
+        out.tell(Kind::Reply, "Marked.", true, &mut companion);
+        assert_eq!(said(&out).len(), 2);
+        // The gap up: what waited goes together (one turn for the call),
+        // the warning with the reading as it is now — and only the
+        // warning: a correction is not about HP, and a call handed "HP
+        // 62%" with it said "HP's at 62, and Zakum is level 110".
+        out.relay.sent = Some(earlier(RELAY_GAP));
+        companion.observe(now(&out), frame(62.0, true, 165));
+        out.relay_due(&companion);
+        let lines: Vec<String> = said(&out).into_iter().map(|(t, _)| t).collect();
+        assert_eq!(
+            lines,
+            [
+                "beating 0",
+                "Marked.",
+                "Actually, Zakum is level 110.",
+                "beating 6"
+            ]
+        );
+        assert_eq!(said(&out)[1].1, None);
+        assert_eq!(said(&out)[2].1, None);
+        assert_eq!(
+            said(&out)[3].1.as_deref(),
+            Some("HP 62% (read 0 s ago), MP about 40% (estimated 0 s ago)")
+        );
+        assert!(out.relay.waiting.is_empty());
+        // The gap is closed again: a low-HP line and the coach's word
+        // park, and are still parked when the death comes. The death goes
+        // at once, alone, and with no reading ("You died" is not about a
+        // number): the parked warning was about a bar that no longer
+        // matters, the parked news about a fight that is over, and the
+        // log says neither was said.
+        out.tell(
+            Kind::Warning,
+            "HP 20 percent. Pot now!",
+            true,
+            &mut companion,
+        );
+        out.tell(Kind::Alert, "Rebuff.", true, &mut companion);
+        assert_eq!(out.relay.waiting.len(), 2);
+        let before = said(&out).len();
+        for _ in 0..3 {
+            let actions = companion.observe(now(&out), frame(0.0, true, 165));
+            out.apply(actions, &mut companion, None);
+        }
+        assert!(companion.dead());
+        let lines = said(&out);
+        assert_eq!(lines.len(), before + 1, "{lines:?}");
+        let death = lines.last().unwrap().0.clone();
+        assert!(death.starts_with("Your HP hit zero"), "{death}");
+        assert_eq!(lines.last().unwrap().1, None, "{lines:?}");
+        assert!(!lines.iter().any(|(t, _)| t.contains("HP 20 percent")));
+        assert!(!lines.iter().any(|(t, _)| t == "Rebuff."));
+        assert!(out.relay.waiting.is_empty());
+        for dropped in ["HP 20 percent. Pot now!", "Rebuff."] {
+            assert!(
+                log(&out).contains(&format!("[live] not said, a newer line came: {dropped}")),
+                "{}",
+                log(&out)
+            );
+        }
+        // The page is told the death is said however late it comes; the
+        // warnings before it were not.
+        assert_eq!(urgent(&out), std::slice::from_ref(&death));
+        assert!(log(&out).contains(&format!("[live] to the call, urgent: {death}\n")));
+        // While the character is dead, a look-up's correction is not
+        // urgent for it: the death was the one line that mattered.
+        assert!(companion.dead());
+        out.relay.sent = Some(earlier(RELAY_GAP));
+        out.tell(
+            Kind::Info,
+            "Actually, Zakum is level 110.",
+            true,
+            &mut companion,
+        );
+        assert_eq!(
+            said(&out).last().unwrap().0,
+            "Actually, Zakum is level 110."
+        );
+        assert_eq!(
+            urgent(&out),
+            std::slice::from_ref(&death),
+            "a correction while dead is not urgent"
+        );
+        // So does a level-up (the number held for a moment, one up), and
+        // it carries no reading either.
+        let t = now(&out) + 100.0;
+        for at in [t, t + 3.5, t + 10.0, t + 13.5] {
+            let level = if at < t + 10.0 { 165 } else { 166 };
+            let actions = companion.observe(at, frame(80.0, true, level));
+            out.apply(actions, &mut companion, None);
+        }
+        assert_eq!(said(&out).last().unwrap().0, "Level up! You're level 166.");
+        assert_eq!(said(&out).last().unwrap().1, None);
+        assert_eq!(urgent(&out), [death, "Level up! You're level 166.".into()]);
+        // Muted: shown, not said, and nothing waits for the gap.
+        let actions = companion.command(t + 20.0, Command::Mute);
+        out.apply(actions, &mut companion, None);
+        let before = said(&out).len();
+        out.tell(Kind::Warning, "beating 7", true, &mut companion);
+        assert_eq!((said(&out).len(), out.relay.waiting.len()), (before, 0));
+    }
+
+    #[test]
+    fn a_call_whose_phone_is_gone_is_lost_and_its_lines_come_back_to_its_own_voice() {
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let now = out.start.elapsed().as_secs_f64();
+        companion.observe(now, frame(20.0, true, 165));
+        // On a call, a warning is the call's to say.
+        out.live = true;
+        out.tell(
+            Kind::Warning,
+            "HP 20 percent. Pot now!",
+            true,
+            &mut companion,
+        );
+        assert_eq!(said(&out).len(), 1);
+        // The phone stops asking (its screen locked): not lost at once…
+        out.watch_call(false, &mut companion);
+        assert!(out.live && out.phone_gone.is_some());
+        // …and not at all when it is back before the time is up.
+        out.watch_call(true, &mut companion);
+        assert!(out.live && out.phone_gone.is_none());
+        // Gone for CALL_LOST_AFTER: the call is lost, and the log says so.
+        out.watch_call(false, &mut companion);
+        out.phone_gone = Some(earlier(CALL_LOST_AFTER));
+        out.watch_call(false, &mut companion);
+        assert!(!out.live, "the call must be taken as lost");
+        assert!(out.phone_gone.is_none());
+        assert!(log(&out).contains("[live] call lost: the phone is gone"));
+        assert!(log(&out).contains("[info] live call ended"));
+        // The next warning is MapleSyrup's own voice's (a Speak job,
+        // remembered as its own words), not handed to a call nobody is on.
+        let before = job(&out);
+        out.tell(
+            Kind::Warning,
+            "HP 10 percent. Pot now!",
+            true,
+            &mut companion,
+        );
+        assert_eq!(
+            job(&out),
+            before + 2,
+            "the warning was not given to the voice"
+        );
+        assert!(
+            companion
+                .own_words(now + 1.0, "HP 10 percent pot now", 0)
+                .is_none(),
+            "the warning was not spoken"
+        );
+        assert_eq!(said(&out).len(), 1, "the warning went to the call");
+        assert!(!log(&out).contains("to the call: HP 10 percent"));
+        // Off a call there is nothing to watch.
+        out.watch_call(false, &mut companion);
+        assert!(out.phone_gone.is_none());
+        // A page that just opened has no call either: one that was on is
+        // over (the page says so again when its call reopens).
+        out.live = true;
+        out.hello(
+            &mut companion,
+            false,
+            "iPhone",
+            true,
+            Some(Duration::from_secs(2)),
+            None,
+        );
+        assert!(!out.live, "a fresh page has no call");
+    }
+
+    #[test]
+    fn a_call_that_ends_hands_the_lines_waiting_for_its_gap_back() {
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let now = |out: &Outputs| out.start.elapsed().as_secs_f64();
+        companion.observe(now(&out), frame(11.0, true, 165));
+        // The page reads off the status whether the PC has its call.
+        assert_eq!(out.call_status()["on_call"], false);
+        assert!(out.call_opened());
+        assert_eq!(out.call_status()["on_call"], true);
+        // On a call, in a fight: the beating is handed over; the low line
+        // a moment later waits for the call's gap, and so does a look-up's
+        // correction.
+        out.tell(
+            Kind::Warning,
+            "Back off, you're getting shredded.",
+            true,
+            &mut companion,
+        );
+        out.tell(
+            Kind::Warning,
+            "Pot! You're at 11 percent.",
+            true,
+            &mut companion,
+        );
+        out.tell(
+            Kind::Info,
+            "Actually, Zakum is level 110.",
+            true,
+            &mut companion,
+        );
+        assert_eq!(said(&out).len(), 1);
+        assert_eq!(out.relay.waiting.len(), 2);
+        // The call ends (the page leaves, the phone is gone, another page
+        // says hello): the warning is still true, and its own voice says it
+        // — on the phone's screen, a job for the voice, remembered as its
+        // own words; the correction is not lost without a word either.
+        let before = job(&out);
+        out.call_ended(&mut companion);
+        assert!(!out.live && out.relay.waiting.is_empty());
+        assert_eq!(out.call_status()["on_call"], false);
+        assert_eq!(
+            job(&out),
+            before + 2,
+            "the waiting warning was not given to the voice"
+        );
+        assert!(
+            companion
+                .own_words(now(&out) + 1.0, "Pot! You're at 11 percent.", 0)
+                .is_none(),
+            "the waiting warning was not spoken"
+        );
+        assert!(screen(&out).contains(&"Pot! You're at 11 percent.".to_string()));
+        assert!(!screen(&out).contains(&"Actually, Zakum is level 110.".to_string()));
+        let log = log(&out);
+        assert!(
+            log.contains("[live] the call ended before saying it: Pot! You're at 11 percent.\n"),
+            "{log}"
+        );
+        assert!(
+            log.contains("[live] not said, the call ended: Actually, Zakum is level 110.\n"),
+            "{log}"
+        );
+        // The phone gone with a line waiting: the same.
+        assert!(out.call_opened());
+        out.relay.sent = Some(Instant::now());
+        out.tell(Kind::Alert, "Rebuff.", true, &mut companion);
+        assert_eq!(out.relay.waiting.len(), 1);
+        out.phone_gone = Some(earlier(CALL_LOST_AFTER));
+        let before = job(&out);
+        out.watch_call(false, &mut companion);
+        assert!(!out.live);
+        assert_eq!(job(&out), before + 2, "the waiting news was not said");
+        assert_eq!(out.call_status()["on_call"], false);
+    }
+
+    #[test]
+    fn the_workshops_word_on_a_call_is_the_calls_to_say() {
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        // Off a call: the worker says it (a job of its own), and the
+        // phone's screen gets nothing to say.
+        let before = job(&out);
+        say_line(&mut out, &mut companion, "On it. A few minutes.".into());
+        assert_eq!(job(&out), before + 2, "the worker got the line");
+        assert!(said(&out).is_empty());
+        // On a call: the call says it, at once (the answer to what they
+        // asked for), not a clip over the call's voice — no job for the
+        // worker.
+        out.live = true;
+        let before = job(&out);
+        say_line(&mut out, &mut companion, "On it. A few minutes.".into());
+        assert_eq!(job(&out), before + 1, "a clip was made over the call");
+        assert_eq!(said(&out), [("On it. A few minutes.".to_string(), None)]);
+        assert!(
+            log(&out).contains("[reply] On it. A few minutes."),
+            "{}",
+            log(&out)
+        );
+    }
+
+    /// The phone's clip counter.
+    fn clip(out: &Outputs) -> u64 {
+        let hub = out.phone.as_ref().unwrap();
+        let state = hub.handle(&phone::http::Request {
+            method: "GET".into(),
+            path: "/api/state".into(),
+            query: vec![("k".into(), "k1".into())],
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["clip"]
+            .as_u64()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_line_of_its_own_waits_while_the_player_talks() {
+        let mut out = outputs();
+        let companion = Companion::new(Settings::default());
+        let mut turns = Turns::default();
+        let samples = vec![100i16; 2400];
+        let piece = |id: u64, kind: Kind, start: bool, end: bool| Piece {
+            id,
+            kind,
+            samples: &samples,
+            start,
+            end,
+        };
+        // The answer they are waiting for goes at once.
+        let answer = job(&out);
+        turns.asked(answer, "what's my level");
+        let own = turns.reply_id() != Some(answer);
+        assert!(!own);
+        out.play_piece(piece(answer, Kind::Reply, true, true), false, &companion);
+        assert_eq!(clip(&out), 1);
+        // A line of its own while they talk (or while the answer is made): held.
+        let heard = Some(Instant::now());
+        assert!(!player_quiet(heard, &turns));
+        out.play_piece(piece(101, Kind::Info, true, true), true, &companion);
+        out.release_clips(player_quiet(heard, &turns));
+        assert_eq!((clip(&out), out.mouth.phone_held.len()), (1, 1));
+        // Once they are quiet and answered, it goes.
+        turns.finished(answer);
+        let quiet = Some(earlier(Duration::from_secs(1)));
+        assert!(player_quiet(quiet, &turns));
+        out.release_clips(player_quiet(quiet, &turns));
+        assert_eq!((clip(&out), out.mouth.phone_held.len()), (2, 0));
+        // Held too long, it goes anyway; cut, it is dropped.
+        out.play_piece(piece(102, Kind::Info, true, true), true, &companion);
+        out.mouth.phone_held[0].since = earlier(CLIP_WAITS);
+        out.release_clips(false);
+        assert_eq!(clip(&out), 3);
+        out.play_piece(piece(103, Kind::Info, true, true), true, &companion);
+        out.cut();
+        assert!(out.mouth.phone_held.is_empty());
+        // A warning's clip, held for their turn, is not dropped by their
+        // next sentence: the warning is still true. Nor is news (a death,
+        // a level-up). They go after their turn, as they would have; the
+        // note held with them is dropped.
+        out.play_piece(piece(104, Kind::Warning, true, true), true, &companion);
+        out.play_piece(piece(105, Kind::Alert, true, true), true, &companion);
+        out.play_piece(piece(106, Kind::Info, true, true), true, &companion);
+        assert_eq!(out.mouth.phone_held.len(), 3);
+        out.cut();
+        assert_eq!(
+            out.mouth
+                .phone_held
+                .iter()
+                .map(|clip| clip.kind)
+                .collect::<Vec<_>>(),
+            [Kind::Warning, Kind::Alert],
+            "the warning's clip and the news must survive the cut"
+        );
+        assert_eq!(cuts(&out), 2);
+        out.release_clips(true);
+        assert_eq!((clip(&out), out.mouth.phone_held.len()), (5, 0));
+        // A warning still being made when the cut comes keeps what was
+        // made of it: the clip is whole, not its second half.
+        out.play_piece(piece(107, Kind::Warning, true, false), false, &companion);
+        out.cut();
+        out.play_piece(piece(107, Kind::Warning, false, true), false, &companion);
+        assert_eq!(clip(&out), 6);
+        assert_eq!(clip_bytes(&out, 6), 44 + 2 * 2 * samples.len());
+    }
+
+    #[test]
+    fn a_cut_hushes_a_reply_and_lets_a_warning_play_out() {
+        let mut out = outputs();
+        let companion = Companion::new(Settings::default());
+        // Replies on the PC's speakers.
+        out.phone.as_ref().unwrap().set_voice_on(VoiceOn::Pc);
+        let samples = vec![100i16; 24_000];
+        let piece = |id: u64, kind: Kind, start: bool, end: bool| Piece {
+            id,
+            kind,
+            samples: &samples,
+            start,
+            end,
+        };
+        // A reply under way; the player talks over it: the speakers stop,
+        // and the rest of the reply is dropped — hushed on its first half,
+        // a reply went on from its second.
+        out.play_piece(piece(1, Kind::Reply, true, false), false, &companion);
+        assert!(out.mouth.player.speaking());
+        out.cut();
+        assert!(!out.mouth.player.speaking());
+        assert_eq!(out.mouth.hushed, Some(1));
+        out.play_piece(piece(1, Kind::Reply, false, true), false, &companion);
+        assert!(
+            !out.mouth.player.speaking(),
+            "the hushed reply's second half must not play"
+        );
+        // A warning under way is not hushed: it is still true, and plays
+        // out, the rest of it too.
+        out.play_piece(piece(2, Kind::Warning, true, false), false, &companion);
+        out.cut();
+        assert!(
+            out.mouth.player.speaking(),
+            "a warning must play on through the cut"
+        );
+        let before = out.mouth.player.remaining();
+        out.play_piece(piece(2, Kind::Warning, false, true), false, &companion);
+        assert!(out.mouth.player.remaining() > before);
+        assert_eq!(out.mouth.hushed, Some(1));
+        // News (a death, a level-up) the same.
+        out.mouth.player.stop();
+        out.play_piece(piece(3, Kind::Alert, true, true), false, &companion);
+        out.cut();
+        assert!(
+            out.mouth.player.speaking(),
+            "news must play on through the cut"
+        );
+        // A note of its own (a hello) is chat: hushed.
+        out.mouth.player.stop();
+        out.play_piece(piece(4, Kind::Info, true, false), false, &companion);
+        out.cut();
+        assert!(!out.mouth.player.speaking());
+        assert_eq!(out.mouth.hushed, Some(4));
+        // Muted, a warning stops too: they asked for quiet.
+        out.mouth.player.stop();
+        out.play_piece(piece(7, Kind::Warning, true, false), false, &companion);
+        out.silence();
+        assert!(!out.mouth.player.speaking());
+        assert_eq!(out.mouth.hushed, Some(7));
+        // On the phone the same: a reply hushed on its first half does
+        // not come out as its second half once its last piece arrives.
+        out.phone.as_ref().unwrap().set_voice_on(VoiceOn::Phone);
+        let clips = clip(&out);
+        out.play_piece(piece(5, Kind::Reply, true, false), false, &companion);
+        out.cut();
+        out.play_piece(piece(5, Kind::Reply, false, true), false, &companion);
+        assert_eq!(
+            clip(&out),
+            clips,
+            "no clip of the hushed reply's second half"
+        );
+        // The next line is a new one: heard in full.
+        out.play_piece(piece(6, Kind::Reply, true, true), false, &companion);
+        assert_eq!(clip(&out), clips + 1);
+        // Muted, a warning's clip held for their turn is dropped with the
+        // rest: nothing plays on the phone after "mute".
+        out.play_piece(piece(8, Kind::Warning, true, true), true, &companion);
+        assert_eq!(out.mouth.phone_held.len(), 1);
+        out.silence();
+        assert!(out.mouth.phone_held.is_empty());
+    }
+
+    #[test]
+    fn the_phone_is_said_hello_to_once_per_visit_by_whoever_will_talk() {
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let hello =
+            |out: &mut Outputs, companion: &mut Companion, live: bool, away: Option<Duration>| {
+                out.hello(companion, false, "iPhone Safari", live, away, None)
+            };
+        let shown = |out: &Outputs| {
+            let hub = out.phone.as_ref().unwrap();
+            let state = hub.handle(&phone::http::Request {
+                method: "GET".into(),
+                path: "/api/state".into(),
+                query: vec![("k".into(), "k1".into())],
+                headers: Vec::new(),
+                body: Vec::new(),
+            });
+            serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|m| m["text"] == "Connected to MapleSyrup on this iPhone.")
+                .count()
+        };
+        // No key (no call to come): a hello of its own, said as a clip
+        // (one job for the worker, remembered as its own words).
+        let first = job(&out);
+        assert_eq!(hello(&mut out, &mut companion, true, None), Hello::Clip);
+        assert_eq!(shown(&out), 1);
+        assert!(
+            companion
+                .own_words(1.0, "hey I'm here just talk to me", 0)
+                .is_none(),
+            "the hello was not said"
+        );
+        // The page reloaded a moment later (the same visit): "Connected"
+        // on the screen, no second hello (no second job).
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(Duration::from_secs(2))),
+            Hello::Quiet
+        );
+        assert_eq!(shown(&out), 2);
+        assert_eq!(job(&out), first + 2);
+        // Gone for half an hour: a visit of its own, hello again.
+        let before = job(&out);
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Clip
+        );
+        assert_eq!(job(&out), before + 2);
+        // Knowing the player, the hello picks up from last time (a job of
+        // its own).
+        let before = job(&out);
+        assert_eq!(
+            out.hello(
+                &mut companion,
+                true,
+                "iPhone",
+                true,
+                Some(HELLO_AGAIN),
+                None
+            ),
+            Hello::Clip
+        );
+        assert_eq!(job(&out), before + 2);
+        // With a key, and the page's toggle on: the call about to open says
+        // hello, and nothing is said meanwhile; the page is told so.
+        out.live_ok = true;
+        let before = job(&out);
+        assert!(!out.call_greets());
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Call
+        );
+        assert!(out.call_greets());
+        assert_eq!(job(&out), before + 1);
+        // The toggle off (the owner's phone connected to silence): a clip.
+        out.call_greets = None;
+        assert_eq!(
+            hello(&mut out, &mut companion, false, Some(HELLO_AGAIN)),
+            Hello::Clip
+        );
+        assert!(!out.call_greets());
+        // Replies on the PC: no call will open, whatever the toggle.
+        out.phone.as_ref().unwrap().set_voice_on(VoiceOn::Pc);
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Clip
+        );
+        out.phone.as_ref().unwrap().set_voice_on(VoiceOn::Phone);
+        // Only after "syrup": the page opens no call either.
+        companion.set_always_listen(false);
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Clip
+        );
+        companion.set_always_listen(true);
+        // A new session (the PC started again) says hello even though the
+        // link saw the phone a moment ago.
+        let mut fresh = outputs();
+        assert_eq!(
+            hello(
+                &mut fresh,
+                &mut companion,
+                true,
+                Some(Duration::from_millis(30))
+            ),
+            Hello::Clip
+        );
+        assert!(log(&out).contains("[info] iPhone connected: back from a reload, no second hello"));
+        assert!(log(&out).contains("[info] iPhone connected: the call says hello when it opens"));
+    }
+
+    #[test]
+    fn the_toggle_flipped_before_listen_changes_who_says_hello() {
+        let mut out = outputs();
+        out.live_ok = true;
+        let mut companion = Companion::new(Settings::default());
+        let hello =
+            |out: &mut Outputs, companion: &mut Companion, live: bool, away: Option<Duration>| {
+                out.hello(companion, false, "iPhone Safari", live, away, None)
+            };
+        let moment = Some(Duration::from_secs(2));
+        // The page opens with the toggle on: the hello is the call's.
+        let before = job(&out);
+        assert_eq!(hello(&mut out, &mut companion, true, None), Hello::Call);
+        assert!(out.call_greets() && out.hello_job.is_none());
+        assert_eq!(job(&out), before + 1);
+        // The player turns the call off before tapping Listen: the page
+        // says hello again, the toggle off. No call is coming, so a clip
+        // says hello — now, not never; and the call that opens an hour
+        // later says none.
+        let before = job(&out);
+        assert_eq!(hello(&mut out, &mut companion, false, moment), Hello::Clip);
+        assert_eq!(job(&out), before + 2, "no clip hello was made");
+        assert!(!out.call_greets());
+        assert!(out.hello_job.is_some());
+        assert!(
+            companion
+                .own_words(1.0, "hey I'm here just talk to me", 0)
+                .is_none(),
+            "the hello was not said"
+        );
+        assert!(
+            log(&out).contains("[info] iPhone connected: no call coming for the hello: saying it")
+        );
+        // The same toggle again (a reload): no second hello.
+        assert_eq!(hello(&mut out, &mut companion, false, moment), Hello::Quiet);
+        // The mirror, the toggle on again before Listen: the call takes
+        // the hello over, and the clip hello the phone was keeping for
+        // the tap is withdrawn — its job called off, the phone's clips
+        // cut — so the call's hello is the one.
+        let id = out.hello_job.unwrap();
+        let cuts_before = cuts(&out);
+        assert_eq!(hello(&mut out, &mut companion, true, moment), Hello::Call);
+        assert!(out.call_greets());
+        assert!(cancelled(&out, id), "the clip hello was not called off");
+        assert_eq!(
+            cuts(&out),
+            cuts_before + 1,
+            "the phone keeps the clip hello"
+        );
+        assert!(out.hello_job.is_none());
+        assert!(
+            log(&out)
+                .contains("[info] iPhone connected: the call takes the hello over, when it opens")
+        );
+        // An earlier visit's clip hello is long heard: a call hello on a
+        // new visit cuts nothing.
+        out.hello_job = Some(id);
+        assert_eq!(
+            hello(&mut out, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Call
+        );
+        assert_eq!(cuts(&out), cuts_before + 1);
+        assert!(out.hello_job.is_none());
+        // The hello left to a call that does not open (Listen never
+        // tapped): after CALL_GREETS_FOR it is not coming, and MapleSyrup
+        // says hello itself — a clip the phone keeps for the tap; the
+        // call that opens later says none.
+        let mut late = outputs();
+        late.live_ok = true;
+        let mut companion = Companion::new(Settings::default());
+        assert_eq!(hello(&mut late, &mut companion, true, None), Hello::Call);
+        assert!(late.call_greets() && !late.hello_overdue());
+        late.call_greets = Some(earlier(CALL_GREETS_FOR));
+        assert!(
+            !late.call_greets(),
+            "the status must not let a late call greet"
+        );
+        assert!(late.hello_overdue());
+        let before = job(&late);
+        late.hello_late(&mut companion, false, None);
+        assert_eq!(job(&late), before + 2, "no clip hello was made");
+        assert!(late.call_greets.is_none() && !late.hello_overdue());
+        assert!(late.hello_job.is_some());
+        assert!(log(&late).contains("[info] no call opened for the hello: saying it myself"));
+        // A reload after that is quiet, as any within the visit.
+        assert_eq!(
+            hello(&mut late, &mut companion, false, moment),
+            Hello::Quiet
+        );
+        // On a call the hello is never overdue: the call said it.
+        late.call_greets = Some(earlier(CALL_GREETS_FOR));
+        late.live = true;
+        assert!(!late.hello_overdue());
+    }
+
+    #[test]
+    fn a_hello_heard_is_final_and_a_reload_mid_call_is_greeted_by_nobody() {
+        let mut out = outputs();
+        out.live_ok = true;
+        let mut companion = Companion::new(Settings::default());
+        let hello =
+            |out: &mut Outputs, companion: &mut Companion, live: bool, away: Option<Duration>| {
+                out.hello(companion, false, "iPhone Safari", live, away, None)
+            };
+        let moment = Some(Duration::from_secs(3));
+        // The page opens with the toggle on: the hello is left to the call.
+        // A minute and no call (the player read the page first): a clip
+        // says it, which the phone keeps for the tap.
+        assert_eq!(hello(&mut out, &mut companion, true, None), Hello::Call);
+        out.call_greets = Some(earlier(CALL_GREETS_FOR));
+        assert!(out.hello_overdue());
+        out.hello_late(&mut companion, false, None);
+        let late = out.hello_job.expect("the late hello is a clip");
+        // Listen tapped: the clip plays, the call opens and says none.
+        assert!(!out.call_greets());
+        assert!(out.call_opened(), "a new call");
+        assert!(out.live);
+        // Twenty minutes on, iOS reloads the tab mid-call (the toggle still
+        // on): the same visit, its hello heard — no second one, and no cut
+        // for a clip heard long ago.
+        let cuts_before = cuts(&out);
+        assert_eq!(hello(&mut out, &mut companion, true, moment), Hello::Quiet);
+        assert!(!out.call_greets(), "the reopened call would say hi again");
+        assert_eq!(cuts(&out), cuts_before, "a clip heard long ago was cut");
+        assert!(!cancelled(&out, late));
+        assert!(out.hello_job.is_none());
+        assert!(
+            !log(&out).contains("the clip is withdrawn"),
+            "{}",
+            log(&out)
+        );
+        // Nor with the toggle off by then: heard is final, whoever would
+        // say it now.
+        assert_eq!(hello(&mut out, &mut companion, false, moment), Hello::Quiet);
+        // The reloaded page's call opens; the page saying so again is no
+        // new call.
+        assert!(out.call_opened());
+        assert!(!out.call_opened(), "the same call twice");
+        // The same through the toggle: a clip visit, the toggle turned on
+        // while listening (the call opens, no hello posted), a reload.
+        let mut clip = outputs();
+        clip.live_ok = true;
+        assert_eq!(hello(&mut clip, &mut companion, false, None), Hello::Clip);
+        assert!(clip.call_opened());
+        let cuts_before = cuts(&clip);
+        assert_eq!(hello(&mut clip, &mut companion, true, moment), Hello::Quiet);
+        assert!(!clip.call_greets());
+        assert_eq!(cuts(&clip), cuts_before);
+        // A new visit is a new hello, and the toggle decides it again.
+        assert_eq!(
+            hello(&mut clip, &mut companion, true, Some(HELLO_AGAIN)),
+            Hello::Call
+        );
+        assert_eq!(hello(&mut clip, &mut companion, false, moment), Hello::Clip);
+    }
+
+    /// Every line on the phone's screen, in order.
+    fn screen(out: &Outputs) -> Vec<String> {
+        let hub = out.phone.as_ref().unwrap();
+        let state = hub.handle(&phone::http::Request {
+            method: "GET".into(),
+            path: "/api/state".into(),
+            query: vec![("k".into(), "k1".into())],
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        serde_json::from_slice::<serde_json::Value>(&state.body).unwrap()["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["text"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_player_it_does_not_know_is_told_what_it_does_after_the_hello() {
+        use ms::companion::Attitude;
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings {
+            attitude: Attitude::Blunt,
+            ..Settings::default()
+        });
+        let terms_of = |attitude: Attitude| attitude.lines(TERMS);
+        for lines in TERMS {
+            assert!(lines.len() >= 2);
+        }
+        // A player it does not know: the hello, then — a moment later, not
+        // over it — what it does.
+        let before = job(&out);
+        assert_eq!(
+            out.hello(&mut companion, false, "iPhone", false, None, None),
+            Hello::Clip
+        );
+        assert_eq!(job(&out), before + 2);
+        assert!(
+            out.terms_due.is_some() && !out.terms_due(),
+            "the terms must wait a moment"
+        );
+        assert!(!out.terms_said);
+        out.terms_due = Some(Instant::now());
+        assert!(out.terms_due());
+        let before = job(&out);
+        out.say_terms(&mut companion);
+        assert_eq!(job(&out), before + 2, "the terms were not spoken");
+        assert!(out.terms_said && out.terms_due.is_none());
+        // In its attitude (blunt), shown, and remembered as its own words.
+        let line = screen(&out)
+            .into_iter()
+            .find(|l| terms_of(Attitude::Blunt).contains(&l.as_str()))
+            .expect("the terms on the screen");
+        assert!(companion.own_words(1.0, &line, 0).is_none(), "{line}");
+        assert!(log(&out).contains("[info] a player I don't know: saying what I do"));
+        // Once a session: a later visit's hello brings no terms.
+        assert_eq!(
+            out.hello(
+                &mut companion,
+                false,
+                "iPhone",
+                false,
+                Some(HELLO_AGAIN),
+                None
+            ),
+            Hello::Clip
+        );
+        assert!(out.terms_due.is_none());
+        // A player it knows hears none: the hello picks up from last time.
+        let mut known = outputs();
+        assert_eq!(
+            known.hello(&mut companion, true, "iPhone", false, None, None),
+            Hello::Clip
+        );
+        assert!(known.terms_due.is_none());
+        // Savage: in that voice.
+        let mut savage = outputs();
+        companion.settings.attitude = Attitude::Savage;
+        savage.hello(&mut companion, false, "iPhone", false, None, None);
+        savage.terms_due = Some(Instant::now());
+        savage.say_terms(&mut companion);
+        assert!(
+            screen(&savage)
+                .iter()
+                .any(|l| terms_of(Attitude::Savage).contains(&l.as_str())),
+            "{:?}",
+            screen(&savage)
+        );
+        // The call taking the hello over (the toggle flipped on before
+        // Listen) sets its own terms: none from here.
+        let mut call = outputs();
+        call.live_ok = true;
+        assert_eq!(
+            call.hello(&mut companion, false, "iPhone", false, None, None),
+            Hello::Clip
+        );
+        assert!(call.terms_due.is_some());
+        assert_eq!(
+            call.hello(
+                &mut companion,
+                false,
+                "iPhone",
+                true,
+                Some(Duration::from_secs(2)),
+                None
+            ),
+            Hello::Call
+        );
+        assert!(call.terms_due.is_none());
+    }
+
+    #[test]
+    fn on_a_call_a_player_it_does_not_know_is_told_what_it_does_by_the_call() {
+        let mut out = outputs();
+        out.live_ok = true;
+        let mut companion = Companion::new(Settings::default());
+        // A player it does not know, the hello left to the call: the page
+        // reads off the status that the call's hello says what it does too
+        // (the clip path's terms; nothing of its own is scheduled).
+        assert_eq!(
+            out.hello(&mut companion, false, "iPhone", true, None, None),
+            Hello::Call
+        );
+        assert_eq!(out.call_status()["new_player"], true);
+        assert!(out.terms_due.is_none() && !out.terms_said);
+        // The call opens and says them: said, once a session.
+        assert!(out.call_opened());
+        assert!(out.terms_said);
+        assert_eq!(out.call_status()["new_player"], false);
+        assert!(log(&out).contains("[info] a player I don't know: the call says what I do"));
+        assert_eq!(
+            out.hello(
+                &mut companion,
+                false,
+                "iPhone",
+                true,
+                Some(HELLO_AGAIN),
+                None
+            ),
+            Hello::Call
+        );
+        assert_eq!(out.call_status()["new_player"], false);
+        // A player it knows: none.
+        let mut known = outputs();
+        known.live_ok = true;
+        known.hello(&mut companion, true, "iPhone", true, None, None);
+        assert_eq!(known.call_status()["new_player"], false);
+        // A call that never came: not the call's to say any more; the
+        // clip hello brings them, as before.
+        let mut late = outputs();
+        late.live_ok = true;
+        late.hello(&mut companion, false, "iPhone", true, None, None);
+        late.call_greets = Some(earlier(CALL_GREETS_FOR));
+        assert_eq!(late.call_status()["new_player"], false);
+        late.hello_late(&mut companion, false, None);
+        assert!(late.terms_due.is_some());
+        assert!(late.call_opened());
+        assert!(!late.terms_said, "the clip's terms are still to come");
+    }
+
+    #[test]
+    fn a_language_asked_for_out_loud_is_the_phones_and_its_own_at_once() {
+        use ms::companion::Attitude;
+        use ms::companion::lines::{LANGUAGE_TAKEN_EN, LANGUAGE_TAKEN_HE};
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let mut player_language = None;
+        let attitude = companion.settings.attitude;
+        // "Talk to me in Hebrew" took a model 13.5 s, and the phone still
+        // heard English. Now no model: its own lines are Hebrew from now on,
+        // the phone is told to take Hebrew (its status, by number), and the
+        // word that it is comes at once, in Hebrew, said.
+        let before = job(&out);
+        out.ask_language("he-IL", &mut player_language, &mut companion, true);
+        assert_eq!(out.language.as_deref(), Some("he-IL"));
+        assert_eq!(player_language.as_deref(), Some("he-IL"));
+        assert_eq!(out.lang_request(), json!({"lang": "he-IL", "seq": 1}));
+        let line = screen(&out).last().cloned().unwrap();
+        assert!(
+            attitude.lines(LANGUAGE_TAKEN_HE).contains(&line.as_str()),
+            "{line}"
+        );
+        assert_eq!(job(&out), before + 2, "the word was not said");
+        assert!(log(&out).contains("[info] language: Hebrew (he-IL)"));
+        // Its own lines are Hebrew from here, shown as they are said (no
+        // Latin letter: the voice's translation lets them through as they
+        // are): the game seen, a level-up.
+        assert!(companion.speaks_hebrew());
+        let seen = |level: u32| ms::companion::Observation {
+            game: ms::companion::GameView::Seen("MapleStory".into()),
+            hp: None,
+            mp: None,
+            exp: None,
+            level: Some(level),
+            name: None,
+            job: None,
+        };
+        let shown = screen(&out).len();
+        for (t, level) in [(0.0, 9), (3.1, 9), (5.0, 10), (8.1, 10)] {
+            let actions = companion.observe(t, seen(level));
+            out.apply(actions, &mut companion, None);
+        }
+        let own = screen(&out)[shown..].to_vec();
+        assert_eq!(own.len(), 2, "{own:?}");
+        assert!(
+            own.iter()
+                .all(|l| !l.chars().any(|c| c.is_ascii_alphabetic())),
+            "{own:?}"
+        );
+        assert_eq!(own[1], "עלית רמה! אתה ברמה 10.");
+        // The phone took it (its picker says so): asked no more. (Its
+        // first word at the hello comes the same way: the companion too.)
+        out.set_language("he-IL", &mut player_language, &mut companion);
+        out.took_language("he-IL");
+        assert_eq!(out.lang_request(), serde_json::Value::Null);
+        assert!(companion.speaks_hebrew());
+        // And back to English: the next number, said in English.
+        out.ask_language("en-US", &mut player_language, &mut companion, true);
+        assert_eq!(out.language, None);
+        assert!(!companion.speaks_hebrew());
+        assert_eq!(out.lang_request(), json!({"lang": "en-US", "seq": 2}));
+        let line = screen(&out).last().cloned().unwrap();
+        assert!(
+            attitude
+                .lines(LANGUAGE_TAKEN_EN)
+                .iter()
+                .any(|l| l.replace("{lang}", "English") == line),
+            "{line}"
+        );
+        // Another of the picker's languages: the word in English, its own
+        // lines (that one too) translated into Spanish from now on.
+        out.ask_language("es-ES", &mut player_language, &mut companion, true);
+        assert_eq!(out.language.as_deref(), Some("es-ES"));
+        assert!(!companion.speaks_hebrew());
+        assert!(screen(&out).last().unwrap().contains("Spanish"));
+        // A request the phone never took is not made forever.
+        out.lang_asked.as_mut().unwrap().at = earlier(LANG_ASKED_FOR);
+        assert_eq!(out.lang_request(), serde_json::Value::Null);
+        // On a call the call answers them: nothing said or shown here, the
+        // phone told all the same.
+        out.live = true;
+        let (before, shown) = (job(&out), screen(&out).len());
+        out.ask_language("he-IL", &mut player_language, &mut companion, false);
+        assert_eq!(job(&out), before + 1);
+        assert_eq!(screen(&out).len(), shown);
+        assert_eq!(out.lang_request()["lang"], "he-IL");
+        assert_eq!(out.language.as_deref(), Some("he-IL"));
+        assert!(companion.speaks_hebrew());
+        // Every attitude has three ways at least, in Hebrew and English.
+        for attitude in Attitude::ALL {
+            assert!(attitude.lines(LANGUAGE_TAKEN_HE).len() >= 3);
+            assert!(attitude.lines(LANGUAGE_TAKEN_EN).len() >= 3);
+        }
+        // With no key there is no voice that speaks Hebrew (the Windows
+        // voice reads English): its own lines stay English.
+        let mut out = outputs();
+        out.mouth.ai = None;
+        let mut companion = Companion::new(Settings::default());
+        out.set_language("he-IL", &mut player_language, &mut companion);
+        assert!(!companion.speaks_hebrew());
+    }
+
+    #[test]
+    fn a_request_for_the_language_in_use_goes_on_to_the_model() {
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let mut player_language = None;
+        // The phone's picker says Hebrew (its hello): taken.
+        out.set_language("he-IL", &mut player_language, &mut companion);
+        out.took_language("he-IL");
+        let lang = player_language.clone();
+        // Hebrew asked for in Hebrew: nothing to change — no "taken" line,
+        // no request to the phone (its recogniser would restart); the
+        // sentence goes on to the model.
+        assert_eq!(out.language_asked("בעברית בבקשה", lang.as_deref()), None);
+        assert_eq!(
+            out.language_asked("תדבר איתי בעברית", lang.as_deref()),
+            None
+        );
+        // The other language is asked for, as before.
+        assert_eq!(
+            out.language_asked("תחזור לאנגלית", lang.as_deref()),
+            Some("en-US")
+        );
+        // In English, "in English" ends a sentence about the game as often
+        // as it asks: it goes on too.
+        out.set_language("en-US", &mut player_language, &mut companion);
+        out.took_language("en-US");
+        assert_eq!(
+            out.language_asked("in English", player_language.as_deref()),
+            None
+        );
+        assert_eq!(
+            out.language_asked("in Hebrew", player_language.as_deref()),
+            Some("he-IL")
+        );
+        // A request the phone has not taken yet is made again.
+        out.ask_language("he-IL", &mut player_language, &mut companion, false);
+        assert_eq!(
+            out.language_asked("talk to me in Hebrew", player_language.as_deref()),
+            Some("he-IL")
+        );
+        // Before any hello, nothing is known to be in use.
+        let fresh = outputs();
+        assert_eq!(fresh.language_asked("in English", None), Some("en-US"));
+    }
+
+    /// The size of the phone's clip `seq`, as it would fetch it.
+    fn clip_bytes(out: &Outputs, seq: u64) -> usize {
+        let hub = out.phone.as_ref().unwrap();
+        let clip = hub.handle(&phone::http::Request {
+            method: "GET".into(),
+            path: "/api/clip".into(),
+            query: vec![("k".into(), "k1".into()), ("seq".into(), seq.to_string())],
+            headers: Vec::new(),
+            body: Vec::new(),
+        });
+        assert_eq!(clip.status, 200);
+        clip.body.len()
+    }
+
+    /// The owner's session of 10 October 2026 (Classic World, 11:51 on),
+    /// as his log has it: the two taught things' alerts ("level-up effect"
+    /// says "עלית רמה! …", "player character" "Level up! Congrats."; held
+    /// ones marked), what he said ("heard"), and when anything else was
+    /// said ("said": a reply, a warning).
+    const OWNER_ROWS: &str = r#"
+11:51:28 heard I opened it
+11:51:28 alert Level up! Congrats.
+11:51:29 said
+11:51:40 heard Equipped
+11:51:44 heard what's equipped look at what's equipped and tell me what to get
+11:51:50 said
+11:52:06 heard What's the next quest I should go to
+11:52:08 said
+11:52:15 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+11:52:17 alert Level up! Congrats.
+11:52:48 heard How do I get to level 20 from quest fastest
+11:52:54 said
+11:52:59 heard question mark
+11:52:59 said
+11:53:00 said
+11:53:10 heard That's actually in Hennessey
+11:53:12 heard search
+11:53:16 heard quest that I can do in level 16
+11:53:19 said
+11:53:23 said
+11:53:47 heard Nothing specifically Hennessy
+11:53:50 said
+11:54:17 heard Where are the blue mushroom
+11:54:18 said
+11:54:30 heard no no the map is the mushroom on
+11:54:30 heard is the mushroom on what
+11:54:32 heard Basic
+11:54:34 heard one
+11:54:36 said
+11:54:48 heard Yes I want you to tell me I want you to tell me where is the map that
+11:54:50 heard blue mushroom spawn at
+11:54:52 said
+11:54:58 heard one and two
+11:55:01 heard that's it
+11:55:02 said
+11:55:07 heard Mushroom Hennessy
+11:55:14 heard well also isn't that like a map that just do mushrooms
+11:55:16 said
+11:55:32 heard Where is another place that the sponsor only blew my
+11:55:35 heard phone searching the Internet please
+11:55:37 said
+11:55:40 said
+11:55:44 heard Spawn at Hennessey hunting Ground at level 16
+11:55:46 said
+11:55:49 heard Where is the blue mushroom Forest
+11:55:51 said
+11:55:57 heard for two
+11:55:59 said
+11:56:10 heard Genesis route sounds of town there is no self fantasies
+11:56:11 said
+11:56:16 heard Victoria Island
+11:56:18 said
+11:56:31 heard There is no blue mushroom forest
+11:56:35 heard search for me when can it be
+11:56:37 said
+11:56:53 heard How do I open in the map of the monsters
+11:56:56 said
+11:57:07 heard There is no search film here
+11:57:09 said
+11:57:28 heard I'm using a classic world so there is no
+11:57:30 heard medical guide
+11:57:32 said
+11:58:53 heard Google says to go to Génesis region and travel to the northern auto maps sign in mushroom forest area and look for a hidden portal disguised near environment of assets of specific pile of wooden logs a bush or hollowed tree trunk near the top of the left side of the map and then press up arrow to enter that hidden street
+11:58:55 heard So guide me there
+11:58:57 said
+11:59:14 heard No he says northern
+11:59:17 heard We
+11:59:17 heard the West
+11:59:18 said
+11:59:25 heard Hennessey
+11:59:26 said
+12:00:04 heard How do I get
+12:00:09 heard A slime piece and piece and table
+12:00:11 said
+12:00:14 heard How do I get a table
+12:00:18 heard Table OMOK table
+12:00:22 said
+12:00:31 heard Well
+12:00:33 said
+12:00:45 heard Here
+12:00:47 said
+12:01:02 heard No I want to go to to buy the old table
+12:01:05 heard at OMOK table
+12:01:06 said
+12:01:17 heard Go to the general store and where is the general store NPC
+12:01:18 said
+12:01:23 heard Yellowstone in PC
+12:01:25 said
+12:01:36 heard racoon OK tell me when to stop
+12:01:40 said
+12:01:50 heard There is no blue mushroom
+12:01:57 heard Well what do they say that I don't see it
+12:02:01 said
+12:02:16 heard No I mean the blue mushroom house you said there is a blue mushroom house that I can buy their stuff at the table
+12:02:18 heard oh OK table
+12:02:19 said
+12:02:28 heard Communist
+12:02:33 heard Correct the town General stopped
+12:02:35 heard Where is the homework table
+12:02:44 heard it's just fried chicken and hotdog and stuff and they don't allow me to buy it because this item requires
+12:02:48 heard a grade of thumb resident of fire
+12:02:58 said
+12:03:11 heard Raymond you mean Raymond
+12:03:12 said
+12:03:27 heard OK but she doesn't have a table here
+12:03:37 said
+12:03:55 heard You are no help
+12:03:59 said
+12:08:33 said
+12:09:23 said
+12:09:57 heard How do I make my stuff drop more items when I kill a monsters
+12:09:59 said
+12:10:08 heard Join the cannabis
+12:10:13 heard Yeah but how can I where is the coupon
+12:10:15 said
+12:10:42 heard There is no drop coupon over here
+12:10:43 said
+12:10:44 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:11:23 heard I didn't level up I don't know what you mean
+12:11:25 said
+12:11:36 heard Remember that
+12:11:38 said
+12:11:45 heard Not a damn shit remember that and then improve yourself
+12:11:46 said
+12:11:57 heard what about now
+12:11:59 said
+12:12:08 heard of no it doesn't
+12:12:09 said
+12:12:28 heard Check again
+12:12:29 said
+12:12:40 said
+12:12:46 heard Check carefully if the level you're flying that's it now
+12:12:55 heard please congratulate me with the more enthusiastic response that I graduated to level 17
+12:12:56 said
+12:13:12 heard More enthusiastic
+12:13:13 said
+12:13:24 heard Enthusiastic get this for one minute
+12:13:25 said
+12:13:36 heard Be enthusiastic and congratulate me for 10 sentences straight
+12:13:38 said
+12:14:06 heard Mouth mole
+12:14:14 said
+12:14:18 heard Is auntie is there a mouse
+12:14:22 heard I want you to congratulate me more
+12:14:24 said
+12:14:33 heard Don't stop don't stop don't stop congratulate me until I say stop
+12:14:37 said
+12:14:45 heard Continue
+12:14:46 said
+12:14:49 heard Without stopping until
+12:14:55 heard Continue with without stopping until I say the world stop without stopping
+12:14:56 said
+12:15:11 heard At least 100 sentences of congratulations
+12:15:14 said
+12:15:30 heard 100 sentences
+12:15:31 said
+12:15:44 heard That's one sentence I want at least 40 sentences
+12:15:45 said
+12:16:11 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:16:17 heard A little
+12:16:18 said
+12:16:38 alert Level up! Congrats.
+12:16:47 heard At least 1000 walls compressed at least 1000 words a few congratulating me right now
+12:16:48 said
+12:16:56 heard 1000 words 1000 words
+12:16:57 said
+12:17:09 heard That's not 1000 words
+12:17:13 heard from your mistakes
+12:17:14 said
+12:17:32 alert Level up! Congrats.
+12:17:34 heard Give me 1000
+12:17:36 said
+12:20:12 alert Level up! Congrats.
+12:21:04 said
+12:21:09 heard MP 23%
+12:21:12 said
+12:21:16 said
+12:21:22 heard 23% still owe
+12:21:25 said
+12:21:59 said
+12:22:05 heard popped skill stock
+12:22:07 said
+12:22:11 heard Is there a
+12:22:13 said
+12:22:58 alert Level up! Congrats.
+12:23:04 said
+12:24:46 alert Level up! Congrats.
+12:24:50 said
+12:25:02 said
+12:25:08 heard My topping up
+12:25:10 said
+12:25:24 heard What's the best skill to use to improve right now
+12:25:25 said
+12:25:37 heard What is the best to improve according to what you say on the screen on my skill inventory
+12:25:38 said
+12:25:43 heard Magical
+12:25:48 heard Yeah but how much should I raising to
+12:25:49 said
+12:25:52 heard Give it
+12:25:56 heard should I give it a free skill points
+12:25:58 said
+12:26:13 heard OK and what about the character stats what to give the five points ability points to
+12:26:17 said
+12:26:22 heard INTINT
+12:26:25 said
+12:26:33 heard Congrats is point eye of the
+12:26:34 said
+12:26:35 said
+12:26:45 heard Level out congrats not leveled up first not darkness about 21% blue one
+12:26:46 said
+12:27:01 heard Yeah but what's INT in the character that
+12:27:02 said
+12:27:16 heard Do you mean I get I get a stronger magic and
+12:27:20 heard Do more damage that way
+12:27:22 said
+12:27:32 said
+12:27:46 heard I don't have I use lemons
+12:27:48 heard remember that
+12:27:51 said
+12:28:01 heard What stuff do I have in the mini keyboard layout
+12:28:04 heard what do you see
+12:28:06 said
+12:28:15 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:28:20 heard Try to guess I didn't
+12:28:24 heard stop it I didn't leveled up
+12:28:25 said
+12:28:30 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:28:45 heard Listen don't don't say if I
+12:28:54 heard don't tell me about my level nothing OK from now on remember to don't do not tell me that
+12:28:57 said
+12:29:05 said
+12:29:07 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:29:16 heard You wouldn't do that
+12:29:19 said
+12:29:25 heard Lose
+12:29:26 said
+12:30:08 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:32:08 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:32:12 heard A little
+12:32:14 said
+12:34:19 said
+12:36:08 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:36:17 said
+12:36:29 said
+12:39:50 said
+12:40:17 said
+12:41:13 said
+12:42:02 said
+12:43:13 said
+12:44:08 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:44:12 said
+12:45:08 alert Level up! Congrats.
+12:46:44 heard How do I make slime shoes
+12:46:46 said
+12:46:55 said
+12:46:59 heard 311 equivalent to that answer is wrong
+12:47:02 heard What's correct
+12:47:04 said
+12:47:13 heard Yes but how to make slime
+12:47:15 said
+12:47:24 heard Bubble shell
+12:47:28 said
+12:47:49 heard What model do I need except Islam bubbles
+12:47:52 said
+12:48:23 heard And then what to go enhances to crafty
+12:48:23 heard is
+12:48:29 said
+12:48:35 heard Where is the
+12:48:37 said
+12:53:13 alert Level up! Congrats.
+12:55:44 alert Level up! Congrats.
+12:56:00 alert Level up! Congrats.
+12:58:36 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:58:40 heard Little
+12:58:42 said
+12:58:52 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:59:22 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:00:41 said
+13:00:47 said
+13:01:17 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:01:18 said
+13:01:56 said
+13:02:54 said
+13:04:16 said
+13:04:43 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:05:00 said
+13:05:14 said
+13:05:17 said
+13:06:19 said
+13:08:16 said
+13:08:28 said
+13:08:58 said
+13:09:58 said
+13:10:04 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:11:58 said
+13:13:58 said
+13:15:58 said
+13:17:58 said
+13:18:49 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:19:58 said
+13:21:58 said
+13:23:58 said
+13:28:49 alert (held) עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:30:00 alert (held) עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:31:31 alert (held) עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:35:58 said
+13:37:58 said
+13:39:05 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:39:29 alert עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:40:12 alert (held) עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:42:03 alert (held) עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:44:03 alert (held) עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:48:03 alert (held) עלית רמה! מזל טוב, וונוואן בוג׳יו!
+"#;
+
+    /// The owner's rows: (seconds since the first, kind, text).
+    fn owner_rows() -> Vec<(u64, &'static str, &'static str)> {
+        let secs = |t: &str| {
+            let p: Vec<u64> = t.split(':').map(|n| n.parse().unwrap()).collect();
+            p[0] * 3600 + p[1] * 60 + p[2]
+        };
+        let rows: Vec<(u64, &str, &str)> = OWNER_ROWS
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| {
+                let (time, rest) = l.split_once(' ').unwrap();
+                let (kind, text) = rest.split_once(' ').unwrap_or((rest, ""));
+                (secs(time), kind, text)
+            })
+            .collect();
+        let first = rows[0].0;
+        rows.into_iter()
+            .map(|(t, k, x)| (t - first, k, x))
+            .collect()
+    }
+
+    /// Which taught thing says `say`.
+    fn taught(say: &str) -> &'static str {
+        if say.ends_with("Level up! Congrats.") {
+            "player character"
+        } else {
+            "level-up effect"
+        }
+    }
+
+    /// His session replayed through [`Objections`], the rows from second
+    /// `from` to `to`: the taught things' lines said (of those not held),
+    /// and what he said no to, when.
+    fn replay_objections(from: u64, to: u64) -> (usize, usize, Vec<(u64, String, String)>) {
+        let base = Instant::now();
+        let mut objections = Objections::default();
+        let mut said_at: Option<Instant> = None;
+        let (mut before, mut after, mut muted) = (0, 0, Vec::new());
+        for (t, kind, text) in owner_rows() {
+            if t < from || t > to {
+                continue;
+            }
+            let at = base + Duration::from_secs(t);
+            match kind {
+                "alert" => {
+                    let held = text.starts_with("(held) ");
+                    let say = text.trim_start_matches("(held) ");
+                    if !held {
+                        before += 1;
+                    }
+                    if held || objections.muted(taught(say)) {
+                        continue;
+                    }
+                    after += 1;
+                    objections.spoke(taught(say), say, at);
+                }
+                "said" => said_at = Some(at),
+                _ => {
+                    let since = objections
+                        .last
+                        .as_ref()
+                        .is_some_and(|(_, _, spoke)| said_at.is_some_and(|s| s > *spoke));
+                    if commands::local_command(text).is_none()
+                        && let Some(name) = objections.objected(text, since, at)
+                    {
+                        objections.mute(&name);
+                        muted.push((t, name, text.to_string()));
+                    }
+                }
+            }
+        }
+        (before, after, muted)
+    }
+
+    /// Seconds into [`OWNER_ROWS`] of a time of his log.
+    fn owner_at(time: &str) -> u64 {
+        let p: Vec<u64> = time.split(':').map(|n| n.parse().unwrap()).collect();
+        p[0] * 3600 + p[1] * 60 + p[2] - (11 * 3600 + 51 * 60 + 28)
+    }
+
+    #[test]
+    fn the_owners_no_mutes_the_taught_thing_that_just_spoke() {
+        // Each of his two "no"s, in its place: 12:11:23 "I didn't level up I
+        // don't know what you mean", 39 s after "עלית רמה! …" (naming it);
+        // 12:28:20 "Try to guess I didn't" (then "stop it I didn't leveled
+        // up"), 5 s after it.
+        for (from, at) in [("12:10:00", "12:11:23"), ("12:28:00", "12:28:20")] {
+            let (_, _, muted) = replay_objections(owner_at(from), owner_at(at));
+            let names: Vec<&str> = muted.iter().map(|(_, n, _)| n.as_str()).collect();
+            assert_eq!(names, ["level-up effect"], "{at}: {muted:?}");
+            assert_eq!(muted[0].0, owner_at(at), "{at}: {muted:?}");
+        }
+        // His whole session: muted at the first, the second never comes (the
+        // line it answered is not said); nothing else he said is a no to
+        // either thing.
+        let (before, after, muted) = replay_objections(0, u64::MAX);
+        eprintln!("taught lines said: {before} in his session, {after} replayed; muted: {muted:?}");
+        assert_eq!(muted.len(), 1, "{muted:?}");
+        assert_eq!(muted[0].0, owner_at("12:11:23"));
+        assert_eq!(before, 30);
+        assert_eq!(after, 13);
+    }
+
+    #[test]
+    fn a_no_is_about_the_last_line_said_or_one_it_names() {
+        let now = Instant::now();
+        let mut objections = Objections::default();
+        // Nothing spoke: nothing to say no to.
+        assert_eq!(objections.objected("no", false, now), None);
+        objections.spoke("player character", "Level up! Congrats.", now);
+        let at = |s: u64| now + Duration::from_secs(s);
+        // A plain no, right after and with nothing said since.
+        assert_eq!(
+            objections.objected("no", false, at(5)).as_deref(),
+            Some("player character")
+        );
+        assert_eq!(
+            objections.objected("די", false, at(5)).as_deref(),
+            Some("player character")
+        );
+        // Something else said since, or too late: about that, not the thing.
+        assert_eq!(objections.objected("no", true, at(5)), None);
+        assert_eq!(objections.objected("no", false, at(30)), None);
+        // Naming it, later or after another line: about it.
+        assert_eq!(
+            objections
+                .objected("I didn't level up", true, at(60))
+                .as_deref(),
+            Some("player character")
+        );
+        assert_eq!(
+            objections.objected("I didn't level up", false, at(200)),
+            None
+        );
+        // Not a no.
+        assert_eq!(
+            objections.objected(
+                "Don't stop don't stop don't stop congratulate me until I say stop",
+                false,
+                at(2)
+            ),
+            None
+        );
+        assert_eq!(objections.objected("what level am I", false, at(2)), None);
+        // Muted once: said no to again, nothing more.
+        assert!(objections.mute("player character"));
+        assert!(!objections.mute("player character"));
+        assert_eq!(objections.objected("no", false, at(5)), None);
+        // Hebrew names Hebrew: "לא עליתי" to "עלית רמה!".
+        assert!(names_any(
+            "לא עליתי",
+            &["level-up effect", "עלית רמה! מזל טוב"]
+        ));
+        assert!(!names_any(
+            "what's my hp",
+            &["level-up effect", "Level up! Congrats."]
+        ));
+    }
+
+    #[test]
+    fn saying_no_to_a_taught_thing_is_answered_once_and_logged() {
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let mut objections = Objections::default();
+        // (Where things are watched for: muted there too — none taught here.)
+        let dir = out.session.dir.join("learned");
+        let sight = Arc::new(Mutex::new(Sight::load(&dir)));
+        out.tell(Kind::Alert, "Level up! Congrats.", false, &mut companion);
+        objections.spoke("player character", "Level up! Congrats.", Instant::now());
+        assert!(!said_since(&out, &objections));
+        for _ in 0..2 {
+            mute_thing(
+                "player character",
+                &mut objections,
+                Some(&sight),
+                &mut out,
+                &mut companion,
+            );
+        }
+        assert!(objections.muted("player character"));
+        let answers = out.log.iter().filter(|l| l.text == MUTED_THING).count();
+        assert_eq!(answers, 1);
+        assert!(log(&out).contains("\"player character\" muted for this session"));
+        // Its answer is a line said since.
+        assert!(said_since(&out, &objections));
+    }
+
+    #[test]
+    fn a_sentence_begun_over_its_own_voice_on_the_pc_is_that_voice() {
+        // No words before it: by when it came.
+        assert!(Sentence::default().whole(true));
+        assert!(!Sentence::default().whole(false));
+        // Begun over the voice, come after it.
+        let mut s = Sentence::default();
+        s.hearing(true);
+        s.hearing(false);
+        assert!(s.whole(false));
+        // ... and the next one starts afresh.
+        assert!(!s.whole(false));
+        // Begun before the voice, come while it is in the room: its own
+        // voice is in it.
+        s.hearing(false);
+        assert!(s.whole(true));
+        // Begun after it, come after it: the player's.
+        s.hearing(false);
+        assert!(!s.whole(false));
+        // Talked over: the player's.
+        s.hearing(true);
+        s.talked_over();
+        assert!(!s.whole(true));
+        // Words of a sentence never closed, long ago, are not this one's.
+        s.hearing(true);
+        s.last = Some(earlier(SENTENCE_GAP + Duration::from_secs(1)));
+        assert!(!s.whole(false));
+    }
+
+    #[test]
+    fn its_voice_on_the_pc_is_in_the_room_a_moment_after_it_stops() {
+        let mut out = outputs();
+        assert!(!out.mouth.pc_voice_heard());
+        out.mouth.sapi_until = Instant::now() + Duration::from_secs(2);
+        assert!(out.mouth.pc_voice_heard());
+        out.mouth.sapi_until = Instant::now();
+        out.mouth.last_pc_voice = Some(Instant::now());
+        assert!(out.mouth.pc_voice_heard());
+        out.mouth.last_pc_voice = Some(earlier(ECHO_TAIL + Duration::from_millis(100)));
+        assert!(!out.mouth.pc_voice_heard());
+        // The phone's clips are the phone's to keep out.
+        out.mouth.phone_until = Instant::now() + Duration::from_secs(2);
+        assert!(!out.mouth.pc_voice_heard());
     }
 }
