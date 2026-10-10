@@ -1,0 +1,32 @@
+ffmpeg on the PATH: none
+MapleSyrup recording test (v0.9.0)
+  ...   downloading ffmpeg (once, about 150 MB)
+  ok    ffmpeg: downloaded to C:\Users\runneradmin\AppData\Roaming\MapleSyrup\ffmpeg\ffmpeg.exe
+  ok    recording: the screen through GDI, without the PC's sound (no speakers: Element not found. (0x80070490))
+  ok    the file: 5.1 s with a picture and sound
+  ok    frames: 149 (29.4 a second)
+  ok    in sync: the tone -7 ms from the flash
+Recording works.
+--- settings in a Hebrew-named folder
+MapleSyrup recording test (v0.9.0)
+  ...   downloading ffmpeg (once, about 150 MB)
+  ok    ffmpeg: downloaded to D:\a\_temp\בית\ffmpeg\ffmpeg.exe
+  ok    recording: the screen through GDI, without the PC's sound (no speakers: Element not found. (0x80070490))
+  ok    the file: 5.1 s with a picture and sound
+  ok    frames: 149 (29.5 a second)
+  ok    in sync: the tone -18 ms from the flash
+Recording works.
+ffmpeg version N-127259-gb91a82d6dd-20261009 Copyright (c) 2000-2026 the FFmpeg developers
+--- gdigrab
+[libx264 @ 00000132711b3400] i4 v,h,dc,ddl,ddr,vr,hd,vl,hu: 32% 33% 10%  3%  4%  4%  6%  3%  6%
+[libx264 @ 00000132711b3400] Weighted P-Frames: Y:0.0% UV:0.0%
+[libx264 @ 00000132711b3400] ref P L0: 80.7%  6.5% 10.5%  2.3%
+[libx264 @ 00000132711b3400] ref B L0: 52.1% 45.5%  2.4%
+[libx264 @ 00000132711b3400] ref B L1: 92.8%  7.2%
+[libx264 @ 00000132711b3400] kb/s:718.75
+--- ddagrab
+[Parsed_ddagrab_0 @ 0000015405ea1c00] Failed to create D3D11VA device.
+[Parsed_ddagrab_0 @ 0000015405ea1c00] Failed to configure output pad on Parsed_ddagrab_0
+[in#0 @ 0000015405e8bbc0] Error opening input: Unknown error occurred
+Error opening input file ddagrab=output_idx=0:framerate=30,hwdownload,format=bgra.
+Error opening input files: Unknown error occurred
