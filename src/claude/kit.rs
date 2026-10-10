@@ -160,10 +160,12 @@ pub fn desktop_configs() -> Vec<PathBuf> {
 /// JSON object is left alone (one mistake there turns all servers off).
 pub fn add_to_desktop_config(path: &Path, exe: &Path) -> Result<bool, String> {
     let before = fs::read_to_string(path).unwrap_or_default();
-    let mut config: serde_json::Value = if before.trim().is_empty() {
+    // (Saved by some editors, it starts with a byte-order mark.)
+    let text = before.trim_start_matches('\u{feff}');
+    let mut config: serde_json::Value = if text.trim().is_empty() {
         json!({})
     } else {
-        serde_json::from_str(&before)
+        serde_json::from_str(text)
             .map_err(|e| format!("{} is not valid JSON ({e}); not touched", path.display()))?
     };
     let Some(fields) = config.as_object_mut() else {
@@ -323,6 +325,12 @@ mod tests {
         assert_eq!(merged["mcpServers"]["filesystem"]["command"], "npx");
         assert_eq!(merged["mcpServers"]["maplesyrup"]["args"][0], "--mcp");
         assert!(config.with_extension("json.before-maplesyrup").exists());
+        // One an editor saved with a byte-order mark is read all the same.
+        fs::write(&config, "\u{feff}{\"mcpServers\": {}}").unwrap();
+        assert_eq!(add_to_desktop_config(&config, exe), Ok(true));
+        let read: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(read["mcpServers"]["maplesyrup"]["args"][0], "--mcp");
         // A broken file is not touched.
         fs::write(&config, "{ broken").unwrap();
         assert!(add_to_desktop_config(&config, exe).is_err());
