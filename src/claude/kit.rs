@@ -179,6 +179,9 @@ pub fn launcher() -> String {
         "start \"MapleSyrup\" \"%~dp0..\\MapleSyrup.exe\"",
         ":claude",
         "\"%CLAUDE%\" --dangerously-load-development-channels server:maplesyrup --model sonnet --effort low --permission-mode auto --remote-control MapleSyrup",
+        // (An error — an old Claude Code without auto mode, say — stays on
+        // screen to be read.)
+        "if errorlevel 1 pause",
         "",
     ]
     .join("\r\n")
