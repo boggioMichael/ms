@@ -2410,6 +2410,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // What the session comes to, in numbers, kept on this PC — and made
     // ready to share only if the player turned that on (`ms::metrics`).
     let mut stats = ms::metrics::Stats::start(&settings_dir);
+    // (Sharing is not offered in this build: a choice made with an earlier
+    // one is withdrawn — the export and its id deleted.)
+    if !ms::metrics::SHARING_OFFERED {
+        let _ = stats.store().delete_shared();
+    }
     // What it learned from playing together before: about the player, their
     // corrections, what it looked up, how they like to talk (all on this PC).
     let learning = ai::Learning::load(&settings_dir);
@@ -2761,7 +2766,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         }
     }
     println!("{d}Session files: {}{r}", session_dir.display());
-    if stats.sharing() {
+    if ms::metrics::SHARING_OFFERED && stats.sharing() {
         println!("{d}Sharing play stats with MapleSyrup's partners: on (Settings on the phone){r}");
     }
     if !console.dpi_aware {

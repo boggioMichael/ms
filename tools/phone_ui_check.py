@@ -104,8 +104,10 @@ LIVE = {"opens": True}
 # turned on), how many of the next deletions it fails (a file of it still on
 # the PC: 500 and the code, as the PC answers), a session as the export has
 # it (the fields of `metrics::EXPORT_FIELDS`), and the last sessions for
-# Details.
-SHARE = {"on": False}
+# Details. (`available`: whether the PC offers sharing at all — the real
+# build does not yet; the page's flow is checked as it would be once it
+# does, then the card as it is now.)
+SHARE = {"on": False, "available": True}
 SHARE_FAILS = {"left": 0}
 SHARED_SESSION = {"week": "2026-W41", "minutes": 95, "game_minutes": 90, "levels_gained": 2, "level_start_band": "141-200",
                   "level_end_band": "141-200", "characters": 1, "job": "Night Lord", "hud": "modern", "deaths": 1,
@@ -117,7 +119,7 @@ SESSIONS = [{"day": "2026-10-09", "minutes": 95, "levels_gained": 2, "deaths": 1
             {"day": "2026-10-08", "minutes": 40, "levels_gained": 0, "deaths": 0, "warnings": {}}]
 def share_view():
     on = SHARE["on"]
-    return {"on": on, "since": "2026-10-09" if on else None, "preview": not on,
+    return {"available": SHARE["available"], "on": on, "since": "2026-10-09" if on else None, "preview": not on,
             "export": {"format": 1, "install_id": "6f1c2a9e-3b7d-4c55-9a0e-2d8f1b7c4e31" if on else None, "app_version": "0.9.0",
                        "sessions": [SHARED_SESSION]}}
 
@@ -449,6 +451,17 @@ def ui_checks(browser):
     page.click("#shareDelete")
     wait_for(lambda: page.inner_text("#shareState").startswith("נמחק:"), 3, ("the PC's ok did not say נמחק", page.inner_text("#shareState")))
     assert not page.is_checked("#shareBox") and not SHARE["on"]
+    # As this build is: sharing not offered (no approved basis yet) — the
+    # card says so, in Hebrew here, and has no switch, age box or export.
+    SHARE["available"] = False
+    def unavailable_shown():
+        page.click("#tabDetails"); page.click("#tabSettings"); page.wait_for_timeout(150)
+        return page.is_visible("#shareUnavailable")
+    wait_for(unavailable_shown, 6, "a PC that does not offer sharing still showed the switch")
+    assert page.is_hidden("#shareControls") and page.is_hidden("#shareBox") and page.is_hidden("#adultBox")
+    assert "בדיקת זכויות" in page.inner_text("#shareUnavailable"), page.inner_text("#shareUnavailable")
+    page.locator("#shareCard").screenshot(path=os.path.join(SHOTS, "phone-share-unavailable-he.png"))
+    SHARE["available"] = True
     page.close()
 
 def listening_page(browser):

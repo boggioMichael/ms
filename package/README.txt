@@ -261,10 +261,9 @@ Privacy
   Play stats: MapleSyrup keeps numbers about each session on this PC (minutes,
   levels, deaths, warnings, how fast it answered; in %APPDATA%\MapleSyrup\metrics)
   and never your character's name, what you say, your voice, pictures or your
-  files. Sharing them with MapleSyrup's partners, who may buy them, is off
-  unless you turn it on (players 18 or older only; Settings on the phone,
-  "Play stats"); there you can see what would be shared, turn it off, and
-  delete it. Nothing is sent anywhere yet.
+  files. Sharing them with anyone is not offered: it first needs a rights
+  review for MapleStory and consent asked for each purpose. Nothing is sent
+  anywhere.
 
 Files
   Each session is kept in "MapleSyrup sessions" (in Documents when installed,

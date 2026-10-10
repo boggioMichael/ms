@@ -286,6 +286,8 @@
 
     <section class="card" id="shareCard">
       <h2 data-t="share_title">Play stats</h2>
+      <div class="sub" id="shareUnavailable" style="margin:0" data-t="share_unavailable" hidden></div>
+      <div id="shareControls">
       <label class="opt" style="margin-top:0"><span data-t="share_adult">I'm 18 or older</span> <input type="checkbox" id="adultBox"></label>
       <label class="opt"><span data-t="share_on">Share my play stats (no name, words, voice or screen) with MapleSyrup's partners</span> <input type="checkbox" id="shareBox" disabled></label>
       <div class="sub" style="margin:8px 0 0" data-t="share_what"></div>
@@ -295,6 +297,7 @@
       <pre id="shareView" hidden></pre>
       <button id="shareDelete" data-t="share_delete">Delete it</button>
       <div class="sub" id="shareState" style="margin:6px 0 0"></div>
+      </div>
     </section>
 
     <footer>
@@ -425,13 +428,14 @@
       no_mic: "This browser has no microphone access.", need_https: "The microphone needs the secure (https) link from MapleSyrup's QR code.",
       mic_failed: "The microphone could not start:", mic_refused: "permission was refused. Allow the microphone for this page in the browser's settings, then try again.",
       hearing_hebrew: "Hearing Hebrew now.", hearing_lang: "Hearing: {n}",
+      share_unavailable: "Your play stats stay on this PC (Details shows your last sessions). Sharing them with anyone isn't available: it first needs a rights review for MapleStory and consent asked for each purpose. Nothing is sent anywhere.",
       share_title: "Play stats", share_on: "Share my play stats (no name, words, voice or screen) with MapleSyrup's partners", share_adult: "I'm 18 or older",
       share_what: "Off unless you turn it on. On, MapleSyrup keeps a file ready on your PC with numbers for each session: minutes played, levels (as ranges like 61–100), deaths, warnings, close calls, your class, how many maps, the week (not the day), the app and Windows version, under a random id made when you turn it on. It may be sold to companies that study gamers. Nothing is sent yet.",
       share_never: "Never shared: your character's name, what you say or your voice, screenshots, what MapleSyrup learned about you or was taught, your files, your PC's name, your keys or your IP address.",
       share_see: "See what would be shared", share_delete: "Delete it", share_deleted: "Deleted: sharing is off, and the file and its id are gone.",
       share_preview: "Sharing is off. If it were on, your last sessions would look like this:",
       share_err: "Couldn't change it. Try again.", share_err_unreached: "Couldn't reach the PC. Try again.",
-      share_err_adult_only: "Tick “I'm 18 or older” first.", share_err_no_stats: "This PC keeps no play stats.",
+      share_err_not_available: "Sharing isn't available yet.", share_err_adult_only: "Tick “I'm 18 or older” first.", share_err_no_stats: "This PC keeps no play stats.",
       share_err_no_id: "The PC couldn't make a random id, so sharing is still off.", share_err_not_saved: "The PC couldn't save your choice, so sharing is still off.",
       share_err_not_deleted: "Not deleted: a file of it is still on the PC (another program may be holding it). Try again in a moment.",
       h_sessions: "Your sessions", col_day: "Day", col_min: "Minutes", col_levels: "Levels up", col_deaths: "Deaths", col_warnings: "Warnings",
@@ -474,13 +478,14 @@
       no_mic: "לדפדפן הזה אין גישה למיקרופון.", need_https: "המיקרופון צריך את הקישור המאובטח (https) מקוד ה-QR של MapleSyrup.",
       mic_failed: "המיקרופון לא הצליח להתחיל:", mic_refused: "ההרשאה נדחתה. אשר את המיקרופון לדף הזה בהגדרות הדפדפן ונסה שוב.",
       hearing_hebrew: "שומע עברית עכשיו.", hearing_lang: "שומע: {n}",
+      share_unavailable: "סטטיסטיקות המשחק שלך נשארות במחשב הזה (בפרטים מופיעים הסשנים האחרונים). שיתוף שלהן עם מישהו לא זמין: קודם צריך בדיקת זכויות ל-MapleStory והסכמה נפרדת לכל מטרה. שום דבר לא נשלח לשום מקום.",
       share_title: "סטטיסטיקות משחק", share_on: "שתף את סטטיסטיקות המשחק שלי (בלי שם, דיבור, קול או מסך) עם השותפים של MapleSyrup", share_adult: "גילי 18 ומעלה",
       share_what: "כבוי אלא אם תדליק. כשהוא דלוק, MapleSyrup שומר במחשב קובץ מוכן עם מספרים לכל סשן: דקות משחק, רמות (בטווחים, כמו 61–100), מיתות, אזהרות, מצבים שכמעט מתת בהם, הקלאס שלך, כמה מפות, השבוע (לא היום), גרסת התוכנה וגרסת Windows, תחת מזהה אקראי שנוצר כשאתה מדליק. הקובץ עשוי להימכר לחברות שחוקרות גיימרים. כרגע שום דבר לא נשלח.",
       share_never: "אף פעם לא משותף: שם הדמות, מה שאתה אומר או הקול שלך, צילומי מסך, מה ש-MapleSyrup למד עליך או מה שלימדת אותו, הקבצים שלך, שם המחשב, המפתחות שלך או כתובת ה-IP שלך.",
       share_see: "הצג מה ישותף", share_delete: "מחק את זה", share_deleted: "נמחק: השיתוף כבוי, והקובץ והמזהה שלו נמחקו.",
       share_preview: "השיתוף כבוי. אם הוא היה דלוק, הסשנים האחרונים שלך היו נראים כך:",
       share_err: "לא הצלחתי לשנות. נסה שוב.", share_err_unreached: "לא הצלחתי להגיע למחשב. נסה שוב.",
-      share_err_adult_only: "קודם צריך לסמן „גילי 18 ומעלה”.", share_err_no_stats: "המחשב הזה לא שומר סטטיסטיקות משחק.",
+      share_err_not_available: "שיתוף עדיין לא זמין.", share_err_adult_only: "קודם צריך לסמן „גילי 18 ומעלה”.", share_err_no_stats: "המחשב הזה לא שומר סטטיסטיקות משחק.",
       share_err_no_id: "המחשב לא הצליח ליצור מזהה אקראי, אז השיתוף עדיין כבוי.", share_err_not_saved: "המחשב לא הצליח לשמור את הבחירה שלך, אז השיתוף עדיין כבוי.",
       share_err_not_deleted: "לא נמחק: קובץ שלו עדיין נמצא במחשב (אולי תוכנה אחרת מחזיקה אותו). נסה שוב עוד רגע.",
       h_sessions: "הסשנים שלך", col_day: "יום", col_min: "דקות", col_levels: "+רמות", col_deaths: "מיתות", col_warnings: "אזהרות",
@@ -1694,6 +1699,10 @@
   // is sent anywhere: the PC only keeps the file ready.
   let shareHeldUntil = 0;
   function renderShare(share) {
+    // (Not offered in this build: the card says why, and has no switch.)
+    const offered = !share || share.available !== false;
+    $("shareControls").hidden = !offered;
+    $("shareUnavailable").hidden = offered;
     if (share && Date.now() > shareHeldUntil) $("shareBox").checked = !!share.on;
     shareGate();
   }

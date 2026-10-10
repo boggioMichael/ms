@@ -51,7 +51,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -358,6 +358,8 @@ pub struct Hub {
     /// The session's stats kept on the PC, and the sharing the player
     /// turns on and off (`crate::metrics`).
     metrics: Mutex<Option<Arc<crate::metrics::Store>>>,
+    /// Whether sharing may be turned on here ([`Hub::offer_sharing`]).
+    sharing_offered: AtomicBool,
 }
 
 impl Hub {
@@ -388,6 +390,7 @@ impl Hub {
             service: Mutex::new(None),
             recording: Mutex::new(None),
             metrics: Mutex::new(None),
+            sharing_offered: AtomicBool::new(crate::metrics::SHARING_OFFERED),
         })
     }
 
@@ -507,6 +510,18 @@ impl Hub {
 
     fn metrics(&self) -> Option<Arc<crate::metrics::Store>> {
         self.metrics.lock().ok().and_then(|m| m.clone())
+    }
+
+    /// Whether sharing may be turned on from the phone. Off in this build
+    /// ([`crate::metrics::SHARING_OFFERED`]): an "on" is refused
+    /// (`not_available`) and the card says why; turning it off and "Delete
+    /// it" always work.
+    pub fn offer_sharing(&self, offered: bool) {
+        self.sharing_offered.store(offered, Ordering::Relaxed);
+    }
+
+    fn sharing_offered(&self) -> bool {
+        self.sharing_offered.load(Ordering::Relaxed)
     }
 
     /// What a call's model can see now: the frame (None while the game is
@@ -1055,8 +1070,9 @@ impl Hub {
             // would be shared, and "Delete it". Nothing is sent anywhere.
             // (Serialized as they are, so the export keeps its fields' order.)
             // What goes wrong is answered as a code (`no_stats`,
-            // `bad_request`, `adult_only`, `no_id`, `not_saved`,
-            // `not_deleted`): the page has the words, in its language.
+            // `bad_request`, `not_available`, `adult_only`, `no_id`,
+            // `not_saved`, `not_deleted`): the page has the words, in its
+            // language.
             ("GET", "/api/stats") => match self.metrics() {
                 Some(store) => Response::new(
                     200,
@@ -1071,7 +1087,11 @@ impl Hub {
                 Some(store) => Response::new(
                     200,
                     "application/json; charset=utf-8",
-                    serde_json::to_vec(&store.share_view()).unwrap_or_default(),
+                    serde_json::to_vec(&crate::metrics::ShareView {
+                        available: self.sharing_offered(),
+                        ..store.share_view()
+                    })
+                    .unwrap_or_default(),
                 )
                 .with_header("Cache-Control", "no-store"),
                 None => Response::json(503, &json!({"error": "no_stats"})),
@@ -1084,6 +1104,10 @@ impl Hub {
                 match (self.metrics(), body.get("on").and_then(Value::as_bool)) {
                     (None, _) => Response::json(503, &json!({"error": "no_stats"})),
                     (_, None) => Response::json(400, &json!({"error": "bad_request"})),
+                    // (Not offered in this build: no approved basis yet.)
+                    (Some(_), Some(true)) if !self.sharing_offered() => {
+                        Response::json(403, &json!({"error": "not_available"}))
+                    }
                     (Some(_), Some(true)) if !adult => {
                         Response::json(400, &json!({"error": "adult_only"}))
                     }
@@ -1553,6 +1577,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ms-phone-share-{}", tls::random_hex(4)));
         let store = crate::metrics::Store::new(&dir);
         hub.set_metrics(Arc::clone(&store));
+        // (The mechanism, as it would be once a basis is approved: this
+        // build does not offer it — see the next test.)
+        hub.offer_sharing(true);
         let stats = body(&hub.handle(&request("GET", "/api/stats?k=k1", "")));
         assert_eq!(stats["share"]["on"], false, "{stats}");
         assert_eq!(stats["sessions"], json!([]));
@@ -1615,6 +1642,47 @@ mod tests {
     }
 
     #[test]
+    fn sharing_is_not_offered_in_this_build_and_an_on_is_refused() {
+        // No approved basis yet (a rights review for MapleStory, consent by
+        // purpose): the card says sharing is not available, and an "on" —
+        // with the age box ticked, from an old page or a script — is
+        // refused; off and "Delete it" still answer ok.
+        const { assert!(!crate::metrics::SHARING_OFFERED) };
+        let hub = hub();
+        let dir = std::env::temp_dir().join(format!("ms-phone-offer-{}", tls::random_hex(4)));
+        let store = crate::metrics::Store::new(&dir);
+        hub.set_metrics(Arc::clone(&store));
+        let share = body(&hub.handle(&request("GET", "/api/share?k=k1", "")));
+        assert_eq!(
+            (share["available"].clone(), share["on"].clone()),
+            (json!(false), json!(false)),
+            "{share}"
+        );
+        let refused = hub.handle(&request(
+            "POST",
+            "/api/share?k=k1",
+            r#"{"on":true,"adult":true}"#,
+        ));
+        assert_eq!(
+            (refused.status, body(&refused)),
+            (403, json!({"error": "not_available"}))
+        );
+        assert_eq!(store.consent(), crate::metrics::Consent::default());
+        assert!(!dir.join("metrics").join("share.json").exists());
+        for (path, sent) in [
+            ("/api/share?k=k1", r#"{"on":false}"#),
+            ("/api/share/delete?k=k1", ""),
+        ] {
+            assert_eq!(
+                hub.handle(&request("POST", path, sent)).status,
+                200,
+                "{path}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_withdrawal_that_leaves_a_file_on_the_pc_is_answered_500_never_ok() {
         // Turned off, or "Delete it", with the export still on the PC
         // (held by another program; here a folder that is not empty in its
@@ -1625,6 +1693,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ms-phone-withdraw-{}", tls::random_hex(4)));
         let store = crate::metrics::Store::new(&dir);
         hub.set_metrics(Arc::clone(&store));
+        hub.offer_sharing(true);
         let on = hub.handle(&request(
             "POST",
             "/api/share?k=k1",

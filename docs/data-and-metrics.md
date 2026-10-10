@@ -3,13 +3,25 @@
 > **Not legal advice.** This page says what the code does and lists the questions the owner needs a
 > lawyer to answer before anything is sold or sent. It is written by engineers, not lawyers.
 
+> **Sharing is not offered (since 10 Oct 2026).** The owner's data-program rules require an
+> approved basis before any play data is shared or sold: a rights review per title (MapleStory and
+> MapleStory Worlds: *requires title-specific review* — Nexon restricts commercial use of gameplay
+> footage), consent asked per purpose (service, improving Syrup, aggregate analytics, external
+> research/training, media donation) with a receipt (text version, time, source, scope), and
+> proportionate age assurance — not one switch. So this build does not offer sharing:
+> `metrics::SHARING_OFFERED` is `false`, the phone's card says why and has no switch, the PC refuses
+> an "on" (`403 not_available`), and the program withdraws a choice made with an earlier build at
+> start (the export and its id deleted). The stats stay on the PC. The sharing mechanism below is kept
+> and tested for when a basis is approved; the purpose-based consent that replaces its single switch
+> is designed in the data program (its own branch and documents).
+
 MapleSyrup keeps two things apart:
 
 1. **Stats** — numbers about each session, kept on the player's PC for MapleSyrup's own product
    metrics (how long people play, how often warnings come, how fast replies are, what breaks).
-2. **Sharing** — the same numbers, coarsened and made ready to share with partners, who may buy
-   them. **Off unless the player turns it on.** Separate from the stats, withdrawable at any time,
-   with "Delete it".
+2. **Sharing** — the same numbers, coarsened and made ready to share with partners. **Not offered
+   in this build** (above). As built: off unless the player turns it on, separate from the stats,
+   withdrawable at any time, with "Delete it".
 
 **Nothing is sent anywhere today.** There is no endpoint. The code writes files on the player's PC
 and stops there; an upload is a documented `TODO(upload)` in `src/metrics.rs`, not code.

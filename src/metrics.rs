@@ -505,12 +505,25 @@ pub struct Consent {
     pub id: Option<String>,
 }
 
-/// What the phone's card shows: whether the player shares (and since
-/// when), and what is shared — or, while it is off, a preview of what
-/// would be (`preview`), with no id. Serialized as it is, so that the
-/// export keeps its fields' order on the phone.
+/// Whether this build offers sharing at all. It does not: sharing play
+/// data with anyone needs an approved basis first — a rights review for
+/// MapleStory and MapleStory Worlds (Nexon restricts commercial use of
+/// gameplay), consent by purpose with a receipt, and proportionate age
+/// assurance (the owner's data-program rules, 10 Oct 2026;
+/// `docs/data-and-metrics.md`). Until then the stats stay on the PC: the
+/// program withdraws any earlier choice at start, and the phone link
+/// refuses to turn sharing on ([`crate::phone::Hub::offer_sharing`]). The
+/// mechanism below stays, tested, for when a basis is approved.
+pub const SHARING_OFFERED: bool = false;
+
+/// What the phone's card shows: whether sharing is offered at all
+/// (`available`), whether the player shares (and since when), and what is
+/// shared — or, while it is off, a preview of what would be (`preview`),
+/// with no id. Serialized as it is, so that the export keeps its fields'
+/// order on the phone.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ShareView {
+    pub available: bool,
     pub on: bool,
     pub since: Option<String>,
     pub preview: bool,
@@ -1213,6 +1226,7 @@ impl Store {
                 read()
             });
             return ShareView {
+                available: SHARING_OFFERED,
                 on: true,
                 since: consent.since,
                 preview: false,
@@ -1222,6 +1236,7 @@ impl Store {
         let records = self.all();
         let last = &records[records.len().saturating_sub(PREVIEW_SESSIONS)..];
         ShareView {
+            available: SHARING_OFFERED,
             on: false,
             since: None,
             preview: true,
