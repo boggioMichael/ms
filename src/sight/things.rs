@@ -235,6 +235,74 @@ pub struct Live {
     /// has been quiet a long while.
     cooldown: Option<Duration>,
     previous_text: Option<String>,
+    /// Its firings lately, and whether it is muted for the session (see
+    /// [`Hush`]). Teaching it again starts it over.
+    hush: Hush,
+}
+
+/// A taught thing that fires this many times within this long is wrong —
+/// the owner's character taught as "player character" with "Level up!
+/// Congrats.", and a sparkle as "level-up effect": 37 false level-ups in
+/// two hours, through every doubling of the wait (2026-10-10). The firing
+/// that makes it so many is said as one plain word that it stops (and how
+/// to delete it); after that it is muted for the rest of the session — its
+/// firings are kept for the log ([`Things::take_hushed`]), not said.
+const MUTE_AFTER: usize = 3;
+const MUTE_WITHIN: Duration = Duration::from_secs(600);
+/// Muted firings kept for the log until taken, at most.
+const HUSHED_KEPT: usize = 64;
+
+/// What becomes of one firing of a thing's alert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hushing {
+    /// Said.
+    Say,
+    /// The one that makes it too many: said as the word that it stops.
+    Mute,
+    /// Muted: logged only.
+    Hushed,
+}
+
+/// A thing's firings within the last [`MUTE_WITHIN`], and whether it is
+/// muted (by its own firing, or by the player: [`Things::mute`]).
+#[derive(Debug, Clone, Default)]
+struct Hush {
+    fired: VecDeque<Instant>,
+    muted: bool,
+}
+
+impl Hush {
+    /// It fired at `now`: whether that is said.
+    fn fire(&mut self, now: Instant) -> Hushing {
+        if self.muted {
+            return Hushing::Hushed;
+        }
+        self.fired.push_back(now);
+        while self
+            .fired
+            .front()
+            .is_some_and(|t| now.duration_since(*t) >= MUTE_WITHIN)
+        {
+            self.fired.pop_front();
+        }
+        if self.fired.len() >= MUTE_AFTER {
+            self.muted = true;
+            Hushing::Mute
+        } else {
+            Hushing::Say
+        }
+    }
+}
+
+/// The word that a thing is muted, in the language of its own line (one
+/// taught in Hebrew is told in Hebrew).
+fn mute_line(say: &str, name: &str) -> String {
+    let hebrew = say.chars().any(|c| ('\u{05D0}'..='\u{05EA}').contains(&c));
+    if hebrew {
+        format!("אני מפסיק להגיד \"{say}\" — תגיד \"תשכח את {name}\" כדי למחוק את זה.")
+    } else {
+        format!("I'll stop saying \"{say}\" — say \"forget {name}\" to delete it.")
+    }
 }
 
 /// A thing's pictures as template sets: scaled to the frame width they
@@ -351,6 +419,11 @@ pub struct Things {
     /// The stripe of the frame the next frame's sweep searches, for every
     /// object alike: one band of the frame prepared once, searched by all.
     sweep: usize,
+    /// Firings of muted things, for the log (see [`Things::take_hushed`]).
+    hushed: Vec<Fired>,
+    /// The thing whose line was last said, and when (see
+    /// [`Things::last_said`]).
+    last_said: Option<(String, Instant)>,
 }
 
 /// How good a match must be, and the band of near misses below it.
@@ -429,7 +502,40 @@ impl Things {
             dir: dir.to_path_buf(),
             candidates: VecDeque::new(),
             sweep: 0,
+            hushed: Vec::new(),
+            last_said: None,
         }
+    }
+
+    /// Mute a thing for the rest of the session (the player said its line
+    /// was wrong): its alert is no longer said, only logged. Nothing is
+    /// deleted — "forget" does that. Returns its name; `None` when nothing
+    /// by that name was taught.
+    pub fn mute(&mut self, name_or_id: &str) -> Option<String> {
+        let i = self.find(name_or_id)?;
+        let thing = &mut self.list[i];
+        thing.live.hush.muted = true;
+        Some(thing.name.clone())
+    }
+
+    /// Whether the thing is muted for this session.
+    pub fn is_muted(&self, name_or_id: &str) -> bool {
+        self.find(name_or_id)
+            .is_some_and(|i| self.list[i].live.hush.muted)
+    }
+
+    /// The thing whose line was said last (its name), and when: what a
+    /// "no, I didn't" right after it is about.
+    pub fn last_said(&self) -> Option<(&str, Instant)> {
+        self.last_said
+            .as_ref()
+            .map(|(name, at)| (name.as_str(), *at))
+    }
+
+    /// The firings of muted things since the last call, for the log: not
+    /// to be said.
+    pub fn take_hushed(&mut self) -> Vec<Fired> {
+        std::mem::take(&mut self.hushed)
     }
 
     pub fn save(&self) {
@@ -1018,16 +1124,41 @@ impl Things {
             }
             let thing = &mut self.list[i];
             thing.live.last_run = Some(now);
-            if let Some(say) = Self::check_alert(thing, &reading, now) {
-                fired.push(Fired {
+            let one = Self::check_alert(thing, &reading, now).map(|say| {
+                let one = Fired {
                     id: thing.id.clone(),
                     name: thing.name.clone(),
                     say,
                     warning: thing.alert.as_ref().is_some_and(Alert::is_warning),
                     waits: thing.live.cooldown.filter(|c| *c > ALERT_COOLDOWN),
-                });
-            }
+                };
+                (thing.live.hush.fire(now), one)
+            });
             thing.live.reading = Some(reading);
+            match one {
+                Some((Hushing::Say, one)) => {
+                    self.last_said = Some((one.name.clone(), now));
+                    fired.push(one);
+                }
+                Some((Hushing::Mute, one)) => {
+                    tracing::info!(thing = %one.name, "muted for the session: it keeps firing");
+                    self.last_said = Some((one.name.clone(), now));
+                    fired.push(Fired {
+                        say: mute_line(&one.say, &one.name),
+                        warning: false,
+                        waits: None,
+                        ..one
+                    });
+                }
+                Some((Hushing::Hushed, one)) => {
+                    tracing::info!(thing = %one.name, say = %one.say, "muted: not said");
+                    if self.hushed.len() >= HUSHED_KEPT {
+                        self.hushed.remove(0);
+                    }
+                    self.hushed.push(Fired { waits: None, ..one });
+                }
+                None => {}
+            }
         }
         fired
     }
@@ -1310,16 +1441,23 @@ mod tests {
         let t0 = Instant::now();
         let (gone, there) = (field(&[]), field(&[(150, 100)]));
         let mut fired_at: Vec<f64> = Vec::new();
+        let mut said = 0;
         for i in 0..3600u64 {
             let at = t0 + Duration::from_millis(100 * i);
             let frame = if (i / 30) % 2 == 0 { &gone } else { &there };
             for f in things.run(frame, at) {
+                said += 1;
                 fired_at.push(i as f64 * 0.1);
                 if let Some(w) = f.waits {
                     assert!(w > ALERT_COOLDOWN && w <= ALERT_COOLDOWN_MAX, "{w:?}");
                 }
             }
+            // (Muted after its third: fired all the same, for the log.)
+            for _ in things.take_hushed() {
+                fired_at.push(i as f64 * 0.1);
+            }
         }
+        assert_eq!(said, 3, "{fired_at:?}");
         // Once every six seconds would be sixty; the wait doubles each
         // time it fires again soon after (up to ten minutes), so the gaps
         // grow: about 12, 30, 60, 120 seconds.
@@ -1328,6 +1466,160 @@ mod tests {
         assert!(gaps.windows(2).all(|g| g[1] >= g[0]), "{gaps:?}");
         assert!(gaps.last().is_some_and(|g| *g >= 100.0), "{gaps:?}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The owner's evening (2026-10-10): his character taught as "player
+    /// character" with "Level up! Congrats.", a sparkle taught as "level-up
+    /// effect" — 37 false level-ups in two hours, through every doubling of
+    /// the wait. Three firings within ten minutes and it is wrong: the third
+    /// is one plain word that it stops, and after that nothing is said.
+    #[test]
+    fn a_thing_that_fires_three_times_in_ten_minutes_is_muted_for_the_session() {
+        let dir = temp_dir("muted");
+        let mut things = Things::load(&dir);
+        let place = NBox::from_pixels(92, 292, 52, 50, 800, 450);
+        let alert = Alert {
+            when: When::Appears,
+            threshold: None,
+            say: "Level up! Congrats.".into(),
+        };
+        things
+            .learn(
+                &field(&[(100, 300)]),
+                teach("player character", Kind::Object, place, Some(alert)),
+            )
+            .unwrap();
+        // Gone three seconds, there three seconds, for six minutes, ten
+        // frames a second (the old rule fired four to eight times).
+        let t0 = Instant::now();
+        let (gone, there) = (field(&[]), field(&[(150, 100)]));
+        let mut said: Vec<(f64, Fired)> = Vec::new();
+        for i in 0..3600u64 {
+            let at = t0 + Duration::from_millis(100 * i);
+            let frame = if (i / 30) % 2 == 0 { &gone } else { &there };
+            for f in things.run(frame, at) {
+                said.push((i as f64 * 0.1, f));
+            }
+        }
+        let lines: Vec<&str> = said.iter().map(|(_, f)| f.say.as_str()).collect();
+        assert_eq!(
+            lines,
+            [
+                "Level up! Congrats.",
+                "Level up! Congrats.",
+                "I'll stop saying \"Level up! Congrats.\" — say \"forget player character\" to delete it.",
+            ],
+            "{said:?}"
+        );
+        // The word that it stops is news, told, with no "keeps firing".
+        let notice = &said[2].1;
+        assert!(!notice.warning && notice.waits.is_none(), "{notice:?}");
+        // After that its firings are kept for the log, not said.
+        let hushed = things.take_hushed();
+        assert!(!hushed.is_empty(), "nothing kept for the log");
+        assert!(
+            hushed
+                .iter()
+                .all(|f| f.say == "Level up! Congrats." && f.name == "player character"),
+            "{hushed:?}"
+        );
+        assert!(things.take_hushed().is_empty(), "taken once");
+        assert!(things.is_muted("player character"));
+        assert_eq!(things.last_said().map(|(n, _)| n), Some("player character"));
+        // Muted for this session only: nothing on disk changes.
+        let again = Things::load(&dir);
+        assert!(!again.is_muted("player character"));
+        assert_eq!(again.list.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "No, I didn't level up" right after a thing spoke: the main loop
+    /// mutes it by name — from then on it is logged, never said, and it is
+    /// not deleted.
+    #[test]
+    fn a_thing_muted_by_name_is_logged_and_not_said() {
+        let dir = temp_dir("mute-by-name");
+        let mut things = Things::load(&dir);
+        let place = NBox::from_pixels(92, 292, 52, 50, 800, 450);
+        let alert = Alert {
+            when: When::Appears,
+            threshold: None,
+            say: "עלית רמה! מזל טוב, וונוואן בוג׳יו!".into(),
+        };
+        things
+            .learn(
+                &field(&[(100, 300)]),
+                teach("level-up effect", Kind::Object, place, Some(alert)),
+            )
+            .unwrap();
+        assert_eq!(things.mute("nothing like it"), None);
+        assert_eq!(
+            things.mute("Level-Up Effect").as_deref(),
+            Some("level-up effect")
+        );
+        let t0 = Instant::now();
+        let (gone, there) = (field(&[]), field(&[(150, 100)]));
+        let mut said = Vec::new();
+        for i in 0..1200u64 {
+            let at = t0 + Duration::from_millis(100 * i);
+            let frame = if (i / 30) % 2 == 0 { &gone } else { &there };
+            said.extend(things.run(frame, at));
+        }
+        assert!(said.is_empty(), "{said:?}");
+        let hushed = things.take_hushed();
+        assert!(!hushed.is_empty());
+        assert!(hushed.iter().all(|f| f.waits.is_none()), "{hushed:?}");
+        assert_eq!(Things::load(&dir).list.len(), 1, "not deleted");
+        // Taught again: the player wants it back.
+        things
+            .learn(
+                &field(&[(100, 300)]),
+                teach("level-up effect", Kind::Object, place, None),
+            )
+            .unwrap();
+        assert!(!things.is_muted("level-up effect"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The owner's evening replayed: the times his two taught things fired
+    /// (the log's `[alert]` rows, `(held)` ones too — they fired, the
+    /// companion's hold kept them quiet), through the rule. Before: 30
+    /// said (37 fired). After: each said until its third firing within ten
+    /// minutes, which is the one word that it stops.
+    #[test]
+    fn the_owners_false_level_ups_stop_at_the_third_within_ten_minutes() {
+        let t0 = Instant::now();
+        let at = |hms: &str| {
+            let p: Vec<u64> = hms.split(':').map(|x| x.parse().unwrap()).collect();
+            t0 + Duration::from_secs(p[0] * 3600 + p[1] * 60 + p[2])
+        };
+        let replay = |times: &[&str]| -> Vec<Hushing> {
+            let mut hush = Hush::default();
+            times.iter().map(|t| hush.fire(at(t))).collect()
+        };
+        // "player character": "Level up! Congrats."
+        let player = replay(&[
+            "11:51:28", "11:52:17", "12:16:38", "12:17:32", "12:20:12", "12:22:58", "12:24:46",
+            "12:45:08", "12:53:13", "12:55:44", "12:56:00",
+        ]);
+        // "level-up effect": "עלית רמה! מזל טוב, וונוואן בוג׳יו!" (the last
+        // nine, from 13:28:49, partly held by the companion).
+        let effect = replay(&[
+            "11:52:15", "12:10:44", "12:16:11", "12:28:15", "12:28:30", "12:29:07", "12:30:08",
+            "12:32:08", "12:36:08", "12:44:08", "12:58:36", "12:58:52", "12:59:22", "13:01:17",
+            "13:04:43", "13:10:04", "13:18:49", "13:28:49", "13:30:00", "13:31:31", "13:39:05",
+            "13:39:29", "13:40:12", "13:42:03", "13:44:03", "13:48:03",
+        ]);
+        let count = |h: &[Hushing], what: Hushing| h.iter().filter(|x| **x == what).count();
+        // Said: 11:51:28, 11:52:17, 12:16:38, 12:17:32; the word at 12:20:12.
+        assert_eq!(count(&player, Hushing::Say), 4, "{player:?}");
+        assert_eq!(player[4], Hushing::Mute, "{player:?}");
+        assert_eq!(count(&player, Hushing::Hushed), 6, "{player:?}");
+        // Said: 11:52:15, 12:10:44, 12:16:11, 12:28:15, 12:28:30; the word
+        // at 12:29:07 — sixteen seconds after "I didn't level up".
+        assert_eq!(count(&effect, Hushing::Say), 5, "{effect:?}");
+        assert_eq!(effect[5], Hushing::Mute, "{effect:?}");
+        assert_eq!(count(&effect, Hushing::Hushed), 20, "{effect:?}");
     }
 
     /// The mushroom with its stem bent to one side: the same thing in

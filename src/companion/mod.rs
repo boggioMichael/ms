@@ -33,7 +33,10 @@ pub use observation::{GameView, Gauge, Observation};
 pub struct Settings {
     /// Warn when HP falls below this percent (0: never).
     pub hp_low: f32,
-    /// Warn when MP falls below this percent (0: never).
+    /// Warn when MP falls below this percent (0: never — the default: only
+    /// a mark the player set himself, by asking, warns of MP. A Magician's
+    /// MP goes up and down all the time: 25 MP lines in his two hours were
+    /// noise).
     pub mp_low: f32,
     /// How long the game must be gone before saying so, in seconds.
     pub lost_after: f64,
@@ -51,7 +54,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             hp_low: 30.0,
-            mp_low: 15.0,
+            mp_low: 0.0,
             lost_after: 5.0,
             listen_for: 8.0,
             always_listen: true,
@@ -213,11 +216,17 @@ const STILL_THERE_AFTER_WARNING_SECS: f64 = 300.0;
 /// fall too). Within it the warning is said once; a potion answers it (the
 /// bar back up by [`POTTED`] over where it was said), and then it is not
 /// said again until the fight is over — unless the bar goes lower than it
-/// was at the last line: then once more, at once. Unanswered (the bar stays
-/// low), it is said again after [`FALL_COOLDOWNS`], longer each time. A
-/// grind of hit, pot, hit, every 8 s, had the line at every hit: 75 "pot
-/// now" in ten minutes, in seven wordings — the beating's nag, one rule
-/// down.
+/// was at the last line: then once more, at once. Unanswered, it is said
+/// again only after a new fall — the bar [`NEW_FALL`] points under where it
+/// was at the last line (damage taken) — and not before
+/// [`FALL_COOLDOWNS`], longer each time; a bar that stays where it was is
+/// said once ("46 percent HP" eleven times in fifteen minutes to the owner
+/// standing still, 2026-10-10). A fight is over only once the bar has been
+/// read over the mark: frames with no reading — the HUD lost and found
+/// again — start no new fight, so no new first line. A grind of hit, pot,
+/// hit, every 8 s, had the line at every hit: 75 "pot now" in ten minutes,
+/// in seven wordings — the beating's nag, one rule down. (HP and MP alike:
+/// MP's is this rule too.)
 ///
 /// A bar that reads low for minutes while EXP comes in is a bar read
 /// wrong — a character does not live at 20% through ten minutes of
@@ -234,8 +243,10 @@ struct Low {
     /// be a bar half-covered by a dialog, or misread).
     frames: u32,
     since: f64,
-    /// When the bar was last under the mark.
+    /// When the bar was last under the mark, and whether it has been read
+    /// at or over the mark since (only then can the fight be over).
     low_at: f64,
+    seen_above: bool,
     /// When the line was last said, the reading then, how many lines this
     /// fight (and how many of the last in a row repeated an unanswered
     /// one), and whether a potion has answered the last — frames in a row
@@ -303,6 +314,7 @@ impl Low {
             frames: 0,
             since: 0.0,
             low_at: f64::NEG_INFINITY,
+            seen_above: false,
             told: f64::NEG_INFINITY,
             told_at: f32::INFINITY,
             lines: 0,
@@ -321,7 +333,9 @@ impl Low {
     /// `fought_at` is when the fight was last seen going on some other way
     /// (HP falling fast; never, for MP).
     fn due(&mut self, now: f64, percent: f32, mark: f32, fought_at: f64, exp: Option<f32>) -> Due {
-        if now - self.low_at.max(fought_at) > FIGHT_OVER_SECS {
+        // (Over a minute since it was last low — and read over the mark
+        // since: a minute of no readings is no minute of the bar up.)
+        if now - self.low_at.max(fought_at) > FIGHT_OVER_SECS && self.seen_above {
             self.lines = 0;
         }
         if percent < mark {
@@ -330,8 +344,10 @@ impl Low {
             }
             self.frames += 1;
             self.low_at = now;
+            self.seen_above = false;
         } else {
             self.frames = 0;
+            self.seen_above = true;
         }
         if percent >= self.told_at + POTTED {
             self.up_frames += 1;
@@ -377,7 +393,8 @@ impl Low {
             }
             said => {
                 let wait = FALL_COOLDOWNS[(said as usize - 1).min(FALL_COOLDOWNS.len() - 1)];
-                if now - self.told < wait {
+                // Unanswered: again only after a new fall (and the wait).
+                if now - self.told < wait || percent > self.told_at - NEW_FALL {
                     Due::Nothing
                 } else if said >= DOUBT_AFTER_LINES && exp_gained(self.exp_at_first, exp) {
                     self.doubted = true;
@@ -754,6 +771,9 @@ pub fn reading(gauge: Option<Gauge>) -> Option<Gauge> {
 /// within this long before (see [`Companion::mp_reading`]).
 const WAY_DOWN_READINGS: usize = 2;
 const WAY_DOWN_SECS: f64 = 3.0;
+/// "Under the mark" for that way down when MP warnings are off or set
+/// lower: the old usual mark, 15%.
+const MP_WAY_DOWN_MARK: f32 = 15.0;
 
 /// Alerts said with no sign of life from the player — a word, HP going
 /// back up (a potion), EXP gained, a level — before the rest are held…
@@ -855,6 +875,10 @@ const HELD_FRAMES: u32 = 2;
 /// for an hour, and "Shut up" was the answer.
 const FIGHT_OVER_SECS: f64 = 60.0;
 const FALL_COOLDOWNS: [f64; 4] = [12.0, 30.0, 60.0, 120.0];
+/// A low bar's unanswered line is said again only when the bar is this many
+/// points under where it was at the last line: a new fall, damage taken
+/// (see [`Low`]).
+const NEW_FALL: f32 = 5.0;
 /// A player who handles the beating is trusted with it: after this many
 /// fights in a row with a potion within [`TRUST_POT_SECS`] of the line,
 /// the next fall is watched instead of shouted, and shouted after all
@@ -882,6 +906,85 @@ const TRUST_BOTTOM: f32 = 0.5;
 /// How long after a line was said the phone may still hand it back as heard,
 /// in seconds: the line, its playing, and the phone's recognition finishing.
 const ECHO_WINDOW: f64 = 30.0;
+
+/// Its own voice is never the player ([`Companion::own_words`]): a heard
+/// sentence whose words are mostly — this share or more — words it said in
+/// the last [`OWN_WINDOW`] s is its own voice, dropped whole, unless what is
+/// left is [`OWN_REST_WORDS`] words or more that it did not say (nor a
+/// near-spelling of one), and never when what is left carries a name. The
+/// owner's evening (2026-10-10): 19 "kept" remainders of 85 echoes, every one
+/// but one its own voice written differently — "my name is Armani my name is
+/// Miha" learned as his name, "question mark" made a mark, "23% still owe"
+/// set his MP warnings at 23%.
+const OWN_SHARE: f32 = 0.6;
+const OWN_WINDOW: f64 = 8.0;
+const OWN_REST_WORDS: usize = 3;
+/// A line is being said from when it is noted for about this long — a lead
+/// and so much a word — and "said in the last 8 s" counts from its end: the
+/// log's echoes came 4–12 s after a long line was noted, 1–7 s after it
+/// ended.
+const OWN_LEAD_SECS: f64 = 0.5;
+const OWN_SECS_PER_WORD: f64 = 0.4;
+/// The words a question starts with: the player's few words after its own,
+/// starting so, ask about what it said.
+const QUESTION_WORDS: &[&str] = &[
+    "where", "wheres", "what", "whats", "how", "hows", "why", "which", "who", "whos", "when",
+];
+
+/// Edits (insertions, deletions, substitutions) from `a` to `b`, by letter.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(ca != *cb));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
+}
+
+/// Whether `word` (normalised) is one of `said`, or the phone's spelling of
+/// one: its plural or possessive ("mp" for "mps", "point" for "points"), or,
+/// for words of six letters or more, two letters off (three from nine) —
+/// "genesis" for "henesys", "racoon" for "raccoon", "equivalent" for
+/// "equipment". (Not "tell" for "tall": short words are words.)
+fn said_or_near(word: &str, said: &[&str]) -> bool {
+    let n = word.chars().count();
+    said.iter().any(|s| {
+        if *s == word {
+            return true;
+        }
+        let m = s.chars().count();
+        let (short, long) = if m <= n { (*s, word) } else { (word, *s) };
+        if short.chars().count() >= 2
+            && long
+                .strip_prefix(short)
+                .is_some_and(|tail| tail == "s" || tail == "es")
+        {
+            return true;
+        }
+        n.min(m) >= 6 && edit_distance(word, s) <= if n.max(m) >= 9 { 3 } else { 2 }
+    })
+}
+
+/// Whether `token`, a word as the phone wrote it, is a name: capitalised
+/// within the sentence ("Miha", "Hennessey") — not its first word, nor "I"
+/// or an all-capitals "OK", "MP".
+fn looks_like_a_name(token: &str, first: bool) -> bool {
+    let core = token.trim_matches(|c: char| !c.is_alphanumeric());
+    let mut chars = core.chars();
+    !first
+        && chars.next().is_some_and(char::is_uppercase)
+        && chars.any(char::is_lowercase)
+        && !core.starts_with("I'")
+        && !core.starts_with("I’")
+}
 
 /// Words that stop MapleSyrup on their own when the player says them over it.
 const STOP_WORDS: &[&str] = &[
@@ -2863,12 +2966,104 @@ impl Companion {
     /// not just say (or a stop word): a word or two of its own voice that the
     /// phone wrote differently is not the player's. (Two while it talks;
     /// one just after, so a quick "yes" to its question still counts.)
+    ///
+    /// Its own voice is never the player: a sentence of two words or more
+    /// whose words are mostly ([`OWN_SHARE`]) its own — said in the last
+    /// [`OWN_WINDOW`] s, or the phone's near-spelling of them — is dropped
+    /// whole, with no "kept" remainder, unless the rest is
+    /// [`OWN_REST_WORDS`] words or more (of three letters or more) that it
+    /// did not say, a question about it ("where is that pillar") or a word
+    /// that stops it; and a remainder never carries a name. A sentence that
+    /// starts with two words of the player's, or with "no" or "stop", is
+    /// theirs whatever it quotes (its echo starts with its own voice: the
+    /// clip plays first). The same for the PC's voice, a clip on the phone
+    /// and a call's transcript: each is a line noted as said.
     pub fn own_words(&self, now: f64, heard: &str, need: usize) -> Option<String> {
         let rest = self.strip_echo(now, heard)?;
+        let rest = self.not_mostly_own(now, heard, rest)?;
         if need == 0 {
             return Some(rest);
         }
         self.players_words(now, &rest, need).map(|_| rest)
+    }
+
+    /// Its own words said lately, for [`Companion::own_words`]: those of
+    /// every line still being said, or said within [`OWN_WINDOW`] s before
+    /// `now` (see [`OWN_SECS_PER_WORD`]).
+    fn said_lately(&self, now: f64) -> Vec<&str> {
+        self.spoken
+            .iter()
+            .filter(|(at, said)| {
+                let words = said.split(' ').filter(|w| !w.is_empty()).count();
+                let end = at + OWN_LEAD_SECS + OWN_SECS_PER_WORD * words as f64;
+                *at <= now + 1.0 && end >= now - OWN_WINDOW
+            })
+            .flat_map(|(_, said)| said.split(' ').filter(|w| !w.is_empty()))
+            .collect()
+    }
+
+    /// `rest`, what `strip_echo` left of `heard`, unless `heard` is mostly
+    /// its own voice with too little of the player's in it, or `rest` is a
+    /// remainder with a name in it (see [`Companion::own_words`]): then
+    /// `None`.
+    fn not_mostly_own(&self, now: f64, heard: &str, rest: String) -> Option<String> {
+        let tokens: Vec<&str> = heard.split_whitespace().collect();
+        let mut words: Vec<(String, usize)> = Vec::new();
+        for (i, token) in tokens.iter().enumerate() {
+            for word in commands::normalize(token)
+                .split(' ')
+                .filter(|w| !w.is_empty())
+            {
+                words.push((word.to_string(), i));
+            }
+        }
+        let said = self.said_lately(now);
+        if words.len() >= 2 && !said.is_empty() {
+            let own: Vec<bool> = words.iter().map(|(w, _)| said_or_near(w, &said)).collect();
+            let first = words[0].0.as_str();
+            let leads = !own[0] && !own[1];
+            let denial =
+                !said.contains(&first) && (DENIALS.contains(&first) || STOP_WORDS.contains(&first));
+            let share = own.iter().filter(|o| **o).count() as f32 / words.len() as f32;
+            if share >= OWN_SHARE && !leads && !denial {
+                let theirs: Vec<&(String, usize)> = words
+                    .iter()
+                    .zip(&own)
+                    .filter(|(_, own)| !**own)
+                    .map(|(word, _)| word)
+                    .collect();
+                let strong: std::collections::HashSet<&str> = theirs
+                    .iter()
+                    .map(|(w, _)| w.as_str())
+                    .filter(|w| w.chars().count() >= 3)
+                    .collect();
+                // (A question about what it said — "…to the blue pillar,
+                // where is that pillar?" — is theirs: two words or more of
+                // theirs, the first a question word.)
+                let asks = theirs.len() >= 2 && QUESTION_WORDS.contains(&theirs[0].0.as_str());
+                // (A word that stops it, said over it — "mute", "stop" — is
+                // theirs: the main loop still acts on it.)
+                let stops = theirs.iter().any(|(w, _)| STOP_WORDS.contains(&w.as_str()));
+                let asks = asks || stops;
+                let named = theirs
+                    .iter()
+                    .any(|(_, i)| looks_like_a_name(tokens[*i], *i == 0));
+                if (strong.len() < OWN_REST_WORDS && !asks) || named {
+                    return None;
+                }
+            }
+        }
+        // A remainder never carries a name ("my name is Armani my name is
+        // Miha" was learned as his).
+        if rest != heard.trim() {
+            let named = rest.split_whitespace().enumerate().any(|(k, token)| {
+                looks_like_a_name(token, k == 0 && tokens.first() == Some(&token))
+            });
+            if named {
+                return None;
+            }
+        }
+        Some(rest)
     }
 
     pub fn set_always_listen(&mut self, on: bool) {
@@ -3044,7 +3239,7 @@ impl Companion {
         let believed = match self.mp_empty {
             Some(believed) => believed,
             None => {
-                let mark = self.settings.mp_low.max(Settings::default().mp_low);
+                let mark = self.settings.mp_low.max(MP_WAY_DOWN_MARK);
                 let way_down = self
                     .mp_lately
                     .iter()
@@ -3333,7 +3528,12 @@ impl Companion {
             alerts.into_iter().filter(Alert::is_news).collect()
         };
         let gained = above(self.exp_peak, self.exp_at_alert, EXP_GAINED);
-        let leveled = obs.level.is_some() && obs.level != self.level_at_alert;
+        // (The level as believed, not this frame's: a level read, lost and
+        // read again — the HUD dropping out — is no level gained.)
+        let leveled = matches!(
+            (self.last_level, self.level_at_alert),
+            (Some(level), Some(then)) if level != then
+        );
         if self.spoke_at > self.alert_at || self.potted || gained || leveled {
             self.unanswered = 0;
             self.hold_until = f64::NEG_INFINITY;
@@ -3355,7 +3555,7 @@ impl Companion {
         self.potted = false;
         self.exp_at_alert = exp;
         self.exp_peak = exp;
-        self.level_at_alert = obs.level;
+        self.level_at_alert = self.last_level;
         if self.unanswered > UNANSWERED_MAX {
             self.hold_until = now + HOLD_SECS;
             if now - self.hold_told >= HOLD_TOLD_EVERY {
@@ -4336,13 +4536,15 @@ mod tests {
         assert_eq!(first.len(), 1, "{first:?}");
         assert_eq!(variant(lines::HP_LOW, &first[0]), Some(0), "{first:?}");
         assert!(first[0].contains("about 20 percent"), "{first:?}");
-        // Still low, nothing done about it: not for a while…
-        for i in 0..11 {
+        // Still low, nothing done about it, and no new fall (18 is no
+        // fall from 20): nothing, the wait over or not…
+        for i in 0..13 {
             assert!(said(&c.observe(21.8 + i as f64, frame(18.0, 90.0, 10.0))).is_empty());
         }
-        // …then said again, put another way — from the deck that may say
-        // "still" (and again after longer waits: see the beating's).
-        let nagged = said(&c.observe(33.8, frame(18.0, 90.0, 10.0)));
+        // …then it falls again (damage taken, no potion): said again, put
+        // another way — from the deck that may say "still" (and again
+        // after longer waits: see the beating's).
+        let nagged = said(&c.observe(34.8, frame(12.0, 90.0, 10.0)));
         assert_eq!(nagged.len(), 1, "{nagged:?}");
         assert!(from(lines::HP_LOW_AGAIN, &nagged[0]), "{nagged:?}");
         assert_ne!(nagged, first);
@@ -4525,12 +4727,9 @@ mod tests {
     fn one_frame_read_high_is_neither_a_potion_nor_a_bar_to_fall_from() {
         // HP read at 20 for five minutes with one frame of 60 at 20 s (a
         // misread): no beating — the bar did not move — and the one frame
-        // is no potion either: the unanswered cadence goes on as if it
-        // had not been (0.6, 12.6, 42.6, 102.6, and the hold where the
-        // fifth line would come, at 222.6 — one frame is no sign of life
-        // to the hold any more than it is an answer to the line). One
-        // night this was "Back off, you're getting shredded. 20 percent
-        // and falling" at 20.2 s, and the next low line 38 s late. The
+        // is no potion either: the line is said once, as for any bar that
+        // stays put, and nothing after. One night this was "Back off,
+        // you're getting shredded. 20 percent and falling" at 20.2 s. The
         // same with a frame of 52 every 15 s at 25%, which had the fight
         // go quiet for 285 s after the beating.
         type Lines = Vec<(f64, String)>;
@@ -4552,11 +4751,11 @@ mod tests {
             }
             (lines, holds)
         };
+        // (Steady: said once — no new fall — and nothing to hold.)
         let (steady, held) = cadence(&|_| None, 20.0);
-        let expected = [0.6, 12.6, 42.6, 102.6];
+        let expected = [0.6];
         assert_eq!(steady.len(), expected.len(), "{steady:?}");
-        assert_eq!(held.len(), 1, "{held:?}");
-        assert!((held[0].0 - 222.6).abs() < 0.15, "{held:?}");
+        assert!(held.is_empty(), "{held:?}");
         for (shape, (lines, holds)) in [
             (
                 "one frame of 60 at 20 s",
@@ -4572,11 +4771,7 @@ mod tests {
                 assert!((at - want).abs() < 0.15, "{shape}: {lines:?}");
                 assert!(!from(lines::BEATING, line), "{shape}: {lines:?}");
             }
-            assert_eq!(holds.len(), 1, "{shape}: {holds:?}");
-            assert!(
-                (holds[0].0 - held[0].0).abs() < 0.15,
-                "{shape}: the hold at {holds:?}, not {held:?}"
-            );
+            assert!(holds.is_empty(), "{shape}: {holds:?}");
         }
         // A potion that holds (HP read at 100 from the second frame on)
         // answers at once: worn down slowly to 20 again in the same
@@ -4587,12 +4782,14 @@ mod tests {
             let mut lines: Vec<(f64, String)> = Vec::new();
             for i in 0..600 {
                 let t = i as f64 * 0.1;
+                // (Unanswered, it falls on to 14: the cadence goes on.)
                 let hp = match i {
                     0..50 => 20.0,
                     50 => 100.0,
                     51..110 if answered => 100.0,
                     110..210 if answered => 100.0 - (i - 110) as f32 * 0.8,
-                    _ => 20.0,
+                    _ if answered => 20.0,
+                    _ => 14.0,
                 };
                 for line in alerts(&c.observe(t, read(hp))) {
                     lines.push((t, line));
@@ -4604,8 +4801,11 @@ mod tests {
                 assert_eq!(lower.len(), 1, "{lower:?}");
                 assert!(says(lines::HP_LOW, &lower[0], "15 percent"), "{lower:?}");
             } else {
-                assert_eq!(lines.len(), 3, "{lines:?}");
+                // (A repeat of an unanswered line, not a first: the one
+                // frame at 100 answered nothing.)
+                assert_eq!(lines.len(), 2, "{lines:?}");
                 assert!((lines[1].0 - 12.6).abs() < 0.15, "{lines:?}");
+                assert!(from(lines::HP_LOW_AGAIN, &lines[1].1), "{lines:?}");
             }
         }
         // The beating's answer is the same. Hit from 100 to 60 at 1 s,
@@ -4695,9 +4895,9 @@ mod tests {
         }
         assert!(from(lines::BEATING, &lines[0].1), "{lines:?}");
         assert!((lines[0].0 - 3.9).abs() < 0.15, "{lines:?}");
-        // (Unanswered, the low line follows the beating's cadence.)
-        assert!(from(lines::HP_LOW_AGAIN, &lines[1].1), "{lines:?}");
-        assert!((lines[1].0 - 15.9).abs() < 0.15, "{lines:?}");
+        // (Unanswered, HP staying at 25: no new fall, so no low line after
+        // the beating's.)
+        assert_eq!(lines.len(), 4, "{lines:?}");
         let later: Vec<&(f64, String)> = lines.iter().filter(|(t, _)| *t >= 120.0).collect();
         assert_eq!(later.len(), 3, "{lines:?}");
         for (n, (at, line)) in later.iter().enumerate() {
@@ -4959,13 +5159,11 @@ mod tests {
     }
 
     #[test]
-    fn staying_low_with_no_potion_is_said_again_after_longer_and_longer_waits() {
-        // HP at 20% and nothing done about it: said, then again 12 s on,
-        // 30 s after that, then 60, then 120 — the beating's waits — and
-        // not for the frames between. (The player grumbles at minutes 2.5
-        // and 5 but drinks nothing: a word keeps the lines coming — four
-        // with no sign of life at all would have the rest held, see
-        // `warnings_nobody_answers_are_held…`.)
+    fn staying_low_is_said_once_and_falling_on_again_after_longer_and_longer_waits() {
+        // HP at 20% and nothing done about it, the player grumbling at
+        // minutes 2.5 and 5 but drinking nothing: said once. (It was again
+        // 12 s on, 30 s after that, then 60, then 120: "46 percent HP"
+        // eleven times in fifteen minutes to the owner standing still.)
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut told = Vec::new();
         for i in 0..4000 {
@@ -4974,30 +5172,172 @@ mod tests {
                 c.player_spoke(t);
             }
             for line in alerts(&c.observe(t, frame(20.0, 90.0, 10.0))) {
-                // (The first stands alone; the rest repeat it, and may
-                // say so — the third asks why.)
-                let deck = match told.len() {
-                    0 => lines::HP_LOW,
-                    2 => lines::HP_LOW_ASK,
-                    _ => lines::HP_LOW_AGAIN,
-                };
-                assert!(from(deck, &line), "{line:?}");
-                told.push(t);
+                told.push((t, line));
             }
         }
-        let mut expected = vec![0.6];
-        for wait in [12.0, 30.0, 60.0, 120.0, 120.0] {
-            expected.push(expected.last().unwrap() + wait);
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!((told[0].0 - 0.6).abs() < 0.15, "{told:?}");
+        assert!(from(lines::HP_LOW, &told[0].1), "{told:?}");
+        // Falling on, no potion — a point every two seconds from 29: said
+        // again at each new fall of five points or more, after the waits
+        // (12, 30, 60 s), not for the frames between; the first stands
+        // alone, the second may say "still", the third asks why.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut told: Vec<(f64, f32, String)> = Vec::new();
+        for i in 0..2000 {
+            let t = i as f64 * 0.1;
+            let hp = (29.0 - (t / 2.0).floor() as f32).max(1.0);
+            for line in alerts(&c.observe(t, read(hp))) {
+                told.push((t, hp, line));
+            }
         }
-        assert_eq!(told.len(), expected.len(), "{told:?}");
-        for (at, want) in told.iter().zip(expected) {
+        let at: Vec<f64> = told.iter().map(|(t, _, _)| *t).collect();
+        assert_eq!(told.len(), 4, "{told:?}");
+        for (at, want) in at.iter().zip([0.6, 12.6, 42.6, 102.6]) {
             assert!((at - want).abs() < 0.15, "{told:?}");
         }
+        for pair in told.windows(2) {
+            assert!(pair[1].1 <= pair[0].1 - NEW_FALL, "{told:?}");
+        }
+        for ((_, _, line), deck) in told.iter().zip([
+            lines::HP_LOW,
+            lines::HP_LOW_AGAIN,
+            lines::HP_LOW_ASK,
+            lines::HP_LOW_AGAIN,
+        ]) {
+            assert!(from(deck, line), "{told:?}");
+        }
+    }
+
+    /// The owner's 13:08–13:23 (2026-10-10), replayed: standing, not
+    /// fighting, HP read at 46% the whole time ("46 percent" eleven times
+    /// in fifteen minutes, every wait of the cadence), MP coming back by
+    /// its regen, EXP flat, the HUD lost now and then — a few frames with
+    /// no level, and twice for over a minute no reading at all. A steady
+    /// low bar is said once; a gap in the readings is no new fight.
+    #[test]
+    fn a_steady_low_hp_is_said_once_through_the_huds_gaps() {
+        // (His mark had moved to 50 after deaths with no warning before.)
+        let mut c = Companion::seeded(
+            Settings {
+                hp_low: 50.0,
+                ..Settings::default()
+            },
+            SEED,
+        );
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        // 13:08:10 is 0 s; to 13:24:30, two frames a second.
+        for i in 0..1960 {
+            let t = i as f64 * 0.5;
+            let mut obs = read(46.4);
+            obs.level = Some(17);
+            obs.mp = gauge((32.0 + t as f32 * 0.25).min(100.0), true);
+            obs.exp = gauge(44.63, true);
+            // The HUD lost: no level for a few frames every minute, and no
+            // reading at all for 70 s at 4:00 and at 9:30.
+            if t % 60.0 < 2.0 {
+                obs.level = None;
+            }
+            if (240.0..310.0).contains(&t) || (570.0..640.0).contains(&t) {
+                obs.hp = None;
+                obs.mp = None;
+                obs.exp = None;
+                obs.level = None;
+            }
+            for line in alerts(&c.observe(t, obs)) {
+                lines.push((t, line));
+            }
+        }
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(says(lines::HP_LOW, &lines[0].1, "46 percent"), "{lines:?}");
+        assert!(lines[0].0 < 2.0, "{lines:?}");
+    }
+
+    /// A low bar that keeps falling — damage taken, no potion — is said
+    /// again, after the waits; one that stays where it was is not. (The
+    /// owner's 13:35–13:38: HP draining from 14% to 7% while he was away,
+    /// then dead.)
+    #[test]
+    fn a_low_hp_said_again_only_after_a_new_fall() {
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut lines: Vec<(f64, String)> = Vec::new();
+        for i in 0..3000 {
+            let t = i as f64 * 0.1;
+            // 25% for a minute, 14% for a minute (a new fall), 12% for a
+            // minute (not one: two points), then 7%.
+            let hp = match t {
+                t if t < 60.0 => 25.0,
+                t if t < 120.0 => 14.0,
+                t if t < 180.0 => 12.0,
+                _ => 7.0,
+            };
+            for line in alerts(&c.observe(t, read(hp))) {
+                lines.push((t, line));
+            }
+        }
+        let at: Vec<f64> = lines.iter().map(|(t, _)| *t).collect();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(says(lines::HP_LOW, &lines[0].1, "25 percent"), "{lines:?}");
+        assert!((at[1] - 60.0).abs() < 1.0, "{lines:?}");
+        assert!(lines[1].1.contains("14"), "{lines:?}");
+        assert!((at[2] - 180.0).abs() < 1.0, "{lines:?}");
+        assert!(lines[2].1.contains('7'), "{lines:?}");
+    }
+
+    /// The owner's evening: 25 MP lines in two hours to a Magician, whose
+    /// MP goes up and down all the time — noise. No MP line unless he set a
+    /// mark himself (`mp_low`, from his plain request); HP stays on.
+    #[test]
+    fn mp_warnings_are_off_unless_the_player_set_a_mark() {
+        // MP spent and coming back, again and again: down to 5% each time.
+        let evening = |settings: Settings| -> (Vec<String>, Tally) {
+            let mut c = Companion::seeded(settings, SEED);
+            let mut lines = Vec::new();
+            for i in 0..6000 {
+                let t = i as f64 * 0.1;
+                let mut obs = read(90.0);
+                obs.mp = gauge((95.0 - (t % 120.0) as f32).max(5.0), true);
+                lines.extend(alerts(&c.observe(t, obs)));
+            }
+            (lines, c.tally())
+        };
+        assert_eq!(Settings::default().mp_low, 0.0);
+        let (lines, tally) = evening(Settings::default());
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(tally.mp_low, 0);
+        // He asked to be warned under 20%: each of the five dips is said
+        // (and, falling on, once more at most).
+        let (lines, tally) = evening(Settings {
+            mp_low: 20.0,
+            ..Settings::default()
+        });
+        assert!((5..=10).contains(&lines.len()), "{lines:?}");
+        assert_eq!(tally.mp_low as usize, lines.len());
+        let mp_card = |l: &String| {
+            [lines::MP_LOW, lines::MP_LOW_AGAIN, lines::MP_LOW_ASK]
+                .iter()
+                .any(|deck| from(*deck, l))
+        };
+        assert!(lines.iter().all(mp_card), "{lines:?}");
+        // HP is warned of by default.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let mut hp = Vec::new();
+        for i in 0..10 {
+            hp.extend(alerts(&c.observe(i as f64 * 0.1, read(20.0))));
+        }
+        assert_eq!(hp.len(), 1, "{hp:?}");
     }
 
     #[test]
     fn low_mp_is_its_own_warning() {
-        let mut c = Companion::seeded(Settings::default(), SEED);
+        // (When the player asked for MP warnings: none by default.)
+        let mut c = Companion::seeded(
+            Settings {
+                mp_low: 15.0,
+                ..Settings::default()
+            },
+            SEED,
+        );
         c.observe(0.0, frame(90.0, 3.1, 10.0));
         c.observe(0.3, frame(90.0, 3.1, 10.0));
         assert_eq!(
@@ -5020,7 +5360,14 @@ mod tests {
                 })
                 .collect()
         };
-        let mut c = Companion::seeded(Settings::default(), SEED);
+        // (MP warnings asked for: there are none by default.)
+        let mut c = Companion::seeded(
+            Settings {
+                mp_low: 15.0,
+                ..Settings::default()
+            },
+            SEED,
+        );
         c.observe(0.0, frame(95.0, 90.0, 10.0));
         for i in 1..10 {
             c.observe(i as f64 * 0.1, frame(95.0, 90.0, 10.0));
@@ -5114,6 +5461,79 @@ mod tests {
         assert!(quiet.still_talking(5.0, "now"));
         assert!(!quiet.still_talking(5.0, "um"));
         assert!(!c.still_talking(11.5, "next level"));
+    }
+
+    #[test]
+    fn a_sentence_mostly_of_its_own_words_is_its_own_voice_whole() {
+        // The owner's 12:21: its two lines, then the phone's "23% still owe
+        // about 10% potion" — kept "23% still owe" at f9b6047, and the model
+        // set his MP warnings at 23%. Mostly its words: dropped whole.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.remember_spoken(0.0, "Got it—MP's at 23%.");
+        c.remember_spoken(4.0, "Still low on mana, about 10 percent. Blue potion!");
+        assert_eq!(c.own_words(10.0, "23% still owe about 10% potion", 0), None);
+        // A remainder never carries a name (11:49: "Miha" learned as his).
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.remember_spoken(0.0, "Got it—that bunny-ear hat is you, Armani.");
+        assert_eq!(
+            c.own_words(
+                10.0,
+                "Got it that bunny hat is my name is Armani my name is Miha",
+                0
+            ),
+            None
+        );
+        // Three words and more of the player's are theirs (12:01: walking
+        // to the NPC); so is a question about what it said, and a word
+        // that stops it.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.remember_spoken(
+            0.0,
+            "General Store NPC is the tall raccoon on the right side of the map.",
+        );
+        assert_eq!(
+            c.own_words(
+                11.0,
+                "NPC is the racoon on the right side of the map OK tell me when to stop",
+                0
+            )
+            .as_deref(),
+            Some("racoon OK tell me when to stop")
+        );
+        assert!(
+            c.own_words(11.0, "the tall raccoon on the right side where is it", 0)
+                .is_some()
+        );
+        assert_eq!(
+            c.own_words(11.0, "the tall raccoon on the right side mute please", 0)
+                .as_deref(),
+            Some("mute please")
+        );
+        // Two words of the player's, the rest its own: its own (12:10,
+        // "Join the cannabis" kept at f9b6047).
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.remember_spoken(
+            0.0,
+            "You need an item drop rate buff: equip a drop coupon or join a party with a Kanna or Bishop for Holy Symbol.",
+        );
+        let heard = "Join the party with a cannabis";
+        assert_eq!(
+            c.strip_echo(9.0, heard).as_deref(),
+            Some("Join the cannabis")
+        );
+        assert_eq!(c.own_words(9.0, heard, 0), None);
+        // "The last 8 s" count from the end of its speaking: a long line
+        // noted at 0 is still being said at 8 s, and heard back at 12 s.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.remember_spoken(
+            0.0,
+            "To reach Blue Mushroom Forest 2, follow the world map's Henesys route south of town; select the nearby mushroom-forest map.",
+        );
+        let heard = "route south of town for two";
+        assert_eq!(c.strip_echo(12.0, heard).as_deref(), Some("for two"));
+        assert_eq!(c.own_words(12.0, heard, 0), None);
+        // Long after, the player saying its words is the player.
+        assert_eq!(c.own_words(40.0, heard, 0).as_deref(), Some(heard));
     }
 
     #[test]
@@ -5762,7 +6182,12 @@ mod tests {
             ..Settings::default()
         };
         let run_off = |frames: usize, script: Script| run(off.clone(), frames, script);
-        let run = |frames: usize, script: Script| run(Settings::default(), frames, script);
+        // (MP warnings asked for at the old usual 15%: none by default.)
+        let asked = Settings {
+            mp_low: 15.0,
+            ..Settings::default()
+        };
+        let run = |frames: usize, script: Script| run(asked.clone(), frames, script);
         let mp_low = |lines: &[(f64, String)]| -> Vec<f64> {
             lines
                 .iter()
@@ -5817,10 +6242,10 @@ mod tests {
         // A real drain, 80 to empty over 4 s (20 points a second: under the
         // mark for less than the low line's hold before it reads 2% or
         // under), empty 30 s, then a potion: warned — the empty bar after
-        // the way down is believed (the line comes again 12 s on, as for
-        // any low bar) — and the potion seen: it answers the line. (w39's
-        // M4; not warned at all while every fill at 2% or under was no
-        // reading.)
+        // the way down is believed (and not said again: an empty bar that
+        // stays empty is no new fall) — and the potion seen: it answers the
+        // line. (w39's M4; not warned at all while every fill at 2% or
+        // under was no reading.)
         let drain = |i: usize| match i {
             0..50 => (80.0, false),
             50..90 => ((80.0 - (i - 50) as f32 * 2.0).max(0.3), false),
@@ -5829,7 +6254,7 @@ mod tests {
         };
         let (lines, c) = run(500, &drain);
         let warned = mp_low(&lines);
-        assert!(warned.len() >= 2, "{lines:?}");
+        assert!((1..=2).contains(&warned.len()), "{lines:?}");
         assert!((8.8..9.1).contains(&warned[0]), "{lines:?}");
         assert!(warned.iter().all(|t| *t < 39.0), "{lines:?}");
         assert_eq!(c.tally().potted, 1, "{lines:?}");
@@ -5944,19 +6369,22 @@ mod tests {
 
     #[test]
     fn warnings_nobody_answers_are_held_and_a_word_lets_them_through_again() {
-        // HP at 20% for twenty-five minutes and nothing done about it (the
-        // player is away, or the bar is misread): the low warning comes
-        // four times (after longer and longer waits: 12, 30, 60 s; said,
-        // said again, asked about, said again), then, where the fifth
-        // would come, one line saying the rest will wait — to an empty
-        // room: not a word from the player all session — then nothing for
-        // ten minutes; then two more, and quiet again. (Six, and a pet's
-        // death was six lines in six minutes to a room that may be empty.)
+        // HP hovering at the mark for twenty-five minutes and nothing done
+        // about it (the player is away): half a minute at 25%, a minute at
+        // 31% (no potion: six points), again and again — a new fight each
+        // time, each with its line (a bar that stays put is said once a
+        // fight: see `a_steady_low_hp_is_said_once…`). Four lines with no
+        // sign of life, then, where the fifth would come, one line saying
+        // the rest will wait — to an empty room: not a word from the
+        // player all session — then nothing for ten minutes; then two
+        // more, and quiet again. (Six, and a pet's death was six lines in
+        // six minutes to a room that may be empty.)
+        let hp = |t: f64| if t % 91.0 < 30.0 { 25.0 } else { 31.0 };
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines: Vec<(f64, String)> = Vec::new();
         for i in 0..15_000 {
             let t = i as f64 * 0.1;
-            for line in said(&c.observe(t, frame(20.0, 90.0, 10.0))) {
+            for line in said(&c.observe(t, frame(hp(t), 90.0, 10.0))) {
                 if !from(lines::SEEN, &line) {
                     lines.push((t, line));
                 }
@@ -5964,18 +6392,17 @@ mod tests {
         }
         let texts: Vec<&str> = lines.iter().map(|(_, l)| l.as_str()).collect();
         assert_eq!(texts.len(), 7, "{lines:?}");
-        assert!(from(lines::HP_LOW, texts[0]), "{texts:?}");
-        assert!(from(lines::HP_LOW_AGAIN, texts[1]), "{texts:?}");
-        assert!(from(lines::HP_LOW_ASK, texts[2]), "{texts:?}");
-        assert!(from(lines::HP_LOW_AGAIN, texts[3]), "{texts:?}");
+        for text in &texts[..4] {
+            assert!(from(lines::HP_LOW, text), "{texts:?}");
+        }
         // The first time, the hold is explained in full.
         assert_eq!(variant(lines::HOLD_AWAY, texts[4]), Some(0), "{texts:?}");
-        // Four warnings over 102 s, the hold where the fifth would come
-        // (two minutes on), and it ends ten minutes later.
-        assert!((lines[3].0 - lines[0].0 - 102.0).abs() < 0.5, "{lines:?}");
-        assert!((lines[4].0 - lines[3].0 - 120.0).abs() < 0.5, "{lines:?}");
+        // Four warnings a fight apart, the hold where the fifth would come,
+        // and it ends ten minutes later.
+        assert!((lines[3].0 - lines[0].0 - 273.0).abs() < 0.5, "{lines:?}");
+        assert!((lines[4].0 - lines[3].0 - 91.0).abs() < 0.5, "{lines:?}");
         assert!(lines[5].0 - lines[4].0 >= 600.0, "{lines:?}");
-        assert!(from(lines::HP_LOW_AGAIN, texts[5]) && from(lines::HP_LOW_AGAIN, texts[6]));
+        assert!(from(lines::HP_LOW, texts[5]) && from(lines::HP_LOW, texts[6]));
         // (The hold is not announced again so soon.)
         assert!(c.alerts_held(1500.0));
         // The player says something: the warnings come again.
@@ -5983,9 +6410,8 @@ mod tests {
         assert!(!c.alerts_held(1500.0));
         let mut after = Vec::new();
         for i in 0..500 {
-            after.extend(said(
-                &c.observe(1500.0 + i as f64 * 0.1, frame(20.0, 90.0, 10.0)),
-            ));
+            let t = 1500.0 + i as f64 * 0.1;
+            after.extend(said(&c.observe(t, frame(hp(t), 90.0, 10.0))));
         }
         assert_eq!(after.len(), 1, "{after:?}");
         // A card that counts the warnings counts four.
@@ -6010,21 +6436,30 @@ mod tests {
 
     #[test]
     fn a_bar_read_low_while_exp_comes_in_is_not_believed() {
-        // HP read at 20% for an hour while EXP rises 0.3% a minute: the
-        // player is grinding and fine, and the bar is read wrong. Four
-        // unanswered lines (0.6, 12.6, 42.6, 102.6 s), then, where the
-        // fifth would come, one note in its own voice that it is holding
-        // the HP warnings — and nothing more all hour. (The hold for
-        // warnings nobody answers never engaged: EXP answered them, every
-        // minute. 34 lines in the hour; six hours of it was ~200.)
+        // HP read low for an hour, a little lower at each line (29, 23,
+        // 17, 11, then 5: a bar that stays put is said once, see
+        // `a_steady_low_hp…`), while EXP rises 0.3% a minute: the player
+        // is grinding and fine, and the bar is read wrong. Four unanswered
+        // lines (0.6, 12.6, 42.6, 102.6 s), then, where the fifth would
+        // come, one note in its own voice that it is holding the HP
+        // warnings — and nothing more all hour. (The hold for warnings
+        // nobody answers never engaged: EXP answered them, every minute.
+        // 34 lines in the hour; six hours of it was ~200.)
         type Lines = Vec<(f64, String)>;
-        let hour = |hp: f32, exp_per_min: f32| -> (Lines, Lines) {
+        let step = |t: f64| match t {
+            t if t < 12.0 => 29.0,
+            t if t < 42.0 => 23.0,
+            t if t < 102.0 => 17.0,
+            t if t < 222.0 => 11.0,
+            _ => 5.0,
+        };
+        let hour = |_hp: f32, exp_per_min: f32| -> (Lines, Lines) {
             let mut c = Companion::seeded(Settings::default(), SEED);
             let mut warnings: Lines = Vec::new();
             let mut notes: Lines = Vec::new();
             for i in 0..36_000 {
                 let t = i as f64 * 0.1;
-                let mut obs = read(hp);
+                let mut obs = read(step(t));
                 obs.exp = gauge(10.0 + (t / 60.0) as f32 * exp_per_min, true);
                 for action in c.observe(t, obs) {
                     let Action::Say(say) = action else { continue };
@@ -6057,11 +6492,10 @@ mod tests {
         // rule stands — the cadence to four lines, then the hold where the
         // fifth would come (the two rules count to four, and part there:
         // EXP gained since the first line is a bar not believed, none is
-        // a room not answering).
+        // a room not answering). (At 5% it falls no further: nothing more.)
         let (warnings, notes) = hour(20.0, 0.0);
-        assert!(warnings.len() >= 6, "{warnings:?}");
+        assert_eq!(warnings.len(), 4, "{warnings:?}");
         assert!((warnings[3].0 - 102.6).abs() < 0.15, "{warnings:?}");
-        assert!(warnings[4].0 - warnings[3].0 >= 600.0, "{warnings:?}");
         assert!((notes[0].0 - 222.6).abs() < 0.15, "{notes:?}");
         assert!(notes.iter().all(|(_, n)| hold_note(n)), "{notes:?}");
         // Believed again once it has read above the mark for three
@@ -6073,7 +6507,7 @@ mod tests {
         for i in 0..3300 {
             let t = i as f64 * 0.1;
             let hp = match i {
-                0..3000 => 20.0,
+                0..3000 => step(t),
                 3000..3029 => 90.0,
                 3029..3100 => 20.0,
                 3100..3131 => 90.0,
@@ -6088,14 +6522,21 @@ mod tests {
         assert_eq!(lines.len(), 5, "{lines:?}");
         assert!((lines[4].0 - 322.3).abs() < 0.15, "{lines:?}");
         assert!(from(lines::HP_LOW, &lines[4].1), "{lines:?}");
-        // MP, the same shape.
-        let mut c = Companion::seeded(Settings::default(), SEED);
+        // MP, the same shape (warned under 50%, asked for: none by
+        // default).
+        let mut c = Companion::seeded(
+            Settings {
+                mp_low: 50.0,
+                ..Settings::default()
+            },
+            SEED,
+        );
         let mut warnings = Vec::new();
         let mut notes = Vec::new();
         for i in 0..6000 {
             let t = i as f64 * 0.1;
             let mut obs = read(90.0);
-            obs.mp = gauge(10.0, true);
+            obs.mp = gauge(step(t) + 16.0, true);
             obs.exp = gauge(10.0 + (t / 60.0) as f32 * 0.3, true);
             for action in c.observe(t, obs) {
                 let Action::Say(say) = action else { continue };
@@ -6114,15 +6555,23 @@ mod tests {
 
     #[test]
     fn a_death_and_a_level_up_pass_through_a_hold() {
-        // HP read at 20% for eight minutes and nothing done about it: four
-        // warnings, then the hold. A death in it is said all the same (the
-        // coach counts it either way, and would speak of a third death the
-        // player never heard of), and so is a level-up; the warnings stay
-        // held.
+        // HP read low for eight minutes, lower at each line, and nothing
+        // done about it: four warnings, then the hold. A death in it is
+        // said all the same (the coach counts it either way, and would
+        // speak of a third death the player never heard of), and so is a
+        // level-up; the warnings stay held.
+        let step = |t: f64| match t {
+            t if t < 12.0 => 29.0,
+            t if t < 42.0 => 23.0,
+            t if t < 102.0 => 17.0,
+            t if t < 222.0 => 11.0,
+            _ => 5.0,
+        };
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines = Vec::new();
         for i in 0..4800 {
-            lines.extend(alerts(&c.observe(i as f64 * 0.1, read(20.0))));
+            let t = i as f64 * 0.1;
+            lines.extend(alerts(&c.observe(t, read(step(t)))));
         }
         assert_eq!(lines.len(), 4, "{lines:?}");
         assert!(c.alerts_held(480.0));
@@ -6135,15 +6584,16 @@ mod tests {
         assert!(from(lines::DEATH_WARNED, &death[0]), "{death:?}");
         assert_eq!(c.so_far().deaths, 1);
         assert!(c.alerts_held(501.0));
-        // Revived, still at 20%: the warnings are still held…
+        // Revived, still low (12%: less than a potion's worth over the
+        // last line's 5%): the warnings are still held…
         let mut after = Vec::new();
         for i in 0..600 {
-            after.extend(alerts(&c.observe(505.0 + i as f64 * 0.1, read(20.0))));
+            after.extend(alerts(&c.observe(505.0 + i as f64 * 0.1, read(12.0))));
         }
         assert!(after.is_empty(), "{after:?}");
         assert!(c.alerts_held(565.0));
         // …and a level-up is said through it.
-        let mut up = read(20.0);
+        let mut up = read(12.0);
         up.level = Some(166);
         let mut cheered = Vec::new();
         for i in 0..40 {
@@ -6155,13 +6605,29 @@ mod tests {
     #[test]
     fn it_says_it_twice_then_asks_then_stops_in_words_for_whoever_is_there() {
         // The evening's 82:00: the pet dies a minute and a half after the
-        // player said "ok, I'm back" — HP from 100 to 25 over 1.5 s and held
-        // there, no potion, EXP flat. The beating; the low line 5 s on; said
-        // again; then asked about; and where the next would come it stops,
-        // in words for someone who is there. (It was four orders in 47 s,
-        // then "Just talk to me when you're back.") A potion at last, six
-        // minutes on: one word that it saw, and nothing is held any more.
+        // player said "ok, I'm back" — HP from 100 to 25 over 1.5 s, then
+        // lower and lower (19, 13, 7: hits, no potion), EXP flat. The
+        // beating; the low line 5 s on; said again at the next fall; then
+        // asked about; and where the next would come it stops, in words for
+        // someone who is there. (It was four orders in 47 s, then "Just
+        // talk to me when you're back.") A potion at last, six minutes on:
+        // one word that it saw, and nothing is held any more. (Had HP
+        // stayed at 25 it was the beating and the low line, and quiet: see
+        // `a_steady_low_hp_is_said_once…`.)
         type Lines = Vec<(f64, Kind, String)>;
+        let falling = |t: f64| -> f32 {
+            if t < 1001.5 {
+                100.0 - (t - 1000.0) as f32 / 1.5 * 75.0
+            } else if t < 1017.0 {
+                25.0
+            } else if t < 1047.0 {
+                19.0
+            } else if t < 1107.0 {
+                13.0
+            } else {
+                7.0
+            }
+        };
         let evening = |word: f64, potion: f64, end: f64| -> (Lines, Companion) {
             let mut c = Companion::seeded(Settings::default(), SEED);
             let mut lines: Lines = Vec::new();
@@ -6172,10 +6638,8 @@ mod tests {
                 }
                 let hp = if t < 1000.0 || t >= potion {
                     100.0
-                } else if t < 1001.5 {
-                    100.0 - (t - 1000.0) as f32 / 1.5 * 75.0
                 } else {
-                    25.0
+                    falling(t)
                 };
                 let mut obs = read(hp);
                 // (Grinding until the pet dies: EXP coming in, then flat.)
@@ -6231,12 +6695,10 @@ mod tests {
             }
             let hp = if t < 1000.0 {
                 100.0
-            } else if t < 1001.5 {
-                100.0 - (t - 1000.0) as f32 / 1.5 * 75.0
             } else if t < 1300.0 {
-                25.0
+                falling(t)
             } else {
-                (25.0 + (t - 1300.0) as f32 / 2.0).min(100.0)
+                (7.0 + (t - 1300.0) as f32 / 2.0).min(100.0)
             };
             let mut obs = read(hp);
             obs.exp = gauge(10.0 + (t.min(1000.0) / 60.0) as f32 * 0.3, true);
@@ -6253,14 +6715,14 @@ mod tests {
         assert_eq!(regen.len(), 5, "{regen:?}");
         assert!(!c.alerts_held(1330.0));
         // No word for fifteen minutes before: as far as it knows the room
-        // is empty, and the hold says so. Two lines through when it ends,
-        // and held again — no note so soon — and a potion in that hold,
-        // the note sixteen minutes old: the hold is over, without a word.
+        // is empty, and the hold says so. When it ends, nothing more: HP
+        // stays where it is (no new fall). A potion then, the note sixteen
+        // minutes old: not a word.
         let (lines, mut c) = evening(100.0, f64::INFINITY, 2100.0);
         fight(&lines);
+        assert_eq!(lines.len(), 5, "{lines:?}");
         assert!(from(lines::HOLD_AWAY, &lines[4].2), "{lines:?}");
         assert_eq!(lines.iter().filter(|l| hold_note(&l.2)).count(), 1);
-        assert!(c.alerts_held(2099.9));
         let mut potted = Vec::new();
         for i in 0..20 {
             potted.extend(said(&c.observe(2100.0 + i as f64 * 0.1, read(100.0))));
@@ -6334,7 +6796,14 @@ mod tests {
         // the player, there. (It was four lines, then "No pot, no word, no
         // point. I'll wait." and twenty minutes in "You still there?")
         let still_there = |line: &str| from(lines::STILL_THERE, line);
-        let mut c = Companion::seeded(Settings::default(), SEED);
+        // (MP warnings asked for: none by default.)
+        let mut c = Companion::seeded(
+            Settings {
+                mp_low: 15.0,
+                ..Settings::default()
+            },
+            SEED,
+        );
         let (mut warnings, mut notes, mut asked) = (Vec::new(), Vec::new(), Vec::new());
         let mut potted_at = f64::NEG_INFINITY;
         let mut last_line = f64::NEG_INFINITY;
@@ -6460,8 +6929,15 @@ mod tests {
             assert_eq!(lower.len(), 1, "{low}: {lower:?}");
             assert!(says(lines::HP_LOW, &lower[0], "12 percent"), "{lower:?}");
         }
-        // MP has the same shape (a pet pots MP too): the same rule.
-        let mut c = Companion::seeded(Settings::default(), SEED);
+        // MP has the same shape (a pet pots MP too): the same rule (MP
+        // warnings asked for: none by default).
+        let mut c = Companion::seeded(
+            Settings {
+                mp_low: 15.0,
+                ..Settings::default()
+            },
+            SEED,
+        );
         let mut lines: Vec<(f64, String)> = Vec::new();
         for i in 0..6000 {
             let t = i as f64 * 0.1;
@@ -6486,13 +6962,20 @@ mod tests {
     #[test]
     fn the_tally_counts_the_warnings_said_and_the_low_lines_a_potion_answered() {
         // For the session's stats, counts only: HP left at 20% gets its
-        // line and a repeat 12 s on, and a potion answers the repeat; then
-        // MP low, once, which nothing answers.
-        let mut c = Companion::seeded(Settings::default(), SEED);
+        // line, then down to 14% a repeat 12 s on, and a potion answers the
+        // repeat; then MP low (asked for), once, which nothing answers.
+        let mut c = Companion::seeded(
+            Settings {
+                mp_low: 15.0,
+                ..Settings::default()
+            },
+            SEED,
+        );
         assert_eq!(c.tally(), Tally::default());
         let mut said = 0;
         for i in 0..130 {
-            said += alerts(&c.observe(i as f64 * 0.1, frame(20.0, 90.0, 10.0))).len();
+            let hp = if i < 60 { 20.0 } else { 14.0 };
+            said += alerts(&c.observe(i as f64 * 0.1, frame(hp, 90.0, 10.0))).len();
         }
         assert_eq!(said, 2);
         let tally = c.tally();
@@ -6548,8 +7031,15 @@ mod tests {
         dealt_like_a_deck(lines::HP_LOW, &warnings);
         assert!(warnings[0].contains("about 20 percent"), "{warnings:?}");
         // MP, the same (with a word from the player each fight too; the
-        // mana potion alone would do, see `a_mana_potion_is_a_sign_of_life`).
-        let mut c = Companion::seeded(Settings::default(), SEED);
+        // mana potion alone would do, see `a_mana_potion_is_a_sign_of_life`;
+        // MP warnings asked for: none by default).
+        let mut c = Companion::seeded(
+            Settings {
+                mp_low: 15.0,
+                ..Settings::default()
+            },
+            SEED,
+        );
         let mut warnings = Vec::new();
         for fight in 0..60 {
             let t = fight as f64 * 120.0;
@@ -6602,9 +7092,11 @@ mod tests {
             })
         };
         for attitude in Attitude::ALL {
+            // (MP warnings asked for: none by default.)
             let mut c = Companion::seeded(
                 Settings {
                     attitude,
+                    mp_low: 15.0,
                     ..Settings::default()
                 },
                 SEED,
@@ -6641,30 +7133,44 @@ mod tests {
             for line in hp_lines.iter().chain(&mp_lines) {
                 assert!(!presumes(line), "{}: {line:?}", attitude.word());
             }
-            // An unanswered fight: the second line repeats the first, and
-            // may say so; the third asks why. MP the same.
-            for (hp, mp, decks) in [
+            // An unanswered fight, the bar lower at each line (a bar that
+            // stays put is said once): the second line repeats the first,
+            // and may say so; the third asks why. MP the same (under the
+            // 50% he asked for: 45, 39, 33).
+            for (hp_bar, decks) in [
                 (
-                    20.0,
-                    90.0,
+                    true,
                     [lines::HP_LOW, lines::HP_LOW_AGAIN, lines::HP_LOW_ASK],
                 ),
                 (
-                    90.0,
-                    10.0,
+                    false,
                     [lines::MP_LOW, lines::MP_LOW_AGAIN, lines::MP_LOW_ASK],
                 ),
             ] {
                 let mut c = Companion::seeded(
                     Settings {
                         attitude,
+                        mp_low: 50.0,
                         ..Settings::default()
                     },
                     SEED,
                 );
                 let mut again = Vec::new();
                 for i in 0..=430 {
-                    again.extend(dealt(&c.observe(i as f64 * 0.1, frame(hp, mp, 10.0))));
+                    let t = i as f64 * 0.1;
+                    let low = if t < 12.0 {
+                        20.0
+                    } else if t < 42.0 {
+                        14.0
+                    } else {
+                        8.0
+                    };
+                    let (hp, mp) = if hp_bar {
+                        (low, 90.0)
+                    } else {
+                        (90.0, low + 25.0)
+                    };
+                    again.extend(dealt(&c.observe(t, frame(hp, mp, 10.0))));
                 }
                 assert_eq!(again.len(), 3, "{}: {again:?}", attitude.word());
                 for (line, deck) in again.iter().zip(decks) {
@@ -8031,12 +8537,12 @@ mod tests {
     #[test]
     fn a_death_in_a_fight_it_warned_in_is_a_warned_death_however_long_ago_the_warning() {
         // Hit from 100 to 25 at 1 s (the beating, with HP already low:
-        // it said to pot), the low line 12 s on, and dead at 30 s — 17 s
-        // after the last line, with the next not due for 13 s more. It
-        // warned, twice, in this fight: the death is a warned one, nothing
-        // about warning sooner, and the mark stays. (A window of 15 s had
-        // it say "I'll warn you sooner from now on, under 35%" here, and
-        // the mark crept up a night at a time for deaths it had called.)
+        // it said to pot), HP staying at 25 (no new fall: the low line is
+        // not said again), and dead at 30 s — 29 s after the line. It
+        // warned in this fight: the death is a warned one, nothing about
+        // warning sooner, and the mark stays. (A window of 15 s had it say
+        // "I'll warn you sooner from now on, under 35%" here, and the mark
+        // crept up a night at a time for deaths it had called.)
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines: Vec<(f64, String)> = Vec::new();
         for i in 0..=302 {
@@ -8052,11 +8558,9 @@ mod tests {
                 lines.push((t, line));
             }
         }
-        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert_eq!(lines.len(), 2, "{lines:?}");
         assert!(from(lines::BEATING, &lines[0].1), "{lines:?}");
-        assert!(from(lines::HP_LOW_AGAIN, &lines[1].1), "{lines:?}");
-        assert!((lines[1].0 - 13.2).abs() < 0.15, "{lines:?}");
-        let (at, death) = &lines[2];
+        let (at, death) = &lines[1];
         assert!((at - 30.2).abs() < 0.05, "{lines:?}");
         assert!(from(lines::DEATH_WARNED, death), "{death:?}");
         assert!(without_sooner(death, 35).is_none(), "{death:?}");
@@ -8070,8 +8574,8 @@ mod tests {
                 lines.push((t, line));
             }
         }
-        assert_eq!(lines.len(), 4, "{lines:?}");
-        assert!(from(lines::DEATH, &lines[3].1), "{lines:?}");
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(from(lines::DEATH, &lines[2].1), "{lines:?}");
         assert_eq!(c.settings.hp_low, 30.0);
     }
 
@@ -8834,8 +9338,15 @@ mod tests {
         assert!((lines[0].0 - 2200.0).abs() < 0.2, "{lines:?}");
         // Not within five minutes of a warning of its own: MP low at
         // 1000 s, coming back by its slow regen (a point a second: no
-        // potion, and not the game going on), puts it off to 1300.
-        let mut c = Companion::seeded(Settings::default(), SEED);
+        // potion, and not the game going on), puts it off to 1300. (MP
+        // warnings asked for: none by default.)
+        let mut c = Companion::seeded(
+            Settings {
+                mp_low: 15.0,
+                ..Settings::default()
+            },
+            SEED,
+        );
         let mut lines: Vec<(f64, String)> = Vec::new();
         for i in 0..15_000 {
             let t = i as f64 * 0.1;
@@ -8871,24 +9382,20 @@ mod tests {
         }
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!((lines[0].0 - 2410.0).abs() < 0.2, "{lines:?}");
-        // Warnings nobody answers (the bar flat under the mark): the hold
-        // comes and goes, two lines through between one and the next —
-        // held, or within minutes of a line of its own, the whole time:
-        // never asked.
+        // A low bar nobody answers (flat under the mark): said once and
+        // then quiet — no new fall, nothing to hold — so twenty minutes of
+        // nothing moving and not a word is asked about, once, like any.
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines: Vec<(f64, String)> = Vec::new();
-        let mut held_at_twenty_five_minutes = false;
         for i in 0..24_000 {
             let t = i as f64 * 0.1;
             for line in asked(&c.observe(t, read(20.0))) {
                 lines.push((t, line));
             }
-            if i == 15_000 {
-                held_at_twenty_five_minutes = c.alerts_held(t);
-            }
         }
-        assert!(held_at_twenty_five_minutes);
-        assert!(lines.is_empty(), "{lines:?}");
+        assert!(!c.alerts_held(2400.0));
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!((lines[0].0 - 1200.0).abs() < 0.2, "{lines:?}");
         // No card claims to know what they are doing: not that they are
         // grinding, not that they are asleep, not how long it has been.
         for attitude in Attitude::ALL {
@@ -8984,5 +9491,555 @@ mod tests {
         }
         fresh.player_spoke(600.0);
         assert_eq!(fresh.so_far().quiet_before, None);
+    }
+
+    /// The owner's evening (2026-10-10), every line it said and every
+    /// sentence the phone heard, as his log has them (`[reply]`,
+    /// `[warning]`, `[alert]`: its own; `[echo]`: dropped as its own voice,
+    /// with the part kept as his, if any; `[heard]`: taken as his).
+    const OWNER_EVENING: &str = r##"
+11:44:59  [reply] Hey Mako, back in the game?
+11:45:11  [heard] No my name is not Michael my name is Miguel with the talk to me bro
+11:45:12  [reply] [ silent ]Got it Miguel, sorry for the mix-up. Talk to me.
+11:45:21  [heard] Not Miguel Hebrew
+11:45:23  [reply] היי מיגל. תפתח את החלון של המשחק.
+11:45:29  [heard] Mi Mi
+11:45:30  [reply] [ silent ]היי מיגל, החלון של המשחק פתוח מאחורי חלון אחר.
+11:45:36  [heard] Mika Mika Mika L
+11:45:37  [reply] [ silent ]היי מיגל, תביא את חלון המשחק לקדימה.
+11:45:48  [heard] Mikael
+11:45:49  [reply] היי מיכאל, אתה במפה "East Forest Trail".
+11:46:01  [heard] Market
+11:46:02  [reply] היי מיכאל, המפה פתוחה אבל השחקן לא נראה על המסך.
+11:46:12  [heard] Can you get
+11:46:14  [reply] היי מיכאל, אתה ב־Perion, ליד שער הכפר.
+11:46:37  [heard] Royalty
+11:46:38  [reply] היי מיכאל, המפה היא "Henesys Market".
+11:46:43  [echo] Market
+11:47:25  [heard] Mail mail
+11:47:26  [reply] יש לך 5 אפקטי עליית רמה על המסך.
+11:47:35  [heard] Armani
+11:47:41  [reply] אַרמני? זה השם שמופיע במשחק, או שאתה מתכוון למשהו אחר? ארמני—קלטתי. I'll call you Armani.
+11:47:47  [heard] I need money
+11:47:55  [reply] בשביל כסף, תמכור ציוד ופריטים מיותרים ל־NPC; אל תמכור ציוד שאת משתמשת בו.
+11:47:57  [echo] Kiss
+11:48:09  [heard] I don't want money talk to me in English I don't want money I want to know what level am I and how do I look
+11:48:11  [reply] You’re level 16, and you look like a Magician in a dark outfit with a big hat.
+11:48:18  [echo] Your level 16 and you look like a magician in a dog outfit with a big hat
+11:48:22  [echo] I look like
+11:48:24  [heard] Melo wheat
+11:48:26  [heard] Atua and
+11:48:27  [heard] and with
+11:48:32  [heard] A hat that's like a bunny ears
+11:48:34  [reply] Your character’s hidden behind the window, so I can’t judge the outfit—move it aside.
+11:48:39  [echo] Outfit
+11:48:44  [heard] My character is next to the cursor
+11:48:46  [reply] I see a bunny-ear hat next to the cursor.
+11:48:53  [echo] I see a bunny hat next to the cursor yeah that's that's
+11:48:54  [heard] me that's one
+11:48:55  [reply] I can’t make out what you mean by “that’s one”—say it again.
+11:49:00  [echo] What do you mean by that  (kept: What do that)
+11:49:00  [heard] What do that
+11:49:01  [reply] That’s the Monster Collection registration popup; it’s asking you to confirm the entry.
+11:49:05  [echo] that's me that's the monster  (kept: that's me)
+11:49:05  [heard] that's me
+11:49:08  [reply] Got it—that bunny-ear hat is you, Armani.
+11:49:18  [echo] Got it that bunny hat is my name is Armani my name is Miha  (kept: my name is Armani my name is Miha)
+11:49:18  [heard] my name is Armani my name is Miha
+11:49:21  [reply] Got it, Miha—I’ll call you Miha.
+11:49:27  [heard] I'll Miha
+11:49:30  [reply] Got it, Miha.
+11:49:35  [echo] Got it no
+11:49:35  [heard] me
+11:49:37  [reply] כן, את מיה—הדמות שלך היא הקוסמת עם אוזני הארנב.
+11:49:44  [heard] My name is
+11:49:46  [heard] Mikael
+11:49:49  [reply] Got it, Mikael.
+11:49:58  [heard] Let's
+11:50:01  [heard] let's get some stuff for my magician
+11:50:06  [warning] Wow, you just stood there and took that. Move, dumbass.
+11:50:09  [heard] I need like a really good magician equipment how do I get it wow
+11:50:12  [echo] Dumbass
+11:50:18  [reply] At level 16, use gear drops or the weapon shop; better Magician gear unlocks as you level.
+11:50:26  [echo] At level 16 used eardrops or the weapon shop
+11:50:26  [reply] Actually, at level 16 don’t spend time farming gear—use quest rewards or whatever drops, then replace it with level-
+11:50:37  [echo] Actually at level 16 don't spend time farming use rewards or whatever drops then replace it with
+11:50:37  [echo] with level
+11:50:40  [heard] OK
+11:50:44  [heard] so what should I do now what should I do now
+11:50:46  [reply] Open the equipment menu and check your weapon slot; your level-16 gear can wait until we see what you have.
+11:50:56  [echo] The equipment and check your button slot level 16 gear from wait until we see what you have here
+11:51:28  [heard] I opened it
+11:51:28  [alert] Level up! Congrats.
+11:51:29  [reply] Your inventory’s open; check the weapon slot and tell me what’s equipped.
+11:51:33  [echo] Congrats
+11:51:40  [heard] Equipped
+11:51:44  [heard] what's equipped look at what's equipped and tell me what to get
+11:51:50  [reply] Your weapon slot has a wand equipped; get a level-20 wand next. You’ve got a Sapphire Staff equipped, plus a hat, cape, gloves, and shoes. Keep them for now; replace pieces with higher-level Magician gear from drops or shops.
+11:51:56  [echo] Weapon equipped sapphire equipped
+11:52:06  [heard] What's the next quest I should go to
+11:52:08  [reply] Follow the yellow quest markers to your left, and check the quest tracker for the objective name.
+11:52:13  [echo] The yellow to your left and
+11:52:15  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+11:52:17  [alert] Level up! Congrats.
+11:52:20  [echo] A little
+11:52:23  [echo] Congrats
+11:52:48  [heard] How do I get to level 20 from quest fastest
+11:52:54  [reply] Follow the active quest marker and clear nearby mobs; turn in each quest immediately for the fastest XP.
+11:52:59  [echo] Follow the active question mark and clear  (kept: question mark)
+11:52:59  [heard] question mark
+11:52:59  [reply] Marked. That's mark 1.
+11:53:00  [reply] Actually, that marker’s in Henesys—follow its available quest chain, but there’s no single fastest Mag
+11:53:10  [echo] That's actually in Hennessey but there's no single  (kept: That's actually in Hennessey)
+11:53:10  [heard] That's actually in Hennessey
+11:53:12  [heard] search
+11:53:16  [heard] quest that I can do in level 16
+11:53:19  [reply] In Henesys, check the lightbulb quests for level 16; take nearby quests that send you to kill monsters.
+11:53:23  [reply] Your buddy’s answer is basically right: there’s no reliable Henesys quest chain for levels 16–20 in current GMS, so do any nearby-level lightbulb quests you already have, but training is usually quicker.
+11:53:32  [echo] Lightbulb to kill monster buddies is basically right there's no
+11:53:47  [heard] Nothing specifically Hennessy
+11:53:50  [reply] נכון, אין כאן הוכחה שזה הנסי—תראי לי את חלון המשימות ואזהה בדיוק מה זמין.נכון, אי אפשר לזהות מכאן משימה של הנסי; פתחי את חלון המשימות כדי לראות מה זמין.
+11:54:17  [heard] Where are the blue mushroom
+11:54:18  [reply] The blue mushroom is on the small floating platform above-left of you, near the map’s center-left.
+11:54:30  [echo] The mushroom is on the floating platform above of near the center no no the map is the mushroom on  (kept: no no the map is the mushroom on)
+11:54:30  [heard] no no the map is the mushroom on
+11:54:30  [heard] is the mushroom on what
+11:54:32  [heard] Basic
+11:54:34  [heard] one
+11:54:36  [reply] נכון, זו לא הנסי—אני לא רואה מפה או פטרייה כחולה כרגע; מה שם המפה שמופיע למעלה?
+11:54:48  [heard] Yes I want you to tell me I want you to tell me where is the map that
+11:54:50  [heard] blue mushroom spawn at
+11:54:52  [reply] Blue Mushrooms spawn in Henesys Hunting Ground I and II, just outside Henesys.
+11:54:58  [echo] Spawn in ground one and two  (kept: one and two)
+11:54:58  [heard] one and two
+11:55:01  [heard] that's it
+11:55:02  [reply] Blue Mushrooms spawn in Henesys Hunting Ground I and II; check the map names before heading there.
+11:55:07  [echo] Mushroom spawn in Hennessy hunting ground  (kept: Mushroom Hennessy)
+11:55:07  [heard] Mushroom Hennessy
+11:55:14  [heard] well also isn't that like a map that just do mushrooms
+11:55:16  [reply] כן—Hen esys Hunting Ground I ו־II הן מפות אימון לפטריות; חפשי במפה את Blue Mushrooms.
+11:55:26  [echo] Blue mushrooms
+11:55:32  [heard] Where is another place that the sponsor only blew my
+11:55:35  [heard] phone searching the Internet please
+11:55:37  [reply] Blue Mushroom spawns at Henesys Hunting Ground I and II; this screen shows Henesys, but not the map name.
+11:55:40  [reply] At level 16, head to Blue Mushroom Forest 2 in Henesys—Blue Mushrooms are there; Henesys Hunting Ground I or II isn’t the right map.
+11:55:44  [heard] Spawn at Hennessey hunting Ground at level 16
+11:55:46  [reply] At level 16, go to Blue Mushroom Forest 2 in Henesys; Hunting Ground isn’t the right map.
+11:55:49  [heard] Where is the blue mushroom Forest
+11:55:51  [reply] Select Henesys on the world map; Blue Mushroom Forest 2 is just outside town.
+11:55:57  [echo] On the world map for two  (kept: for two)
+11:55:57  [heard] for two
+11:55:59  [reply] To reach Blue Mushroom Forest 2, follow the world map’s Henesys route south of town; select the nearby mushroom-forest map.
+11:56:10  [echo] Mushroom forest follow the world Genesis route sounds of town there is no self fantasies  (kept: Genesis route sounds of town there is no self fantasies)
+11:56:10  [heard] Genesis route sounds of town there is no self fantasies
+11:56:11  [reply] צודק—המפה מראה את ויקטוריה איילנד, לא מסלול ברור ליער; אל תנחש לפי המפה הזאת.
+11:56:16  [heard] Victoria Island
+11:56:18  [reply] אתה בצפון־מזרח ויקטוריה; Blue Mushroom Forest נמצאת מערבית להנסיס—חפש את השם במפת העולם.
+11:56:24  [echo] Mushroom forest
+11:56:31  [heard] There is no blue mushroom forest
+11:56:35  [heard] search for me when can it be
+11:56:37  [reply] אתה צודק—אין במפה הזאת אזור בשם Blue Mushroom Forest; חפש Blue Mushroom במפת המפלצות של הנסי.
+11:56:53  [heard] How do I open in the map of the monsters
+11:56:56  [reply] Press W to open the world map, then use its search field for “Blue Mushroom.”
+11:57:04  [echo] Open search for mushroom
+11:57:07  [heard] There is no search film here
+11:57:09  [reply] נכון, במפה הזאת אין שדה חיפוש; סגור אותה ופתח את Maple Guide עם F1 כדי למצוא אזורי אימון.
+11:57:28  [heard] I'm using a classic world so there is no
+11:57:30  [heard] medical guide
+11:57:32  [reply] Classic World doesn’t have Maple Guide; press W to open the world map, then scroll west of Henesys until you see Blue Mushroom Forest.
+11:57:44  [echo] Blue mushroom forest
+11:58:53  [heard] Google says to go to Génesis region and travel to the northern auto maps sign in mushroom forest area and look for a hidden portal disguised near environment of assets of specific pile of wooden logs a bush or hollowed tree trunk near the top of the left side of the map and then press up arrow to enter that hidden street
+11:58:55  [heard] So guide me there
+11:58:57  [reply] אתה צודק—אין מפה כזאת במסך הזה; Google טועה. במפה שמוצגת כאן אתה באזור Henesys, אז תסתכל על השם הכחול למעלה ותעבור מערבה.
+11:59:14  [heard] No he says northern
+11:59:17  [heard] We
+11:59:17  [heard] the West
+11:59:18  [reply] המפה שמוצגת היא Henesys; חפש את Blue Mushroom Forest מערבה מהעיר.
+11:59:25  [heard] Hennessey
+11:59:26  [reply] תשתה שיקוי עכשיו, בדחיפות!
+12:00:04  [heard] How do I get
+12:00:09  [heard] A slime piece and piece and table
+12:00:11  [reply] You’re at Henesys, so head west to the Hunting Grounds; Blue Mushrooms drop Slime Pieces there.
+12:00:14  [heard] How do I get a table
+12:00:18  [heard] Table OMOK table
+12:00:22  [reply] פתח את ה-shop של Henesys General Store וקנה Omok Table.
+12:00:31  [heard] Well
+12:00:33  [reply] Monster Park is open; press the portal on the left to enter.
+12:00:39  [echo] is the portal on the left to enter
+12:00:45  [heard] Here
+12:00:47  [reply] The portal on the right leads to Mushroom Kingdom; walk there now.
+12:00:53  [echo] The portal on the right leads to mushroom kingdom walk there now
+12:01:02  [heard] No I want to go to to buy the old table
+12:01:05  [heard] at OMOK table
+12:01:06  [reply] Go back to Henesys, open the General Store NPC and buy the Omok Table.
+12:01:17  [heard] Go to the general store and where is the general store NPC
+12:01:18  [reply] General Store NPC is the pink-haired girl at the right-side stall in Henesys; walk to her now.
+12:01:23  [heard] Yellowstone in PC
+12:01:25  [reply] General Store NPC is the tall raccoon on the right side of the map.
+12:01:36  [echo] NPC is the racoon on the right side of the right side of the map OK tell me when to stop  (kept: racoon OK tell me when to stop)
+12:01:36  [heard] racoon OK tell me when to stop
+12:01:40  [reply] Stop at the blue mushroom house on the right.
+12:01:42  [echo] Mushroom
+12:01:45  [echo] On the right
+12:01:50  [heard] There is no blue mushroom
+12:01:57  [heard] Well what do they say that I don't see it
+12:02:01  [reply] Blue Mushroom Forest isn’t on this map; the quest marker on the left is the next step.
+12:02:16  [heard] No I mean the blue mushroom house you said there is a blue mushroom house that I can buy their stuff at the table
+12:02:18  [heard] oh OK table
+12:02:19  [reply] The mushroom house on the right is the Henesys General Store; walk inside it.
+12:02:26  [echo] The house on the right is the Hennessy general store inside
+12:02:28  [heard] Communist
+12:02:33  [heard] Correct the town General stopped
+12:02:35  [heard] Where is the homework table
+12:02:44  [heard] it's just fried chicken and hotdog and stuff and they don't allow me to buy it because this item requires
+12:02:48  [heard] a grade of thumb resident of fire
+12:02:56  [echo] The NPC
+12:02:58  [reply] You need to talk to the NPC at the counter on the right to buy the Omok Table. הקופאית מאחורי הדלפק היא זו שמוכרת את Omok Table; לחץ עליה וקנה.
+12:03:11  [heard] Raymond you mean Raymond
+12:03:12  [reply] The NPC on the upper-left platform with the yellow name is the General Store clerk; walk up the left stairs to reach her.
+12:03:20  [echo] The platform name is the general store
+12:03:22  [echo] To reach
+12:03:27  [heard] OK but she doesn't have a table here
+12:03:37  [reply] Look at the left panel: click the “Crafting” tab at the top, then search “Omok Table” inside that list. No Omok Table here; open the NPC shop again and scroll the list to the bottom. Click the small table item at the top of that list; that’s the Omok Table.
+12:03:38  [echo] Search table
+12:03:49  [echo] Open the MPC shop again and scroll the list to the bottom click the small table item at the top of that list that's the table
+12:03:55  [heard] You are no help
+12:03:59  [reply] החנות שמופיעה כאן היא “Lion King’s Castle” ולא Henesys General Store; חזור למפת Henesys וחפש את החנות שם.
+12:04:05  [echo] Lion King castle
+12:08:33  [warning] about 23 percent MP. Even the mage mules manage better than this.
+12:09:23  [warning] Mana check: about 21 percent. Time for a potion.
+12:09:57  [heard] How do I make my stuff drop more items when I kill a monsters
+12:09:59  [reply] You need an item drop rate buff: equip a drop coupon or join a party with a Kanna or Bishop for Holy Symbol.
+12:10:04  [echo] Item
+12:10:08  [echo] Join the party with a cannabis  (kept: Join the cannabis)
+12:10:08  [heard] Join the cannabis
+12:10:13  [heard] Yeah but how can I where is the coupon
+12:10:15  [reply] The Cash Shop tab at the top right sells Drop Coupons; open it and search “Drop Coupon”.
+12:10:23  [echo] Search drop coupon
+12:10:42  [heard] There is no drop coupon over here
+12:10:43  [reply] Drop coupons aren’t free here; buy them in the Cash Shop with NX or use the web mall.
+12:10:44  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:10:53  [echo] Coupons
+12:11:23  [heard] I didn't level up I don't know what you mean
+12:11:25  [reply] The game shows a level-up effect, but the displayed level is still 16; it was a visual flash only.
+12:11:31  [echo] Display 16
+12:11:33  [echo] Visual only
+12:11:36  [heard] Remember that
+12:11:38  [reply] הרמה עדיין 16, התמונה לא מראה עליית רמה חדשה.
+12:11:45  [heard] Not a damn shit remember that and then improve yourself
+12:11:46  [reply] The screen still shows the “You got your attire” message, not a level-up; the level stays 16.
+12:11:52  [echo] The screen still shows that you got your message
+12:11:55  [echo] The 16
+12:11:57  [heard] what about now
+12:11:59  [reply] The level-up effect is still on screen; your level bar shows 16, so nothing changed.
+12:12:08  [echo] The level of effect is still on screen your level bar shows 16 so nothing changed no it doesn't  (kept: of no it doesn't)
+12:12:08  [heard] of no it doesn't
+12:12:09  [reply] The level-up effect is on screen but your character is still level 16; it was just a visual flash.
+12:12:19  [echo] The level of effect is on screen but your character is still level 16 it was just a visual flash check again
+12:12:28  [heard] Check again
+12:12:29  [reply] The level-up effect is still on screen; the character portrait shows level 16, so the level didn’t change.
+12:12:38  [echo] The effect on the portrait level 16 didn't change
+12:12:40  [alert] 17 already? You're flying.
+12:12:46  [heard] Check carefully if the level you're flying that's it now
+12:12:55  [heard] please congratulate me with the more enthusiastic response that I graduated to level 17
+12:12:56  [reply] מזל טוב! עלית לרמה 17, כל הכבוד, וונוואן בוג׳יו!
+12:13:12  [heard] More enthusiastic
+12:13:13  [reply] מזל טוב, וונוואן בוג׳יו! עלית לרמה 17, כל הכבוד!
+12:13:24  [heard] Enthusiastic get this for one minute
+12:13:25  [reply] Still the same.
+12:13:29  [echo] Still the same
+12:13:36  [heard] Be enthusiastic and congratulate me for 10 sentences straight
+12:13:38  [reply] מזל טוב על רמה 17, מיכאל! וואו, איזה יופי! כל הכבוד על ההתקדמות! אתה טס קדימה! רמה 17 נראית עליך מעולה! תמשיך כך, קוסם תותח! איזה הישג כיפי! מגיע לך לחגוג את זה! עוד רמה בדרך! אלוף, תן בראש!
+12:14:06  [heard] Mouth mole
+12:14:14  [reply] הבנתי, זה ה־Mouth Mole. ביומן שלי הוא נשמר.
+12:14:18  [heard] Is auntie is there a mouse
+12:14:22  [heard] I want you to congratulate me more
+12:14:24  [reply] מזל טוב, מיכאל! איזה כיף, אתה פשוט טס קדימה!
+12:14:27  [echo] Don't
+12:14:33  [heard] Don't stop don't stop don't stop congratulate me until I say stop
+12:14:37  [reply] איזה יופי, תמשיך להפציץ!
+12:14:45  [heard] Continue
+12:14:46  [reply] מזל טוב, מיכאל! רמה 17, איזה הישג ענק—תמשיך להפציץ!
+12:14:49  [heard] Without stopping until
+12:14:55  [heard] Continue with without stopping until I say the world stop without stopping
+12:14:56  [reply] מזל טוב, מיכאל! רמה 17, איזה הישג אדיר—אתה פשוט תותח!
+12:15:11  [heard] At least 100 sentences of congratulations
+12:15:14  [reply] מזל טוב, מיכאל! רמה 17, איזה הישג אדיר! רמה 17, איזה הישג אדיר!
+12:15:30  [heard] 100 sentences
+12:15:31  [reply] איזה הישג אדיר, מיכאל! מזל טוב על רמה 17!
+12:15:44  [heard] That's one sentence I want at least 40 sentences
+12:15:45  [reply] מזל טוב על רמה 17, מיכאל—איזה הישג אדיר!
+12:16:11  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:16:17  [heard] A little
+12:16:18  [reply] מזל טוב, מיכאל! עוד רמה נהדרת בדרך—אתה אלוף!
+12:16:38  [alert] Level up! Congrats.
+12:16:47  [heard] At least 1000 walls compressed at least 1000 words a few congratulating me right now
+12:16:48  [reply] כל הכבוד—איזה הישג נהדר!
+12:16:56  [heard] 1000 words 1000 words
+12:16:57  [reply] מזל טוב, מיכאל! איזה הישג אדיר! כל הכבוד, קוסם תותח!
+12:17:09  [heard] That's not 1000 words
+12:17:13  [heard] from your mistakes
+12:17:14  [reply] אתה צודק—לא נתתי אלף מילים; סליחה, מזל טוב ענק על רמה 17!
+12:17:32  [alert] Level up! Congrats.
+12:17:34  [heard] Give me 1000
+12:17:36  [reply] מזל טוב על רמה 17, מיכאל—אתה קוסם תותח, וכל הכבוד על ההתקדמות שלך!
+12:20:12  [alert] Level up! Congrats.
+12:20:16  [echo] Congrats
+12:21:04  [warning] Your MP's down to about 23 percent.
+12:21:09  [heard] MP 23%
+12:21:12  [reply] Got it—MP’s at 23%.
+12:21:16  [warning] Still low on mana, about 10 percent. Blue potion!
+12:21:22  [echo] 23% still owe about 10% potion  (kept: 23% still owe)
+12:21:22  [heard] 23% still owe
+12:21:25  [reply] האזהרה תופעל כשה־MP ירד מתחת ל־23%; כרגע הוא בערך 5%, אז שתה שיקוי MP עכשיו!
+12:21:29  [echo] M
+12:21:33  [echo] Cuisine
+12:21:59  [warning] You're almost out of MP. Pot before the skills stop.
+12:22:05  [echo] You're almost out of MP popped before the skill stock  (kept: popped skill stock)
+12:22:05  [heard] popped skill stock
+12:22:07  [reply] איזה יופי, השתמשת ב־Skill Stock! אלוף, מיכאל!
+12:22:11  [heard] Is there a
+12:22:13  [reply] ממה אתה שואל—מהיצור שעל המסך, ה־Mouth Mole?
+12:22:58  [alert] Level up! Congrats.
+12:23:02  [echo] It's level up congrats
+12:23:04  [warning] about 16 percent MP. Top it up when you get a second.
+12:23:11  [echo] About 16% MP it up when you get a second
+12:24:46  [alert] Level up! Congrats.
+12:24:50  [warning] Heads up, only about 20 percent MP left.
+12:24:55  [echo] Level up congrats heads up only about 20% MP left
+12:25:02  [warning] Mana check again: about 22 percent. Top it up.
+12:25:08  [echo] My check again about 22% topping up  (kept: My topping up)
+12:25:08  [heard] My topping up
+12:25:10  [reply] Good, MP topped. Level up! Congrats.
+12:25:16  [echo] Top level up congrats
+12:25:24  [heard] What's the best skill to use to improve right now
+12:25:25  [reply] הכי כדאי להשתמש ב־Magic Claw—מובינג מהיר ויעיל ברמה הזאת.
+12:25:37  [heard] What is the best to improve according to what you say on the screen on my skill inventory
+12:25:38  [reply] הכי כדאי להמשיך עם Magic Claw—הוא כבר מסומן כמומלץ.
+12:25:43  [heard] Magical
+12:25:48  [heard] Yeah but how much should I raising to
+12:25:49  [reply] Magic Claw is maxed, so put the rest into Magic Guard—keeps you alive.
+12:25:52  [heard] Give it
+12:25:56  [heard] should I give it a free skill points
+12:25:58  [reply] כן, תן את נקודת הכישרון החופשית ל־Magic Claw.
+12:26:13  [heard] OK and what about the character stats what to give the five points ability points to
+12:26:17  [reply] Give the five points to INT. Put all five points into INT.
+12:26:22  [heard] INTINT
+12:26:25  [echo] points to INTINTT
+12:26:25  [reply] Level up! Congrats. INT's already maxed for your level—save the next points. Save the points—INT's already maxed.
+12:26:33  [echo] Congrats is already maxed for your level save the next point eye of the  (kept: Congrats is point eye of the)
+12:26:33  [heard] Congrats is point eye of the
+12:26:34  [reply] Level up! Congrats. Head left to that quest marker.
+12:26:35  [warning] Mana's getting low, about 21 percent. Drink a blue one.
+12:26:45  [heard] Level out congrats not leveled up first not darkness about 21% blue one
+12:26:46  [reply] נכון, לא עלית רמה—ה־MP בערך 62%, אין צורך בשיקוי כרגע.
+12:27:01  [heard] Yeah but what's INT in the character that
+12:27:02  [reply] INT היא אינטליגנציה—הנתון הראשי של קוסם, והיא מחזקת את הקסם שלך.
+12:27:09  [echo] INT intelligence
+12:27:16  [heard] Do you mean I get I get a stronger magic and
+12:27:20  [heard] Do more damage that way
+12:27:22  [reply] כן—INT מחזקת את הקסם שלך, וככל שהיא גבוהה יותר, בדרך כלל תגרום יותר נזק.
+12:27:29  [echo] I took
+12:27:32  [warning] MP's at about 18 percent, might want a potion.
+12:27:35  [echo] About
+12:27:38  [echo] 18%
+12:27:46  [heard] I don't have I use lemons
+12:27:48  [heard] remember that
+12:27:51  [reply] צודק—יש לך לימונים, לא שיקויי MP; השתמש בהם כשצריך.
+12:28:01  [heard] What stuff do I have in the mini keyboard layout
+12:28:04  [heard] what do you see
+12:28:06  [reply] בחפיסה הקטנה נראה שיש שיקויים ומיומנויות, אבל האייקונים זעירים מדי לזיהוי ודאי.
+12:28:15  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:28:20  [heard] Try to guess I didn't
+12:28:24  [heard] stop it I didn't leveled up
+12:28:25  [reply] נכון, לא עלית רמה; האפקט הטעה אותי.
+12:28:30  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:28:45  [heard] Listen don't don't say if I
+12:28:54  [heard] don't tell me about my level nothing OK from now on remember to don't do not tell me that
+12:28:57  [reply] מובן, לא אזכיר עליית רמה אלא אם תבקש.
+12:29:05  [warning] about 20 percent MP. Top it up when you get a second.
+12:29:07  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:29:12  [echo] About 20% MP when you get a second
+12:29:16  [heard] You wouldn't do that
+12:29:19  [reply] צודק. לא אזכיר את הרמה או עליית רמה אלא אם תבקש.
+12:29:25  [heard] Lose
+12:29:26  [reply] הבנתי—לא אדבר על הרמה שלך. מה הפסדת במשחק?
+12:30:08  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:32:08  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:32:12  [heard] A little
+12:32:14  [reply] רק רגע—עלו שוב אפקטים, אבל לא אזכיר רמות.
+12:34:19  [warning] Heads up, only about 23 percent MP left.
+12:34:24  [echo] Heads up only about 23% MP list
+12:36:08  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:36:17  [warning] Mana check: about 21 percent. Time for a potion.
+12:36:23  [echo] About 21% for a potion
+12:36:29  [warning] Only about 14 percent MP, still. Drink.
+12:36:35  [echo] Only about 14% and still drink
+12:39:50  [warning] MP's at about 20 percent, might want a potion.
+12:40:17  [warning] Your MP's down to about 15 percent.
+12:41:13  [warning] Mana's getting low, about 9 percent. Drink a blue one.
+12:42:02  [warning] You're almost out of MP. Pot before the skills stop.
+12:43:13  [warning] Your MP's down to about 23 percent.
+12:44:08  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:44:12  [warning] Mana check: about 20 percent. Time for a potion.
+12:45:08  [alert] Level up! Congrats.
+12:46:44  [heard] How do I make slime shoes
+12:46:46  [reply] To craft Slime Shoes you need 20 Slime Bubbles, 5 Blue Snail Shells, and 3 Leather, then talk to any equipment smith.
+12:46:55  [reply] That answer’s wrong: Slime Shoes aren’t crafted in Classic World—Squishy Shoes can drop from King Slime in Kerning PQ.
+12:46:59  [echo] Blue snail shells and 311 then talk to any equivalent to that answer is wrong  (kept: 311 equivalent to that answer is wrong)
+12:46:59  [heard] 311 equivalent to that answer is wrong
+12:47:02  [heard] What's correct
+12:47:04  [reply] השם שלך הוא WANWANBUJIO, לא ANWANBUIIO. תיקנתי.
+12:47:13  [heard] Yes but how to make slime
+12:47:15  [reply] תיקנתי. כדי להכין Slime Shoes אתה צריך 20 Slime Bubbles, 5 Blue Snail Shells ו-3 Leather, ואז לדבר עם נפח ציוד.
+12:47:24  [echo] Bubble blue snail shell  (kept: Bubble shell)
+12:47:24  [heard] Bubble shell
+12:47:28  [reply] אסוף Slime Bubbles מסליימים, לא Blue Snail Shells—הקליפה הכחולה היא חומר נפרד. אסוף 20 Slime Bubbles מסליימים; צריך גם 5 Blue Snail Shells ו-3 Leather.
+12:47:31  [echo] Soft slime bubbles
+12:47:49  [heard] What model do I need except Islam bubbles
+12:47:52  [reply] צריך גם 5 Blue Snail Shells ו־3 Leather, חוץ מ־20 Slime Bubbles. צריך גם 5 Blue Snail Shells ו־3 Leather.
+12:48:02  [echo] Snail
+12:48:23  [heard] And then what to go enhances to crafty
+12:48:23  [heard] is
+12:48:29  [reply] אחרי החומרים, גש לנפח ציוד ובחר ביצירה של Slime Shoes.
+12:48:35  [heard] Where is the
+12:48:37  [reply] ליד שולחן האומוק, פתח את חלון היצירה ולחץ על הכפתור הכחול שבתחתית.
+12:53:13  [alert] Level up! Congrats.
+12:53:17  [echo] Level up congrats
+12:55:44  [alert] Level up! Congrats.
+12:55:49  [echo] Congrats
+12:56:00  [alert] Level up! Congrats.
+12:56:04  [echo] Level up congrats
+12:58:36  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:58:40  [heard] Little
+12:58:42  [reply] הדמות שלך נקראת WANWANBUJIO, לא ANWANBUIIO. תיקנתי.
+12:58:52  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+12:58:55  [echo] A little
+12:59:22  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:00:41  [warning] Heads up, only about 21 percent MP left.
+13:00:47  [warning] Careful, your HP's down to about 36 percent. Drink a potion!
+13:01:17  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:01:18  [warning] about 16 percent MP. Top it up when you get a second.
+13:01:56  [warning] HP's at about 42 percent, potion time!
+13:02:54  [warning] Hey, HP's getting scary. Potion, please!
+13:04:16  [warning] You're almost out of MP. Pot before the skills stop.
+13:04:43  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:05:00  [warning] Whoa, about 46 percent HP. Drink something!
+13:05:14  [warning] about 41 percent left on the bar. Top it up before the next hit.
+13:05:17  [warning] Mana's getting low, about 12 percent. Drink a blue one.
+13:06:19  [warning] MP's at about 5 percent, might want a potion.
+13:08:16  [warning] You're low, 46 percent. Don't push it, drink.
+13:08:28  [warning] Calling it again: 46 percent HP. Drink before the next hit.
+13:08:58  [warning] Is something stopping you from potting? 46 percent HP.
+13:09:58  [warning] Still low, 46 percent. Please drink something.
+13:10:04  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:11:58  [warning] I said potion! 46 percent HP. Drink.
+13:13:58  [warning] Hey, 46 percent HP is still scary. Pot!
+13:15:58  [warning] That bar's still red, 46 percent. Drink up.
+13:17:58  [warning] Didn't you hear me? 46 percent HP. Potion, now.
+13:18:49  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:19:58  [warning] That bar's still red, 46 percent. Drink up.
+13:21:58  [warning] Calling it again: 46 percent HP. Drink before the next hit.
+13:23:58  [warning] Still low, 46 percent. Please drink something.
+13:35:58  [warning] Didn't you hear me? about 14 percent HP. Potion, now.
+13:37:58  [warning] Hey, about 7 percent HP is still scary. Pot!
+13:39:05  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+13:39:29  [alert] עלית רמה! מזל טוב, וונוואן בוג׳יו!
+"##;
+
+    /// Its own voice is never the player, replayed over his evening: of the
+    /// 85 echoes, 19 had a remainder kept as his words at f9b6047 (his name
+    /// learned as "Miha", a mark from "question mark", MP warnings at 23%
+    /// from "23% still owe"); now two at most, and only his own words.
+    #[test]
+    fn its_own_voice_is_never_the_player_through_the_owners_evening() {
+        let hms = |time: &str| -> f64 {
+            let p: Vec<f64> = time.split(':').map(|x| x.parse().unwrap()).collect();
+            p[0] * 3600.0 + p[1] * 60.0 + p[2]
+        };
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let (mut echoes, mut kept_in_log, mut kept_before) = (0, 0, 0);
+        let mut kept_after: Vec<(String, String)> = Vec::new();
+        let mut changed: Vec<String> = Vec::new();
+        let mut last_kept: Option<String> = None;
+        for row in OWNER_EVENING.lines().filter(|r| !r.is_empty()) {
+            let (time, rest) = row.split_once("  [").unwrap();
+            let (kind, text) = rest.split_once("] ").unwrap();
+            let t = hms(time);
+            match kind {
+                "reply" | "warning" | "alert" => {
+                    c.remember_spoken(t, text.trim_start_matches("[ silent ]"));
+                    last_kept = None;
+                }
+                "echo" => {
+                    echoes += 1;
+                    let (heard, kept) = match text.split_once("  (kept: ") {
+                        Some((heard, kept)) => (heard, Some(kept.trim_end_matches(')'))),
+                        None => (text, None),
+                    };
+                    last_kept = kept.map(str::to_string);
+                    // (Dropped whole then, dropped now: the rule only takes
+                    // away. The main loop's `need` did the rest then.)
+                    if kept.is_none() {
+                        continue;
+                    }
+                    kept_in_log += 1;
+                    // (The rule before, replayed: strip_echo alone.)
+                    if c.strip_echo(t, heard).is_some_and(|rest| rest != heard) {
+                        kept_before += 1;
+                    }
+                    if let Some(rest) = c.own_words(t, heard, 0) {
+                        kept_after.push((time.to_string(), rest));
+                    }
+                }
+                "heard" => {
+                    // (The part of an echo kept as his: counted above.)
+                    if last_kept.take().as_deref() == Some(text) {
+                        continue;
+                    }
+                    if c.strip_echo(t, text).as_deref() == Some(text)
+                        && c.own_words(t, text, 0).as_deref() != Some(text)
+                    {
+                        changed.push(text.to_string());
+                    }
+                }
+                _ => unreachable!("{row}"),
+            }
+        }
+        eprintln!(
+            "echoes {echoes}, kept in the log {kept_in_log}, by strip_echo {kept_before}, now {kept_after:?}"
+        );
+        eprintln!("his sentences now dropped or cut: {changed:?}");
+        assert_eq!((echoes, kept_in_log), (85, 19));
+        assert!(kept_before >= 15, "{kept_before}");
+        // Kept now: only his words — "OK tell me when to stop" (he was
+        // walking to the NPC). Not "my name is … Miha", not "question
+        // mark", not "23% still owe", not a word with a name in it.
+        assert!(kept_after.len() <= 1, "{kept_after:?}");
+        for (time, rest) in &kept_after {
+            assert!(
+                rest.ends_with("OK tell me when to stop"),
+                "{time}: {rest:?}"
+            );
+        }
+        // His sentences: its own voice taken for his before — "I'll Miha"
+        // (it had said "I'll call you Miha"), "MP 23%" (it had said "MP's
+        // down to about 23 percent") — dropped now; at most two of his own
+        // lost with them (mostly its words, said right after it).
+        for own in ["I'll Miha", "MP 23%"] {
+            assert!(changed.iter().any(|c| c == own), "{own}: {changed:?}");
+        }
+        for lost in &changed {
+            assert!(
+                [
+                    "I'll Miha",
+                    "MP 23%",
+                    "is the mushroom on what",
+                    "Spawn at Hennessey hunting Ground at level 16",
+                ]
+                .contains(&lost.as_str()),
+                "{lost:?}: {changed:?}"
+            );
+        }
     }
 }

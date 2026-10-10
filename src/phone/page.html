@@ -1142,6 +1142,9 @@
     healCall();
   }
   let thinkingShown = false, lastReply = "", quietUntil = 0;
+  // How long after its voice stops on this phone the phone still does not
+  // listen: the room, and the recogniser handing its last words over late.
+  const CLIP_TAIL_MS = 1200;
 
   // ---- what it learned ------------------------------------------------------
   let learnedKey = "";
@@ -1302,10 +1305,16 @@
     return h ? h + ":" + two(m % 60) + ":" + two(s % 60) : two(m) + ":" + two(s % 60);
   }
   let speechUnlocked = false;
+  // The phone's own voice (no natural voice): it does not listen meanwhile,
+  // as while a clip plays — until it ends, or the time the line takes and a
+  // little more (Safari does not always say that it ended).
+  let ownVoice = false, ownVoiceUntil = 0;
   function speakHere(text) {
     if (!speechUnlocked || !("speechSynthesis" in window)) return;
     const u = new SpeechSynthesisUtterance(text);
     u.rate = 1.05;
+    u.onstart = () => { ownVoice = true; ownVoiceUntil = Date.now() + 2000 + text.length * 120; updateHold(); };
+    u.onend = u.onerror = () => { ownVoice = false; quietUntil = Date.now() + CLIP_TAIL_MS; updateHold(); };
     window.speechSynthesis.cancel();
     window.speechSynthesis.speak(u);
   }
@@ -1442,7 +1451,7 @@
       if (m && m.levels) clipMouth = { seq, levels: m.levels, step: m.step_ms || 40 };
     }).catch(() => {});
   });
-  player.addEventListener("ended", () => { quietUntil = Date.now() + 500; playNextClip(); updateHold(); });
+  player.addEventListener("ended", () => { quietUntil = Date.now() + CLIP_TAIL_MS; playNextClip(); updateHold(); });
   player.addEventListener("error", () => { playNextClip(); updateHold(); });
 
   // ---- polling ---------------------------------------------------------------
@@ -2109,9 +2118,12 @@
     postJson("/api/hearing", { text }).catch(() => {});
   }
   function interim(index, transcript) {
-    // While this phone speaks, only the sentence it was already writing
-    // counts: anything started since is mostly its own voice.
-    if (held && index !== heldIndex) return;
+    // While this phone speaks (and a moment after), nothing it writes down
+    // counts — not even more of the sentence it was writing as the voice
+    // began (what waited of it went then): it is its own voice. Half-duplex,
+    // like a walkie-talkie; the player still stops it by talking loud over
+    // it (talkingOver), which lets it listen at once.
+    if (held) return;
     heardAt = Date.now();
     if (index !== current) { current = index; sentWords = 0; sentAll = ""; }
     said = transcript;
@@ -2133,7 +2145,7 @@
     }, settleMs);
   }
   function final(index, transcript) {
-    if (held && index !== heldIndex) return;
+    if (held) return;
     clearTimeout(settleTimer);
     clearTimeout(hearingTimer);
     const rest = restOf(index, transcript);
@@ -2155,15 +2167,17 @@
   }
 
   // While MapleSyrup speaks on this phone, recognition is stopped (the
-  // phone would hear itself) and started again right after; the player can
-  // still talk over it: a loud voice (the phone's echo cancelling takes its
-  // own sound out) stops it.
+  // phone would hear itself) and started again CLIP_TAIL_MS after (the
+  // room, and the recogniser handing over its last words late); whatever
+  // it writes meanwhile is dropped. The player can still talk over it: a
+  // loud voice (the phone's echo cancelling takes its own sound out) pauses
+  // it, and it listens at once.
   let held = false, holdTimer = 0, heldIndex = -1;
-  function speakingNow() { return !player.paused; }
+  function speakingNow() { return !player.paused || (ownVoice && Date.now() < ownVoiceUntil); }
   function updateHold() {
     clearTimeout(holdTimer);
     if (speakingNow()) {
-      quietUntil = Math.max(quietUntil, Date.now() + 600);
+      quietUntil = Math.max(quietUntil, Date.now() + CLIP_TAIL_MS);
       setHeld(true);
       return;
     }

@@ -39,6 +39,7 @@ pub mod live;
 pub mod lookup;
 pub mod memory;
 pub mod openai;
+pub mod pronounce;
 pub mod style;
 pub mod teaching;
 pub mod tools;
@@ -177,15 +178,148 @@ pub struct Eyes {
     pub status: Option<NBox>,
 }
 
+/// The parts of the screen a question about it is answered from, close up
+/// ([`Eyes::close_pictures`]): where each is on the screen (fractions of the
+/// frame), and what the model is told it is. On MapleStory the minimap
+/// with the map's name is at the top left (Classic World's too), the HUD
+/// with the level, job, name, HP, MP and EXP at the bottom (Classic: its
+/// left part, the chat line above it), and the camera follows the
+/// character: he is around the middle, his name tag under him — where an
+/// open window or dialog usually is too.
+pub const CLOSE_UPS: [(&str, [f32; 4]); 3] = [
+    (
+        "the minimap, top left of the screen: the map's name is written at its top",
+        [0.0, 0.0, 0.24, 0.24],
+    ),
+    (
+        "the HUD at the bottom of the screen: the level (LV.), job and character name, HP[now/max], \
+MP[now/max] and EXP, with the chat line above them",
+        [0.2, 0.9, 0.64, 1.0],
+    ),
+    (
+        "the middle of the screen: his character is usually here (the name tag under him is his character's name, \
+as on the HUD; at a map's edge he can be off to a side), and any window or dialog open there",
+        [0.25, 0.2, 0.75, 0.85],
+    ),
+];
+
+/// The Quest Helper (top right on Classic World): what each of his quests
+/// still needs — close up when he asks about quests ("What's the next
+/// quest I should go to" got "follow the yellow markers").
+pub const QUEST_CLOSE_UP: (&str, [f32; 4]) = (
+    "the Quest Helper, top right of the screen: his quests and what each still needs",
+    [0.75, 0.0, 1.0, 0.3],
+);
+
+/// How wide the whole screen goes with a question about it: game text is
+/// readable at this size (the owner's game draws its UI for 1280 across).
+pub const OVERVIEW_WIDE: u32 = 1280;
+
 impl Eyes {
-    /// The picture for the model: the whole frame, small and at low detail
-    /// (quick to send and to look at), with rulers to point at things. The
-    /// numbers come read already; `look_closer` reads small print.
+    /// The picture for the model when the sentence is not about the screen:
+    /// the whole frame, small and at low detail (quick to send and to look
+    /// at), with rulers to point at things. The numbers come read already;
+    /// `look_closer` reads small print.
     pub fn pictures(&self) -> Vec<Value> {
         // (At low detail OpenAI looks at 512 pixels across at most.)
         let frame = images::with_rulers(&images::fit(&self.frame, 640, 400));
         vec![images::input_image(images::jpeg_url(&frame, 60), "low")]
     }
+
+    /// The pictures for a sentence about the screen ("where am I", "what
+    /// level", "what's equipped", "what do you see"): the whole screen at
+    /// [`OVERVIEW_WIDE`] and high detail, rulers on it, then close-ups of
+    /// [`CLOSE_UPS`] at the frame's own resolution and high detail, each
+    /// with a word on what it is — the map's name, the HUD's numbers and
+    /// his character could not be read from 640 pixels at low detail, so
+    /// the model guessed them. (Each close-up is no bigger than what OpenAI
+    /// looks at in high detail — 2048 across, 768 on its short side — so
+    /// nothing it would see is lost on the way; small frames' close-ups are
+    /// enlarged so the game's small print is big enough to read.)
+    pub fn close_pictures(&self) -> Vec<Value> {
+        self.close_pictures_for("")
+    }
+
+    /// [`Eyes::close_pictures`] for the sentence `heard`: asked about his
+    /// quests, the Quest Helper close up too ([`QUEST_CLOSE_UP`]).
+    pub fn close_pictures_for(&self, heard: &str) -> Vec<Value> {
+        let overview = images::with_rulers(&images::fit(&self.frame, OVERVIEW_WIDE, 900));
+        let mut out = vec![
+            json!({"type": "input_text", "text": format!(
+                "[The whole screen, {} across, high detail; rulers 0–1000 for pointing (look_closer, boxes)]",
+                overview.width().saturating_sub(44)
+            )}),
+            images::input_image(images::jpeg_url(&overview, 75), "high"),
+        ];
+        let (w, _) = self.frame.dimensions();
+        // A small frame's small print, enlarged (a 1280-wide window: twice).
+        let times = (2560.0 / w.max(1) as f32).round().clamp(1.0, 3.0) as u32;
+        // What each close-up is, where, and whether it is small print.
+        let mut parts: Vec<(&str, NBox, bool)> = Vec::new();
+        for (i, (what, [x0, y0, x1, y1])) in CLOSE_UPS.iter().enumerate() {
+            let mut part = NBox::new(*x0, *y0, *x1, *y1);
+            // The HUD where the vision engine found it, too (another
+            // layout than Classic World's keeps its numbers elsewhere along
+            // the bottom).
+            if i == 1
+                && let Some(found) = self.status.filter(|s| s.y0 >= 0.6)
+            {
+                part = NBox::new(
+                    part.x0.min(found.x0),
+                    part.y0.min(found.y0),
+                    part.x1.max(found.x1),
+                    part.y1.max(found.y1),
+                );
+            }
+            parts.push((what, part, i != 2));
+        }
+        if brain::asks_about_quests(heard) {
+            let (what, [x0, y0, x1, y1]) = QUEST_CLOSE_UP;
+            parts.push((what, NBox::new(x0, y0, x1, y1), true));
+        }
+        let n = parts.len();
+        for (i, (what, part, small_print)) in parts.into_iter().enumerate() {
+            let (x0, y0, x1, y1) = (part.x0, part.y0, part.x1, part.y1);
+            let mut crop = images::crop(&self.frame, &part);
+            if times > 1 {
+                crop = images::enlarged(&crop, times);
+            }
+            let crop = as_seen_in_high_detail(&crop);
+            out.push(json!({"type": "input_text", "text": format!(
+                "[Close-up {} of {n}, full resolution: {what} (x {:.0}–{:.0}, y {:.0}–{:.0} on the rulers)]",
+                i + 1,
+                x0 * 1000.0,
+                x1 * 1000.0,
+                y0 * 1000.0,
+                y1 * 1000.0
+            )}));
+            // (Small print sharp; the middle a touch lighter.)
+            let quality = if small_print { 88 } else { 82 };
+            out.push(images::input_image(
+                images::jpeg_url(&crop, quality),
+                "high",
+            ));
+        }
+        out
+    }
+}
+
+/// `image` as OpenAI looks at it in high detail: within 2048 by 2048, then
+/// no more than 768 on its short side (anything bigger is made that small
+/// on their side: sending it bigger only takes longer).
+pub fn as_seen_in_high_detail(image: &RgbaImage) -> RgbaImage {
+    let fitted = images::fit(image, 2048, 2048);
+    let (w, h) = fitted.dimensions();
+    let short = w.min(h);
+    if short <= 768 {
+        return fitted;
+    }
+    let scale = 768.0 / short as f32;
+    images::fit(
+        &fitted,
+        (w as f32 * scale).round() as u32,
+        (h as f32 * scale).round() as u32,
+    )
 }
 
 /// Something for the worker to do.
@@ -648,6 +782,17 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             language.as_deref(),
                             &tx,
                         ),
+                        // A look-up's finding is shown on the phone, never
+                        // said: one answer, not two.
+                        Job::Say { heard: None, text } if lookup::shown_only(&text) => {
+                            let text = brain::for_speech(&text);
+                            if !text.is_empty() {
+                                let _ = tx.send(Done::Shown {
+                                    kind: Kind::Info,
+                                    text,
+                                });
+                            }
+                        }
                         Job::Say { heard, text } => {
                             let asked = Instant::now();
                             let text = brain::for_speech(&text);
@@ -737,20 +882,14 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                         Job::Converse { .. } if Some(i) != newest => {}
                         Job::Converse {
                             heard,
-                            mut snapshot,
+                            snapshot,
                             facts,
                             speak,
                             eyes,
                             language,
                         } => {
-                            if let Some(l) =
-                                language.as_deref().filter(|l| !language::is_english(l))
-                            {
-                                let name = language::name(l);
-                                snapshot.push_str(&format!(
-                                    "\n(The player's language setting is {name}: answer in the language they speak to you; when it isn't clear, in {name}.)"
-                                ));
-                            }
+                            // (The language to answer in goes with his
+                            // words: `brain::answer_note`.)
                             let fast_rested = fast_paused_until.is_none_or(|t| Instant::now() >= t);
                             let Replied {
                                 used,
@@ -1002,22 +1141,44 @@ fn speak_line(
 
 /// How the model is told it can see the game.
 const EYES_GUIDE: &str = "\n\nWith the player's words comes what your vision engine reads off the game right now \
-(not said by the player) and, while the game is in view, a small picture of the game window as it is now, with \
-rulers on its edges (0 to 1000 across and down) for pointing at things. The picture is low detail: take the \
-numbers from what your vision engine read, and use look_closer when a small detail really matters. Use what you \
-see, like a friend looking at the same screen. Without a picture you can't see the game right now.";
+(not said by the player) and, while the game is in view, a picture of the game window as it is now, with rulers on \
+its edges (0 to 1000 across and down) for pointing at things. When their words are about the screen (where they \
+are, the map, their level, HP or MP, how they look, an NPC, a quest, an item, a window, what you see), the picture \
+is sharp and close-ups at full resolution come with it: the minimap (the map's name is at its top), the HUD (LV., \
+job, name, HP[now/max], MP[now/max], EXP) and the middle of the screen (their character, his name tag under him, \
+and any window or dialog). Read the answer off them, as a person reading the screen would: the map's name off the \
+minimap, the numbers off the HUD (or from what your vision engine read, with its age), what they wear off their \
+character — the one whose name tag under him is the HUD's name. Use look_closer for anything still too small. \
+Never answer about the screen from memory, from an earlier picture or from the small low-detail picture, and \
+never guess a map, a level or a look: if you truly can't read it, say so in a few words and say what you can see. Use what you see, like a friend looking at the \
+same screen. Without a picture you can't see the game right now.";
+
+/// How the model is told about MapleStory Classic World, when the player
+/// plays it ([`brain::classic_world`]): what it does not have, and that a
+/// fact it isn't sure holds there is said to be unsure — the owner was sent
+/// to the Maple Guide, a world-map search, "Blue Mushroom Forest 2", Drop
+/// Coupons and a Slime Shoes recipe, none of which his world has.
+const CLASSIC_GUIDE: &str = "\n\nThey play MapleStory Classic World: the game as it was long ago, not today's \
+MapleStory. It has none of today's systems and content: no Maple Guide, no world-map search, no Arcane River, no \
+Fafnir, no Root Abyss, no Kanna or the other later jobs, no Drop Coupons in the Cash Shop, none of the modern \
+events or boosts. If you are not sure a fact holds in Classic World, say you're not sure — never invent maps, \
+NPCs, recipes or routes. What you see on their screen beats what you remember.";
 
 /// How the model is told about its tools.
 const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
 - Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with a tight box around it in the picture's 0-1000 coordinates. Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language). The alert is about that thing appearing, disappearing or crossing a value — never attach an unrelated announcement to it (a level-up is watched by MapleSyrup itself; their own character is always on screen and is never a thing to learn).
 - When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
-- When the player corrects you on anything else (a game fact, a name, how something works, or how you talk or behave), call note_correction with the right version, then go on with it.
-- When the player tells you something about themselves or their game worth keeping (their class, a key binding, a goal), or asks you to remember something, call remember_fact.
+- When the player corrects you on anything else (a game fact, how something works, or how you talk or behave), call note_correction with the right version, then go on with it.
+- When the player asks you to remember something (\"remember…\", \"תזכור…\"), call remember_fact.
 - set_warnings when they want low HP or MP warnings at another percent, or no more of them, or back to the usual.
 - forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
 - mark_moment when the player asks you to mark or save the moment (for their video); set_muted when they ask you to be quiet, or to talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
 - set_coaching when they ask you to stop speaking up on your own (\"only talk when I ask\", \"no more tips\"), or to start again.
+A tool that changes a setting or what you keep acts only when the player's own sentence plainly asks for it — a \
+verb and what it is about (\"warn me when MP is under 30%\", \"stop talking\", \"remember that…\", \"no, I'm level \
+61\") — never on a few words that may be misheard or your own voice heard back (\"don't stop\", \"23% still \
+owe\"); \"Not changed\" from a tool means nothing changed. Never keep a name for the player with a tool.
 Never announce a tool before using it; after one, a few words at most.";
 
 /// How the model is told about looking things up.
@@ -1224,8 +1385,8 @@ fn translate(
         instructions: format!(
             "Translate what a gaming buddy app says out loud to someone playing MapleStory into {name}. \
 Keep it short, casual and natural, as a friend would say it, and keep its tone: bossy stays bossy, rude stays \
-rude, swearing stays swearing. Keep the numbers, and game words the way players say them. Reply with the \
-translation only."
+rude, swearing stays swearing. Keep the numbers, and game words the way players say them. The player is a man: \
+speak to him in the masculine (in Hebrew אתה, תשתה, תזוז). Reply with the translation only."
         ),
         input: vec![json!({"role": "user", "content": text})],
         max_output_tokens: 150,
@@ -1246,11 +1407,16 @@ translation only."
 /// The conversation as input items. With the player's last sentence goes
 /// what is on screen now (and the screen itself), so everything before it
 /// stays the same from one reply to the next and OpenAI keeps it cached.
+/// (`close`: the sentence is about the screen — the screen goes sharp and
+/// close up, [`Eyes::close_pictures`]; `note`: how to answer it, just
+/// before the player's words.)
 fn input_of(
     turns: &[openai::Turn],
     snapshot: &str,
     eyes: Option<&Eyes>,
     helps: &str,
+    close: bool,
+    note: &str,
 ) -> Vec<Value> {
     let last_user = turns.iter().rposition(|t| t.role == "user");
     turns
@@ -1265,13 +1431,20 @@ fn input_of(
                 "text": format!("[The game right now, read by your vision engine — not said by the player]\n{snapshot}"),
             })];
             if let Some(eyes) = eyes {
-                content.extend(eyes.pictures());
+                if close {
+                    content.extend(eyes.close_pictures_for(&t.text));
+                } else {
+                    content.extend(eyes.pictures());
+                }
             }
             if !helps.trim().is_empty() {
                 content.push(json!({
                     "type": "input_text",
                     "text": format!("[What you learned before that may help — not said by the player]\n{helps}"),
                 }));
+            }
+            if !note.trim().is_empty() {
+                content.push(json!({"type": "input_text", "text": note}));
             }
             content.push(json!({"type": "input_text", "text": t.text}));
             json!({"role": "user", "content": content})
@@ -1459,6 +1632,9 @@ struct Saying<'a> {
     /// goes ([`brain::without_status`]).
     unasked: bool,
     facts: &'a brain::Facts,
+    /// Whether he asked about the level, or to be congratulated, now or
+    /// just before: else a level-up is not said ([`brain::without_level_ups`]).
+    level_asked: bool,
     kept: Vec<String>,
     total: usize,
     dropped: usize,
@@ -1467,9 +1643,18 @@ struct Saying<'a> {
 
 impl Saying<'_> {
     /// A sentence of the reply (or a few), as it is written: kept, and
-    /// handed to the voice, unless it was said lately or only says the
-    /// game's state back to someone who did not ask about it.
+    /// handed to the voice, unless it was said lately, only says the
+    /// game's state back to someone who did not ask about it, or announces
+    /// a level-up he did not ask about.
     fn take(&mut self, sentence: &str, recent: &mut brain::Recent, voice: &Sender<String>) {
+        let (sentence, level_ups) = brain::without_level_ups(sentence, self.level_asked);
+        if !level_ups.is_empty() {
+            self.restated.extend(level_ups);
+            if sentence.trim().is_empty() {
+                return;
+            }
+        }
+        let sentence = sentence.as_str();
         let sentence = if self.unasked {
             match brain::without_status(&brain::for_speech(sentence), self.facts) {
                 Some(kept) => kept,
@@ -1538,18 +1723,27 @@ fn converse<'a>(
     // service keeps the start cached, and answers sooner.
     let mut instructions = brain.persona();
     instructions.push_str(EYES_GUIDE);
+    let learned = brain.learned();
+    // Classic World: what it doesn't have, and to say when it's not sure.
+    let classic = brain::classic_world(snapshot, &learned);
+    if classic {
+        instructions.push_str(CLASSIC_GUIDE);
+    }
     if let Some(toolbox) = toolbox {
         instructions.push_str(TOOLS_GUIDE);
         if toolbox.web {
             instructions.push_str(LOOKUP_GUIDE);
         }
     }
-    let learned = brain.learned();
     if !learned.is_empty() {
         instructions.push_str(LEARNED_GUIDE);
         instructions.push('\n');
         instructions.push_str(&learned);
     }
+    // A sentence about the screen gets it sharp and close up; the language
+    // of the answer is his sentence's (or the one he asked for), to a man.
+    let close = brain::about_the_screen(&heard);
+    let note = brain::answer_note(&brain.language_for(&heard, language));
     // The voice sounds like the attitude of the moment.
     let attitude = brain.attitude();
     // The player's sentence joins the conversation once it is answered (or
@@ -1564,7 +1758,7 @@ fn converse<'a>(
         .as_ref()
         .map(|l| l.helps(&heard))
         .unwrap_or_default();
-    let mut input = input_of(&turns, snapshot, eyes, &helps);
+    let mut input = input_of(&turns, snapshot, eyes, &helps, close, &note);
     let tools = toolbox.map(|t| t.definitions()).unwrap_or_default();
     // The brain for this reply.
     let mut chat = fast.unwrap_or(openai);
@@ -1576,6 +1770,14 @@ fn converse<'a>(
         again: brain::asks_again(&heard),
         unasked: !brain::asks_about_the_game(&heard),
         facts,
+        level_asked: brain::asks_about_the_level(&heard)
+            || turns
+                .iter()
+                .rev()
+                .filter(|t| t.role == "user" && !t.text.starts_with(brain::WATCHER))
+                .skip(1)
+                .take(2)
+                .any(|t| brain::asks_about_the_level(&t.text)),
         kept: Vec::new(),
         total: 0,
         dropped: 0,
@@ -1696,7 +1898,11 @@ fn converse<'a>(
             let mut outputs = Vec::new();
             for call in &answer.calls {
                 let (mut output, effect) = match toolbox {
-                    Some(toolbox) => toolbox.run(call, eyes.map(|e| e.frame.as_ref())),
+                    // (A setting or the notebook changes only when his own
+                    // sentence plainly asks for it.)
+                    Some(toolbox) => {
+                        toolbox.run_heard(call, eyes.map(|e| e.frame.as_ref()), &heard)
+                    }
                     None => ("No tools here.".to_string(), None),
                 };
                 if call.name != "look_it_up" {
@@ -1734,6 +1940,12 @@ fn converse<'a>(
                             said.trim().to_string()
                         } else {
                             quick
+                        };
+                        // (Checked for the world they play in.)
+                        let question = if classic && !brain::classic_world(&question, "") {
+                            format!("{question} ({})", lookup::CLASSIC)
+                        } else {
+                            question
                         };
                         let _ = tx.send(Done::LookUp {
                             question,
@@ -1822,6 +2034,13 @@ words (\"probably\" if you're not sure)."
                     brain::for_speech(&brain::without_announcement(&saying.kept.join(" ")))
                 } else {
                     let reply = brain::for_speech(&brain::without_announcement(&said));
+                    // (A level-up nobody asked about is not said.)
+                    let (reply, level_ups) = brain::without_level_ups(&reply, saying.level_asked);
+                    if !level_ups.is_empty() {
+                        let _ = tx.send(Done::Noted {
+                            line: format!("not said, nobody asked: {}", level_ups.join(" ")),
+                        });
+                    }
                     // (Asked to talk, and nothing but the game's state:
                     // here and listening, as above.)
                     let whole = if brain::asked_to_talk(&heard)

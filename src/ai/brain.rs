@@ -301,13 +301,13 @@ lands, still without pauses."
 
 /// Who MapleSyrup is.
 const PERSONA: &str = "You are MapleSyrup: a fluffy cream-colored dog in a pancake-and-syrup hat, \
-and the player's buddy while they play MapleStory (the current global version). A vision engine shows you their \
-game, and you talk with them out loud.";
+and the player's buddy while they play MapleStory (the current global version, unless you're told they play \
+Classic World). A vision engine shows you their game, and you talk with them out loud.";
 
 /// What else it should know, after the rules.
 const MORE: &str = "More:
-- Answer in the language of what they just said, every time; say game names the way players say them. Their \
-language setting counts only when their words have none (a button).
+- Answer in the language the note with their words says; say game names the way players say them. Never \
+announce a level-up or mention their level unless asked.
 - Don't say again what you said in your last two replies unless they ask again. Never report their level, map or \
 bars unasked; while MapleStory isn't open, talk about whatever they say, and say it isn't open only when they ask \
 about the game. If what you heard makes no sense, say in a few words you didn't catch it; don't guess.
@@ -385,6 +385,49 @@ pub struct Brain {
     /// The "I'm here" lines ([`HERE_EN`], [`HERE_HE`]), dealt the same way.
     here_en: Deck,
     here_he: Deck,
+    /// The language he asked to be answered in ("talk to me in English"),
+    /// until he asks for another.
+    asked_language: Option<&'static str>,
+}
+
+/// Who the player is, for the rules: his name as his own file says it (or
+/// that it is not known), that no name is ever taken from what is heard,
+/// and that he is a man unless he said otherwise.
+fn who_he_is(name: Option<&str>) -> String {
+    let name_line = match name {
+        Some(name) => format!(
+            "- The player's name is {name}: it comes from his own file and from nowhere else. Speech-to-text \
+can't spell names (it made Armani, Miha, Mako and Miguel of his): never take a name from what you hear, never \
+rename him, never keep a name for him with a tool; call him {name} or nothing (another name for him in your \
+notes was misheard). His character's name (on the HUD) is not his name."
+        ),
+        None => "- You don't know the player's name (his own file doesn't say it): call him nothing. \
+Speech-to-text can't spell names: never take a name from what you hear, never keep one for him with a tool (a \
+name for him in your notes was misheard). His character's name (on the HUD) is not his name."
+            .to_string(),
+    };
+    format!(
+        "{name_line}\n- He is a man unless his own file says otherwise: in Hebrew always the masculine (אתה, תפתח, \
+תראה); never guess anyone's gender from a name."
+    )
+}
+
+/// What the snapshot says when the player plays MapleStory Classic World
+/// (the sight read the classic HUD): the line the sight or the main loop
+/// adds to it, and what [`classic_world`] looks for.
+pub const CLASSIC_SNAPSHOT: &str =
+    "They play MapleStory Classic World (the classic HUD is on screen).";
+
+/// Whether the player plays MapleStory Classic World: the snapshot says
+/// so (the classic HUD is on screen, [`CLASSIC_SNAPSHOT`]), or what was
+/// learned about him does (the owner taught it: "I'm using a classic
+/// world").
+pub fn classic_world(snapshot: &str, learned: &str) -> bool {
+    let says = |text: &str| {
+        let lower = text.to_lowercase();
+        lower.contains("classic world") || lower.contains("classic hud")
+    };
+    says(snapshot) || says(learned)
 }
 
 impl Default for Brain {
@@ -476,6 +519,7 @@ impl Brain {
             same_as_before: Deck::seeded(session_seed()),
             here_en: Deck::seeded(session_seed()),
             here_he: Deck::seeded(session_seed()),
+            asked_language: None,
         }
     }
 
@@ -603,12 +647,42 @@ impl Brain {
     /// Who it is: the part of the instructions that stays the same from one
     /// reply to the next (so OpenAI keeps it cached, and answers sooner).
     pub fn persona(&self) -> String {
-        let mut text = format!("{PERSONA}\n\n{}\n\n{MORE}", style::rules(self.attitude()));
+        let mut text = format!(
+            "{PERSONA}\n\n{}\n\n{MORE}\n{}",
+            style::rules(self.attitude()),
+            who_he_is(self.player_name().as_deref())
+        );
         if self.learning.is_none() && !self.about_player.trim().is_empty() {
             text.push_str("\n\nAbout the player (they told you this):\n");
             text.push_str(self.about_player.trim());
         }
         text
+    }
+
+    /// The player's name, from his own file (`about-me.txt`, or what the
+    /// brain was told without one) — never from what was heard: speech to
+    /// text can't spell it (the owner's Michael came out as Armani, Miha,
+    /// Mako, Miguel and Mikael, and each was learned and used).
+    pub fn player_name(&self) -> Option<String> {
+        match &self.learning {
+            Some(learning) => learning.player_name(),
+            None => super::memory::name_in(&self.about_player),
+        }
+    }
+
+    /// The language he asked to be answered in, kept until he asks for
+    /// another ([`asked_language`]); else `None`.
+    pub fn asked_language(&self) -> Option<&'static str> {
+        self.asked_language
+    }
+
+    /// The language to answer `heard` in ([`reply_language`]), keeping the
+    /// one he asks for from now on.
+    pub fn language_for(&mut self, heard: &str, setting: Option<&str>) -> String {
+        if let Some(asked) = asked_language(heard) {
+            self.asked_language = Some(asked);
+        }
+        reply_language(heard, self.asked_language, setting)
     }
 
     /// How it sounds, to read where the brain is not: it follows the
@@ -1626,6 +1700,266 @@ pub fn asks_about_the_game(heard: &str) -> bool {
         )
 }
 
+/// What a sentence about the screen says, whatever else is in it: "where am
+/// I", "what level", "how do I look", "what do you see", "look at…",
+/// "check again" (the owner's own words, in English and Hebrew).
+const SCREEN_PHRASES: &[&str] = &[
+    "where am i",
+    "where are we",
+    "where is my",
+    "where's my",
+    "what do you see",
+    "what can you see",
+    "do you see",
+    "can you see",
+    "what you see",
+    "how do i look",
+    "how i look",
+    "what do i look like",
+    "what i look like",
+    "look at",
+    "look closer",
+    "check again",
+    "check carefully",
+    "look again",
+    "what about now",
+    "how about now",
+    "on the screen",
+    "on my screen",
+    "on screen",
+    "what level",
+    "which level",
+    "which map",
+    "what map",
+    "my level",
+    "my hp",
+    "my mp",
+    "my exp",
+    "my stats",
+    "equipped",
+    "wearing",
+    "איפה אני",
+    "איפה אנחנו",
+    "מה אתה רואה",
+    "מה רואים",
+    "אתה רואה",
+    "תסתכל",
+    "תבדוק שוב",
+    "איך אני נראה",
+    "איך הדמות שלי",
+    "מה הרמה",
+    "איזו מפה",
+    "באיזו מפה",
+    "איזה מפה",
+    "באיזה מפה",
+    "על המסך",
+    "מה זה",
+    "מה לובש",
+];
+
+/// Words for what a question about the screen asks about: where they are,
+/// the character and its HUD, what is on screen (an NPC, a quest, an item,
+/// a window, a monster…). With a question word, the sentence is about the
+/// screen ([`about_the_screen`]).
+const SCREEN_WORDS: &[&str] = &[
+    "where",
+    "wheres",
+    "map",
+    "minimap",
+    "town",
+    "level",
+    "lvl",
+    "lv",
+    "hp",
+    "mp",
+    "health",
+    "mana",
+    "exp",
+    "xp",
+    "stats",
+    "bar",
+    "look",
+    "looks",
+    "outfit",
+    "equip",
+    "equipment",
+    "gear",
+    "weapon",
+    "hat",
+    "character",
+    "npc",
+    "quest",
+    "item",
+    "window",
+    "dialog",
+    "popup",
+    "inventory",
+    "skill",
+    "screen",
+    "see",
+    "monster",
+    "mob",
+    "portal",
+    "shop",
+    "store",
+    "איפה",
+    "מפה",
+    "מפת",
+    "רמה",
+    "לבל",
+    "חיים",
+    "מאנה",
+    "ניסיון",
+    "נראה",
+    "לובש",
+    "ציוד",
+    "נשק",
+    "דמות",
+    "חלון",
+    "משימה",
+    "קווסט",
+    "פריט",
+    "מסך",
+    "רואה",
+    "מפלצת",
+    "מפלצות",
+    "פורטל",
+    "חנות",
+];
+
+/// Question words anywhere in a sentence ("go to the store and where is
+/// the NPC").
+const ASKS_ANYWHERE: &[&str] = &[
+    "what", "whats", "where", "wheres", "which", "how", "hows", "מה", "איפה", "איזה", "איזו", "איך",
+];
+
+/// Whether `heard` is about what is on the screen: where they are, which
+/// map, their level, HP or MP, how their character looks, what an NPC, a
+/// quest, an item or a window is, what MapleSyrup sees — English and Hebrew.
+/// Then the model gets the screen close up ([`super::Eyes::close_pictures`]):
+/// the owner's "where am I", "what level am I and how do I look" and "what's
+/// equipped" were answered from a 640-pixel picture at low detail, and
+/// guessed ("Henesys Market", "a dark outfit with a big hat"). Chit-chat
+/// ("hey", "I need money") is not.
+pub fn about_the_screen(heard: &str) -> bool {
+    let lower = heard.to_lowercase().replace(['’', '‘'], "'");
+    if SCREEN_PHRASES.iter().any(|p| contains_words(&lower, p)) {
+        return true;
+    }
+    let words = words_of(heard);
+    let asks = is_question(heard)
+        || ["tell me", "show me", "תגיד לי", "תראה לי"]
+            .iter()
+            .any(|p| lower.contains(p))
+        || words.iter().any(|(w, _)| is_one_of(w, ASKS_ANYWHERE));
+    asks && words
+        .iter()
+        .any(|(w, _)| is_one_of_or_plural(w, SCREEN_WORDS))
+}
+
+/// Whether `heard` asks about his quests ("What's the next quest I should
+/// go to", "איזה משימה"): then the Quest Helper goes close up too.
+pub fn asks_about_quests(heard: &str) -> bool {
+    words_of(heard).iter().any(|(w, _)| {
+        is_one_of_or_plural(
+            w,
+            &["quest", "mission", "משימה", "משימות", "קווסט", "קווסטים"],
+        )
+    })
+}
+
+/// Whether `text` (lower case) has `phrase` in it as whole words ("look at"
+/// is in "look at it", not in "outlook at").
+fn contains_words(text: &str, phrase: &str) -> bool {
+    let mut from = 0;
+    while let Some(at) = text[from..].find(phrase) {
+        let start = from + at;
+        let end = start + phrase.len();
+        let before = text[..start].chars().next_back();
+        let after = text[end..].chars().next();
+        if !before.is_some_and(char::is_alphanumeric) && !after.is_some_and(char::is_alphanumeric) {
+            return true;
+        }
+        from = start + phrase.chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
+/// The language the player asked to be answered in, if this sentence asks
+/// ("talk to me in English", "Hebrew please", "תדבר בעברית"): "English" or
+/// "Hebrew". A language named alone ("Not Miguel Hebrew") asks nothing.
+pub fn asked_language(heard: &str) -> Option<&'static str> {
+    let lower = heard.to_lowercase();
+    let english = [
+        "in english",
+        "english please",
+        "speak english",
+        "talk english",
+        "answer english",
+        "באנגלית",
+    ];
+    let hebrew = [
+        "in hebrew",
+        "hebrew please",
+        "speak hebrew",
+        "talk hebrew",
+        "answer hebrew",
+        "בעברית",
+        "תדבר עברית",
+    ];
+    let at = |list: &[&str]| list.iter().filter_map(|p| lower.rfind(p)).max();
+    match (at(&english), at(&hebrew)) {
+        (Some(e), Some(h)) => Some(if e > h { "English" } else { "Hebrew" }),
+        (Some(_), None) => Some("English"),
+        (None, Some(_)) => Some("Hebrew"),
+        (None, None) => None,
+    }
+}
+
+/// The language to answer `heard` in: the one the player asked for, if he
+/// did (`asked`); else his sentence's — Hebrew letters are Hebrew, Latin
+/// letters English (the owner's English got Hebrew answers at random, and
+/// Hebrew got English). Another script, or a language setting (`setting`, a
+/// locale) other than English and Hebrew: the language of his sentence.
+pub fn reply_language(heard: &str, asked: Option<&str>, setting: Option<&str>) -> String {
+    if let Some(asked) = asked {
+        return asked.to_string();
+    }
+    if is_hebrew(heard) {
+        return "Hebrew".into();
+    }
+    let other_setting = setting.is_some_and(|l| {
+        let l = l.to_ascii_lowercase();
+        !(l.starts_with("en") || l.starts_with("he") || l.starts_with("iw"))
+    });
+    let other_script = heard.chars().any(|c| c.is_alphabetic() && !c.is_ascii());
+    if !other_script && !other_setting {
+        return "English".into();
+    }
+    match setting {
+        Some(l) => format!(
+            "the language of his sentence (when unclear, {})",
+            super::language::name(l)
+        ),
+        None => "the language of his sentence".into(),
+    }
+}
+
+/// How this reply is to be written, for the player's sentence: in which
+/// language, and to whom (a man, unless he said otherwise — the owner was
+/// called "תראי", "פתחי" after a misheard "Miha").
+pub fn answer_note(language: &str) -> String {
+    let him = if language == "Hebrew" {
+        " Address him in the masculine (אתה, תפתח, תראה — never את, תפתחי, תראי)."
+    } else {
+        " Address him as a man (he/him) unless he said otherwise."
+    };
+    format!(
+        "[How to answer — not said by the player] Answer in {language}, whatever language you used before, unless he \
+asks for another.{him}"
+    )
+}
+
 /// Whether `heard` is a question: it ends with a question mark, or starts
 /// with a question word.
 pub fn is_question(heard: &str) -> bool {
@@ -1933,6 +2267,86 @@ pub fn unasked(reply: &str, heard: &str, facts: &Facts) -> String {
         None if wants_an_answer(heard) => reply.to_string(),
         None => String::new(),
     }
+}
+
+/// Whether `sentence` announces a level-up ("Level up! Congrats.", "עלית
+/// רמה! מזל טוב") — not one that says there was none ("נכון, לא עלית
+/// רמה", "the level-up effect is on screen but you're still 16").
+pub fn announces_level_up(sentence: &str) -> bool {
+    let lower = sentence.to_lowercase();
+    let says = [
+        "level up!",
+        "level up.",
+        "leveled up",
+        "levelled up",
+        "you hit level",
+        "you reached level",
+        "ding!",
+        "עלית רמה",
+        "עלית לרמה",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+        || (lower.contains("congrat") && lower.contains("level"));
+    let denies = [
+        "didn't", "didnt", "did not", "not ", "no level", "isn't", "still", "לא ",
+    ]
+    .iter()
+    .any(|n| lower.contains(n));
+    says && !denies
+}
+
+/// Whether `heard` asks about the level, or to be congratulated: then a
+/// level-up may be said.
+pub fn asks_about_the_level(heard: &str) -> bool {
+    let lower = heard.to_lowercase();
+    words_of(heard)
+        .iter()
+        .any(|(w, _)| is_one_of(w, LEVEL_WORDS))
+        // (Asked to be congratulated: "congratulate me". "Congrats" alone
+        // was its own voice heard back, more than once.)
+        || ["congratulat", "תברך", "ברכות"]
+            .iter()
+            .any(|w| lower.contains(w))
+}
+
+/// `reply` without the sentences that announce a level-up, when `heard`
+/// did not ask about the level: the model copied its watcher's "Level up!
+/// Congrats." into answers about MP and INT three times on the owner's
+/// evening, after he had asked it never to. Returns what is left and what
+/// went.
+pub fn without_level_up(reply: &str, heard: &str) -> (String, Vec<String>) {
+    without_level_ups(reply, asks_about_the_level(heard))
+}
+
+/// `reply` without the sentences that announce a level-up, unless the
+/// level was `asked` about (in his sentence, or the one or two before:
+/// "please congratulate me… level 17", then "More enthusiastic").
+pub fn without_level_ups(reply: &str, asked: bool) -> (String, Vec<String>) {
+    if asked {
+        return (reply.to_string(), Vec::new());
+    }
+    let (mut kept, mut gone) = (Vec::new(), Vec::new());
+    let mut after_one = false;
+    for sentence in sentences_of(reply) {
+        // ("Level up! Congrats.": the cheer after it goes with it.)
+        let lower = sentence.to_lowercase();
+        let cheer = after_one
+            && words_of(&sentence).len() <= 3
+            && ["congrat", "grats", "gz", "nice", "מזל טוב", "כל הכבוד"]
+                .iter()
+                .any(|c| lower.contains(c));
+        after_one = announces_level_up(&sentence) || cheer;
+        if after_one {
+            gone.push(sentence);
+        } else {
+            kept.push(sentence);
+        }
+    }
+    if gone.is_empty() {
+        return (reply.to_string(), gone);
+    }
+    (kept.join(" "), gone)
 }
 
 /// Whether the model chose to stay quiet: it was told to reply with
@@ -5347,6 +5761,163 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             ),
         ] {
             assert_eq!(humanise(reply), said, "{reply:?}");
+        }
+    }
+
+    /// The owner's real session (2026-10-10, Classic World): his sentences
+    /// about the screen get it close up; chit-chat does not.
+    #[test]
+    fn the_owners_questions_about_the_screen_get_it_close_up_and_chit_chat_does_not() {
+        for heard in [
+            "where am I",
+            "I don't want money talk to me in English I don't want money I want to know what level am I and how do I look",
+            "what's equipped look at what's equipped and tell me what to get",
+            "Where are the blue mushroom",
+            "What's the next quest I should go to",
+            "Yes I want you to tell me I want you to tell me where is the map that",
+            "Go to the general store and where is the general store NPC",
+            "Where is the homework table",
+            "What is the best to improve according to what you say on the screen on my skill inventory",
+            "what do you see",
+            "what about now",
+            "Check again",
+            "Check carefully if the level you're flying that's it now",
+            "what level am I",
+            "איפה אני?",
+            "מה הרמה שלי",
+            "מה אתה רואה על המסך",
+            "באיזו מפה אני",
+        ] {
+            assert!(about_the_screen(heard), "{heard}");
+        }
+        for heard in [
+            "hey",
+            "No my name is not Michael my name is Miguel with the talk to me bro",
+            "Not Miguel Hebrew",
+            "Mikael",
+            "I need money",
+            "OK",
+            "Remember that",
+            "A little",
+            "100 sentences",
+            "please congratulate me with the more enthusiastic response that I graduated to level 17",
+            "Be enthusiastic and congratulate me for 10 sentences straight",
+            "Don't stop don't stop don't stop congratulate me until I say stop",
+            "I don't have I use lemons",
+            "23% still owe",
+            "You are no help",
+            "היי",
+            "תודה רבה",
+        ] {
+            assert!(!about_the_screen(heard), "{heard}");
+        }
+    }
+
+    #[test]
+    fn the_answer_is_in_his_sentences_language_unless_he_asked_for_one() {
+        // English words get English (the log's "Not Miguel Hebrew" names a
+        // language, it doesn't ask for it), Hebrew letters Hebrew.
+        assert_eq!(asked_language("Not Miguel Hebrew"), None);
+        assert_eq!(
+            reply_language("Not Miguel Hebrew", None, Some("en-US")),
+            "English"
+        );
+        assert_eq!(reply_language("Market", None, Some("he-IL")), "English");
+        assert_eq!(reply_language("איפה אני", None, Some("en-US")), "Hebrew");
+        assert_eq!(
+            asked_language("I don't want money talk to me in English I don't want money"),
+            Some("English")
+        );
+        assert_eq!(asked_language("תדבר איתי בעברית"), Some("Hebrew"));
+        // Asked for, it stays until he asks for another.
+        let mut brain = Brain::new();
+        assert_eq!(
+            brain.language_for("talk to me in Hebrew please", None),
+            "Hebrew"
+        );
+        assert_eq!(brain.language_for("where am I", None), "Hebrew");
+        assert_eq!(brain.language_for("in English now", None), "English");
+        assert_eq!(brain.language_for("מה הרמה שלי", None), "English");
+        // To a man, in Hebrew's masculine.
+        let note = answer_note("Hebrew");
+        assert!(note.contains("Answer in Hebrew"));
+        assert!(note.contains("masculine (אתה, תפתח, תראה — never את, תפתחי, תראי)"));
+        assert!(answer_note("English").contains("Answer in English"));
+    }
+
+    #[test]
+    fn his_name_is_his_files_and_never_one_heard() {
+        let mut brain = Brain::new();
+        brain.about_player = "- My name is Michael (מיכאל)\n- I play a Magician.\n".into();
+        assert_eq!(brain.player_name().as_deref(), Some("Michael (מיכאל)"));
+        let persona = brain.persona();
+        assert!(
+            persona.contains("The player's name is Michael (מיכאל): it comes from his own file")
+        );
+        assert!(persona.contains("never take a name from what you hear, never rename him"));
+        assert!(persona.contains("He is a man unless his own file says otherwise"));
+        assert!(persona.contains("never guess anyone's gender from a name"));
+        assert!(persona.contains("Never announce a level-up or mention their level unless asked."));
+        // Not known: no name at all.
+        let persona = Brain::new().persona();
+        assert!(persona.contains("You don't know the player's name"));
+        assert!(!persona.contains("The player's name is"));
+    }
+
+    #[test]
+    fn classic_world_is_known_from_the_snapshot_or_what_he_taught() {
+        assert!(classic_world(CLASSIC_SNAPSHOT, ""));
+        assert!(classic_world(
+            "",
+            "Classic World maps: In the player's Classic World, there is no Maple Guide."
+        ));
+        assert!(!classic_world(
+            "Level 16. HP 655 of 655.",
+            "They play a Night Lord."
+        ));
+    }
+
+    /// The owner's evening: "Level up! Congrats." copied into answers about
+    /// MP and INT after he asked never to hear it; said when he asked.
+    #[test]
+    fn a_level_up_nobody_asked_about_is_not_said() {
+        for (heard, reply, said) in [
+            (
+                "My topping up",
+                "Good, MP topped. Level up! Congrats.",
+                "Good, MP topped.",
+            ),
+            (
+                "INTINT",
+                "Level up! Congrats. INT's already maxed for your level—save the next points.",
+                "INT's already maxed for your level—save the next points.",
+            ),
+            // (Its own "Congrats" heard back asks for nothing.)
+            (
+                "Congrats is point eye of the",
+                "Level up! Congrats. Head left to that quest marker.",
+                "Head left to that quest marker.",
+            ),
+            ("Mail mail", "עלית רמה! מזל טוב. תמשיך ככה.", "תמשיך ככה."),
+            // Saying there was none is no announcement.
+            (
+                "stop it I didn't leveled up",
+                "נכון, לא עלית רמה; האפקט הטעה אותי.",
+                "נכון, לא עלית רמה; האפקט הטעה אותי.",
+            ),
+            (
+                "Check again",
+                "The level-up effect is still on screen; your level bar shows 16, so nothing changed.",
+                "The level-up effect is still on screen; your level bar shows 16, so nothing changed.",
+            ),
+            // Asked about the level, or to be congratulated: said.
+            (
+                "please congratulate me with the more enthusiastic response that I graduated to level 17",
+                "מזל טוב! עלית לרמה 17, כל הכבוד!",
+                "מזל טוב! עלית לרמה 17, כל הכבוד!",
+            ),
+        ] {
+            assert_eq!(without_level_up(reply, heard).0, said, "{heard}: {reply}");
         }
     }
 }

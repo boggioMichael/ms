@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use syrup::geometry::{NormRect, Rect};
-use syrup::glyphs::{GlyphOptions, GlyphSet, LearnError};
+use syrup::glyphs::{GlyphOptions, GlyphSet, LearnError, TextReading};
 use syrup::threshold::text_evidence;
 
 use crate::vision::hud_text::{parse_current_max, parse_percent};
@@ -260,10 +260,17 @@ pub const DISAGREE_FOR: u32 = 30;
 pub struct Numbers {
     dir: PathBuf,
     font: GlyphSet,
-    /// The classic HUD's font, apart from the modern one: its thin digits
+    /// The classic HUD's fonts, apart from the modern one (its thin digits
     /// are as tall as the modern bold ones to the glyph reader, which would
-    /// average the two into one template per character.
-    classic: GlyphSet,
+    /// average the two into one template per character), and one per
+    /// field: the game stretches the classic HUD by a fraction (2.81 at
+    /// 4K), so a digit is drawn a pixel wider or narrower depending on
+    /// where it lands, and each field's line lands where it lands. One
+    /// font for the three averaged them into templates none read surely:
+    /// on the owner's frames, learning his EXP line made the MP line just
+    /// learned unreadable, and with MP's and EXP's examples in the font
+    /// his HP[671/671] would not learn (it does alone).
+    classic: HashMap<Field, GlyphSet>,
     /// Both fonts' examples; a classic one has its `window`.
     samples: Vec<Sample>,
     /// The line each field reads from, from the examples that worked.
@@ -338,12 +345,40 @@ const CLASSIC_TRIES: usize = 32;
 /// the bar is not the classic HUD's.
 const PANEL_SATURATION: f32 = 0.3;
 
+/// A glyph of the classic font that matches its character below
+/// [`CLASSIC_MIN_SCORE`] is still that character when it matches at
+/// [`CLASSIC_LOOSE_SCORE`] or better and no other character comes within
+/// [`CLASSIC_LOOSE_MARGIN`] of it. The game stretches the classic HUD by
+/// 2.81 at 4K, so one character is drawn a pixel wider in one place than
+/// another: in the owner's `HP[671/671]` (10 October) the two 1s are 7 and
+/// 8 pixels wide, and each matches their one template at 0.969, margin
+/// 0.53 — under 0.975 the line was never learned, nor read, all session
+/// ("not surely"). A digit the font does not know matches its look-alike
+/// at up to 0.954, with other digits close behind (an 8 read as a 9): not
+/// that. (Two templates per character, one per width, would be syrup's to
+/// give: its glyph sets average one template per character and size.)
+const CLASSIC_LOOSE_SCORE: f32 = 0.96;
+const CLASSIC_LOOSE_MARGIN: f32 = 0.3;
+
+/// The classic font's options: the glyph reader's own bar is the loose
+/// one ([`CLASSIC_LOOSE_SCORE`]), and [`classic_sure`] holds every reading
+/// and every example learned to the rest.
 fn classic_options() -> GlyphOptions {
     GlyphOptions {
-        min_score: CLASSIC_MIN_SCORE,
+        min_score: CLASSIC_LOOSE_SCORE,
         min_margin: CLASSIC_MIN_MARGIN,
         ..GlyphOptions::default()
     }
+}
+
+/// Whether every glyph of a classic reading is surely its character: at
+/// [`CLASSIC_MIN_SCORE`] with [`CLASSIC_MIN_MARGIN`], or at
+/// [`CLASSIC_LOOSE_SCORE`] with [`CLASSIC_LOOSE_MARGIN`].
+fn classic_sure(reading: &TextReading) -> bool {
+    reading.glyphs.iter().all(|g| {
+        (g.score >= CLASSIC_MIN_SCORE && g.margin >= CLASSIC_MIN_MARGIN)
+            || (g.score >= CLASSIC_LOOSE_SCORE && g.margin >= CLASSIC_LOOSE_MARGIN)
+    })
 }
 
 fn now_text() -> String {
@@ -353,6 +388,30 @@ fn now_text() -> String {
 /// The label as the glyph reader wants it: the characters drawn, no spaces.
 fn normalised(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// A line as read, with no space beside a decimal point or a thousands
+/// comma: the glyph reader puts one where the gap after a glyph is wide
+/// (the owner's classic `830[7.52%]` read "…7 .52%", which parsed as
+/// 0.52%), and no number is printed so. The space between the amount and
+/// the percent stays: with the classic HUD's brackets unseen, "830 7.52%"
+/// is the only thing between the two numbers.
+fn tight(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_whitespace() {
+            let before = chars[..i].iter().rev().find(|c| !c.is_whitespace());
+            let after = chars[i + 1..].iter().find(|c| !c.is_whitespace());
+            let point = |c: Option<&char>| matches!(c, Some('.' | ','));
+            let digit = |c: Option<&char>| c.is_some_and(char::is_ascii_digit);
+            if (digit(before) && point(after)) || (point(before) && digit(after)) {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The ways `label` (already normalised) might be printed on the line: as
@@ -619,7 +678,7 @@ impl Numbers {
         let mut numbers = Numbers {
             dir: dir.to_path_buf(),
             font: GlyphSet::new(options()),
-            classic: GlyphSet::new(classic_options()),
+            classic: HashMap::new(),
             samples: Vec::new(),
             lines: HashMap::new(),
             windows: HashMap::new(),
@@ -647,7 +706,10 @@ impl Numbers {
             h: picture.height(),
         };
         let font = match sample.window {
-            Some(_) => &mut self.classic,
+            Some(_) => self
+                .classic
+                .entry(sample.field)
+                .or_insert_with(|| GlyphSet::new(classic_options())),
             None => &mut self.font,
         };
         if font.learn(&picture, whole, &sample.text).is_ok() {
@@ -678,7 +740,11 @@ impl Numbers {
 
     /// How many characters the fonts know (each once, in either font).
     pub fn glyphs(&self) -> usize {
-        let mut chars: Vec<char> = self.font.chars().chain(self.classic.chars()).collect();
+        let mut chars: Vec<char> = self
+            .font
+            .chars()
+            .chain(self.classic.values().flat_map(GlyphSet::chars))
+            .collect();
         chars.sort_unstable();
         chars.dedup();
         chars.len()
@@ -733,7 +799,9 @@ impl Numbers {
     /// Read `field` beside the bar at `band`, if the glyphs are sure of
     /// every character and the line says a number that makes sense.
     pub fn read(&mut self, frame: &RgbaImage, field: Field, band: &NormRect) -> Option<Read> {
-        if self.font.chars().next().is_none() && self.classic.chars().next().is_none() {
+        if self.font.chars().next().is_none()
+            && self.classic.values().all(|f| f.chars().next().is_none())
+        {
             return None;
         }
         let (fw, fh) = frame.dimensions();
@@ -758,7 +826,10 @@ impl Numbers {
         let mut read = None;
         for (place, region) in places {
             let font = if place.classic() {
-                &self.classic
+                match self.classic.get(&field) {
+                    Some(font) => font,
+                    None => continue,
+                }
             } else {
                 &self.font
             };
@@ -766,8 +837,11 @@ impl Numbers {
                 continue;
             }
             let reading = font.read(frame, region);
-            read = reading.value.and_then(|r| {
-                parse(field, &r.text).map(|value| Read {
+            let reading = reading
+                .value
+                .filter(|r| !place.classic() || classic_sure(r));
+            read = reading.and_then(|r| {
+                parse(field, &tight(&r.text)).map(|value| Read {
                     value,
                     text: r.text,
                 })
@@ -1048,7 +1122,29 @@ impl Numbers {
                     return None;
                 }
                 tries += 1;
-                match self.classic.learn(frame, region, spelling) {
+                // Learned on the glyph reader's loose bar, kept only if the
+                // line reads back surely by the classic font's own
+                // (`classic_sure`).
+                let font = self
+                    .classic
+                    .entry(field)
+                    .or_insert_with(|| GlyphSet::new(classic_options()));
+                let before = font.clone();
+                let learned = font.learn(frame, region, spelling).and_then(|count| {
+                    match font.read(frame, region).value {
+                        Some(back) if classic_sure(&back) => Ok(count),
+                        back => Err(LearnError::DoesNotReadBack {
+                            read: format!(
+                                "{} (not surely)",
+                                back.map(|r| r.text).unwrap_or_default()
+                            ),
+                        }),
+                    }
+                });
+                if learned.is_err() {
+                    *font = before;
+                }
+                match learned {
                     Ok(count) => {
                         let crop = image::imageops::crop_imm(
                             frame, region.x, region.y, region.w, region.h,
@@ -1180,7 +1276,7 @@ impl Numbers {
     fn rebuild(&mut self) {
         let samples = std::mem::take(&mut self.samples);
         self.font = GlyphSet::new(options());
-        self.classic = GlyphSet::new(classic_options());
+        self.classic.clear();
         self.lines.clear();
         self.windows.clear();
         for sample in samples {
@@ -1213,7 +1309,7 @@ impl Numbers {
         self.classic_first.clear();
         self.state.clear();
         self.font = GlyphSet::new(options());
-        self.classic = GlyphSet::new(classic_options());
+        self.classic.clear();
         self.save();
     }
 
@@ -1654,6 +1750,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_space_beside_a_decimal_point_is_not_read() {
+        assert_eq!(tight("830[7 .52%]"), "830[7.52%]");
+        assert_eq!(tight("1, 185,906 [34. 36%]"), "1,185,906 [34.36%]");
+        assert_eq!(
+            tight("830 7.52%"),
+            "830 7.52%",
+            "the two numbers stay apart"
+        );
+        assert_eq!(
+            parse(Field::Exp, &tight("830[7 .52%]")),
+            Some(Value::Percent(7.52))
+        );
+    }
+
+    #[test]
     fn values_parse_the_lines_the_game_prints() {
         assert_eq!(
             parse(Field::Hp, "HP[400/400]"),
@@ -1681,5 +1792,255 @@ pub(crate) mod tests {
         assert_eq!(parse(Field::Hp, "HP 400"), None, "no maximum");
         assert!((Value::Amount { current: 1, max: 3 }.percent() - 33.33).abs() < 0.01);
         assert_eq!(normalised(" HP [400 / 400] "), "HP[400/400]");
+    }
+}
+
+/// The owner's Classic World HUD lines of 10 October, as his MapleSyrup kept
+/// them under `learned/debug/` when they would not learn: the line above
+/// the bar and the bar (no name in them). Read from `$MS_OWNER_FRAMES`, or
+/// `resources/owner-classic/`; the test says so and passes when neither
+/// holds them.
+#[cfg(test)]
+mod owner_classic {
+    use super::*;
+
+    /// A crop and its bar: 6 px in from each side, 1.5 bar heights down
+    /// (`keep_failure`'s region), 8 rows above the crop's bottom.
+    fn owner(name: &str) -> Option<(RgbaImage, NormRect)> {
+        let dirs = [
+            std::env::var("MS_OWNER_FRAMES").ok().map(PathBuf::from),
+            Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/owner-classic")),
+        ];
+        let frame = dirs
+            .into_iter()
+            .flatten()
+            .find_map(|d| image::open(d.join(name)).ok())?
+            .to_rgba8();
+        let (w, h) = frame.dimensions();
+        let bar = ((h - 8) as f32 / 2.5).round() as u32;
+        Some((
+            frame,
+            NormRect::from_pixels(6, h - 8 - bar, w - 12, bar, w, h),
+        ))
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ms-owner-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    const HP_671: &str = "unlearned-hp-4-HP_671_671_.png";
+    const MP_695: &str = "unlearned-mp-5-MP_695_695_.png";
+    const HP_655: &str = "unlearned-hp-1-659_659.png";
+    const EXP_752: &str = "unlearned-exp-6-830_7_32__.png";
+
+    #[test]
+    fn the_owners_classic_lines_learn_from_what_they_say_and_not_from_misreads() {
+        let names = [HP_671, MP_695, HP_655, EXP_752];
+        let Some(crops) = names.iter().map(|n| owner(n)).collect::<Option<Vec<_>>>() else {
+            eprintln!(
+                "the owner's crops are not here (MS_OWNER_FRAMES, resources/owner-classic): skipped"
+            );
+            return;
+        };
+        let now = Instant::now();
+        let read = |n: &mut Numbers, i: usize, field: Field| {
+            let (frame, band) = &crops[i];
+            let read = n.read(frame, field, band);
+            eprintln!("{} {field:?}: {read:?}", names[i]);
+            read.map(|r| r.value)
+        };
+        let amount = |current, max| Some(Value::Amount { current, max });
+        // HP[671/671]: its two 1s are drawn 7 and 8 pixels wide; at
+        // 12:12:36 and 12:53:10 it was "not surely" learned. Now it is,
+        // read, and read after a reload.
+        let dir = temp_dir("671");
+        let mut n = Numbers::load(&dir);
+        let (frame, band) = &crops[0];
+        let learned = n.learn(frame, Field::Hp, band, "HP[671/671]", "model", now);
+        assert!(learned.is_ok(), "{learned:?}");
+        assert_eq!(read(&mut n, 0, Field::Hp), amount(671, 671));
+        assert_eq!(
+            read(&mut Numbers::load(&dir), 0, Field::Hp),
+            amount(671, 671)
+        );
+        // A line with a digit it does not know (5) is not read as another.
+        assert_eq!(read(&mut n, 2, Field::Hp), None);
+        // The teacher's misreads are not learned (11:48:10 "659/659" for
+        // 655/655; 12:21:12 "830[7.32%]" for 830[7.52%]), what the lines
+        // say is, and each line then reads as it says.
+        let (frame, band) = &crops[2];
+        assert!(
+            n.learn(frame, Field::Hp, band, "659/659", "model", now)
+                .is_err()
+        );
+        assert_eq!(read(&mut n, 2, Field::Hp), None);
+        let learned = n.learn(frame, Field::Hp, band, "655/655", "model", now);
+        assert!(learned.is_ok(), "{learned:?}");
+        assert_eq!(read(&mut n, 2, Field::Hp), amount(655, 655));
+        let (frame, band) = &crops[3];
+        assert!(
+            n.learn(frame, Field::Exp, band, "830[7.32%]", "model", now)
+                .is_err()
+        );
+        let learned = n.learn(frame, Field::Exp, band, "830[7.52%]", "model", now);
+        assert!(learned.is_ok(), "{learned:?}");
+        assert_eq!(read(&mut n, 3, Field::Exp), Some(Value::Percent(7.52)));
+        // MP[695/695] with all that learned, and every line still right.
+        let (frame, band) = &crops[1];
+        let learned = n.learn(frame, Field::Mp, band, "MP[695/695]", "model", now);
+        assert!(learned.is_ok(), "{learned:?}");
+        assert_eq!(read(&mut n, 1, Field::Mp), amount(695, 695));
+        assert_eq!(read(&mut n, 0, Field::Hp), amount(671, 671));
+        assert_eq!(read(&mut n, 2, Field::Hp), amount(655, 655));
+        assert_eq!(read(&mut n, 3, Field::Exp), Some(Value::Percent(7.52)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One of the owner's whole 4K frames (`mark-001.png` at 11:52:59,
+    /// `hud-found.png` at 12:38), whose HUD lies where the classic fixture's
+    /// does (`tests/classic_hud.rs`).
+    /// (`hud-found.png` is the frame MapleSyrup saved with its own "HUD
+    /// found" box drawn on it: the box's top edge, rows 2,082 – 2,083 from
+    /// x 1,072 to 2,400, crosses the text line, and is repaired from the
+    /// rows above and below, as the repository's classic fixture was.)
+    fn owner_frame(name: &str) -> Option<RgbaImage> {
+        let dir = std::env::var("MS_OWNER_FRAMES").ok()?;
+        let mut frame = image::open(Path::new(&dir).join(name)).ok()?.to_rgba8();
+        if name == "hud-found.png" {
+            for x in 1072..=2400 {
+                let (above, below) = (*frame.get_pixel(x, 2081), *frame.get_pixel(x, 2084));
+                for (y, w) in [(2082, 1.0 / 3.0), (2083, 2.0 / 3.0)] {
+                    let mix = |c: usize| {
+                        (f32::from(above.0[c]) * (1.0 - w) + f32::from(below.0[c]) * w).round()
+                            as u8
+                    };
+                    frame.put_pixel(x, y, image::Rgba([mix(0), mix(1), mix(2), 255]));
+                }
+            }
+        }
+        Some(frame)
+    }
+
+    const BANDS: [NormRect; 3] = [
+        NormRect {
+            x0: 0.36822918,
+            y0: 0.9777778,
+            x1: 0.4450521,
+            y1: 0.9925926,
+        },
+        NormRect {
+            x0: 0.44739583,
+            y0: 0.9777778,
+            x1: 0.5239583,
+            y1: 0.9930556,
+        },
+        NormRect {
+            x0: 0.53020835,
+            y0: 0.9777778,
+            x1: 0.6132866,
+            y1: 0.9930556,
+        },
+    ];
+
+    #[test]
+    fn the_owners_session_replayed_on_his_frames_reads_nothing_wrong() {
+        let (Some(market), Some(later), Some((hp4, hp4_band)), Some((mp5, mp5_band))) = (
+            owner_frame("mark-001.png"),
+            owner_frame("hud-found.png"),
+            owner(HP_671),
+            owner(MP_695),
+        ) else {
+            eprintln!("the owner's frames are not here (MS_OWNER_FRAMES): skipped");
+            return;
+        };
+        let dir = temp_dir("session");
+        let mut n = Numbers::load(&dir);
+        let now = Instant::now();
+        let fields = Field::ALL;
+        // What each frame says.
+        let truth = |frame: &str, field: Field| match (frame, field) {
+            ("market", Field::Hp) => Value::Amount {
+                current: 655,
+                max: 655,
+            },
+            ("market", Field::Mp) => Value::Amount {
+                current: 671,
+                max: 671,
+            },
+            ("market", Field::Exp) => Value::Percent(80.42),
+            (_, Field::Hp) => Value::Amount {
+                current: 416,
+                max: 671,
+            },
+            (_, Field::Mp) => Value::Amount {
+                current: 189,
+                max: 695,
+            },
+            (_, Field::Exp) => Value::Percent(19.32),
+        };
+        let check = |n: &mut Numbers, name: &str, frame: &RgbaImage| {
+            let mut read = Vec::new();
+            for (field, band) in fields.into_iter().zip(BANDS) {
+                let value = n.read(frame, field, &band).map(|r| r.value);
+                eprintln!("{name} {field:?}: {value:?}");
+                assert!(
+                    value.is_none() || value == Some(truth(name, field)),
+                    "{name} {field:?} read wrong: {value:?}"
+                );
+                read.push(value.is_some());
+            }
+            read
+        };
+        // 11:48:10, the teacher's labels on the market's lines: HP
+        // "659/659" (it says 655/655) is not learned, MP "671/671" is, and
+        // EXP "7,105[80.42%]" (it says 7,109) is — a 9 kept as a 5, which
+        // nothing in that one label can tell.
+        assert!(
+            n.learn(&market, Field::Hp, &BANDS[0], "659/659", "model", now)
+                .is_err()
+        );
+        assert!(
+            n.learn(&market, Field::Mp, &BANDS[1], "671/671", "model", now)
+                .is_ok()
+        );
+        let poisoned = n.learn(
+            &market,
+            Field::Exp,
+            &BANDS[2],
+            "7,105[80.42%]",
+            "model",
+            now,
+        );
+        eprintln!("EXP 7,105[80.42%]: {poisoned:?}");
+        check(&mut n, "market", &market);
+        // 12:12:36: HP[671/671] — its 1s 7 and 8 px wide — is learned now.
+        let learned = n.learn(&hp4, Field::Hp, &hp4_band, "HP[671/671]", "model", now);
+        assert!(learned.is_ok(), "{learned:?}");
+        let mp = n.learn(&mp5, Field::Mp, &mp5_band, "MP[695/695]", "model", now);
+        eprintln!("MP[695/695]: {mp:?}");
+        // 12:38: nothing on the frame is read wrong; then the teacher's
+        // labels of 12:38:44, right as the frame shows, each tried in its
+        // own field's font. (EXP's font holds the 9 kept as a 5 at
+        // 11:48:10, and refuses "19.32".)
+        check(&mut n, "later", &later);
+        for (field, band, label) in [
+            (Field::Hp, BANDS[0], "416/671"),
+            (Field::Mp, BANDS[1], "189/695"),
+            (Field::Exp, BANDS[2], "2,133[19.32%]"),
+        ] {
+            let learned = n.learn(&later, field, &band, label, "model", now);
+            eprintln!("{field:?} {label}: {learned:?}");
+        }
+        // MP is read. HP's "416/671" is not learned: its 7 is drawn 15 px
+        // wide here and 16 at 12:12, and matches the template at 0.939 —
+        // a second template per drawn width is syrup's to give — but it is
+        // not read wrong either.
+        let read = check(&mut n, "later", &later);
+        assert!(read[1], "MP[189/695] read at 12:38: {read:?}");
+        // The market's lines, with all that learned: nothing read wrong.
+        check(&mut n, "market", &market);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

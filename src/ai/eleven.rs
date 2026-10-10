@@ -18,6 +18,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::openai::{AiError, Delivery, OpenAi, Stop};
+use super::pronounce;
 use crate::companion::Attitude;
 
 pub const BASE: &str = "https://api.elevenlabs.io/v1";
@@ -96,7 +97,9 @@ impl Eleven {
     /// `text` said in voice `voice` (24 kHz mono), delivered as `delivery`
     /// says, handed to `on_samples` a piece at a time as it is made. A
     /// model the account can't use is skipped (from then on), and one that
-    /// won't take the voice settings is asked without them.
+    /// won't take the voice settings is asked without them. The voice is
+    /// given each word as it is said ([`pronounce`]); the line shown and
+    /// logged stays as it was written.
     pub fn speech_stream(
         &self,
         text: &str,
@@ -105,7 +108,8 @@ impl Eleven {
         stop: Option<&Stop>,
         on_samples: &mut dyn FnMut(&[i16]),
     ) -> Result<usize, AiError> {
-        let result = self.try_models(text, voice, delivery, stop, on_samples);
+        let said = pronounce::for_voice(text);
+        let result = self.try_models(&said, voice, delivery, stop, on_samples);
         match &result {
             Ok(_) | Err(AiError::Cancelled) | Err(AiError::Unsupported(_)) => {
                 self.failures.store(0, Ordering::Relaxed);
@@ -461,6 +465,44 @@ mod tests {
             assert!(body.get("voice_settings").is_none(), "{model}");
             assert_eq!(body["text"], "Pot now!");
             assert_eq!(body["model_id"], model);
+        }
+    }
+
+    #[test]
+    fn elevenlabs_is_given_each_word_as_it_is_said() {
+        use crate::ai::pronounce::fake;
+        if !fake::have_curl() {
+            return;
+        }
+        let (base, seen) = fake::voices();
+        let eleven = Eleven::new("sk_test", &base);
+        let reply = delivery(Attitude::Blunt, Kind::Reply, false);
+        for (line, said) in [
+            // The owner's session, 11:55:16.
+            (
+                "כן—Hen esys Hunting Ground I ו־II הן מפות אימון לפטריות; חפשי במפה את Blue Mushrooms.",
+                "כן—הֶנֶסִיס האנטינג גראונד 1 ו־2 הן מפות אימון לפטריות; חפשי במפה את בלו מאשרומס.",
+            ),
+            // 11:49:49: his name as the recognizer spelled it.
+            ("Got it, Mikael.", "Got it, Michael."),
+            (
+                "Your character is WANWANBUJIO.",
+                "Your character is Wanwan Bujio.",
+            ),
+            ("Pot now!", "Pot now!"),
+        ] {
+            let from = seen.lock().unwrap().len();
+            eleven
+                .speech_stream(line, "v-ok", reply, None, &mut |_| {})
+                .unwrap();
+            assert_eq!(
+                fake::said(&seen, from),
+                [(
+                    "/v1/text-to-speech/v-ok/stream".to_string(),
+                    said.to_string()
+                )],
+                "{line}"
+            );
         }
     }
 

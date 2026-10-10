@@ -11,7 +11,8 @@ at 320 px the game line loses its end, not the level); then the
 turn-taking, with a stand-in speech
 recognizer, a stand-in call and a microphone fed from a file: the words so
 far never land after the sentence, a sentence cut off by a clip is still
-sent, a loud sound over a clip pauses it until the PC's word, a PC started
+sent but nothing written while the clip plays or just after (its own
+voice), a loud sound over a clip pauses it until the PC's word, a PC started
 again is greeted again and its clips play, a page reloaded mid-visit is not
 greeted twice, and on a call MapleSyrup's own lines are said by the call,
 never by the phone's own voice: the call's hello says what it does to a
@@ -479,8 +480,9 @@ def listening_page(browser):
     page.click("#listen")
     started = time.time()
     # (The tap plays a silent clip to unlock the phone's sound, which holds
-    # recognition for a moment: wait for it to be listening again.)
-    page.wait_for_timeout(1200)
+    # recognition while it plays and a moment after: wait for it to be
+    # listening again.)
+    page.wait_for_timeout(2000)
     wait_for(lambda: page.evaluate("!!window.__rec && window.__rec.running"), 5, "recognition did not start")
     return page, started
 
@@ -511,6 +513,29 @@ def recognition_checks(browser):
     wait_for(lambda: page.evaluate("window.__rec.aborted > 0"), 2, "recognition kept running under the clip")
     assert page.evaluate("!window.msVoice.paused"), "the clip plays"
     assert not requests_since(t1, "/api/interrupt"), "a silent microphone is no talk-over"
+    # Half-duplex (the owner's session: 85 of its own lines came back as
+    # his): what the recognizer writes while the clip plays is the clip's
+    # voice — more of the sentence it was writing as the clip began, a new
+    # sentence, one closed — and so is what it hands over just after the
+    # clip ends. Nothing of it is posted, and it listens again only a
+    # moment (CLIP_TAIL_MS) after the clip.
+    t_own = time.time()
+    page.evaluate('window.__rec.result(1, "where am I follow the active quest marker", false)')
+    page.evaluate('window.__rec.result(2, "follow the active quest marker", false)')
+    page.evaluate('window.__rec.result(2, "follow the active quest marker and clear nearby mobs", true)')
+    wait_for(lambda: page.evaluate("window.msVoice.ended"), 4, "the clip did not end")
+    ended_at = time.time()
+    page.evaluate('window.__rec.result(0, "question mark", true)')
+    wait_for(lambda: page.evaluate("window.__rec.running"), 4, "recognition never started again after the clip")
+    back_after = time.time() - ended_at
+    posted = [(r["path"], r["body"].get("text")) for r in requests_since(t_own) if r["path"] in ("/api/heard", "/api/hearing")]
+    assert not posted, f"its own voice was posted as the player's: {posted}"
+    assert back_after >= 1.0, f"listening again {back_after:.2f} s after the clip: its last words come back"
+    # And then the player's words are theirs again.
+    t_back = time.time()
+    page.evaluate('window.__rec.result(0, "what level am I", true)')
+    wait_for(lambda: any(r["body"].get("text") == "what level am I" for r in requests_since(t_back, "/api/heard")), 3,
+             "the player's sentence after the clip was not sent")
     # The PC is started again (a new boot): the page says hello again and
     # takes its clips from the start.
     page.wait_for_timeout(300)

@@ -307,28 +307,247 @@ fn after_wake_word(text: &str) -> Option<usize> {
         .map(|end| end.min(text.len()))
 }
 
+/// Nouns with "mark" in them, which ask for no mark ("question mark": the
+/// owner's echo of its own "Follow the active quest marker").
+const NOT_MARKS: &[&str] = &[
+    "question mark",
+    "question marks",
+    "exclamation mark",
+    "check mark",
+    "quotation mark",
+    "punctuation mark",
+    "birth mark",
+];
+
 /// The command in an addressed sentence, if one is there.
 pub fn command_in(text: &str) -> Option<Command> {
-    let text = normalize(text);
+    let mut text = format!(" {} ", normalize(text));
+    for noun in NOT_MARKS {
+        let first = noun.split(' ').next().unwrap_or(noun);
+        text = text.replace(&format!(" {noun} "), &format!(" {first} "));
+    }
+    let text = text.trim();
     PHRASES
         .iter()
-        .find(|(_, phrases)| phrases.iter().any(|p| has_phrase(&text, p)))
+        .find(|(_, phrases)| phrases.iter().any(|p| has_phrase(text, p)))
         .map(|(command, _)| *command)
+}
+
+/// Words that turn a request into its opposite said right before it ("don't
+/// stop talking", "never stop recording", "אל תפסיק להקליט"); "do not" too.
+/// Not "no", nor Hebrew's "לא": "no, stop talking" and "לא, תפסיק" ask for
+/// the stop (and the comma is gone once normalised).
+const NEGATIONS: &[&str] = &["dont", "never", "אל"];
+
+/// Words that may come between a negation and what it negates ("don't you
+/// ever stop", "don't be quiet").
+const NEGATION_FILLERS: &[&str] = &["you", "ever", "even", "really", "please", "just", "be"];
+
+/// Whether the words right before `at` negate what starts there.
+fn negated(words: &[&str], at: usize) -> bool {
+    let negation = |i: usize| {
+        NEGATIONS.contains(&words[i])
+            || (words[i] == "not" && i > 0 && matches!(words[i - 1], "do" | "does" | "did"))
+    };
+    let mut i = at;
+    // The word before, or one past a filler or two.
+    for _ in 0..3 {
+        if i == 0 {
+            return false;
+        }
+        i -= 1;
+        if negation(i) {
+            return true;
+        }
+        if !NEGATION_FILLERS.contains(&words[i]) {
+            return false;
+        }
+    }
+    false
+}
+
+/// Does `phrase` occur in `text` as whole words (a Hebrew phrase also with
+/// one of its one-letter prefixes), at least once without a negation right
+/// before it ([`negated`])? "Don't stop talking" asks for no stop.
+fn has_asked(text: &str, phrase: &str) -> bool {
+    let words: Vec<&str> = text.split(' ').filter(|w| !w.is_empty()).collect();
+    let wanted: Vec<&str> = phrase.split(' ').filter(|w| !w.is_empty()).collect();
+    let Some((&head, rest)) = wanted.split_first() else {
+        return false;
+    };
+    let hebrew = head
+        .chars()
+        .next()
+        .is_some_and(|c| ('\u{05d0}'..='\u{05ea}').contains(&c));
+    let first = |w: &str| {
+        w == head
+            || (hebrew
+                && w.strip_prefix(HEBREW_PREFIXES)
+                    .is_some_and(|stem| stem == head))
+    };
+    (0..words.len()).any(|at| {
+        first(words[at])
+            && words.len() >= at + wanted.len()
+            && words[at + 1..at + wanted.len()] == *rest
+            && !negated(&words, at)
+    })
+}
+
+/// Asking to mark the moment, in so many words, at the start of the
+/// sentence (after "ok", "please"…): "mark that", "mark this", "mark it",
+/// "clip that", "סמן" — never "mark" said in passing ("question mark", "the
+/// quest marker", "bookmark", "I'll mark it later", its own words heard
+/// back).
+const MARK_ASKED: &[&str] = &[
+    "mark that",
+    "mark this",
+    "mark it",
+    "mark the moment",
+    "mark this moment",
+    "mark that moment",
+    "clip that",
+    "clip this",
+    "clip it",
+    "save that",
+    "save this",
+    "flag that",
+    "flag this",
+    "סמן",
+    "תסמן",
+    "קליפ",
+    "שמור את זה",
+];
+
+/// Words that may open a request before it ("ok, mark that").
+const OPENERS: &[&str] = &[
+    "ok",
+    "okay",
+    "please",
+    "now",
+    "hey",
+    "yo",
+    "go",
+    "and",
+    "so",
+    "quick",
+    "quickly",
+    "יאללה",
+    "טוב",
+    "אוקיי",
+    "בבקשה",
+    "עכשיו",
+];
+
+/// Whether `text` (normalised, the wake word taken out) asks to mark the
+/// moment ([`MARK_ASKED`]); `addressed`: the wake word was said, and
+/// "syrup, mark" asks too.
+fn mark_asked(text: &str, addressed: bool) -> bool {
+    let words: Vec<&str> = text.split(' ').filter(|w| !w.is_empty()).collect();
+    let start = words.iter().take_while(|w| OPENERS.contains(w)).count();
+    let rest = words[start..].join(" ");
+    (addressed && rest == "mark")
+        || MARK_ASKED.iter().any(|phrase| {
+            let n = phrase.split(' ').count();
+            let opening = words[start..]
+                .iter()
+                .take(n)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ");
+            has_asked(&opening, phrase)
+        })
 }
 
 /// A command the companion carries out itself even when a model answers
 /// the conversation: marking a moment and muting. Only short sentences
-/// count ("mark that", "be quiet"), not a sentence that mentions marking.
+/// count ("mark that", "be quiet"), not a sentence that mentions marking;
+/// a mark only when asked for in so many words ([`MARK_ASKED`]), and no
+/// stop or mute with a "don't" before it ("don't stop talking").
 pub fn local_command(sentence: &str) -> Option<Command> {
+    let text = normalize(sentence);
+    let (text, addressed) = match after_wake_word(&text) {
+        Some(end) => (text[end..].trim().to_string(), true),
+        None => (text, false),
+    };
+    if text.split(' ').filter(|w| !w.is_empty()).count() > 4 {
+        return None;
+    }
+    let asked = |command: Command| {
+        PHRASES
+            .iter()
+            .filter(|(c, _)| *c == command)
+            .flat_map(|(_, phrases)| phrases.iter())
+            .any(|p| has_asked(&text, p))
+    };
+    // ("Unmute" before "mute": the first is no case of the second.)
+    if asked(Command::Unmute) {
+        Some(Command::Unmute)
+    } else if asked(Command::Mute) {
+        Some(Command::Mute)
+    } else if mark_asked(&text, addressed) {
+        Some(Command::Mark)
+    } else {
+        None
+    }
+}
+
+/// The player says no to what was just said: "no", "nope", "wrong", "stop",
+/// "לא", "די", "תפסיק" opening the sentence, or "I didn't", "that's wrong",
+/// "stop it", "don't tell me", "לא עליתי", "לא נכון", "תפסיק" anywhere in a
+/// sentence of up to twenty words — never with a "don't" before it ("don't
+/// stop", "אל תפסיק" ask for more). What it objects to is the caller's to
+/// know (the line said last, or one it names).
+pub fn objection(sentence: &str) -> bool {
     let text = normalize(sentence);
     let text = match after_wake_word(&text) {
         Some(end) => text[end..].trim().to_string(),
         None => text,
     };
-    if text.split(' ').filter(|w| !w.is_empty()).count() > 4 {
-        return None;
+    let words: Vec<&str> = text.split(' ').filter(|w| !w.is_empty()).collect();
+    if words.is_empty() || words.len() > 20 {
+        return false;
     }
-    command_in(&text).filter(|c| matches!(c, Command::Mark | Command::Mute | Command::Unmute))
+    const OPENING: &[&str] = &[
+        "no",
+        "nope",
+        "nah",
+        "not",
+        "wrong",
+        "stop",
+        "לא",
+        "די",
+        "תפסיק",
+        "טעות",
+        "עזוב",
+    ];
+    const ANYWHERE: &[&str] = &[
+        "i didnt",
+        "i did not",
+        "i havent",
+        "i have not",
+        "thats wrong",
+        "that is wrong",
+        "thats not true",
+        "that is not true",
+        "not true",
+        "youre wrong",
+        "you are wrong",
+        "stop it",
+        "stop saying",
+        "stop telling me",
+        "dont tell me",
+        "do not tell me",
+        "dont say",
+        "dont announce",
+        "לא עליתי",
+        "לא נכון",
+        "טעית",
+        "תפסיק",
+        "אל תגיד",
+        "אל תגיד לי",
+        "די עם",
+    ];
+    OPENING.contains(&words[0]) || ANYWHERE.iter().any(|p| has_asked(&text, p))
 }
 
 /// "Start recording" (true) or "stop recording" (false), said in a short
@@ -369,9 +588,10 @@ pub fn recording_request(sentence: &str) -> Option<bool> {
         "תקליט את זה",
         "תקליט",
     ];
-    if STOP.iter().any(|p| has_phrase(&text, p)) {
+    // ("Don't stop recording" asks for no stop: [`has_asked`].)
+    if STOP.iter().any(|p| has_asked(&text, p)) {
         Some(false)
-    } else if START.iter().any(|p| has_phrase(&text, p)) {
+    } else if START.iter().any(|p| has_asked(&text, p)) {
         Some(true)
     } else {
         None
@@ -428,9 +648,10 @@ pub fn coaching_request(sentence: &str) -> Option<bool> {
         "תגיד לי מה לעשות",
         "תדבר מעצמך",
     ];
-    if STOP.iter().any(|p| has_phrase(&text, p)) {
+    // ("Don't stop coaching" asks for no stop: [`has_asked`].)
+    if STOP.iter().any(|p| has_asked(&text, p)) {
         Some(false)
-    } else if START.iter().any(|p| has_phrase(&text, p)) {
+    } else if START.iter().any(|p| has_asked(&text, p)) {
         Some(true)
     } else {
         None
@@ -1004,6 +1225,121 @@ mod tests {
             local_command("I want to mark the spot where the boss spawns"),
             None
         );
+    }
+
+    #[test]
+    fn a_mark_only_when_asked_for() {
+        // The owner's session: its own "Follow the active quest marker…"
+        // came back as "question mark", and was marked ("Marked. That's
+        // mark 1."). "Mark" said in passing is no mark.
+        for sentence in [
+            "question mark",
+            "Question mark.",
+            "a question mark",
+            "the quest marker",
+            "marker",
+            "bookmark",
+            "exclamation mark",
+            "mark",
+            "clip",
+            "remember this",
+            "I'll mark it later",
+        ] {
+            assert_eq!(local_command(sentence), None, "{sentence}");
+        }
+        for sentence in [
+            "mark that",
+            "Mark this!",
+            "mark it",
+            "ok mark that",
+            "Syrup, mark that",
+            "syrup mark",
+            "clip that",
+            "save this",
+            "סמן",
+            "תסמן את זה",
+        ] {
+            assert_eq!(local_command(sentence), Some(Command::Mark), "{sentence}");
+        }
+        // Addressed, "question mark" asks for no mark either.
+        assert_ne!(
+            interpret("syrup question mark", false),
+            Heard::Command(Command::Mark)
+        );
+        assert_eq!(
+            interpret("syrup mark that", false),
+            Heard::Command(Command::Mark)
+        );
+    }
+
+    #[test]
+    fn dont_stop_is_not_stop() {
+        // "Don't stop … congratulate me until I say stop" turned coaching
+        // off in the owner's session. A stop or a mute said with "don't",
+        // "do not", "never" or "אל" asks for the opposite.
+        for sentence in [
+            "don't stop talking",
+            "Do not stop talking",
+            "never stop talking",
+            "don't be quiet",
+            "don't mute",
+            "Don't stop",
+            "אל תשתוק",
+            "Don't stop don't stop don't stop congratulate me until I say stop",
+        ] {
+            assert_eq!(local_command(sentence), None, "{sentence}");
+            assert_eq!(coaching_request(sentence), None, "{sentence}");
+            assert_eq!(recording_request(sentence), None, "{sentence}");
+        }
+        assert_eq!(recording_request("don't stop recording"), None);
+        assert_eq!(recording_request("never stop the recording"), None);
+        assert_eq!(recording_request("אל תפסיק להקליט"), None);
+        assert_eq!(recording_request("don't start recording"), None);
+        assert_eq!(coaching_request("don't stop coaching"), None);
+        assert_eq!(coaching_request("do not stop giving tips"), None);
+        assert_eq!(coaching_request("אל תפסיק לאמן"), None);
+        // A plain stop still stops, "no" before it too.
+        assert_eq!(local_command("stop talking"), Some(Command::Mute));
+        assert_eq!(local_command("no, stop talking"), Some(Command::Mute));
+        assert_eq!(local_command("שקט"), Some(Command::Mute));
+        assert_eq!(recording_request("stop recording"), Some(false));
+        assert_eq!(coaching_request("stop coaching"), Some(false));
+        assert_eq!(coaching_request("dont tell me what to do"), Some(false));
+        assert_eq!(coaching_request("לא, תפסיק לאמן"), Some(false));
+    }
+
+    #[test]
+    fn an_objection_to_what_was_just_said() {
+        // The owner's, after a taught thing said he leveled up.
+        for sentence in [
+            "I didn't level up I don't know what you mean",
+            "stop it I didn't leveled up",
+            "Try to guess I didn't",
+            "no",
+            "No!",
+            "nope",
+            "that's wrong",
+            "stop",
+            "don't tell me about my level nothing OK from now on remember to don't do not tell me that",
+            "לא",
+            "לא עליתי",
+            "תפסיק",
+            "די",
+            "זה לא נכון",
+        ] {
+            assert!(objection(sentence), "{sentence}");
+        }
+        for sentence in [
+            "Don't stop don't stop don't stop congratulate me until I say stop",
+            "don't stop",
+            "אל תפסיק",
+            "what's my hp",
+            "please congratulate me with the more enthusiastic response that I graduated to level 17",
+            "How do I get to level 20 from quest fastest",
+            "",
+        ] {
+            assert!(!objection(sentence), "{sentence}");
+        }
     }
 
     #[test]

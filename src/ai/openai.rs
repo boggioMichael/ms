@@ -803,7 +803,9 @@ impl OpenAi {
 
     /// `text` spoken, handed to `on_samples` a piece at a time as the voice
     /// is made (24 kHz mono), so it can be played before it is complete.
-    /// Returns how many samples there were.
+    /// Returns how many samples there were. The voice is given each word as
+    /// it is said ([`super::pronounce`]); the line shown and logged stays as
+    /// it was written.
     pub fn speech_stream(
         &self,
         text: &str,
@@ -811,12 +813,13 @@ impl OpenAi {
         stop: Option<&Stop>,
         on_samples: &mut dyn FnMut(&[i16]),
     ) -> Result<usize, AiError> {
+        let said = super::pronounce::for_voice(text);
         let mut voice = self.voice.clone();
         for attempt in 0..2 {
             let body = json!({
                 "model": SPEECH_MODEL,
                 "voice": voice,
-                "input": text,
+                "input": said.as_str(),
                 "instructions": style,
                 "response_format": "pcm",
             });
@@ -1188,6 +1191,40 @@ arms are gone, so keep hitting the arms until they drop.";
         assert_eq!(output_text(raw).unwrap(), "Hey! HP looks great.");
         assert!(output_text(br#"{"output":[]}"#).is_err());
         assert!(output_text(b"not json").is_err());
+    }
+
+    #[test]
+    fn openais_voice_is_given_each_word_as_it_is_said() {
+        use crate::ai::pronounce::fake;
+        if !fake::have_curl() {
+            return;
+        }
+        let (base, seen) = fake::voices();
+        let openai = OpenAi::new("sk-test", &base, "cedar", None);
+        for (line, said) in [
+            // The owner's session, 12:03:59.
+            (
+                "החנות שמופיעה כאן היא “Lion King’s Castle” ולא Henesys General Store; חזור למפת Henesys וחפש את החנות שם.",
+                "החנות שמופיעה כאן היא “לאיון קינגס קאסל” ולא הֶנֶסִיס ג'נרל סטור; חזור למפת הֶנֶסִיס וחפש את החנות שם.",
+            ),
+            // 12:47:04: the character's name, said as a word.
+            (
+                "השם שלך הוא WANWANBUJIO, לא ANWANBUIIO. תיקנתי.",
+                "השם שלך הוא וונוואן בוג'יו, לא Anwanbuiio. תיקנתי.",
+            ),
+            ("Got it, Mikael.", "Got it, Michael."),
+            ("Pot now, slowly.", "Pot now, slowly."),
+        ] {
+            let from = seen.lock().unwrap().len();
+            openai
+                .speech_stream(line, "Calm.", None, &mut |_| {})
+                .unwrap();
+            assert_eq!(
+                fake::said(&seen, from),
+                [("/v1/audio/speech".to_string(), said.to_string())],
+                "{line}"
+            );
+        }
     }
 
     #[test]
