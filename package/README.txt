@@ -244,23 +244,23 @@ Workshop (off unless you turn it on)
   dependencies and takes longer.
 
 Claude, live (talk with Claude while it sees the game)
-  Claude can be the one you talk with: MapleSyrup gives it everything it reads
-  off the screen as it happens (HP/MP/EXP with how old each number is, level,
-  map, what moves on the screen and where, a dialog and its text, the things
-  you taught it), passes on what you say as you said it, and says Claude's
-  answers in its voice. While Claude is connected, MapleSyrup thinks and says
-  nothing of its own; when Claude goes, it talks again.
-  It needs Claude Code on this PC (signed in with a Claude Pro or Max plan).
-  Once: run  MapleSyrup.exe --setup-claude  (it writes a "Claude" folder
-  beside MapleSyrup.exe). Then double-click "Start Claude.cmd" in that folder:
-  it starts MapleSyrup if it is not running, then Claude with the live
-  channel. Claude Code asks each time whether to load a "development
-  channel" - choose "I am using this for local development" (custom channels
-  need that while they are a research preview). The session also shows in the
-  Claude app (Remote Control), where you can read it and type to it.
-  Talk through the phone as usual; Claude answers in MapleSyrup's voice.
-  CLAUDE.md in that folder is what Claude reads about how to talk with you
-  (with your about-me.txt at its end): change it as you like.
+  Talk with Claude in the Claude app as usual, and Claude sees your game:
+  MapleSyrup works in the background (no window, no voice of its own) and
+  gives Claude what it knows - the screen as it is now (HP/MP/EXP with how
+  old each number is, level, map, what moves on the screen and where, a
+  dialog and its text, the things you taught it), a look at the screen,
+  its own MapleStory wiki (Claude adds the facts it checked), and what it
+  knows about you (your about-me.txt, which Claude can add to).
+  Once: double-click "Add MapleSyrup to Claude.cmd" (or run
+  MapleSyrup.exe --install-claude), then quit the Claude app completely (its
+  icon by the clock -> Quit) and open it again. From then on Claude starts
+  MapleSyrup by itself when it needs it, and stops it when it is done.
+  It needs the Claude desktop app on this PC.
+  Claude Code too, with the game pushed to it as it happens (a death, a
+  level-up, a new map, HP in danger): run MapleSyrup.exe --setup-claude
+  once, then "Start Claude.cmd" in the Claude folder it writes beside
+  MapleSyrup.exe. Claude Code asks each time whether to load a
+  "development channel" - choose "I am using this for local development".
 
 Privacy
   Your keys stay on this PC (%APPDATA%\MapleSyrup); a live call uses a key
@@ -289,11 +289,11 @@ Privacy
   The workshop (off unless you turn it on) hands your request and the end of
   the session's log to the coding agent on your PC, which sends them to its
   own provider (Anthropic or OpenAI).
-  Claude, live (only when you start Claude with it): Claude Code gets what
-  MapleSyrup reads off the game, what you say, and - when Claude asks to look
-  - pictures of the game window, and sends them to Anthropic as part of your
-  Claude session. MapleSyrup serves them on this PC only (127.0.0.1, with a
-  key), never through the tunnel.
+  Claude, live (only once you add MapleSyrup to Claude): Claude gets what
+  MapleSyrup reads off the game, its wiki, your about-me.txt and notebook,
+  and - when Claude asks to look - pictures of the game window, and sends
+  them to Anthropic as part of your Claude conversation. MapleSyrup serves
+  them on this PC only (127.0.0.1, with a key), never through the tunnel.
   "The game" is any window whose title contains "MapleStory".
   OpenAI bills your account: a live call costs more than the PC voice (very
   roughly a dollar or two per hour of play, depending on how much you talk).
