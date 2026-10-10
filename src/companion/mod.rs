@@ -491,6 +491,14 @@ pub struct Companion {
     last_name: Option<String>,
     /// A level reading waiting to hold: the level, and since when.
     level_candidate: Option<(u32, f64)>,
+    /// Level-ups of the characters played before this one, this session
+    /// (`exp` starts over for each); when falls in EXP were counted as
+    /// level-ups lately (wraps); and since when a level reading that would
+    /// be another character's has waited to hold (see
+    /// [`Companion::levels_gained`]).
+    levels_before: u32,
+    wraps: std::collections::VecDeque<f64>,
+    switch_since: Option<f64>,
     announced_level_up: f64,
     marks: u32,
     now: f64,
@@ -504,6 +512,11 @@ pub struct Companion {
     mp_steady: Steadiness,
     /// Since when HP has read as zero.
     zero_hp_since: f64,
+    /// MP read lately (when, percent; not an empty fill), and whether the
+    /// empty fill being read now is a reading (`None`: MP is not empty;
+    /// see [`Companion::mp_reading`]).
+    mp_lately: std::collections::VecDeque<(f64, f32)>,
+    mp_empty: Option<bool>,
     /// Alerts said with no sign of life from the player since, and the
     /// state when the last was said: when, and HP, MP, EXP and the level
     /// then, with the highest EXP seen since, and whether HP or MP has been
@@ -733,9 +746,10 @@ const DEATH_EXP_SECS: f64 = 10.0;
 /// …or the way down was seen: this many readings under the mark (not the
 /// swing's) within this long before the bar read empty — a cursor jumps
 /// from where the bar was to its start; HP that runs out goes through the
-/// red first.
-const DEATH_FALL_READINGS: usize = 2;
-const DEATH_FALL_SECS: f64 = 3.0;
+/// red first. (An empty MP fill is a reading only so: see
+/// [`Companion::mp_reading`].)
+const WAY_DOWN_READINGS: usize = 2;
+const WAY_DOWN_SECS: f64 = 3.0;
 
 /// Alerts said with no sign of life from the player — a word, HP going
 /// back up (a potion), EXP gained, a level — before the rest are held…
@@ -792,6 +806,13 @@ fn exp_gained(then: Option<f32>, now: Option<f32>) -> bool {
 /// times as long, a misread by the sight's reader lasting minutes.
 const LEVEL_HOLD_SECS: f64 = 3.0;
 const LOWER_LEVEL_HOLDS: f64 = 10.0;
+/// Another character's EXP bar coming into view lower is no level-up: a
+/// fall in EXP counted as one (the bar's wrap) from this long before its
+/// level was first read (the level's reader can lag the bar's)…
+const SWITCH_WRAP_SECS: f64 = 10.0;
+/// …and no longer ago than this (a lower level holds 30 s; one counted
+/// before was the character's own).
+const SWITCH_SECS: f64 = LEVEL_HOLD_SECS * LOWER_LEVEL_HOLDS + SWITCH_WRAP_SECS;
 
 /// How long HP or MP must stay low before it is said, in seconds (and at
 /// least three frames): a moment's misread is not worth a warning.
@@ -2519,6 +2540,9 @@ impl Companion {
             top_level: None,
             last_name: None,
             level_candidate: None,
+            levels_before: 0,
+            wraps: std::collections::VecDeque::new(),
+            switch_since: None,
             announced_level_up: f64::NEG_INFINITY,
             marks: 0,
             now: 0.0,
@@ -2527,6 +2551,8 @@ impl Companion {
             hp_steady: Steadiness::new(),
             mp_steady: Steadiness::new(),
             zero_hp_since: 0.0,
+            mp_lately: std::collections::VecDeque::new(),
+            mp_empty: None,
             unanswered: 0,
             alert_at: f64::NEG_INFINITY,
             hp_at_alert: None,
@@ -2866,9 +2892,32 @@ impl Companion {
             seconds: self.now,
             exp_per_hour: self.exp.per_hour(),
             seconds_to_level: self.exp.seconds_to_level(),
-            levels_gained: self.exp.levels_gained(),
+            levels_gained: self.levels_gained(),
             marks: self.marks,
         }
+    }
+
+    /// Level-ups this session: the characters' played before this one,
+    /// and this one's — less, while a level reading that would be another
+    /// character's waits to hold, the falls in EXP counted as level-ups
+    /// that came with it ([`Companion::switch_wraps`]): another character's
+    /// bar coming into view lower is no level-up, nor said as one while it
+    /// may be. (Taken, they are taken back: see `watch_progress`.)
+    fn levels_gained(&self) -> u32 {
+        let held = self
+            .switch_since
+            .map_or(0, |since| self.switch_wraps(since));
+        self.levels_before + self.exp.levels_gained().saturating_sub(held)
+    }
+
+    /// The falls in EXP counted as level-ups (wraps, kept [`SWITCH_SECS`])
+    /// that came with a level reading first read at `since`: from
+    /// [`SWITCH_WRAP_SECS`] before it on.
+    fn switch_wraps(&self, since: f64) -> u32 {
+        self.wraps
+            .iter()
+            .filter(|&&at| at >= since - SWITCH_WRAP_SECS)
+            .count() as u32
     }
 
     /// The session so far, as a friend in the room would know it, as of
@@ -2888,7 +2937,7 @@ impl Companion {
                 .map(|(quiet, _)| quiet),
             deaths: self.deaths,
             since_last_death: since(self.last_death),
-            level_ups: self.exp.levels_gained(),
+            level_ups: self.levels_gained(),
             since_last_level_up: since(self.announced_level_up),
             lowest_hp_lately: self
                 .hp_minute
@@ -2999,7 +3048,7 @@ impl Companion {
     /// steady bar or swinging (the cursor makes the swing): it is a death
     /// only with a second sign — EXP fell (the death's penalty); or the
     /// way down was seen, readings under the mark just before it
-    /// ([`DEATH_FALL_READINGS`] in [`DEATH_FALL_SECS`]); or HP read steady
+    /// ([`WAY_DOWN_READINGS`] in [`WAY_DOWN_SECS`]); or HP read steady
     /// under the mark before a swing that hid the rest. Readings that were
     /// the swing's are no sign: its first frames, before it was found to
     /// swing, can rest a moment where the cursor rests ("12, 12", "10,
@@ -3024,14 +3073,62 @@ impl Companion {
                 p > 0.5
                     && p < mark
                     && t < self.zero_hp_since
-                    && self.zero_hp_since - t <= DEATH_FALL_SECS
+                    && self.zero_hp_since - t <= WAY_DOWN_SECS
                     && !steady.swung_at(t)
             })
             .count();
         let steady_under = self
             .steady_hp
             .is_some_and(|(t, p)| p < mark && !steady.swung_at(t));
-        self.exp_fell() || fall >= DEATH_FALL_READINGS || steady_under
+        self.exp_fell() || fall >= WAY_DOWN_READINGS || steady_under
+    }
+
+    /// MP as this frame reads it; `None` where it is no reading. A number
+    /// read in the game's font is believed as it comes. The bar's fill
+    /// read empty is a sliver, as HP's is (see `zero_is_death`), and the
+    /// everyday sliver is the cursor's tip parked on the bar's start: it
+    /// is a reading only when the way down was seen — [`WAY_DOWN_READINGS`]
+    /// readings under the mark (the default's when the warnings are set
+    /// lower, or off), none of them the swing's, within [`WAY_DOWN_SECS`]
+    /// before the bar first read empty; a drain goes so, and is warned of
+    /// at the mark on its way down. Otherwise it is no reading for as long
+    /// as the bar reads empty: no warning ("less than 2% MP" four times in
+    /// two minutes to a player at 80, then the hold), and the cursor moving
+    /// off is no potion ("There you go.").
+    fn mp_reading(&mut self, now: f64, mp: Option<Gauge>) -> Option<Gauge> {
+        let mp = mp?;
+        if mp.read || mp.percent > 0.5 {
+            self.mp_empty = None;
+            self.mp_lately.push_back((now, mp.percent));
+            while self
+                .mp_lately
+                .front()
+                .is_some_and(|(t, _)| now - t > WAY_DOWN_SECS)
+            {
+                self.mp_lately.pop_front();
+            }
+            return Some(mp);
+        }
+        // (Decided as it first reads empty, from the readings before.)
+        let believed = match self.mp_empty {
+            Some(believed) => believed,
+            None => {
+                let mark = self.settings.mp_low.max(Settings::default().mp_low);
+                let way_down = self
+                    .mp_lately
+                    .iter()
+                    .filter(|&&(t, p)| {
+                        p > 0.5
+                            && p < mark
+                            && now - t <= WAY_DOWN_SECS
+                            && !self.mp_steady.swung_at(t)
+                    })
+                    .count();
+                way_down >= WAY_DOWN_READINGS
+            }
+        };
+        self.mp_empty = Some(believed);
+        believed.then_some(mp)
     }
 
     /// Whether a sentence now would count as addressed without the wake word.
@@ -3058,13 +3155,16 @@ impl Companion {
     }
 
     /// One frame.
-    pub fn observe(&mut self, now: f64, obs: Observation) -> Vec<Action> {
+    pub fn observe(&mut self, now: f64, mut obs: Observation) -> Vec<Action> {
         self.now = now;
         self.started_at.get_or_insert(now);
         let mut out = Vec::new();
         let mut alerts = Vec::new();
         self.track_window(now, &obs, &mut out);
         if obs.game.is_seen() {
+            // (An empty MP fill with no way down seen is no reading, to
+            // everything after: see `mp_reading`.)
+            obs.mp = self.mp_reading(now, obs.mp);
             self.track_change(now, &obs);
             self.watch_hp(now, &obs, &mut out, &mut alerts);
             self.watch_mp(now, &obs, &mut out, &mut alerts);
@@ -3785,6 +3885,12 @@ impl Companion {
                     };
                     let top = self.top_level.filter(|_| same_character);
                     let lower = top.is_some_and(|top| level < top);
+                    // Another character's, it would be (another name, or
+                    // lower: the note's two cases below), waiting to hold:
+                    // its EXP is not this one's (see `levels_gained`).
+                    let another = self.last_level.is_some_and(|taken| taken != level)
+                        && (!same_character || lower);
+                    self.switch_since = another.then_some(since);
                     let hold = if lower {
                         LEVEL_HOLD_SECS * LOWER_LEVEL_HOLDS
                     } else {
@@ -3798,6 +3904,19 @@ impl Companion {
                         }
                         if !lower {
                             self.top_level = Some(level);
+                        }
+                        if another {
+                            // Taken: the falls in EXP counted as level-ups
+                            // as its bar came into view are taken back (a
+                            // switch from 85% to a bar at 20% is the EXP
+                            // tracker's wrap), and its pace starts over.
+                            self.levels_before += self
+                                .exp
+                                .levels_gained()
+                                .saturating_sub(self.switch_wraps(since));
+                            self.exp = ExpTracker::new();
+                            self.wraps.clear();
+                            self.switch_since = None;
                         }
                         let rose_by_one = top.is_some_and(|top| level == top + 1);
                         if rose_by_one {
@@ -3835,15 +3954,23 @@ impl Companion {
                         }
                     }
                 }
-                _ => self.level_candidate = Some((level, now)),
+                _ => {
+                    self.level_candidate = Some((level, now));
+                    self.switch_since = None;
+                }
             }
         } else if self.last_name.is_none() && obs.name.is_some() {
             self.last_name = obs.name.clone();
         }
         // The EXP bar: for the pace and the time to the next level. Its
         // wrapping counts a level for the total, and says nothing.
-        if let Some(exp) = obs.exp {
-            self.exp.add(now, exp.percent as f64);
+        if let Some(exp) = obs.exp
+            && self.exp.add(now, exp.percent as f64)
+        {
+            self.wraps.push_back(now);
+        }
+        while self.wraps.front().is_some_and(|at| now - at > SWITCH_SECS) {
+            self.wraps.pop_front();
         }
     }
 
@@ -5484,6 +5611,133 @@ mod tests {
             _ => (100.0, false, 40.0),
         });
         assert!(deaths.is_empty(), "{lines:?}");
+    }
+
+    #[test]
+    fn an_empty_mp_fill_is_no_reading_unless_the_way_down_was_seen() {
+        // D1's MP twin (w34): his cursor parked on the MP bar's start reads
+        // as an empty MP bar. At b28cdfb, 0.3 on a steady 80 for five
+        // minutes was four MP warnings in two minutes, the hold note, and
+        // "There you go." when the cursor moved off — taken for a potion
+        // at last. An empty fill counts only when the way down was seen —
+        // two readings under the mark in the 3 s before it, not the
+        // swing's — as an empty HP bar's death does; else it is no
+        // reading. Ten frames a second; `script` gives MP and whether it
+        // was read in the game's font. Returns what was said after the
+        // first frame (when, the line), and the companion.
+        type Script<'a> = &'a dyn Fn(usize) -> (f32, bool);
+        let run = |settings: Settings, frames: usize, script: Script| {
+            let mut c = Companion::seeded(settings, SEED);
+            let mut lines: Vec<(f64, String)> = Vec::new();
+            for i in 0..frames {
+                let t = i as f64 * 0.1;
+                let (mp, read) = script(i);
+                let mut obs = frame(85.0, mp, 40.0);
+                obs.mp = gauge(mp, read);
+                let actions = c.observe(t, obs);
+                if i > 0 {
+                    lines.extend(said(&actions).into_iter().map(|l| (t, l)));
+                }
+            }
+            (lines, c)
+        };
+        let off = Settings {
+            mp_low: 0.0,
+            ..Settings::default()
+        };
+        let run_off = |frames: usize, script: Script| run(off.clone(), frames, script);
+        let run = |frames: usize, script: Script| run(Settings::default(), frames, script);
+        let mp_low = |lines: &[(f64, String)]| -> Vec<f64> {
+            lines
+                .iter()
+                .filter(|(_, l)| {
+                    [lines::MP_LOW, lines::MP_LOW_AGAIN, lines::MP_LOW_ASK]
+                        .iter()
+                        .any(|deck| from(*deck, l))
+                })
+                .map(|(t, _)| *t)
+                .collect()
+        };
+        // Parked five minutes on a steady 80, then off: not a word, no
+        // potion. (Fails at b28cdfb: the four warnings, the hold note and
+        // "There you go." at 305.1 s.)
+        let (lines, c) = run(3200, &|i| match i {
+            50..3050 => (0.3, false),
+            _ => (80.0, false),
+        });
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!((c.tally().mp_low, c.tally().potted), (0, 0));
+        assert_eq!(c.potion_at, f64::NEG_INFINITY, "moving off is no potion");
+        // Parked 3 s, at 0.0 (a tip just before the bar's start), and with
+        // the MP warnings off: the same.
+        for (lines, c) in [
+            run(200, &|i| match i {
+                50..80 => (0.3, false),
+                _ => (80.0, false),
+            }),
+            run(400, &|i| match i {
+                50..350 => (0.0, false),
+                _ => (80.0, false),
+            }),
+            run_off(400, &|i| match i {
+                50..350 => (0.3, false),
+                _ => (80.0, false),
+            }),
+        ] {
+            assert!(lines.is_empty(), "{lines:?}");
+            assert_eq!(c.potion_at, f64::NEG_INFINITY, "{lines:?}");
+        }
+        // The cursor coming in, found to swing, and parked at once: its
+        // readings under the mark in the 3 s before the empty bar were the
+        // swing's, no way down — not warned when the hold ends. (Fails at
+        // b28cdfb: a warning 0.6 s after the hold.)
+        let quick = [60.0, 20.0, 12.0, 12.0, 70.0, 10.0, 10.0, 80.0, 15.0];
+        let (lines, _) = run(600, &|i| match i {
+            50..59 => (quick[i - 50], false),
+            59..559 => (0.3, false),
+            _ => (80.0, false),
+        });
+        assert!(mp_low(&lines).is_empty(), "{lines:?}");
+        // A real drain, 80 to empty over 4 s, empty 30 s, then a potion:
+        // warned at the mark on the way down, the empty bar believed (the
+        // line comes again 12 s on, as for any low bar), and the potion
+        // seen — it answers the line.
+        let drain = |i: usize| match i {
+            0..50 => (80.0, false),
+            50..90 => ((80.0 - (i - 50) as f32 * 2.0).max(0.3), false),
+            90..390 => (0.3, false),
+            _ => (80.0, false),
+        };
+        let (lines, c) = run(500, &drain);
+        let warned = mp_low(&lines);
+        assert!(warned.len() >= 2, "{lines:?}");
+        assert!((8.8..9.1).contains(&warned[0]), "{lines:?}");
+        assert!(warned.iter().all(|t| *t < 39.0), "{lines:?}");
+        assert_eq!(c.tally().potted, 1, "{lines:?}");
+        assert!((39.0..39.3).contains(&c.potion_at), "{}", c.potion_at);
+        // With the MP warnings off, the same drain still makes the empty
+        // bar a reading (the mark is the default's then): the potion seen.
+        let (lines, c) = run_off(500, &drain);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert!((39.0..39.3).contains(&c.potion_at), "{}", c.potion_at);
+        // A fast one — 80, 40, 12, 6, empty — is a way down too.
+        let (lines, _) = run(300, &|i| match i {
+            0..50 => (80.0, false),
+            50 => (40.0, false),
+            51 => (12.0, false),
+            52 => (6.0, false),
+            53..153 => (0.3, false),
+            _ => (80.0, false),
+        });
+        let warned = mp_low(&lines);
+        assert!(!warned.is_empty() && warned[0] < 6.0, "{lines:?}");
+        // A 0 read in the game's font is believed at once.
+        let (lines, _) = run(300, &|i| match i {
+            50..150 => (0.0, true),
+            _ => (80.0, true),
+        });
+        let warned = mp_low(&lines);
+        assert!(!warned.is_empty() && warned[0] < 5.8, "{lines:?}");
     }
 
     #[test]
@@ -7936,6 +8190,74 @@ mod tests {
             lines.extend(said(&c.observe(4.0 + i as f64 * 0.1, next)));
         }
         assert_eq!(lines, ["Level up! You're level 58."]);
+    }
+
+    #[test]
+    fn another_character_is_no_level_up_though_its_exp_bar_is_lower() {
+        // w36's note: the EXP tracker takes a fall from 80% or more to under
+        // 30% for a level-up (the bar's wrap), and a character switch is
+        // one — level 167 at 85%, the select screen, level 9 at 20%. At
+        // b28cdfb it was counted (`levels_gained`, the model's "Level-ups:
+        // 1", the stats' record) 4 s after the new bar was read: after the
+        // switch was taken when the name changed (3 s), and 26 s before it
+        // with no name read (a lower level holds 30 s). Ten frames a
+        // second, EXP from the fill and creeping; the second character's
+        // name and level.
+        let run = |first: Option<&str>, then: (Option<&str>, u32)| {
+            let mut c = Companion::seeded(Settings::default(), SEED);
+            let (mut lines, mut counted) = (Vec::new(), Vec::new());
+            for i in 0..2400 {
+                let t = i as f64 * 0.1;
+                let (name, level, exp) = match i {
+                    0..600 => (first, Some(167), Some(85.0 + t as f32 * 0.01)),
+                    // (The select screen: the window, no HUD.)
+                    600..650 => (None, None, None),
+                    _ => (then.0, Some(then.1), Some(20.0 + (t - 65.0) as f32 * 0.05)),
+                };
+                let mut obs = frame(90.0, 80.0, 0.0);
+                if level.is_none() {
+                    (obs.hp, obs.mp) = (None, None);
+                }
+                obs.name = name.map(String::from);
+                obs.level = level;
+                obs.exp = exp.and_then(|e| gauge(e, false));
+                lines.extend(said(&c.observe(t, obs)).into_iter().map(|l| (t, l)));
+                let count = (c.progress().levels_gained, c.so_far().level_ups);
+                if count != (0, 0) {
+                    counted.push((t, count));
+                }
+            }
+            (lines, counted, c)
+        };
+        for then in [(Some("WanLittle"), 9), (None, 9), (Some("WanBig"), 170)] {
+            let first = then.0.map(|_| "WanWanBoggio");
+            let (lines, counted, c) = run(first, then);
+            // Never counted, at any frame. (Fails at b28cdfb: (1, 1) from
+            // 69.0 s.)
+            assert!(counted.is_empty(), "{then:?}: {:?}", counted.first());
+            assert!(
+                lines.iter().all(|(_, l)| !from(lines::LEVEL_UP, l)),
+                "{lines:?}"
+            );
+            // Taken quietly, as before: noted, not celebrated.
+            assert_eq!(c.level(), Some(then.1));
+            let note = format!("Level {} now, from 167 (", then.1);
+            assert!(lines.iter().any(|(_, l)| l.starts_with(&note)), "{lines:?}");
+        }
+        // The new character's own level-up is one: 9 to 10, its bar from
+        // 99.5% to 0.5% — said, and counted once.
+        let (_, _, mut c) = run(Some("WanWanBoggio"), (Some("WanLittle"), 9));
+        let mut lines = Vec::new();
+        for i in 0..100 {
+            let mut obs = frame(90.0, 80.0, 0.0);
+            obs.name = Some("WanLittle".into());
+            let (level, exp) = if i < 40 { (9, 99.5) } else { (10, 0.5) };
+            obs.level = Some(level);
+            obs.exp = gauge(exp, false);
+            lines.extend(said(&c.observe(240.0 + i as f64 * 0.1, obs)));
+        }
+        assert_eq!(lines, ["Level up! You're level 10."]);
+        assert_eq!((c.progress().levels_gained, c.so_far().level_ups), (1, 1));
     }
 
     #[test]

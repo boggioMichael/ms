@@ -36,7 +36,7 @@ pub mod scene;
 
 use std::collections::VecDeque;
 
-use crate::companion::{Attitude, Observation};
+use crate::companion::{Attitude, Gauge, Observation};
 
 /// What the coach sees of one frame.
 pub struct Glance<'a> {
@@ -387,6 +387,14 @@ pub const CLOSE_CALL_AGAIN: f64 = 300.0;
 /// and a flicker is not a save.
 const HOLD_FRAMES: u32 = 3;
 const HOLD_SECS: f64 = 0.6;
+/// A dip read from the bar's fill counts only when the way down was seen:
+/// this many readings between the marks (under [`CLOSE_CALL_BACK`], not
+/// under [`CLOSE_CALL_UNDER`]) within this long before HP first read under
+/// the mark. HP that falls goes through the red; the cursor resting on the
+/// bar comes from where the bar was in one frame (a "close call" at a
+/// steady 85, p21 A10). The number read in the game's font needs none.
+const WAY_DOWN_READINGS: usize = 2;
+const WAY_DOWN_SECS: f64 = 3.0;
 /// A streak: this many deaths within this long, in seconds. Remarked on
 /// once, when the third lands, and not again until the streak is over —
 /// this long without a death.
@@ -430,20 +438,26 @@ const CONSULT_TIMEOUT: f64 = 45.0;
 const KEEP_LINES: usize = 6;
 
 /// Close calls as they happen: HP under [`CLOSE_CALL_UNDER`] (held a
-/// moment), then back above [`CLOSE_CALL_BACK`] (held a moment) within
-/// [`CLOSE_CALL_WITHIN`] of going under, with no death between. A death
-/// ends the scare; so does a dip that drags on (they sat at low HP: the
-/// companion's warnings are for that). The coach remarks on one at most
-/// once in [`CLOSE_CALL_AGAIN`]; the session's stats ([`crate::metrics`])
-/// count every one.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// moment) — seen falling there, or read in the game's font (see
+/// [`WAY_DOWN_READINGS`]) — then back above [`CLOSE_CALL_BACK`] (held a
+/// moment) within [`CLOSE_CALL_WITHIN`] of going under, with no death
+/// between. A death ends the scare; so does a dip that drags on (they sat
+/// at low HP: the companion's warnings are for that). The coach remarks on
+/// one at most once in [`CLOSE_CALL_AGAIN`]; the session's stats
+/// ([`crate::metrics`]) count every one.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CloseCalls {
     scare: Scare,
+    /// HP read lately (when, percent): the way down to a dip.
+    lately: VecDeque<(f64, f32)>,
 }
 
 impl Default for CloseCalls {
     fn default() -> Self {
-        Self { scare: Scare::None }
+        Self {
+            scare: Scare::None,
+            lately: VecDeque::new(),
+        }
     }
 }
 
@@ -451,24 +465,46 @@ impl CloseCalls {
     /// One frame: HP as read (None: no reading), and whether the character
     /// is dead (the companion's word). Returns the lowest HP got, in
     /// percent, when a close call ended on this frame.
-    pub fn track(&mut self, now: f64, hp: Option<f32>, dead: bool) -> Option<f32> {
+    pub fn track(&mut self, now: f64, hp: Option<Gauge>, dead: bool) -> Option<f32> {
         if dead {
             self.scare = Scare::None;
+            self.lately.clear();
             return None;
         }
         // No reading, or a zero (a dialog over the bar, or a death on its
         // way: `dead` says which): the scare stands as it is.
-        let hp = hp.filter(|p| *p > 0.5)?;
+        let reading = hp.filter(|g| g.percent > 0.5)?;
+        let hp = reading.percent;
+        // (The way down: the readings between the marks before this one.)
+        let way_down = self
+            .lately
+            .iter()
+            .filter(|&&(t, p)| {
+                now - t <= WAY_DOWN_SECS && (CLOSE_CALL_UNDER..CLOSE_CALL_BACK).contains(&p)
+            })
+            .count();
+        self.lately.push_back((now, hp));
+        while self
+            .lately
+            .front()
+            .is_some_and(|(t, _)| now - t > WAY_DOWN_SECS)
+        {
+            self.lately.pop_front();
+        }
         let mut found = None;
         let under = hp < CLOSE_CALL_UNDER;
         let back = hp >= CLOSE_CALL_BACK;
         let held = |since: f64, frames: u32| frames >= HOLD_FRAMES && now - since >= HOLD_SECS;
         self.scare = match self.scare {
-            Scare::None if under => Scare::Under {
-                since: now,
-                frames: 1,
-                lowest: hp,
-            },
+            // (A dip begins seen falling there, or read: not from a cursor
+            // resting on the bar.)
+            Scare::None if under && (reading.read || way_down >= WAY_DOWN_READINGS) => {
+                Scare::Under {
+                    since: now,
+                    frames: 1,
+                    lowest: hp,
+                }
+            }
             Scare::None => Scare::None,
             Scare::Under {
                 since,
@@ -877,7 +913,7 @@ impl Coach {
     /// [`CLOSE_CALL_AGAIN`].
     fn track_scare(&mut self, g: &Glance) {
         let now = g.now;
-        if let Some(lowest) = self.scares.track(now, g.obs.hp.map(|h| h.percent), g.dead)
+        if let Some(lowest) = self.scares.track(now, g.obs.hp, g.dead)
             && now - self.last_close_call >= CLOSE_CALL_AGAIN
         {
             self.last_close_call = now;
@@ -1764,26 +1800,109 @@ mod tests {
         // The detector the coach and the session's stats share: a dip to
         // 8% saved, and the same a minute later, are both close calls (the
         // coach remarks on the first only: above); a dip that ends in a
-        // death is not one, nor is the revive.
+        // death is not one, nor is the revive. (HP read from the number,
+        // as above; from the bar's fill, below.)
         let mut calls = CloseCalls::default();
         let mut found = Vec::new();
-        let mut feed = |from: f64, secs: f64, hp: f32, dead: bool| {
+        let mut feed = |from: f64, secs: f64, hp: f32, read: bool, dead: bool| {
             for i in 0..(secs * 10.0).round() as u32 {
                 let t = from + i as f64 * 0.1;
-                if let Some(lowest) = calls.track(t, Some(hp), dead) {
+                let gauge = Gauge {
+                    percent: hp,
+                    current: None,
+                    max: None,
+                    read,
+                };
+                if let Some(lowest) = calls.track(t, Some(gauge), dead) {
                     found.push((t, lowest));
                 }
             }
         };
-        feed(20.0, 1.0, 8.0, false);
-        feed(21.0, 5.0, 60.0, false);
-        feed(80.0, 1.0, 7.0, false);
-        feed(81.0, 5.0, 60.0, false);
-        feed(130.0, 1.0, 8.0, false);
-        feed(131.0, 3.0, 0.0, true);
-        feed(134.0, 5.0, 100.0, false);
-        assert_eq!(found.len(), 2, "{found:?}");
-        assert_eq!((found[0].1, found[1].1), (8.0, 7.0), "{found:?}");
+        feed(20.0, 1.0, 8.0, true, false);
+        feed(21.0, 5.0, 60.0, true, false);
+        feed(80.0, 1.0, 7.0, true, false);
+        feed(81.0, 5.0, 60.0, true, false);
+        feed(130.0, 1.0, 8.0, true, false);
+        feed(131.0, 3.0, 0.0, true, true);
+        feed(134.0, 5.0, 100.0, true, false);
+        // From the fill: the cursor resting at 5% of a steady 85 is no
+        // dip (p21 A10); HP seen on its way down — 35 and 15 — is.
+        feed(200.0, 5.0, 85.0, false, false);
+        feed(205.0, 2.0, 5.0, false, false);
+        feed(207.0, 5.0, 85.0, false, false);
+        feed(300.0, 0.1, 35.0, false, false);
+        feed(300.1, 0.1, 15.0, false, false);
+        feed(300.2, 1.0, 6.0, false, false);
+        feed(301.2, 5.0, 85.0, false, false);
+        assert_eq!(found.len(), 3, "{found:?}");
+        let lowest: Vec<f32> = found.iter().map(|(_, lowest)| *lowest).collect();
+        assert_eq!(lowest, [8.0, 7.0, 6.0], "{found:?}");
+    }
+
+    #[test]
+    fn a_cursor_resting_on_the_bar_is_no_close_call_a_fall_seen_or_a_number_read_is() {
+        // p21 A10: HP steady at 85 from the bar's fill, his cursor resting
+        // at 5% of the bar for 2 s, then gone — at b28cdfb a close call,
+        // remarked on and counted in the stats (the detector is theirs
+        // too). A dip counts when the way down was seen — two readings
+        // between the marks in the 3 s before it: HP that falls goes
+        // through the red — or when the number was read; a cursor comes
+        // from where the bar was in one frame. Twenty seconds to settle in,
+        // then `script` (frame from 20 s → HP, read in the font) for 40 s.
+        let run = |script: &dyn Fn(usize) -> (f32, bool)| -> Vec<(f64, u32)> {
+            let mut coach = Coach::new(true);
+            play(&mut coach, 0.0, 20.0, 18.99, true, 0.02, None);
+            let v = verdict(0.02, false);
+            let mut consults = Vec::new();
+            for i in 0..400 {
+                let now = 20.0 + i as f64 * 0.1;
+                let (hp, read) = script(i);
+                let mut o = obs(19.19 + (i / 10) as f32 * 0.01, 150);
+                o.hp = Some(Gauge {
+                    percent: hp,
+                    current: None,
+                    max: None,
+                    read,
+                });
+                let g = Glance {
+                    now,
+                    obs: &o,
+                    scene: Some(&v),
+                    in_view: true,
+                    talking: false,
+                    muted: false,
+                    dead: false,
+                    held: false,
+                };
+                if let Some(reason) = coach.observe(&g) {
+                    consults.push((now, reason));
+                    coach.answered(now, None);
+                }
+            }
+            close_calls(&consults)
+        };
+        // A10 at 30 s. (Fails at b28cdfb: "close call (5%)" at 32.6 s.)
+        let a10 = run(&|i| (if (100..120).contains(&i) { 5.0 } else { 85.0 }, false));
+        assert!(a10.is_empty(), "{a10:?}");
+        // The way down seen: 85, 60, 35, 15, then 8 for a second, potted.
+        let fall = run(&|i| {
+            let hp = match i {
+                100 => 60.0,
+                101 => 35.0,
+                102 => 15.0,
+                103..113 => 8.0,
+                _ => 85.0,
+            };
+            (hp, false)
+        });
+        assert_eq!(fall, vec![(32.0, 8)]);
+        // The number read: from 90 to 8 in one frame, potted a second on.
+        let read = run(&|i| (if (100..110).contains(&i) { 8.0 } else { 90.0 }, true));
+        assert_eq!(read, vec![(31.6, 8)]);
+        // The price, chosen: the same hit from the fill, nothing between
+        // 85 and 8, is the cursor's very shape — no close call.
+        let hit = run(&|i| (if (100..110).contains(&i) { 8.0 } else { 85.0 }, false));
+        assert!(hit.is_empty(), "{hit:?}");
     }
 
     #[test]

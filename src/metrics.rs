@@ -1333,7 +1333,7 @@ impl Stats {
                 }
             }
         }
-        let hp = obs.hp.map(|g| g.percent);
+        let hp = obs.hp;
         if self.close_calls.track(at, hp, companion.dead()).is_some() {
             self.record.close_calls += 1;
         }
