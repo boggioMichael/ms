@@ -1,0 +1,715 @@
+   Compiling ms v0.9.0 (/home/runner/work/ms/ms)
+    Finished `release` profile [optimized] target(s) in 1m 24s
+     Running unittests src/lib.rs (target/release/deps/ms-cf63dbed89972323)
+
+running 506 tests
+test ai::brain::tests::a_first_sentence_that_only_announces_the_answer_is_not_said ... ok
+test ai::brain::tests::a_grind_of_warnings_in_a_row_is_one_turn_and_the_players_last_sentence_stays ... ok
+test ai::brain::tests::a_hebrew_window_recital_is_no_order ... ok
+test ai::brain::tests::a_friends_lines_pass_through_untouched ... ok
+test ai::brain::tests::a_hold_after_a_colon_is_still_an_announcement ... ok
+test ai::brain::tests::a_level_up_nobody_asked_about_is_not_said ... ok
+test ai::brain::tests::a_hebrew_cheer_beside_a_number_is_said ... ok
+test ai::brain::tests::a_reply_is_cut_into_sentences ... ok
+test ai::brain::tests::a_streamed_reply_is_cut_into_sentences ... ok
+test ai::brain::tests::a_word_or_two_that_asks_nothing_needs_no_same_as_before ... ok
+test ai::brain::tests::a_word_to_it_is_answered_and_nothing_is_reported_unasked ... ok
+test ai::brain::tests::a_lone_one_is_a_number_and_not_a_list ... ok
+test ai::brain::tests::a_status_line_nobody_asked_for_is_not_said ... ok
+test ai::brain::tests::asked_to_talk_it_says_it_is_here_in_its_attitude_and_language ... ok
+test ai::brain::tests::asking_to_hear_it_again_is_the_one_time_to_repeat ... ok
+test ai::brain::tests::a_line_beside_a_number_that_says_something_of_its_own_is_said ... ok
+test ai::brain::tests::classic_world_is_known_from_the_snapshot_or_what_he_taught ... ok
+test ai::brain::tests::citations_and_links_are_not_read_out ... ok
+test ai::brain::tests::his_name_is_his_files_and_never_one_heard ... ok
+test ai::brain::tests::its_own_lines_join_the_conversation_after_the_watchers_word ... ok
+test ai::brain::tests::nothing_said_lately_is_said_again ... ok
+test ai::brain::tests::same_as_before_is_a_card_in_its_attitude_and_never_the_same_twice_running ... ok
+test ai::brain::tests::silence_and_speech_cleanup ... ok
+test ai::brain::tests::hebrew_openers_places_and_decimals_do_not_save_a_recital ... ok
+test ai::brain::tests::humanising_is_done_in_one_pass ... ok
+test ai::brain::tests::speech_cleanup_and_humanising_go_together ... ok
+test ai::brain::tests::the_answer_is_in_his_sentences_language_unless_he_asked_for_one ... ok
+test ai::brain::tests::the_conversation_is_kept_and_starts_with_the_player ... ok
+test ai::brain::tests::the_owners_questions_about_the_screen_get_it_close_up_and_chit_chat_does_not ... ok
+test ai::brain::tests::the_persona_says_how_to_be_present_and_how_to_use_what_it_knows ... ok
+test ai::brain::tests::the_conversation_keeps_a_ramble_short ... ok
+test ai::brain::tests::the_snapshot_says_what_a_friend_in_the_room_would_know ... ok
+test ai::brain::tests::the_snapshot_says_what_is_seen_and_what_is_estimated ... ok
+test ai::brain::tests::the_same_long_sentence_with_other_numbers_is_the_same_sentence ... ok
+test ai::brain::tests::the_voice_is_told_the_attitude_and_how_this_line_is_delivered ... ok
+test ai::brain::tests::the_stream_drops_the_assistant_too ... ok
+test ai::brain::tests::the_assistant_is_taken_out_of_a_reply ... ok
+test ai::brain::tests::what_the_voice_never_said_is_not_said_lately ... ok
+test ai::eleven::tests::a_lively_voice_is_picked_to_start_with ... ok
+test ai::eleven::tests::a_warning_is_faster_and_sharper_than_a_reply_and_an_explanation_steadier ... ok
+test ai::eleven::tests::eleven_v4_gets_stability_in_its_three_steps_and_nothing_else ... ok
+test ai::brain::tests::what_follows_a_disclaimer_with_no_but_is_kept_when_it_advises ... ok
+test ai::brain::tests::two_sentences_glued_at_a_full_stop_are_parted ... ok
+test ai::eleven::tests::hebrew_and_thai_go_to_the_model_that_speaks_them ... ok
+test ai::eleven::tests::plain_is_the_voice_as_it_is_on_either_family ... ok
+test ai::images::tests::base64_matches_the_standard ... ok
+test ai::images::tests::boxes_go_between_fractions_pixels_and_thousandths ... ok
+test ai::images::tests::pictures_encode_and_rulers_frame_them ... ok
+test ai::brain::tests::an_order_or_an_everyday_word_is_no_place_of_his_map ... ok
+test ai::knowledge::tests::a_correction_replaces_what_it_corrects_and_wins ... ok
+test ai::knowledge::tests::something_looked_up_answers_the_same_question_next_time ... ok
+test ai::knowledge::tests::the_words_of_a_question_leave_out_the_common_ones ... ok
+test ai::knowledge::tests::what_helps_is_found_by_the_words_it_shares ... ok
+test ai::knowledge::tests::it_is_kept_between_sessions ... ok
+test ai::language::tests::locales_have_names ... ok
+test ai::live::tests::a_call_keeps_the_conversations_rules_on_presence_and_on_what_it_knows ... ok
+test ai::live::tests::a_call_is_told_who_it_is_what_it_knows_and_what_was_said ... ok
+test ai::live::tests::a_call_listens_the_way_it_adapted_to ... ok
+test ai::memory::tests::his_name_comes_from_his_own_file ... ok
+test ai::live::tests::a_call_takes_functions_only ... ok
+test ai::memory::tests::it_adapts_to_how_the_player_talks ... ok
+test ai::memory::tests::it_is_kept_and_read_back ... ok
+test ai::memory::tests::it_looks_back_when_there_is_enough_new_talk_without_asking_every_minute ... ok
+test ai::memory::tests::the_look_back_asks_for_the_whole_notebook ... ok
+test ai::memory::tests::the_notebook_comes_back_whole_and_its_lessons_go_to_knowledge ... ok
+test ai::memory::tests::the_logs_are_read_from_where_the_last_reading_stopped ... ok
+test ai::memory::tests::the_owners_misheard_names_are_never_learned_as_words_or_facts ... ok
+test ai::openai::tests::a_long_reply_is_an_explanation_and_a_warning_alone_is_urgent ... ok
+test ai::openai::tests::a_stream_is_read_whatever_pieces_it_arrives_in ... ok
+test ai::openai::tests::error_answers_are_read_from_every_service ... ok
+test ai::openai::tests::reads_the_text_out_of_a_responses_answer ... ok
+test ai::pronounce::tests::a_hebrew_line_says_the_games_words_as_an_israeli_gamer_does ... ok
+test ai::memory::tests::what_it_learned_is_told_shown_and_forgotten_on_the_phone ... ok
+test ai::pronounce::tests::an_all_caps_name_is_said_as_a_word_never_spelled_out ... ok
+test ai::pronounce::tests::an_english_line_stays_english_with_names_in_their_english_form ... ok
+test ai::pronounce::tests::replay_a_session_log ... ignored
+test ai::pronounce::tests::a_mixed_line_goes_sentence_by_sentence ... ok
+test ai::pronounce::tests::taught_words_come_first_in_the_lines_of_their_script ... ok
+test ai::pronounce::tests::teach_requests_are_understood_and_ordinary_talk_is_not ... ok
+test ai::pronounce::tests::taught_words_are_kept_in_pronounce_json_and_used_by_the_voices ... ok
+test ai::pronounce::tests::the_owners_hebrew_lines_are_said_in_hebrew ... ok
+test ai::style::tests::every_attitude_gets_the_rules_and_its_own_voice ... ok
+test ai::style::tests::the_rules_are_numbered_and_say_to_react_not_report_and_never_as_an_assistant ... ok
+test ai::tests::a_line_with_other_numbers_is_translated_once ... ok
+test ai::tests::a_template_never_puts_a_number_in_another_numbers_grammar ... ok
+test ai::tests::keys_are_recognised ... ok
+test ai::tests::the_coach_is_told_to_react_in_its_attitude_and_never_to_narrate ... ok
+test ai::tests::wav_in_memory_has_a_correct_header ... ok
+test ai::tools::tests::a_correction_is_kept_for_good ... ok
+test ai::tools::tests::settings_and_the_notebook_change_only_when_he_plainly_asks ... ok
+test ai::tools::tests::warnings_move_when_the_player_asks ... ok
+test ai::eleven::tests::elevenlabs_is_given_each_word_as_it_is_said ... ok
+test app::dog::tests::the_mouth_follows_how_loud_the_voice_is ... ok
+test ai::openai::tests::openais_voice_is_given_each_word_as_it_is_said ... ok
+test app::dog::tests::turning_round_a_point_keeps_the_point ... ok
+test ai::pronounce::tests::the_voices_are_given_the_respelling_and_the_shown_and_logged_line_is_not ... ok
+test app::panel::tests::the_dog_sits_to_the_left ... ok
+test app::panel::tests::the_panel_is_premultiplied_with_see_through_corners ... ok
+test app::dog::tests::the_parts_are_inside_and_put_together_make_the_dog ... ok
+test app::recorder::tests::a_spoken_line_stopped_short_is_cut_where_it_stopped ... ok
+test app::recorder::tests::ffmpeg_is_told_to_record_the_screen_and_the_sound_on_one_clock ... ok
+test app::recorder::tests::pieces_go_where_they_were_heard_and_follow_each_other_smoothly ... ok
+test app::panel::tests::the_panel_grows_with_the_game ... ok
+test app::recorder::tests::progress_reports_are_read_from_the_end ... ok
+test app::recorder::tests::the_phone_is_placed_by_when_it_was_heard ... ok
+test app::recorder::tests::the_phone_is_heard_when_the_player_talks_not_when_the_room_is_heard ... ok
+test app::recorder::tests::the_sound_goes_to_ffmpeg_as_matroska_with_each_blocks_time ... ok
+test app::screen::layout_tests::columns_line_up_and_the_height_is_kept ... ok
+test app::screen::layout_tests::lines_are_cut_to_the_console_with_escape_codes_whole ... ok
+test app::screen::tests::durations_and_truncation ... ok
+test app::screen::tests::the_block_has_the_same_height_whatever_it_shows ... ok
+test app::session::tests::marks_and_lines_are_written ... ok
+test app::session::tests::the_installer_can_choose_the_sessions_folder ... ok
+test capture::pick_tests::a_decorated_title_is_taken_when_nothing_is_exact ... ok
+test capture::pick_tests::no_game_no_pick ... ok
+test capture::pick_tests::the_exact_title_wins_over_lookalikes_above_it ... ok
+test claude::board::tests::a_new_bridge_starts_from_now_and_then_gets_each_event_once ... ok
+test claude::board::tests::a_poll_waits_for_the_next_event ... ok
+test app::dog::tests::its_mouth_opens_with_the_voice ... ok
+test claude::board::tests::only_the_key_and_never_through_a_tunnel ... ok
+test claude::board::tests::regions_by_name_and_by_numbers ... ok
+test claude::board::tests::says_are_kept_for_the_main_loop_and_status_says_the_reading_and_recent_news ... ok
+test claude::board::tests::the_wiki_and_the_players_file_are_kept_and_found ... ok
+test claude::board::tests::look_gives_the_screen_or_part_of_it_while_the_game_is_in_front ... ok
+test claude::channel::tests::a_companion_started_again_is_greeted_again_and_its_events_come_through ... ok
+test claude::channel::tests::a_message_is_written_whole_in_one_go ... ok
+test claude::channel::tests::a_query_is_escaped_for_the_url ... ok
+test claude::channel::tests::claude_code_gets_the_channel_and_say_the_desktop_app_the_tools ... ok
+test claude::channel::tests::events_flow_to_claude_code_after_initialized_with_a_hello_first ... ok
+test claude::channel::tests::it_answers_the_protocol_and_nothing_else ... ok
+test claude::channel::tests::a_companion_that_stops_is_told_once_and_one_that_comes_back_says_hello ... ok
+test claude::channel::tests::the_tools_read_look_search_keep_and_say ... ok
+test claude::feed::tests::a_death_a_level_up_and_a_new_map_are_news_once ... ok
+test claude::feed::tests::a_dialog_opening_and_its_text_are_news ... ok
+test claude::feed::tests::a_misread_level_for_a_moment_is_no_level_up ... ok
+test claude::feed::tests::a_window_change_that_holds_is_news_a_glance_is_not ... ok
+test claude::feed::tests::hp_danger_is_news_going_in_and_coming_out_not_while_it_hovers ... ok
+test claude::feed::tests::mp_is_news_only_when_all_but_gone ... ok
+test claude::feed::tests::the_first_look_is_the_state_not_news ... ok
+test claude::feed::tests::the_state_goes_out_now_and_then_when_something_moved ... ok
+test claude::feed::tests::the_text_says_every_reading_with_its_age ... ok
+test claude::kit::tests::a_path_as_permission_rules_write_it ... ok
+test claude::kit::tests::claude_may_use_maplesyrup_the_web_and_his_folders_and_the_launcher_needs_no_hebrew ... ok
+test claude::kit::tests::maplesyrup_is_added_to_the_desktop_config_keeping_the_rest ... ok
+test claude::kit::tests::the_brief_tells_claude_to_talk_through_say_and_keeps_the_players_own ... ok
+test claude::kit::tests::the_mcp_config_starts_the_bridge_from_a_path_with_hebrew_in_it ... ok
+test claude::kit::tests::the_style_makes_it_claude_for_anything_and_is_the_one_chosen ... ok
+test claude::link::tests::a_link_is_saved_read_and_removed_only_by_its_own_run ... ok
+test claude::link::tests::the_key_is_made_once_and_kept ... ok
+test coach::scene::tests::a_cut_back_to_a_picture_seen_lately_is_a_return_not_a_new_scene ... ok
+test coach::scene::tests::a_fingerprint_is_the_same_whatever_the_frames_size ... ok
+test coach::scene::tests::a_flash_that_goes_away_is_not_a_new_scene ... ok
+test coach::scene::tests::a_loading_screen_keeps_the_cut_open_until_the_map_comes_up ... ok
+test coach::scene::tests::a_scroll_is_a_small_change_and_a_cut_a_new_scene ... ok
+test coach::tests::a_close_call_is_reacted_to_at_once_not_a_quarter_minute_after_the_warning ... ok
+test coach::tests::a_close_call_is_remarked_on_once_in_a_while_and_never_from_the_grave ... ok
+test coach::tests::a_cursor_resting_on_the_bar_is_no_close_call_a_fall_seen_or_a_number_read_is ... ok
+test coach::tests::a_fill_at_two_percent_or_under_is_no_reading_for_a_close_call ... ok
+test coach::tests::a_level_reading_that_flips_is_not_the_coachs_to_celebrate ... ok
+test coach::tests::a_look_called_off_is_not_nothing_to_say_and_the_looks_come_no_less_often ... ok
+test coach::tests::a_new_scene_a_level_up_and_a_stall_are_each_looked_at_in_turn ... ok
+test coach::tests::a_new_scene_is_looked_at_once_in_a_while_and_not_around_a_death_or_a_level_up ... ok
+test coach::tests::a_stall_is_fighting_with_no_exp_and_idle_time_never_counts ... ok
+test coach::tests::every_close_call_is_found_though_the_coach_remarks_on_one_in_five_minutes ... ok
+test coach::tests::every_reason_reacts_in_the_attitudes_voice_and_never_narrates ... ok
+test coach::tests::it_looks_now_and_then_and_less_often_when_it_has_nothing_to_say ... ok
+test coach::tests::it_waits_while_someone_talks_and_after_anything_was_said ... ok
+test coach::tests::looks_come_less_often_while_the_player_talks_a_lot ... ok
+test coach::tests::nothing_going_on_means_nobody_is_playing ... ok
+test coach::tests::the_minutes_of_a_hold_are_not_minutes_of_a_stall ... ok
+test coach::tests::the_third_death_in_ten_minutes_is_a_streak_said_once_per_streak ... ok
+test coach::tests::while_the_companion_holds_its_alerts_the_coach_holds_its_tongue ... ok
+test companion::attitude::tests::a_deck_deals_every_line_before_any_again_and_never_one_twice_in_a_row ... ok
+test companion::attitude::tests::a_deck_dealt_by_place_deals_a_twin_card_for_card ... ok
+test companion::attitude::tests::a_deck_seeded_by_the_session_is_dealt_in_another_order_each_night ... ok
+test companion::attitude::tests::a_settled_deck_shuffles_its_first_round_whole ... ok
+test companion::attitude::tests::another_attitude_starts_the_deck_over_in_its_voice ... ok
+test companion::attitude::tests::attitudes_are_named_and_picked ... ok
+test companion::attitude::tests::small_decks_do_what_they_can ... ok
+test companion::attitude::tests::two_decks_of_the_same_size_are_not_dealt_in_step ... ok
+test companion::chat::tests::answers_say_what_is_seen ... ok
+test companion::chat::tests::long_unknown_sentences_get_no_answer ... ok
+test companion::chat::tests::small_talk_is_answered_another_way_each_time ... ok
+test companion::chat::tests::what_was_said_on_the_first_try_is_understood ... ok
+test companion::commands::tests::a_language_asked_for_out_loud_is_the_phones_language ... ok
+test companion::commands::tests::a_language_said_of_someone_or_something_is_no_request ... ok
+test companion::commands::tests::a_mark_only_when_asked_for ... ok
+test companion::commands::tests::a_sentence_about_something_in_a_language_is_no_request ... ok
+test companion::commands::tests::an_objection_to_the_tone_is_heard_in_a_short_sentence ... ok
+test companion::commands::tests::an_objection_to_what_was_just_said ... ok
+test companion::commands::tests::buttons_name_commands_by_word ... ok
+test companion::commands::tests::coaching_is_turned_off_and_on_in_short_sentences ... ok
+test companion::commands::tests::dont_stop_is_not_stop ... ok
+test companion::commands::tests::hebrew_works_too ... ok
+test companion::commands::tests::marking_and_muting_are_done_locally ... ok
+test companion::commands::tests::normalizes_punctuation_and_case ... ok
+test companion::commands::tests::specific_phrases_beat_general_ones ... ok
+test companion::commands::tests::start_and_stop_recording_are_heard_in_short_sentences ... ok
+test companion::commands::tests::talk_without_the_wake_word_is_ignored ... ok
+test companion::commands::tests::the_wake_word_alone_waits_for_the_command ... ok
+test companion::commands::tests::the_wake_word_and_a_command ... ok
+test companion::commands::tests::the_ways_to_ask_for_a_language_in_hebrew_are_heard ... ok
+test companion::commands::tests::words_inside_other_words_do_not_match ... ok
+test companion::exp::tests::a_bar_flapping_between_full_and_empty_is_not_a_level_up ... ok
+test companion::exp::tests::a_bar_going_out_of_sight_from_halfway_is_not_a_level_up ... ok
+test companion::exp::tests::a_few_misreads_do_not_move_the_rate ... ok
+test companion::exp::tests::a_level_read_as_risen_counts_once ... ok
+test companion::exp::tests::a_level_up_is_seen_without_a_level_reading ... ok
+test companion::exp::tests::a_level_up_keeps_the_total_rising ... ok
+test companion::exp::tests::a_misread_fall_is_not_a_level_up ... ok
+test companion::exp::tests::a_steady_pace_is_measured ... ok
+test companion::exp::tests::durations_are_spoken_naturally ... ok
+test companion::exp::tests::not_enough_play_gives_no_rate ... ok
+test companion::instant::tests::a_hebrew_answer_names_the_bar_in_hebrew_and_reads_whole ... ok
+test companion::instant::tests::a_hello_never_swallows_a_question_about_the_numbers ... ok
+test companion::instant::tests::a_hello_on_its_own_is_answered_at_once_game_or_no_game ... ok
+test companion::instant::tests::a_level_asked_after_it_changed_is_news_not_the_same_as_before ... ok
+test companion::instant::tests::an_everyday_hello_is_a_hello_and_shalom_at_the_end_a_goodbye ... ok
+test companion::instant::tests::another_night_answers_in_another_order ... ok
+test companion::instant::tests::each_kind_of_answer_is_dealt_from_its_own_deck ... ok
+test companion::instant::tests::every_answer_has_six_ways_and_savage_keeps_to_the_play ... ok
+test companion::instant::tests::only_questions_about_the_players_own_numbers_are_answered_at_once ... ok
+test companion::instant::tests::the_answer_is_in_their_language_and_attitude ... ok
+test companion::instant::tests::the_gamers_words_for_the_level_and_the_percent_are_answered_at_once ... ok
+test companion::instant::tests::the_israeli_whats_up_is_a_hello ... ok
+test companion::instant::tests::the_same_question_again_is_answered_another_way ... ok
+test companion::observation::tests::a_bar_the_detector_only_guessed_at_is_not_an_observation ... ok
+test companion::observation::tests::a_trusted_reading_wins_over_the_bar ... ok
+test companion::observation::tests::an_untrusted_reading_falls_back_to_the_bar_estimate ... ok
+test companion::observation::tests::levels_come_only_from_trusted_plausible_reads ... ok
+test companion::observation::tests::nothing_seen_gives_no_gauge ... ok
+test claude::channel::tests::the_desktop_app_is_sent_no_events_and_the_companion_keeps_talking ... ok
+test companion::tests::a_bar_whose_readings_jump_around_is_not_warned_from ... ok
+test companion::tests::a_beating_and_a_low_bar_are_warnings_and_a_death_and_a_level_up_are_news ... ok
+test companion::tests::a_beating_is_called_as_it_happens_and_the_low_warning_waits_its_turn ... ok
+test companion::tests::a_beating_is_said_once_per_fight ... ok
+test companion::tests::a_beating_nobody_pots_after_is_said_again_after_longer_and_longer_waits ... ok
+test companion::tests::a_correction_that_ends_with_its_own_words_is_the_players_whole_sentence ... ok
+test companion::tests::a_cursor_parked_on_the_bars_start_is_no_death ... ok
+test companion::tests::a_death_and_a_level_up_pass_through_a_hold ... ok
+test companion::tests::a_death_in_a_fight_it_warned_in_is_a_warned_death_however_long_ago_the_warning ... ok
+test companion::tests::a_death_is_said_once ... ok
+test companion::tests::a_death_is_seen_through_a_bar_that_swings ... ok
+test companion::tests::a_death_no_warning_came_before_moves_the_warning_sooner ... ok
+test companion::tests::a_death_right_after_a_beating_is_warned_and_a_sudden_one_moves_no_mark ... ok
+test companion::tests::a_death_with_no_warning_before_it_never_claims_one_came ... ok
+test companion::tests::a_fill_at_two_percent_or_under_is_no_reading_and_a_number_read_is_believed ... ok
+test companion::tests::a_known_player_does_not_hear_the_same_opening_line_every_night ... ok
+test companion::tests::a_latin_hp_asked_in_a_hebrew_session_is_answered_in_hebrew ... ok
+test companion::tests::a_level_misread_for_a_moment_is_not_believed ... ok
+test companion::tests::a_level_read_rising_without_an_exp_fall_is_celebrated ... ok
+test companion::tests::a_level_reading_that_flips_celebrates_the_level_once ... ok
+test companion::tests::a_level_up_is_celebrated_once ... ok
+test companion::tests::a_long_line_heard_back_with_a_few_words_written_differently_is_all_its_own ... ok
+test companion::tests::a_low_hp_said_again_only_after_a_new_fall ... ok
+test companion::tests::a_bar_read_low_while_exp_comes_in_is_not_believed ... ok
+test companion::tests::a_low_warning_a_potion_answers_is_said_once_per_fight ... ok
+test companion::tests::a_mana_potion_is_a_sign_of_life ... ok
+test companion::tests::a_player_who_speaks_hebrew_hears_its_own_lines_in_hebrew ... ok
+test companion::tests::a_potion_after_a_warning_is_an_answer ... ok
+test companion::tests::a_sentence_mostly_of_its_own_words_is_its_own_voice_whole ... ok
+test companion::tests::a_steady_low_hp_is_said_once_through_the_huds_gaps ... ok
+test companion::tests::a_switch_of_language_mid_session_goes_on_with_the_deck ... ok
+test companion::tests::a_player_who_always_pots_is_not_shouted_at_for_every_beating ... ok
+test companion::tests::an_empty_fill_is_no_death_and_a_zero_read_in_the_font_is ... ok
+test companion::tests::an_empty_mp_fill_is_no_reading_unless_the_way_down_was_seen ... ok
+test companion::tests::announces_the_game_once_and_its_loss_after_a_while ... ok
+test companion::tests::a_trusted_player_is_never_left_unwarned_under_half_the_mark ... ok
+test companion::tests::another_night_deals_the_decks_in_another_order ... ok
+test companion::tests::every_deck_has_a_hebrew_twin_card_for_card ... ok
+test companion::tests::every_deck_has_six_ways_to_say_it_and_savage_roasts_the_play_only ... ok
+test companion::tests::everything_said_is_answered_like_a_conversation ... ok
+test companion::tests::another_character_is_no_level_up_though_its_exp_bar_is_lower ... ok
+test companion::tests::it_asks_whether_the_player_is_there_only_when_the_game_has_sat_idle ... ok
+test companion::tests::its_own_voice_coming_back_is_not_answered ... ok
+test companion::tests::its_own_voice_is_never_the_player_through_the_owners_evening ... ok
+test companion::tests::low_hp_is_said_once_per_fight_and_again_only_unanswered_or_lower ... ok
+test companion::tests::low_mp_is_its_own_warning ... ok
+test companion::tests::mp_warnings_are_off_unless_the_player_set_a_mark ... ok
+test companion::tests::mute_and_mark ... ok
+test companion::tests::no_death_card_speaks_of_an_earlier_death_and_a_known_player_gets_another_opening_each_night ... ok
+test companion::tests::no_hebrew_card_says_what_a_native_ear_heard_as_translated ... ok
+test companion::tests::numbers_read_off_the_screen_are_trusted_through_a_fast_fight ... ok
+test companion::tests::it_says_it_twice_then_asks_then_stops_in_words_for_whoever_is_there ... ok
+test companion::tests::one_percent_agrees_with_every_hebrew_card ... ok
+test companion::tests::only_the_number_going_up_by_one_for_the_same_character_is_a_level_up ... ok
+test companion::tests::percents_are_said_with_sensible_precision ... ok
+test companion::tests::printed_numbers_are_quoted_exactly ... ok
+test companion::tests::questions_about_an_unseen_game_say_so ... ok
+test companion::tests::reversals_are_counted_by_the_turn ... ok
+test companion::tests::sixty_beatings_across_fights_are_dealt_like_a_deck ... ok
+test companion::tests::sixty_deaths_and_sixty_level_ups_are_dealt_like_decks ... ok
+test companion::tests::sixty_low_hp_warnings_in_a_night_are_never_the_same_line_twice_running ... ok
+test companion::tests::one_frame_read_high_is_neither_a_potion_nor_a_bar_to_fall_from ... ok
+test companion::tests::talking_over_it_is_told_from_its_own_voice_coming_back ... ok
+test companion::tests::staying_low_is_said_once_and_falling_on_again_after_longer_and_longer_waits ... ok
+test companion::tests::the_hebrew_cards_say_it_the_way_it_is_said ... ok
+test companion::tests::the_first_line_of_a_fight_never_says_still_or_again ... ok
+test companion::tests::the_mark_moving_is_said_in_the_attitudes_voice_from_a_small_deck ... ok
+test companion::tests::the_player_quoting_it_to_correct_it_keeps_their_whole_sentence ... ok
+test companion::tests::the_players_answer_is_kept_when_the_echo_runs_into_it ... ok
+test companion::tests::the_quieter_lines_are_dealt_like_decks_too ... ok
+test companion::tests::the_rate_needs_some_play_first ... ok
+test companion::tests::the_hebrew_decks_keep_the_rules_of_the_english_ones ... ok
+test companion::tests::the_session_so_far_is_what_a_friend_in_the_room_would_know ... ok
+test companion::tests::the_tally_counts_the_warnings_said_and_the_low_lines_a_potion_answered ... ok
+test companion::tests::warnings_nobody_answers_are_held_and_a_word_lets_them_through_again ... ok
+test companion::tests::what_was_heard_over_it_needs_enough_of_the_players_own_words ... ok
+test companion::tests::with_the_wake_word_required_talk_is_ignored_and_addressed_commands_answered ... ok
+test game_state::tests::display_string_is_readable ... ok
+test game_state::tests::serializes_to_json ... ok
+test knowledge::dialogs::tests::empty_text_classifies_as_none ... ok
+test knowledge::dialogs::tests::recognizes_level_up_banner ... ok
+test knowledge::dialogs::tests::unrelated_text_has_no_dialog_kind ... ok
+test knowledge::tests::classifies_death_prompt_text ... ok
+test knowledge::tests::looks_up_known_monster_case_insensitively ... ok
+test metrics::tests::a_class_kept_before_the_list_is_shown_and_shared_as_a_name_or_other ... ok
+test companion::tests::the_silence_a_sentence_ended_is_kept_for_the_reply_to_it ... ok
+test metrics::tests::a_map_written_with_a_slash_between_spaces_is_counted ... ok
+test metrics::tests::a_record_and_its_export_never_hold_the_name_the_words_or_a_path ... ok
+test metrics::tests::a_session_is_written_as_it_goes_and_kept_after_a_crash_once ... ok
+test metrics::tests::a_session_whose_record_cannot_be_kept_is_kept_at_the_next_start ... ok
+test metrics::tests::a_torn_line_in_the_kept_records_costs_that_line_not_the_others ... ok
+test metrics::tests::another_character_starts_the_levels_and_the_class_over ... ok
+test metrics::tests::a_copy_waits_for_the_other_and_deletes_only_what_no_write_is_making ... ok
+test metrics::tests::every_record_and_every_export_keeps_to_its_allow_list ... ok
+test metrics::tests::sharing_is_off_until_turned_on_and_off_deletes_the_export_and_the_id ... ok
+test metrics::tests::the_class_is_a_name_from_the_list_or_other_never_the_words ... ok
+test metrics::tests::the_classes_are_matched_whole_in_any_case_spacing_and_in_hebrew ... ok
+test metrics::tests::the_export_is_coarsened_and_only_from_the_day_sharing_began ... ok
+test metrics::tests::the_small_things_are_read_as_they_should_be ... ok
+test metrics::tests::the_stats_count_what_the_main_loop_tells_them ... ok
+test metrics::tests::turning_sharing_off_deletes_every_file_of_it_and_never_fails_silently ... ok
+test metrics::tests::two_copies_at_once_keep_both_sessions_and_neither_twice ... ok
+test metrics::tests::at_most_a_year_of_sessions_is_kept_the_oldest_dropped ... ok
+test observe::dashboard::tests::a_bar_that_contradicts_the_reading_is_flagged_not_hidden ... ok
+test observe::dashboard::tests::a_carried_value_is_labelled_with_the_frame_it_came_from ... ok
+test observe::dashboard::tests::a_failed_read_shows_unknown_and_never_the_bar_percentage_as_a_value ... ok
+test observe::dashboard::tests::a_read_value_is_shown_as_the_value_and_the_bar_only_as_a_check ... ok
+test observe::dashboard::tests::absent_detectors_render_as_absent_not_as_values ... ok
+test observe::dashboard::tests::amounts_prefer_current_and_max_over_a_bare_number ... ok
+test observe::dashboard::tests::an_invalid_read_shows_the_raw_text_so_the_misread_is_visible ... ok
+test observe::dashboard::tests::bar_fills_proportionally_and_clamps ... ok
+test observe::dashboard::tests::dashboard_reports_frame_and_timing_values ... ok
+test observe::dashboard::tests::format_int_inserts_thousands_separators ... ok
+test observe::dashboard::tests::line_count_is_stable_across_different_frames ... ok
+test observe::dashboard::tests::missing_percent_still_renders_a_full_width_bar ... ok
+test observe::frame_result::tests::fps_derives_from_frame_interval ... ok
+test observe::frame_result::tests::mailbox_is_empty_after_taking ... ok
+test observe::frame_result::tests::mailbox_returns_newest_and_counts_dropped ... ok
+test observe::frame_result::tests::total_latency_is_capture_plus_vision ... ok
+test observe::frame_result::tests::zero_interval_reports_zero_fps_rather_than_infinity ... ok
+test observe::overlay::tests::drawing_clips_at_frame_edges_instead_of_panicking ... ok
+test observe::overlay::tests::labels_are_clamped_into_the_frame ... ok
+test observe::overlay::tests::overlay_does_not_mutate_the_captured_frame ... ok
+test observe::overlay::tests::overlay_draws_something_over_a_blank_frame ... ok
+test observe::overlay::tests::overlay_preserves_frame_dimensions ... ok
+test observe::preview::tests::degenerate_sizes_do_not_divide_by_zero ... ok
+test observe::preview::tests::large_frames_scale_down_preserving_aspect_ratio ... ok
+test observe::preview::tests::portrait_frames_clamp_on_their_longest_edge ... ok
+test observe::preview::tests::small_frames_are_not_scaled_up ... ok
+test perceive::tests::the_hud_detector_runs_until_the_sight_sees_the_hud_and_then_rests ... ok
+test phone::audio::tests::a_wav_reads_back_as_its_samples ... ok
+test phone::audio::tests::loudness_in_db ... ok
+test phone::audio::tests::samples_are_little_endian ... ok
+test phone::audio::tests::speech_stands_out_from_the_room ... ok
+test phone::audio::tests::the_wav_file_is_valid_while_it_grows ... ok
+test phone::http::tests::decodes_percent_escapes ... ok
+test phone::http::tests::parses_requests_arriving_in_pieces_and_pipelined ... ok
+test phone::http::tests::refuses_oversized_bodies_and_garbage ... ok
+test phone::http::tests::writes_a_response_with_its_length ... ok
+test phone::net::tests::private_addresses_are_recognised ... ok
+test phone::net::tests::the_lan_address_is_not_loopback ... ok
+test phone::qr::tests::a_link_fits_in_a_console ... ok
+test phone::qr::tests::the_image_has_finder_patterns ... ok
+test phone::tests::a_line_for_the_call_reaches_the_page_with_the_reading_behind_it ... ok
+test metrics::tests::two_copies_ending_at_the_same_moment_lose_no_session_and_kept_means_kept ... ok
+test phone::tests::a_page_can_tell_a_restarted_pc_by_its_boot ... ok
+test phone::tests::a_withdrawal_that_leaves_a_file_on_the_pc_is_answered_500_never_ok ... ok
+test phone::tests::audio_moves_the_meter ... ok
+test phone::tests::claudes_channel_is_served_on_this_pc_and_pauses_live_calls ... ok
+test phone::tests::each_clip_comes_with_how_loud_it_is_for_the_dogs_mouth ... ok
+test phone::tests::messages_are_delivered_once_and_a_fresh_page_gets_the_latest ... ok
+test phone::tests::sentences_and_buttons_reach_the_inbox ... ok
+test phone::tests::sharing_is_not_offered_in_this_build_and_an_on_is_refused ... ok
+test phone::tests::the_page_is_public_and_the_api_needs_the_key ... ok
+test phone::tests::the_pages_last_word_as_it_goes_reaches_the_inbox ... ok
+test phone::tests::the_phone_gets_spoken_clips_the_dog_and_the_listen_switch ... ok
+test phone::tests::the_stats_and_the_sharing_choice_answer_from_the_pc_and_sharing_starts_off ... ok
+test phone::tests::the_voice_setting_round_trips ... ok
+test phone::tests::while_recording_the_phones_sound_goes_into_the_recording ... ok
+test phone::tls::tests::a_certificate_is_made_saved_and_reused ... ok
+test phone::tls::tests::the_link_key_is_random_and_kept ... ok
+test phone::tunnel::tests::finds_the_address_in_cloudflareds_banner ... ok
+test platform::loopback::tests::elsewhere_there_is_no_pc_sound_to_record ... ok
+test platform::loopback::tests::sound_comes_out_as_stereo_at_48k_whatever_it_went_in_as ... ok
+test platform::sound::tests::a_short_line_plays_when_it_is_complete_and_stopping_drops_the_rest ... ok
+test phone::tests::a_live_call_gets_a_key_the_screen_and_the_tools_from_the_pc ... ok
+test platform::sound::tests::the_player_knows_how_long_it_speaks ... ok
+test sight::numbers::owner_classic::the_owners_classic_lines_learn_from_what_they_say_and_not_from_misreads ... ok
+test sight::numbers::owner_classic::the_owners_session_replayed_on_his_frames_reads_nothing_wrong ... ok
+test sight::numbers::tests::a_character_the_font_has_not_learned_is_not_read_as_the_most_alike_one ... ok
+test sight::numbers::tests::a_label_is_tried_in_every_spelling_the_line_might_use ... ok
+test sight::numbers::tests::a_line_that_cannot_be_read_is_tried_less_often_until_it_reads ... ok
+test sight::numbers::tests::a_line_that_will_not_learn_says_the_most_telling_reason_and_keeps_its_picture ... ok
+test sight::numbers::tests::a_space_beside_a_decimal_point_is_not_read ... ok
+test sight::numbers::tests::a_wrong_label_is_refused_and_disagreement_is_counted ... ok
+test sight::numbers::tests::font_json_with_classic_examples_is_read_by_an_older_maplesyrup_and_reads_its_files ... ok
+test sight::numbers::tests::the_classic_line_is_reached_at_any_size_of_the_screen ... ok
+test sight::numbers::tests::the_font_is_learned_from_labels_read_every_frame_and_kept ... ok
+test sight::numbers::tests::values_parse_the_lines_the_game_prints ... ok
+test sight::teacher::tests::answers_are_read_and_checked ... ok
+test sight::teacher::tests::questions_carry_pictures_and_a_strict_schema ... ok
+test sight::tests::a_bar_that_jumps_leaves_a_picture_to_look_at_now_and_then ... ok
+test sight::tests::a_fill_that_disagrees_with_the_last_read_is_no_reading_until_the_next_read ... ok
+test sight::tests::a_layout_lacking_both_bars_gets_them_as_a_pair_and_asks_the_model_only_in_time ... ok
+test sight::tests::a_line_the_font_reads_is_not_asked_about_on_the_cadence ... ok
+test sight::tests::a_look_that_sees_no_hud_waits_longer_each_time ... ok
+test sight::tests::a_map_name_is_said_with_its_age_and_not_after_ten_minutes_nor_next_run ... ok
+test sight::tests::a_read_whose_maximum_is_far_from_the_one_known_is_not_believed_unless_it_holds ... ok
+test sight::tests::bars_that_disagree_twice_send_it_looking_again ... ok
+test sight::tests::labels_that_teach_nothing_are_asked_for_less_and_less_often ... ok
+test sight::tests::numbers_and_bars_disagreeing_for_a_while_send_it_looking_again ... ok
+test sight::tests::on_a_real_4k_screen_the_hp_and_mp_bars_are_found_as_a_pair ... ok
+test sight::tests::on_the_classic_hud_the_numbers_are_read_every_frame_once_the_teacher_spelled_them_out ... ok
+test sight::tests::the_exp_bar_wrapping_is_a_level_up_and_corrections_stick ... ok
+test sight::tests::the_hud_is_found_from_the_pixels_alone ... ok
+test sight::tests::the_hud_is_found_on_a_lava_map_and_a_lava_bar_is_dropped_at_load ... ok
+test sight::tests::the_hud_is_learned_measured_kept_and_checked ... ok
+test sight::tests::the_numbers_are_read_every_frame_once_the_teacher_spelled_them_out ... ok
+test sight::tests::while_the_font_cannot_read_a_line_the_teacher_reads_the_numbers_every_25_s ... ok
+test sight::things::tests::a_gauge_warns_below_its_threshold_once ... ok
+test sight::things::tests::a_near_miss_on_a_confident_track_becomes_a_new_pose ... ok
+test platform::sound::tests::a_streamed_line_starts_once_enough_has_come_and_pieces_follow_without_a_gap ... ok
+test sight::things::tests::a_thing_muted_by_name_is_logged_and_not_said ... ok
+test app::recorder::tests::a_short_recording_has_a_picture_and_the_phones_sound ... ok
+test sight::things::tests::an_object_is_taught_once_and_found_again_and_alerts ... ok
+test sight::things::tests::foreground_trims_the_background ... ok
+test sight::things::tests::the_owners_false_level_ups_stop_at_the_third_within_ten_minutes ... ok
+test update::tests::a_channel_that_answers_with_its_home_page_has_nothing_published ... ok
+test update::tests::a_download_is_accepted_only_whole_and_as_a_program ... ok
+test update::tests::a_manifest_is_believed_only_with_the_release_keys_signature ... ok
+test update::tests::a_program_built_on_this_pc_goes_in_whatever_its_version_says ... ok
+test update::tests::a_staged_program_is_activated_at_the_start_kept_beside_and_committed ... ok
+test update::tests::a_staged_program_no_newer_than_the_running_one_is_dropped ... ok
+test update::tests::a_version_that_does_not_come_up_is_rolled_back_and_never_offered_again ... ok
+test update::tests::arguments_are_quoted_the_way_windows_reads_them ... ok
+test update::tests::install_now_puts_the_staged_program_in_place ... ok
+test update::tests::the_plan_for_a_manifest ... ok
+test update::tests::versions_order_as_releases_do ... ok
+test util::pool::tests::the_pool_leaves_the_game_a_core ... ok
+test util::stages::tests::percentiles_use_the_nearest_rank ... ok
+test util::stages::tests::spans_are_timed_by_name ... ok
+test vision::detectors::combat::tests::no_motion_reads_idle ... ok
+test vision::detectors::combat::tests::sustained_high_motion_and_entities_reads_heavy ... ok
+test vision::detectors::dialog::tests::a_panel_that_stays_put_is_read_on_a_cadence ... ok
+test vision::detectors::dialog::tests::detects_uniform_panel_region ... ok
+test vision::detectors::dialog::tests::empty_frame_is_reported_as_missing_not_panicking ... ok
+test vision::detectors::environment::tests::detects_a_strong_horizontal_edge ... ok
+test vision::detectors::environment::tests::flat_scene_reports_no_edges ... ok
+test vision::detectors::hud::tests::metric_with_geometry_only_is_heuristic ... ok
+test vision::detectors::hud::tests::metric_with_ocr_value_is_corroborated ... ok
+test vision::detectors::hud::tests::missing_metric_reports_failure_reason ... ok
+test vision::detectors::panels::tests::icon_row_detector_rejects_empty_row ... ok
+test vision::detectors::panels::tests::minimap_detector_rejects_empty_region ... ok
+test vision::hud_geometry::tests::detect_synthetic_name_job_level_blocks ... ok
+test vision::hud_geometry::tests::detect_synthetic_ui_markers ... ok
+test vision::hud_ocr::tests::a_complete_reading_from_sharp_pixels_is_trusted ... ok
+test vision::hud_ocr::tests::a_lone_number_has_no_maximum_and_no_percent ... ok
+test vision::hud_ocr::tests::a_lone_number_scores_below_a_complete_pair ... ok
+test vision::hud_ocr::tests::a_printed_percentage_is_reported_exactly ... ok
+test vision::hud_ocr::tests::a_reading_from_blurred_pixels_is_never_trusted ... ok
+test vision::hud_ocr::tests::absent_text_is_distinguished_from_invalid_text ... ok
+test vision::hud_ocr::tests::agreement_flags_a_bar_that_contradicts_the_reading ... ok
+test vision::hud_ocr::tests::an_amount_exposes_current_max_and_a_derived_percent ... ok
+test vision::hud_ocr::tests::an_unparsed_reading_scores_zero ... ok
+test vision::hud_ocr::tests::carried_forward_values_report_their_origin_frame ... ok
+test vision::hud_ocr::tests::provenance_traces_a_value_back_to_pixels ... ok
+test vision::hud_ocr::tests::unreadable_text_is_invalid_and_unusable ... ok
+test vision::hud_text::tests::a_carried_value_keeps_its_original_frame_and_is_relabelled ... ok
+test vision::hud_text::tests::a_failed_field_is_never_carried_forward ... ok
+test vision::hud_text::tests::a_lone_number_still_reports_a_current_value ... ok
+test vision::hud_text::tests::a_rejected_region_reports_the_layout_fault_not_a_read_failure ... ok
+test vision::hud_text::tests::cadence_refreshes_on_the_first_frame_then_on_interval ... ok
+test vision::hud_text::tests::cadence_treats_zero_interval_as_every_frame ... ok
+test vision::hud_text::tests::level_must_be_a_number_in_range ... ok
+test vision::hud_text::tests::parses_a_trailing_percentage ... ok
+test vision::hud_text::tests::parses_current_and_max_with_separators ... ok
+test vision::hud_text::tests::picks_nothing_when_no_candidate_is_plausible ... ok
+test vision::hud_text::tests::picks_the_value_even_when_ocr_mangles_the_label ... ok
+test vision::hud_text::tests::picks_two_word_values_before_single_tokens ... ok
+test vision::hud_text::tests::regions_too_small_or_too_tall_for_text_are_rejected ... ok
+test vision::hud_text::tests::rejects_ocr_spill_as_a_character_name ... ok
+test vision::hud_text::tests::rejects_ocr_spill_as_a_job_name ... ok
+test vision::hud_text::tests::rejects_out_of_range_percentages ... ok
+test vision::hud_text::tests::results_are_projected_onto_the_flat_text_shape ... ok
+test vision::hud_text::tests::returns_none_when_there_are_no_digits ... ok
+test vision::hud_text::tests::strips_plate_labels ... ok
+test vision::hud_text::tests::tolerates_ocr_confusing_the_slash ... ok
+test vision::snapshot::tests::only_the_detectors_asked_for_run ... ok
+test vision::snapshot::tests::pipeline_produces_world_state_on_empty_frame ... ok
+test workshop::tests::a_request_to_change_itself_is_recognised_with_what_to_change ... ok
+test workshop::tests::programs_are_found_on_the_path_and_the_host_names_the_branch ... ok
+test app::recorder::tests::the_picture_and_the_sound_line_up ... ok
+test sight::things::tests::a_thing_that_fires_three_times_in_ten_minutes_is_muted_for_the_session ... ok
+test sight::things::tests::a_thing_that_keeps_appearing_is_called_out_less_and_less ... ok
+
+test result: ok. 505 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 5.99s
+
+     Running unittests src/bin/demo_realtime.rs (target/release/deps/demo_realtime-791ea203584cc277)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/demo_video.rs (target/release/deps/demo_video-ccf2a0dea4d525ea)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/maplesyrup/main.rs (target/release/deps/maplesyrup-0990025314710c9f)
+
+running 25 tests
+test recording::tests::the_phone_hears_how_the_recording_is_going ... ok
+test tests::a_call_whose_phone_is_gone_is_lost_and_its_lines_come_back_to_its_own_voice ... ok
+test tests::a_call_that_ends_hands_the_lines_waiting_for_its_gap_back ... ok
+test tests::a_hello_heard_is_final_and_a_reload_mid_call_is_greeted_by_nobody ... ok
+test tests::a_line_cut_short_keeps_the_words_heard ... ok
+test tests::a_language_asked_for_out_loud_is_the_phones_and_its_own_at_once ... ok
+test tests::a_line_of_its_own_waits_while_the_player_talks ... ok
+test tests::a_cut_hushes_a_reply_and_lets_a_warning_play_out ... ok
+test tests::a_loud_sound_nobody_spoke_over_is_forgotten ... ok
+test tests::a_loud_sound_on_the_phone_cuts_the_reply_only_once_words_follow ... ok
+test tests::a_no_is_about_the_last_line_said_or_one_it_names ... ok
+test tests::a_sentence_begun_over_its_own_voice_on_the_pc_is_that_voice ... ok
+test tests::its_voice_on_the_pc_is_in_the_room_a_moment_after_it_stops ... ok
+test tests::on_a_call_a_player_it_does_not_know_is_told_what_it_does_by_the_call ... ok
+test tests::a_player_it_does_not_know_is_told_what_it_does_after_the_hello ... ok
+test tests::a_request_for_the_language_in_use_goes_on_to_the_model ... ok
+test tests::on_a_call_the_watcher_speaks_once_per_gap_and_with_a_number ... ok
+test tests::saying_no_to_a_taught_thing_is_answered_once_and_logged ... ok
+test tests::the_phone_is_said_hello_to_once_per_visit_by_whoever_will_talk ... ok
+test tests::the_sentences_own_words_posted_late_are_not_more_talking ... ok
+test tests::the_toggle_flipped_before_listen_changes_who_says_hello ... ok
+test tests::words_held_for_the_rest_of_a_sentence_join_it ... ok
+test tests::words_overdue_are_answered_with_the_rest_the_phone_heard ... ok
+test tests::the_workshops_word_on_a_call_is_the_calls_to_say ... ok
+test tests::the_owners_no_mutes_the_taught_thing_that_just_spoke ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/bin/measure_evidence.rs (target/release/deps/measure_evidence-00539f040f0925c2)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/release/deps/ms-b79a6201d3986289)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/vision_bench.rs (target/release/deps/vision_bench-7684624dde6b64b7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/vision_debug.rs (target/release/deps/vision_debug-29a7f58e1bffc60e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/classic_hud.rs (target/release/deps/classic_hud-4176899f07b5a1de)
+
+running 5 tests
+test a_classic_label_that_is_not_what_the_line_says_is_not_learned ... ok
+test the_modern_hp_line_is_not_learned_as_the_mp_line_above_its_bar ... ok
+test every_label_the_teacher_gives_for_the_classic_hud_is_learned_and_read_every_frame ... ok
+test the_modern_hud_is_read_as_before ... ok
+test one_font_learns_both_huds_in_either_order_and_reads_each ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests/eleven_fake.rs (target/release/deps/eleven_fake-34effe0a7424ed8e)
+
+running 5 tests
+test the_voices_on_the_account_come_by_name_with_what_they_are ... ok
+test failing_again_and_again_it_rests_and_no_credits_rests_longer ... ok
+test the_worker_speaks_in_the_picked_voice_and_openai_stands_in_when_it_cant ... ok
+test speech_streams_and_models_the_account_cant_use_are_skipped ... ok
+test a_warning_is_asked_for_faster_and_sharper_than_a_reply ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+
+     Running tests/hp_bar_integration.rs (target/release/deps/hp_bar_integration-58f3dff9a4fa1556)
+
+running 1 test
+test finds_hp_bar_in_resource_photo ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/hud_accuracy.rs (target/release/deps/hud_accuracy-0be9d309b1ea7a42)
+
+running 4 tests
+test bars_are_not_all_reported_as_identical ... ok
+test hp_bar_reads_full_on_a_400_of_400_capture ... ok
+test exp_bar_reads_about_a_third_full ... ok
+test mp_bar_reads_nearly_full_on_a_1291_of_1351_capture ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/openai_fake.rs (target/release/deps/openai_fake-9e7e5efee5bca4bf)
+
+running 41 tests
+test a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested ... ok
+test a_line_that_comes_back_with_another_number_is_translated_once ... ok
+test a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use ... ok
+test a_line_of_its_own_called_off_before_a_sound_was_not_said ... ok
+test a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look ... ok
+test a_look_up_never_holds_the_answer_up_and_corrects_it_later ... ok
+test a_look_called_off_says_so_and_is_not_nothing_to_say ... ok
+test a_refused_key_says_so ... ok
+test a_reply_talked_over_stops_and_the_next_is_answered ... ok
+test a_request_is_called_off_at_once ... ok
+test a_hello_is_answered_at_once_and_never_reaches_the_model ... ok
+test a_streamed_reply_arrives_in_pieces_after_the_same_fallbacks ... ok
+test a_warning_is_spoken_with_urgency_and_a_reply_at_the_usual_pace ... ok
+test a_status_line_nobody_asked_for_is_left_out_of_the_reply ... ok
+test a_warning_never_waits_for_a_look ... ok
+test a_look_up_never_speaks_a_second_answer_it_shows_it ... ok
+test an_alerts_line_is_not_called_off_with_the_rest ... ok
+test a_warning_waits_two_seconds_for_its_translation_then_is_said_in_english ... ok
+test a_word_or_two_answered_as_before_gets_quiet_not_a_card ... ok
+test asked_to_talk_with_nothing_but_the_games_state_it_says_it_is_here ... ok
+test every_reply_knows_the_rules_the_attitude_and_what_it_learned ... ok
+test grok_answers_and_openai_steps_in_when_it_fails ... ok
+test its_own_lines_are_translated_shown_and_spoken ... ok
+test nothing_listening_is_a_network_error ... ok
+test replies_fall_back_through_the_models_and_drop_reasoning_when_refused ... ok
+test a_question_about_the_screen_gets_it_close_up_at_full_resolution_and_chit_chat_does_not ... ok
+test settings_change_only_when_his_own_words_plainly_ask ... ok
+test speech_comes_back_as_samples ... ok
+test the_coach_speaks_only_when_there_is_something_to_say ... ok
+test the_hello_picks_up_from_last_time_when_it_knows_the_player ... ok
+test speech_arrives_in_pieces_while_it_is_made ... ok
+test the_owners_frames_close_up_cost_and_crops ... ok
+test the_owners_session_replayed ... ok
+test the_same_question_twice_gets_a_word_not_silence ... ok
+test the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made ... ok
+test two_lines_pieces_are_never_shuffled_together ... ok
+test what_a_reply_talked_over_never_said_is_said_when_asked_again ... ok
+test what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees ... ok
+test classic_world_is_said_and_the_log_s_wrong_answers_are_ruled_out ... ok
+test each_answer_is_in_his_sentences_language_to_a_man_by_his_own_name ... ok
+test the_learner_looks_back_on_the_sessions_and_keeps_what_it_learned ... ok
+
+test result: ok. 41 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.11s
+
+     Running tests/phone_link.rs (target/release/deps/phone_link-db73e31d71fcb6fd)
+
+running 4 tests
+test the_local_door_for_a_tunnel_serves_plain_http ... ok
+test plain_http_on_the_tls_port_is_sent_to_https ... ok
+test a_certificate_other_than_ours_is_refused_by_the_pinned_client ... ok
+test the_page_and_the_api_work_over_tls ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/probe.rs (target/release/deps/probe-4e0accc3d709e749)
+
+running 1 test
+test probe ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/syrup_parity.rs (target/release/deps/syrup_parity-6ed515076a83be70)
+
+running 1 test
+test the_fixture_reads_as_it_did_before_the_migration ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/update_channel.rs (target/release/deps/update_channel-806072f496ce4172)
+
+running 2 tests
+test a_release_signed_by_another_key_or_tampered_with_is_refused ... ok
+test a_release_on_the_channel_is_fetched_staged_and_activated_at_the_next_start ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/workshop_pipeline.rs (target/release/deps/workshop_pipeline-b261bd0d125fa196)
+
+running 3 tests
+test the_workshop_refuses_what_it_cannot_do_and_says_why ... ok
+test a_change_out_of_bounds_or_failing_the_tests_is_thrown_away ... ok
+test a_change_is_coded_built_tested_committed_and_staged_on_this_pcs_branch ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.65s
+
+   Doc-tests ms
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+TESTS PASSED: 597
