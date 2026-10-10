@@ -331,8 +331,10 @@ fn escape(text: &str) -> String {
 pub type Out = Arc<Mutex<Box<dyn Write + Send>>>;
 
 fn send(out: &Out, message: &Value) {
+    // The whole line in one write: whoever reads never sees half a message.
+    let line = format!("{message}\n");
     let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = writeln!(out, "{message}");
+    let _ = out.write_all(line.as_bytes());
     let _ = out.flush();
 }
 
@@ -987,13 +989,37 @@ mod tests {
     }
 
     impl Sink {
+        /// The whole lines written so far (one being written is left for
+        /// the next look).
         fn lines(&self) -> Vec<Value> {
-            String::from_utf8(self.0.lock().unwrap().clone())
-                .unwrap()
+            let text = String::from_utf8(self.0.lock().unwrap().clone()).unwrap();
+            let whole = text.rfind('\n').map_or("", |end| &text[..end]);
+            whole
                 .lines()
                 .map(|l| serde_json::from_str(l).expect("each line is one JSON message"))
                 .collect()
         }
+    }
+
+    #[test]
+    fn a_message_is_written_whole_in_one_go() {
+        /// Counts the writes it is given.
+        #[derive(Clone, Default)]
+        struct Counting(Arc<Mutex<Vec<usize>>>);
+        impl Write for Counting {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().push(buf.len());
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let counting = Counting::default();
+        let out: Out = Arc::new(Mutex::new(Box::new(counting.clone())));
+        notify(&out, "heard", "He said: \"hi\" — שלום");
+        let writes = counting.0.lock().unwrap().clone();
+        assert_eq!(writes.len(), 1, "{writes:?}");
     }
 
     fn bridge() -> (Bridge<Fake>, Arc<Fake>, Sink) {
