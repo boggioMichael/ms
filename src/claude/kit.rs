@@ -29,7 +29,7 @@ pub fn mcp_json(exe: &Path) -> String {
         "mcpServers": {
             SERVER: {
                 "command": exe.to_string_lossy(),
-                "args": ["--claude-channel"],
+                "args": ["--mcp"],
             }
         }
     });
@@ -111,6 +111,104 @@ pub fn launcher() -> String {
     .join("\r\n")
 }
 
+/// The Claude desktop app's config files on this PC (Windows: the .exe
+/// install's in `%APPDATA%\\Claude`, the Microsoft Store one's under
+/// `%LOCALAPPDATA%\\Packages\\Claude_*`; elsewhere `~/.config/Claude` or
+/// `~/Library/Application Support/Claude`): those whose folder exists — the
+/// app was installed and opened.
+pub fn desktop_configs() -> Vec<PathBuf> {
+    const FILE: &str = "claude_desktop_config.json";
+    let mut found = Vec::new();
+    let mut consider = |dir: PathBuf| {
+        if dir.is_dir() {
+            found.push(dir.join(FILE));
+        }
+    };
+    if let Some(appdata) = std::env::var_os("APPDATA") {
+        consider(PathBuf::from(appdata).join("Claude"));
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA")
+        && let Ok(packages) = fs::read_dir(PathBuf::from(local).join("Packages"))
+    {
+        for package in packages.flatten() {
+            if package.file_name().to_string_lossy().starts_with("Claude_") {
+                consider(
+                    package
+                        .path()
+                        .join("LocalCache")
+                        .join("Roaming")
+                        .join("Claude"),
+                );
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        consider(
+            home.join("Library")
+                .join("Application Support")
+                .join("Claude"),
+        );
+        consider(home.join(".config").join("Claude"));
+    }
+    found
+}
+
+/// Add MapleSyrup to a Claude desktop app config (`mcpServers.maplesyrup`:
+/// `exe --mcp`), keeping everything else in it; the file as it was is kept
+/// beside it first. Returns whether anything changed. A file that is not a
+/// JSON object is left alone (one mistake there turns all servers off).
+pub fn add_to_desktop_config(path: &Path, exe: &Path) -> Result<bool, String> {
+    let before = fs::read_to_string(path).unwrap_or_default();
+    let mut config: serde_json::Value = if before.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&before)
+            .map_err(|e| format!("{} is not valid JSON ({e}); not touched", path.display()))?
+    };
+    let Some(fields) = config.as_object_mut() else {
+        return Err(format!(
+            "{} is not a JSON object; not touched",
+            path.display()
+        ));
+    };
+    let servers = fields.entry("mcpServers").or_insert_with(|| json!({}));
+    let Some(servers) = servers.as_object_mut() else {
+        return Err(format!(
+            "mcpServers in {} is not an object; not touched",
+            path.display()
+        ));
+    };
+    let entry = json!({"command": exe.to_string_lossy(), "args": ["--mcp"]});
+    if servers.get(SERVER) == Some(&entry) {
+        return Ok(false);
+    }
+    servers.insert(SERVER.to_string(), entry);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    if !before.is_empty() {
+        let kept = path.with_extension("json.before-maplesyrup");
+        fs::write(&kept, &before).map_err(|e| format!("couldn't keep a copy first: {e}"))?;
+    }
+    let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())? + "\n";
+    fs::write(path, text).map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// `Add MapleSyrup to Claude.cmd`, beside the program: runs
+/// `--install-claude` and leaves the window open to read.
+pub fn installer_cmd() -> String {
+    [
+        "@echo off",
+        "rem Adds MapleSyrup to the Claude desktop app: Claude then sees the game through it.",
+        "\"%~dp0MapleSyrup.exe\" --install-claude",
+        "pause",
+        "",
+    ]
+    .join("\r\n")
+}
+
 /// The brief, with what the player wrote about himself for MapleSyrup
 /// (`about-me.txt`: his name, his language, how he likes to be helped,
 /// his character) at its end.
@@ -160,10 +258,7 @@ mod tests {
             config["mcpServers"]["maplesyrup"]["command"],
             r"C:\Users\מיכאל\Desktop\MapleSyrup\MapleSyrup.exe"
         );
-        assert_eq!(
-            config["mcpServers"]["maplesyrup"]["args"][0],
-            "--claude-channel"
-        );
+        assert_eq!(config["mcpServers"]["maplesyrup"]["args"][0], "--mcp");
     }
 
     #[test]
@@ -193,6 +288,48 @@ mod tests {
             "a folder not set up is set up first"
         );
         assert!(launcher.contains("\r\n"));
+    }
+
+    #[test]
+    fn maplesyrup_is_added_to_the_desktop_config_keeping_the_rest() {
+        let dir = std::env::temp_dir().join(format!(
+            "ms-claude-desktop-{}",
+            crate::phone::tls::random_hex(4)
+        ));
+        let config = dir.join("claude_desktop_config.json");
+        let exe = Path::new(r"C:\Users\מיכאל\Desktop\MapleSyrup\MapleSyrup.exe");
+        // No file yet: made.
+        assert_eq!(add_to_desktop_config(&config, exe), Ok(true));
+        let made: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(
+            made["mcpServers"]["maplesyrup"]["command"],
+            r"C:\Users\מיכאל\Desktop\MapleSyrup\MapleSyrup.exe"
+        );
+        assert_eq!(made["mcpServers"]["maplesyrup"]["args"][0], "--mcp");
+        // Again: nothing to change.
+        assert_eq!(add_to_desktop_config(&config, exe), Ok(false));
+        // Someone else's servers and settings stay, and the file as it was
+        // is kept beside it.
+        fs::write(
+            &config,
+            r#"{"globalShortcut": "Ctrl+Space", "mcpServers": {"filesystem": {"command": "npx", "args": ["x"]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(add_to_desktop_config(&config, exe), Ok(true));
+        let merged: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        assert_eq!(merged["globalShortcut"], "Ctrl+Space");
+        assert_eq!(merged["mcpServers"]["filesystem"]["command"], "npx");
+        assert_eq!(merged["mcpServers"]["maplesyrup"]["args"][0], "--mcp");
+        assert!(config.with_extension("json.before-maplesyrup").exists());
+        // A broken file is not touched.
+        fs::write(&config, "{ broken").unwrap();
+        assert!(add_to_desktop_config(&config, exe).is_err());
+        assert_eq!(fs::read_to_string(&config).unwrap(), "{ broken");
+        assert!(installer_cmd().contains("--install-claude"));
+        assert!(installer_cmd().is_ascii());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

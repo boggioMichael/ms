@@ -6,13 +6,23 @@
 //!   to `wait` milliseconds for one; `?fresh=1` instead starts afresh,
 //!   with nothing from before the bridge came (only the number to go on
 //!   from). Each answer carries the board's `boot`, which a companion
-//!   started again changes, and each poll says the bridge is there
-//!   ([`Board::connected`]).
+//!   started again changes. Each poll says a bridge is there
+//!   ([`Board::bridge_seen_ago`]); one with `listen=1` says Claude takes the
+//!   events, and MapleSyrup leaves the talking to it ([`Board::connected`]).
+//! - `POST /local/quit` — the bridge that started the companion is done
+//!   with it ([`Board::quit_requested`]).
 //! - `GET /local/status` — the reading now, as text and as fields, with the
 //!   last few events.
 //! - `POST /local/say` `{"text": …}` — a line for MapleSyrup's voice.
 //! - `GET /local/look?region=…` — the screen (or part of it) as a JPEG,
 //!   while the game is the window in front.
+//! - `GET /local/wiki?q=…` / `POST /local/wiki` `{"about", "answer",
+//!   "source"}` — the local MapleStory wiki: what MapleSyrup knows about the
+//!   game (looked up, or the player's corrections; `knowledge.json`), and a
+//!   fact added to it.
+//! - `GET /local/player` / `POST /local/player` `{"fact"}` — what MapleSyrup
+//!   knows about the player and his game (his own file, `about-me.txt`, and
+//!   its notebook), and a fact added to his file.
 //!
 //! Every request carries the board's key (`k=` or `X-MapleSyrup-Key`), and
 //! one that came through a tunnel or a proxy (it carries their headers) is
@@ -61,12 +71,18 @@ struct Inner {
     status: Value,
     text: String,
     bridge_seen: Option<Instant>,
+    /// A bridge whose Claude takes the events (Claude Code) polled then.
+    listener_seen: Option<Instant>,
+    quit: bool,
     says: Vec<String>,
     frame: Option<Arc<RgbaImage>>,
 }
 
 pub struct Board {
     key: String,
+    /// What MapleSyrup knows about the game and the player (None: nothing
+    /// kept, as in the tests).
+    learning: Mutex<Option<crate::ai::Learning>>,
     /// This run's: a bridge that sees it change knows the companion
     /// started again (and numbers its events from one).
     boot: String,
@@ -79,6 +95,7 @@ impl Board {
     pub fn new(key: String) -> Arc<Board> {
         Arc::new(Board {
             key,
+            learning: Mutex::new(None),
             boot: crate::phone::tls::random_hex(4),
             started: Instant::now(),
             inner: Mutex::new(Inner {
@@ -87,6 +104,8 @@ impl Board {
                 status: json!({}),
                 text: String::new(),
                 bridge_seen: None,
+                listener_seen: None,
+                quit: false,
                 says: Vec::new(),
                 frame: None,
             }),
@@ -136,11 +155,34 @@ impl Board {
         self.lock().frame = frame;
     }
 
-    /// Whether a bridge is polling: Claude is listening.
+    /// What MapleSyrup knows about the game and the player: the wiki and
+    /// the player's file are served from it.
+    pub fn set_learning(&self, learning: crate::ai::Learning) {
+        if let Ok(mut slot) = self.learning.lock() {
+            *slot = Some(learning);
+        }
+    }
+
+    fn learning(&self) -> Option<crate::ai::Learning> {
+        self.learning.lock().ok().and_then(|l| l.clone())
+    }
+
+    /// How long ago a bridge was last heard from (None: never).
+    pub fn bridge_seen_ago(&self) -> Option<Duration> {
+        self.lock().bridge_seen.map(|at| at.elapsed())
+    }
+
+    /// Whether Claude takes the events (a Claude Code session is polling):
+    /// MapleSyrup leaves the talking to it.
     pub fn connected(&self) -> bool {
         self.lock()
-            .bridge_seen
+            .listener_seen
             .is_some_and(|at| at.elapsed() < CONNECTED_FOR)
+    }
+
+    /// Whether the bridge that started this companion is done with it.
+    pub fn quit_requested(&self) -> bool {
+        self.lock().quit
     }
 
     /// What Claude asked to have said since the last call.
@@ -169,6 +211,10 @@ impl Board {
                 Response::json(200, &json!({"ok": true, "pid": std::process::id()}))
             }
             ("GET", "/local/events") => self.events(request),
+            ("POST", "/local/quit") => {
+                self.lock().quit = true;
+                Response::json(200, &json!({"ok": true}))
+            }
             ("GET", "/local/status") => self.status(),
             ("POST", "/local/say") => {
                 let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
@@ -183,6 +229,20 @@ impl Board {
                 Response::json(200, &json!({"ok": true}))
             }
             ("GET", "/local/look") => self.look(request),
+            ("GET", "/local/wiki") => self.wiki(request.param("q").unwrap_or_default()),
+            ("POST", "/local/wiki") => {
+                let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
+                self.wiki_save(
+                    body["about"].as_str().unwrap_or_default(),
+                    body["answer"].as_str().unwrap_or_default(),
+                    body["source"].as_str().unwrap_or_default(),
+                )
+            }
+            ("GET", "/local/player") => self.player(),
+            ("POST", "/local/player") => {
+                let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
+                self.remember(body["fact"].as_str().unwrap_or_default())
+            }
             _ => Response::json(404, &json!({"error": "not found"})),
         }
     }
@@ -196,8 +256,12 @@ impl Board {
         };
         let since = number("since");
         let wait = Duration::from_millis(number("wait")).min(MAX_WAIT);
+        let listening = request.param("listen") == Some("1");
         let mut inner = self.lock();
         inner.bridge_seen = Some(Instant::now());
+        if listening {
+            inner.listener_seen = Some(Instant::now());
+        }
         if request.param("fresh").is_some() {
             // A bridge that just came: from here on.
             let last = inner.next - 1;
@@ -216,6 +280,9 @@ impl Board {
         }
         // (Still there: a poll that waited long is still the bridge's.)
         inner.bridge_seen = Some(Instant::now());
+        if listening {
+            inner.listener_seen = Some(Instant::now());
+        }
         let events: Vec<&Posted> = inner
             .events
             .iter()
@@ -227,6 +294,125 @@ impl Board {
             200,
             &json!({"events": events, "last": last, "boot": self.boot}),
         )
+    }
+
+    /// What the local wiki has on `query`: the best few entries, the
+    /// player's corrections first among equals.
+    fn wiki(&self, query: &str) -> Response {
+        let Some(learning) = self.learning() else {
+            return Response::json(503, &json!({"error": "MapleSyrup keeps no wiki here"}));
+        };
+        let query = query.trim();
+        if query.is_empty() {
+            return Response::json(400, &json!({"error": "nothing to look for"}));
+        }
+        let found = learning.knowledge().relevant(query, 8);
+        let entries: Vec<Value> = found
+            .iter()
+            .map(|e| {
+                json!({
+                    "about": e.about,
+                    "answer": e.answer,
+                    "from": match e.from {
+                        crate::ai::knowledge::Source::Player => "the player (a correction: trust it)",
+                        crate::ai::knowledge::Source::Web => "looked up",
+                    },
+                    "when": e.when,
+                })
+            })
+            .collect();
+        let size = learning.knowledge().entries.len();
+        Response::json(200, &json!({"found": entries, "size": size}))
+    }
+
+    /// A fact for the local wiki (it takes the place of one about the same
+    /// thing, unless that one is the player's correction).
+    fn wiki_save(&self, about: &str, answer: &str, source: &str) -> Response {
+        let Some(learning) = self.learning() else {
+            return Response::json(503, &json!({"error": "MapleSyrup keeps no wiki here"}));
+        };
+        let (about, answer, source) = (about.trim(), answer.trim(), source.trim());
+        if about.is_empty() || answer.is_empty() {
+            return Response::json(400, &json!({"error": "say what it is about and the fact"}));
+        }
+        let answer = if source.is_empty() {
+            answer.to_string()
+        } else {
+            format!("{answer} (source: {source})")
+        };
+        let id = learning
+            .knowledge()
+            .add(about, &answer, crate::ai::knowledge::Source::Web);
+        Response::json(200, &json!({"ok": true, "id": id}))
+    }
+
+    /// What MapleSyrup knows about the player and his game: his own file,
+    /// its notebook, his character as read now.
+    fn player(&self) -> Response {
+        let character = {
+            let inner = self.lock();
+            let s = &inner.status;
+            let mut who = Vec::new();
+            for field in ["name", "job"] {
+                if let Some(v) = s[field].as_str() {
+                    who.push(v.to_string());
+                }
+            }
+            if let Some(level) = s["level"].as_u64() {
+                who.push(format!("level {level}"));
+            }
+            if s["classic"].as_bool() == Some(true) {
+                who.push("MapleStory Classic World".to_string());
+            }
+            who.join(", ")
+        };
+        let known = self.learning().map(|l| l.prompt()).unwrap_or_default();
+        let mut text = String::new();
+        if !character.is_empty() {
+            text.push_str(&format!(
+                "His character as MapleSyrup reads it now (the name can be misread): {character}.\n\n"
+            ));
+        }
+        if known.trim().is_empty() {
+            text.push_str("MapleSyrup knows nothing else about him yet.");
+        } else {
+            text.push_str(&known);
+        }
+        Response::json(200, &json!({"text": text}))
+    }
+
+    /// A fact about the player for good, in his own file (one a line; the
+    /// same line is not written twice).
+    fn remember(&self, fact: &str) -> Response {
+        let Some(learning) = self.learning() else {
+            return Response::json(503, &json!({"error": "MapleSyrup keeps nothing here"}));
+        };
+        let fact: String = fact
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(400)
+            .collect();
+        if fact.is_empty() {
+            return Response::json(400, &json!({"error": "nothing to remember"}));
+        }
+        let file = learning.settings.join(crate::ai::memory::TOLD);
+        let mut about = std::fs::read_to_string(&file).unwrap_or_default();
+        let known = about
+            .lines()
+            .any(|l| l.trim().trim_start_matches("- ").trim() == fact);
+        if !known {
+            if !about.is_empty() && !about.ends_with('\n') {
+                about.push('\n');
+            }
+            about.push_str(&format!("- {fact}\n"));
+            let _ = std::fs::create_dir_all(&learning.settings);
+            if let Err(e) = std::fs::write(&file, about) {
+                return Response::json(500, &json!({"error": format!("couldn't keep it: {e}")}));
+            }
+        }
+        Response::json(200, &json!({"ok": true, "new": !known}))
     }
 
     fn status(&self) -> Response {
@@ -396,7 +582,19 @@ mod tests {
         assert_eq!(first["events"].as_array().unwrap().len(), 0, "old news");
         assert_eq!(first["last"], 1);
         assert_eq!(first["boot"].as_str().unwrap().len(), 8);
-        assert!(board.connected());
+        // A bridge is there; Claude takes no events yet.
+        assert!(board.bridge_seen_ago().is_some());
+        assert!(!board.connected());
+        board.handle(&get(&format!("/local/events?k={KEY}&fresh=1&listen=1")));
+        assert!(board.connected(), "a Claude Code session listens");
+        assert!(!board.quit_requested());
+        board.handle(&request(
+            "POST",
+            &format!("/local/quit?k={KEY}"),
+            b"{}",
+            &[],
+        ));
+        assert!(board.quit_requested());
         board.post("map", "New map: Ellinia (was Henesys).", "…".into());
         board.post("hp", "HP low: 28%.", "…".into());
         let next = json_of(&board.handle(&get(&format!("/local/events?k={KEY}&since=1"))));
@@ -492,6 +690,83 @@ mod tests {
                 .status,
             400
         );
+    }
+
+    #[test]
+    fn the_wiki_and_the_players_file_are_kept_and_found() {
+        let dir = std::env::temp_dir().join(format!(
+            "ms-claude-board-{}",
+            crate::phone::tls::random_hex(4)
+        ));
+        let board = Board::new(KEY.into());
+        // Nothing kept here: said so.
+        assert_eq!(
+            board
+                .handle(&get(&format!("/local/wiki?k={KEY}&q=slime")))
+                .status,
+            503
+        );
+        board.set_learning(crate::ai::Learning::load(&dir));
+        let post = |path: &str, body: Value| {
+            board.handle(&request(
+                "POST",
+                &format!("{path}?k={KEY}"),
+                body.to_string().as_bytes(),
+                &[],
+            ))
+        };
+        assert_eq!(
+            post("/local/wiki", json!({"about": "", "answer": "x"})).status,
+            400
+        );
+        let saved = post(
+            "/local/wiki",
+            json!({
+                "about": "Where to hunt Blue Mushrooms in Classic World",
+                "answer": "Henesys Hunting Ground I, south of Henesys.",
+                "source": "https://example.org/blue-mushroom",
+            }),
+        );
+        assert_eq!(saved.status, 200);
+        let found = json_of(&board.handle(&get(&format!(
+            "/local/wiki?k={KEY}&q=blue%20mushrooms%20hunt"
+        ))));
+        assert_eq!(found["size"], 1);
+        let answer = found["found"][0]["answer"].as_str().unwrap();
+        assert!(answer.contains("Henesys Hunting Ground I"), "{answer}");
+        assert!(answer.contains("(source: https://example.org/blue-mushroom)"));
+        let none = json_of(&board.handle(&get(&format!("/local/wiki?k={KEY}&q=zakum"))));
+        assert!(none["found"].as_array().unwrap().is_empty());
+        // The player's file: a fact kept once, and read back with his
+        // character as read now.
+        assert_eq!(post("/local/player", json!({"fact": "  "})).status, 400);
+        let first = json_of(&post(
+            "/local/player",
+            json!({"fact": "Wants to reach level 30 this week."}),
+        ));
+        assert_eq!(first["new"], true);
+        let again = json_of(&post(
+            "/local/player",
+            json!({"fact": "Wants to reach level 30 this week."}),
+        ));
+        assert_eq!(again["new"], false);
+        board.set_status(
+            json!({"name": "WANWANBUJIO", "job": "Magician", "level": 18, "classic": true}),
+            String::new(),
+        );
+        let player = json_of(&board.handle(&get(&format!("/local/player?k={KEY}"))));
+        let text = player["text"].as_str().unwrap();
+        assert!(
+            text.contains("WANWANBUJIO, Magician, level 18, MapleStory Classic World"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Wants to reach level 30 this week."),
+            "{text}"
+        );
+        let file = std::fs::read_to_string(dir.join("about-me.txt")).unwrap();
+        assert_eq!(file.matches("level 30").count(), 1, "{file}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

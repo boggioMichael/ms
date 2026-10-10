@@ -115,13 +115,19 @@ OPTIONS
   --self-test           check this PC: the engine, the phone link, the voice
   --record-test         check recording on this PC: a few seconds of the screen
                         with a flash and a tone, which must line up
-  --setup-claude        write the Claude folder beside MapleSyrup: Claude Code
-                        started there (Start Claude.cmd) talks with you and
-                        gets everything MapleSyrup reads, live, while
-                        MapleSyrup only watches and speaks for it
+  --install-claude      add MapleSyrup to the Claude desktop app: Claude starts
+                        it in the background and sees the game through it
+                        (the screen live, MapleSyrup's MapleStory wiki, what
+                        it knows about you); restart Claude afterwards
+  --setup-claude        write the Claude folder beside MapleSyrup, for Claude
+                        Code: started there (Start Claude.cmd), Claude is also
+                        pushed what changes in the game as it happens
+  --mcp                 (started by Claude) MapleSyrup's MCP server on stdio;
+                        it starts MapleSyrup in the background if need be
+  --background          watch the game with no window, voice or phone: for
+                        Claude (what --mcp starts)
   --no-claude           don't offer Claude the live channel
   --claude-port N       the channel's port on this PC (default 8790)
-  --claude-channel      (started by Claude Code) the channel itself, on stdio
   --help
 
 The OpenAI key is read from OPENAI_API_KEY, or from openai-key.txt next to
@@ -174,10 +180,15 @@ struct Options {
     /// Offer Claude the live channel (`ms::claude`), on this port.
     claude: bool,
     claude_port: u16,
-    /// Be the channel Claude Code started (stdio), and nothing else.
+    /// Be the MCP server Claude started (stdio), and nothing else.
     claude_channel: bool,
     /// Write the folder Claude Code is started in, and stop.
     setup_claude: bool,
+    /// Add MapleSyrup to the Claude desktop app, and stop.
+    install_claude: bool,
+    /// Watch the game for Claude with no window, voice or phone; stop when
+    /// no Claude has asked for anything for a while.
+    background: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -220,6 +231,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         claude_port: ms::claude::link::DEFAULT_PORT,
         claude_channel: false,
         setup_claude: false,
+        install_claude: false,
+        background: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -285,12 +298,28 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--claude-port" => {
                 o.claude_port = number("--claude-port", value("--claude-port")?)? as u16
             }
-            "--claude-channel" => o.claude_channel = true,
+            "--claude-channel" | "--mcp" => o.claude_channel = true,
             "--setup-claude" => o.setup_claude = true,
+            "--install-claude" => o.install_claude = true,
+            "--background" => o.background = true,
             "-h" | "--help" | "/?" => return Err(String::new()),
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             path => o.input = Some(PathBuf::from(path)),
         }
+    }
+    // In the background, for Claude: no window of its own to show things
+    // in, no voice, no phone, no update that would restart it from under
+    // the Claude that started it.
+    if o.background {
+        o.phone = false;
+        o.overlay = false;
+        o.voice = false;
+        o.replies = Some(VoiceOn::Off);
+        o.live = false;
+        o.plain = true;
+        o.update = false;
+        o.preview = false;
+        o.claude = true;
     }
     Ok(o)
 }
@@ -319,10 +348,13 @@ fn main() {
     // Started by Claude Code as its channel: the protocol on stdio, and
     // nothing else (no console of its own, no update).
     if options.claude_channel {
-        std::process::exit(ms::claude::channel::run(&tls::settings_dir()));
+        std::process::exit(ms::claude::channel::run(&tls::settings_dir(), true));
     }
     if options.setup_claude {
         std::process::exit(setup_claude());
+    }
+    if options.install_claude {
+        std::process::exit(install_claude());
     }
     if options.self_test {
         std::process::exit(selftest::run());
@@ -385,6 +417,44 @@ fn setup_claude() -> i32 {
             1
         }
     }
+}
+
+/// `--install-claude`: MapleSyrup added to the Claude desktop app's config
+/// (each install of the app found on this PC), so that Claude starts it in
+/// the background and sees the game through it.
+fn install_claude() -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(e) => {
+            eprintln!("Can't tell where MapleSyrup is: {e}");
+            return 1;
+        }
+    };
+    let configs = ms::claude::kit::desktop_configs();
+    if configs.is_empty() {
+        eprintln!(
+            "The Claude desktop app isn't on this PC (or hasn't been opened yet). Install it from claude.ai/download, open it once, then run this again."
+        );
+        return 1;
+    }
+    let mut failed = false;
+    for config in &configs {
+        match ms::claude::kit::add_to_desktop_config(config, &exe) {
+            Ok(true) => println!("Added MapleSyrup to Claude: {}", config.display()),
+            Ok(false) => println!("MapleSyrup was in Claude already: {}", config.display()),
+            Err(why) => {
+                failed = true;
+                eprintln!("Couldn't add MapleSyrup to Claude: {why}");
+            }
+        }
+    }
+    if failed {
+        return 1;
+    }
+    println!(
+        "\nQuit Claude completely (its icon by the clock -> Quit) and open it again. Then, in any chat, ask Claude about your game: it starts MapleSyrup in the background by itself."
+    );
+    0
 }
 
 /// Started by double-clicking, the console closes with the program: keep
@@ -683,6 +753,10 @@ fn grab(mut source: Source, mailbox: Arc<Mailbox>, running: Arc<AtomicBool>, fps
 /// While Claude listens, one frame in this many also goes through the
 /// scene's detectors (what moves, dialogs, the panels).
 const RICH_EVERY: u64 = 3;
+
+/// In the background, MapleSyrup stops when no Claude has asked it for
+/// anything this long (the Claude that started it went away).
+const BACKGROUND_IDLE: Duration = Duration::from_secs(180);
 
 /// The vision engine, on a thread of its own: every frame the capture
 /// thread puts in the mailbox goes through `perceive` and out as a tick.
@@ -3260,12 +3334,23 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     };
     // Claude's channel (`ms::claude`): the board, on this PC only, and where
     // the bridge Claude Code starts finds it.
-    let claude_board: Option<Arc<ms::claude::board::Board>> = match &phone {
-        Some(link) if options.claude => {
+    // (Without the phone — in the background — a hub of its own serves it.)
+    let claude_hub: Option<Arc<Hub>> =
+        phone
+            .as_ref()
+            .map(|link| Arc::clone(&link.hub))
+            .or_else(|| {
+                options
+                    .claude
+                    .then(|| Hub::new(tls::random_hex(8), None, VoiceOn::Off))
+            });
+    let claude_board: Option<Arc<ms::claude::board::Board>> = match &claude_hub {
+        Some(hub) if options.claude => {
             let key = ms::claude::link::key(&settings_dir);
             let board = ms::claude::board::Board::new(key.clone());
-            link.hub.set_claude(Arc::clone(&board));
-            match phone::serve_local(Arc::clone(&link.hub), options.claude_port) {
+            board.set_learning(learning.clone());
+            hub.set_claude(Arc::clone(&board));
+            match phone::serve_local(Arc::clone(hub), options.claude_port) {
                 Ok(port) => {
                     let link = ms::claude::link::Link {
                         port,
@@ -3286,7 +3371,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         _ => None,
     };
     // Whether the vision thread looks at the whole scene (Claude listens).
-    let claude_rich = Arc::new(AtomicBool::new(false));
+    // (In the background it is there for Claude only: always.)
+    let claude_rich = Arc::new(AtomicBool::new(options.background));
 
     // The header, printed once.
     let (b, d, s, r) = if ansi {
@@ -3528,6 +3614,17 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         if relaunch_as.is_some() {
             break;
         }
+        // The Claude that started it in the background is done with it, or
+        // no Claude has asked for anything for a while.
+        if let Some(board) = &claude_board {
+            if board.quit_requested() {
+                break;
+            }
+            let idle = board.bridge_seen_ago().unwrap_or_else(|| start.elapsed());
+            if options.background && idle >= BACKGROUND_IDLE {
+                break;
+            }
+        }
         let now = start.elapsed().as_secs_f64();
         // What the updater did; and this version, once it has run long
         // enough, is kept for good (the previous one let go).
@@ -3598,8 +3695,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 coach.leveled(now, companion.level());
             }
             // The coach: is it time for a look at the game, and why? (Not
-            // while Claude does the talking: it gets the game itself.)
+            // while Claude does the talking: it gets the game itself; nor
+            // in the background, where nobody would hear it.)
             if !out.claude
+                && !options.background
                 && let Some(worker) = &out.mouth.ai
             {
                 let in_view = in_front.load(Ordering::Relaxed);
@@ -4845,7 +4944,6 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         out.call_ended(&mut companion);
                     }
                     out.claude = listening;
-                    claude_rich.store(listening, Ordering::Relaxed);
                     if let Some(hub) = &out.phone {
                         hub.pause_live(listening);
                     }
@@ -4857,6 +4955,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     out.session.line("claude", line);
                     out.push(Kind::Info, line.to_string());
                 }
+                // The whole scene is looked at while any Claude uses MapleSyrup.
+                let used = board
+                    .bridge_seen_ago()
+                    .is_some_and(|ago| ago < Duration::from_secs(45));
+                claude_rich.store(used || options.background, Ordering::Relaxed);
                 if claude_looked.is_none_or(|at| at.elapsed() >= Duration::from_millis(500)) {
                     claude_looked = Some(Instant::now());
                     let front = in_front.load(Ordering::Relaxed);
