@@ -525,26 +525,25 @@ pub fn run(settings: &Path) -> i32 {
 mod tests {
     use super::*;
 
-    /// A companion that posts what it is given, numbering each.
+    /// A companion that posts what it is given, numbering each. (Its
+    /// events and its run are kept together: a restart is one step.)
     #[derive(Default)]
     struct Fake {
-        posted: Mutex<Vec<Value>>,
+        run: Mutex<(Vec<Value>, String)>,
         said: Mutex<Vec<String>>,
         down: AtomicBool,
-        boot: Mutex<String>,
     }
 
     impl Fake {
         fn post(&self, kind: &str, text: &str) {
-            let mut posted = self.posted.lock().unwrap();
-            let seq = posted.len() as u64 + 1;
-            posted.push(json!({"seq": seq, "kind": kind, "text": text}));
+            let mut run = self.run.lock().unwrap();
+            let seq = run.0.len() as u64 + 1;
+            run.0.push(json!({"seq": seq, "kind": kind, "text": text}));
         }
 
         /// Started again: its numbers start over.
         fn restart(&self) {
-            self.posted.lock().unwrap().clear();
-            *self.boot.lock().unwrap() = "second".into();
+            *self.run.lock().unwrap() = (Vec::new(), "second".into());
         }
     }
 
@@ -554,7 +553,8 @@ mod tests {
                 return Err("MapleSyrup isn't running".into());
             }
             std::thread::sleep(Duration::from_millis(20));
-            let posted = self.posted.lock().unwrap();
+            let run = self.run.lock().unwrap();
+            let (posted, boot) = (&run.0, &run.1);
             let last = posted.len() as u64;
             let events = match since {
                 None => Vec::new(),
@@ -567,7 +567,7 @@ mod tests {
             Ok(Batch {
                 events,
                 last,
-                boot: self.boot.lock().unwrap().clone(),
+                boot: boot.clone(),
             })
         }
         fn status(&self) -> Result<Value, String> {
@@ -613,7 +613,7 @@ mod tests {
 
     fn bridge() -> (Bridge<Fake>, Arc<Fake>, Sink) {
         let fake = Arc::new(Fake::default());
-        *fake.boot.lock().unwrap() = "first".into();
+        fake.run.lock().unwrap().1 = "first".into();
         let sink = Sink::default();
         let out: Out = Arc::new(Mutex::new(Box::new(sink.clone())));
         let mut bridge = Bridge::new(Arc::clone(&fake), out);
