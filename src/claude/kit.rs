@@ -87,6 +87,14 @@ pub fn launcher() -> String {
         "  exit /b 1",
         ")",
         ":maplesyrup",
+        "if exist \"%~dp0.mcp.json\" goto :running",
+        "echo Setting this folder up for Claude, once...",
+        "echo.| \"%~dp0..\\MapleSyrup.exe\" --setup-claude >nul",
+        "if exist \"%~dp0.mcp.json\" goto :running",
+        "echo MapleSyrup couldn't set this folder up: is MapleSyrup.exe one folder up?",
+        "pause",
+        "exit /b 1",
+        ":running",
         "tasklist /FI \"IMAGENAME eq MapleSyrup.exe\" 2>nul | find /I \"MapleSyrup.exe\" >nul",
         "if errorlevel 1 goto :start",
         "if exist \"%APPDATA%\\MapleSyrup\\claude-link.json\" goto :claude",
@@ -115,9 +123,10 @@ pub fn brief(about: Option<&str>) -> String {
 }
 
 /// Write the folder in `dir` for the program at `exe`, with `about` (the
-/// player's own words about himself) in the brief. The brief is kept when
-/// it is there already (the player may have made it his own); the rest is
-/// written fresh. Returns the files written.
+/// player's own words about himself) in the brief. The brief and the
+/// launcher are kept when they are there already (the player may have made
+/// the brief his own; the launcher may be what is running this); the MCP
+/// config and the settings are written fresh. Returns the files written.
 pub fn write(dir: &Path, exe: &Path, about: Option<&str>) -> std::io::Result<Vec<PathBuf>> {
     fs::create_dir_all(dir.join(".claude"))?;
     let mut written = Vec::new();
@@ -132,7 +141,9 @@ pub fn write(dir: &Path, exe: &Path, about: Option<&str>) -> std::io::Result<Vec
     };
     put(".mcp.json", &mcp_json(exe), false)?;
     put(".claude/settings.json", &settings_json(), false)?;
-    put(LAUNCHER, &launcher(), false)?;
+    // (The launcher runs this when the folder is not set up yet: a batch
+    // file rewritten while it runs is read on from where it was.)
+    put(LAUNCHER, &launcher(), true)?;
     put("CLAUDE.md", &brief(about), true)?;
     Ok(written)
 }
@@ -177,6 +188,10 @@ mod tests {
             launcher.contains("--remote-control"),
             "the session is in the Claude app too"
         );
+        assert!(
+            launcher.contains("--setup-claude"),
+            "a folder not set up is set up first"
+        );
         assert!(launcher.contains("\r\n"));
     }
 
@@ -205,7 +220,11 @@ mod tests {
         );
         fs::write(dir.join("CLAUDE.md"), "my own brief").unwrap();
         let again = write(&dir, exe, Some(about)).unwrap();
-        assert_eq!(again.len(), 3, "his brief is his");
+        assert_eq!(
+            again.len(),
+            2,
+            "his brief is his, the launcher is left as it is"
+        );
         assert_eq!(
             fs::read_to_string(dir.join("CLAUDE.md")).unwrap(),
             "my own brief"
