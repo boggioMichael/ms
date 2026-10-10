@@ -1275,13 +1275,22 @@ fn without_discourse(part: &str) -> &str {
 /// "to" joined to one, a place ([`place_at`]).
 const PLACES: &[&str] = &[
     "אליניה",
+    "אלינייה",
+    "אלניה",
     "הנסיס",
+    "הניסיס",
+    "הנסייס",
     "פריון",
+    "פרי און",
     "קרנינג",
     "קרנינג סיטי",
+    "סיטי",
     "לית",
+    "ליט",
     "לית הארבור",
+    "רואד",
     "סליפיווד",
+    "סליפי ווד",
     "נאוטילוס",
     "ויקטוריה",
     "ויקטוריה רואד",
@@ -1290,8 +1299,11 @@ const PLACES: &[&str] = &[
     "אמהרסט",
     "סאות פרי",
     "אורביס",
+    "אורביס פארק",
     "אל נאת",
+    "אלנאת",
     "לודיבריום",
+    "לודי",
     "אקווריום",
     "ליפרה",
     "מו לונג",
@@ -1302,13 +1314,26 @@ const PLACES: &[&str] = &[
     "טמפל אוף טיים",
     "גייט",
     "גייט אוף דה פיוצר",
+    "שער העתיד",
     "רוט אביס",
     "פרי מרקט",
+    "ארקיין",
+    "ארקיין ריבר",
+    "צוצו",
+    "צו צו",
+    "צו צו איילנד",
+    "ווניש",
+    "לכליין",
+    "לאשלן",
     "ארקנה",
     "מורס",
     "אספרה",
     "לימינה",
 ];
+
+/// Everyday words a map's name has the consonants of, vowel letters and
+/// all: "סיפור" is "Esfera" (SPR), "גרון" is "Journey" (GRN).
+const NO_PLACES: &[&str] = &["ספור", "סיפור", "גרון"];
 
 /// The words a place's name takes between its own ("Gate of the Future"
 /// is "גייט אוף דה פיוצ'ר").
@@ -1377,16 +1402,35 @@ fn says_the_map(word: &str, map: &[String]) -> bool {
     word.chars().count() >= 3 && word.chars().all(hebrew) && map.contains(&consonants(word))
 }
 
+/// Whether `word`, with "in" or "to" joined to it, is a word of the map
+/// that starts a place ([`says_the_map`]) and could be nothing else: three
+/// consonants at least (two are ordinary Hebrew: "Road" is "ירידה" and
+/// "הארד", "City" is "שתות", "Muto" is "אמת" and "מטה" — the short towns
+/// are in [`PLACES`]), and a vowel written, as a name from English is
+/// ("ויקטוריה"; "קטר", "ספר" and "דרך" write none), and not an everyday
+/// word ([`NO_PLACES`]).
+fn starts_the_map(word: &str, map: &[String]) -> bool {
+    let vowel = word.contains(['א', 'ו', 'י', 'ע']) || word.ends_with('ה');
+    consonants(word).chars().count() >= 3
+        && vowel
+        && !NO_PLACES.contains(&word)
+        && says_the_map(word, map)
+}
+
 /// The place said in Hebrew at `words[i]`, with "in" or "to" joined to it
 /// ("באליניה", "להנסיס", "בקרנינג סיטי"), as the range of words it takes:
 /// a town or a map of [`PLACES`], or a word of the snapshot's map written
 /// in Hebrew (`map`, [`map_sounds`]), with the rest of its name after it
 /// ("בויקטוריה רואד", "בגייט אוף דה פיוצ'ר") and an "on the way" before it
 /// ("בדרך לאליניה"). A cheer or an order is no place ("לחיים!",
-/// "לשיקוי!", "לעיר!", "בטירוף!"): Hebrew joins "in" and "to" to anything,
-/// but his places are a closed set, and the map is in the snapshot.
+/// "לשיקוי!", "לעיר!", "בטירוף!", "לשתות!"): Hebrew joins "in" and "to" to
+/// anything, but his places are a closed set, and the map is in the
+/// snapshot ([`starts_the_map`]).
 fn place_at(words: &[(String, bool)], i: usize, map: &[String]) -> Option<(usize, usize)> {
     let word = words[i].0.as_str();
+    if is_one_of_or_plural(word, VERBS) || is_one_of_or_plural(word, REACTIONS) {
+        return None;
+    }
     // ("And in": "ובאליניה".)
     let joined = word
         .strip_prefix('ו')
@@ -1407,7 +1451,7 @@ fn place_at(words: &[(String, bool)], i: usize, map: &[String]) -> Option<(usize
             .then(|| i + place.split(' ').count())
         })
         .max();
-    let mut end = listed.or_else(|| says_the_map(head, map).then_some(i + 1))?;
+    let mut end = listed.or_else(|| starts_the_map(head, map).then_some(i + 1))?;
     // The rest of the map's name goes with it.
     loop {
         let mut next = end;
@@ -1969,12 +2013,20 @@ pub struct Sentences {
 
 impl Sentences {
     /// `chunk` without its marks ([`without_marks`]), a list counted on
-    /// from the chunks before it.
-    fn unmarked(&mut self, chunk: &str) -> String {
+    /// from the chunks before it; `then` is the word the reply goes on
+    /// with (a "2." makes a "1." a list's mark).
+    fn unmarked(&mut self, chunk: &str, then: &str) -> String {
         let mut next = self.items + 1;
-        let out = without_marks_from(chunk, &mut next);
+        let out = without_marks_from(chunk, &mut next, then);
         self.items = next - 1;
         out
+    }
+
+    /// Whether `chunk` has a "1." that is a list's mark only if a "2."
+    /// comes next: until the next word is known, it waits.
+    fn lone_one(&self, chunk: &str) -> bool {
+        let (mut a, mut b) = (self.items + 1, self.items + 1);
+        without_marks_from(chunk, &mut a, "2.") != without_marks_from(chunk, &mut b, "")
     }
 
     /// More of the reply. Returns the sentences it completed.
@@ -1995,25 +2047,39 @@ impl Sentences {
             out.push(offer);
         }
         while let Some(end) = sentence_end_from(&self.pending, SENTENCE_MIN_CHARS, self.items + 1) {
+            // (Is a "2." next? The next word, once whole, tells.)
+            let told = self.pending[end..]
+                .trim_start()
+                .contains(char::is_whitespace);
+            if !told && self.lone_one(&self.pending[..end]) {
+                break;
+            }
             let chunk: String = self.pending.drain(..end).collect();
             let chunk = chunk.trim();
             if chunk.is_empty() {
                 continue;
             }
-            let kept = without_assistant(&self.unmarked(chunk));
+            let then = self
+                .pending
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let kept = without_assistant(&self.unmarked(chunk, &then));
             let Some(last) = kept.last() else {
                 self.set_aside(chunk);
                 continue;
             };
             let closes = is_offer(last) && self.pending.trim().is_empty();
-            let sentence = kept.join(" ");
-            if self.given == 0
-                && self.held.is_none()
-                && self.offer.is_none()
-                && is_announcement(&sentence)
-            {
-                self.held = Some(sentence);
-                continue;
+            let mut sentence = kept.join(" ");
+            if self.given == 0 && self.held.is_none() && self.offer.is_none() {
+                // A short one glued to the answer ("רגע: בודק. תלך שמאלה.")
+                // goes, and the answer is said.
+                sentence = without_announcement(&sentence);
+                if is_announcement(&sentence) {
+                    self.held = Some(sentence);
+                    continue;
+                }
             }
             // (An announcement stays held under an offer: the offer may go
             // at the end, and the announcement be all there was.)
@@ -2039,7 +2105,7 @@ impl Sentences {
             .map(|offer| sentences_of(&offer))
             .unwrap_or_default();
         if !rest.is_empty() {
-            let kept = without_assistant(&self.unmarked(rest));
+            let kept = without_assistant(&self.unmarked(rest, ""));
             if kept.is_empty() {
                 self.set_aside(rest);
             }
@@ -2049,9 +2115,14 @@ impl Sentences {
         // announcement counts: it is said when the offer goes).
         without_closing_offer(&mut tail, self.given > 0 || self.held.is_some());
         if !tail.is_empty() {
+            let mut said = tail.join(" ");
+            // (A short announcement before the answer, all in the end.)
+            if self.given == 0 && self.held.is_none() {
+                said = without_announcement(&said);
+            }
             self.held = None;
             self.given += 1;
-            return Some(tail.join(" "));
+            return Some(said);
         }
         if self.given > 0 {
             return None;
@@ -2080,10 +2151,42 @@ impl Sentences {
 /// nothing.
 pub fn is_announcement(sentence: &str) -> bool {
     // What follows a colon is the answer: "Here's how: farm Zakum
-    // helmets." (a list's first item) tells them something.
+    // helmets." (a list's first item) tells them something — when it says
+    // something: three words at least, or an order ("Here's the plan: pot
+    // up."), and no hold ("Let me check: one sec.", "רגע: בודק." only
+    // announce).
+    // (Not before a "to": "hold on to your elixirs" is advice.)
+    const HOLDS: &[&str] = &[
+        "one sec",
+        "a sec",
+        "let me",
+        "lets see",
+        "lets check",
+        "lets look",
+        "hold on",
+        "hang on",
+        "give me",
+        "רגע",
+        "שנייה",
+        "שניה",
+        "בודק",
+        "בודקת",
+        "תן לי",
+    ];
     if sentence.match_indices(':').any(|(at, _)| {
         let after = &sentence[at + 1..];
-        after.starts_with(char::is_whitespace) && after.chars().any(char::is_alphanumeric)
+        let words = crate::companion::commands::normalize(after);
+        let padded = format!(" {words} ");
+        let mut said = words.split(' ').filter(|w| !w.is_empty());
+        let order = said.next().is_some_and(is_order);
+        after.starts_with(char::is_whitespace)
+            && (order || said.count() >= 2)
+            && !HOLDS.iter().any(|h| {
+                let hold = format!(" {h} ");
+                padded
+                    .match_indices(&hold)
+                    .any(|(at, _)| !padded[at + hold.len()..].starts_with("to "))
+            })
     }) {
         return false;
     }
@@ -2532,13 +2635,13 @@ fn capitalised(text: &str) -> String {
 /// with nothing gets its full stop ("1. Farm Zakum helmets 2. Sell them"
 /// is "Farm Zakum helmets. Sell them.").
 fn without_marks(text: &str) -> String {
-    without_marks_from(text, &mut 1)
+    without_marks_from(text, &mut 1, "")
 }
 
 /// [`without_marks`], in a numbered list that goes on from `expected` (a
 /// reply cut into sentences as it comes counts on from one to the next),
 /// left at the number the list goes on with.
-fn without_marks_from(text: &str, expected: &mut u32) -> String {
+fn without_marks_from(text: &str, expected: &mut u32, then: &str) -> String {
     // Each word, and whether a line break came before it.
     let mut words: Vec<(String, bool)> = Vec::new();
     let mut word = String::new();
@@ -2557,6 +2660,16 @@ fn without_marks_from(text: &str, expected: &mut u32) -> String {
     if !word.is_empty() {
         words.push((word, broke));
     }
+    // Whether a list's "2." comes after the word at `i` (in `text`, or as
+    // the word the reply goes on with): a "1." with none after it, at the
+    // start or after a sentence, is a number ("Deaths today? 1. Not bad.").
+    let two_after = |i: usize| {
+        words[i + 1..]
+            .iter()
+            .map(|(w, _)| w.as_str())
+            .chain(then.split_whitespace().take(1))
+            .any(|w| list_marker(w) == Some(Some(2)))
+    };
     let mut out: Vec<String> = Vec::new();
     let mut capitalise = false;
     // Whether a list's mark went: its items are sentences.
@@ -2574,7 +2687,9 @@ fn without_marks_from(text: &str, expected: &mut u32) -> String {
             && !last
             && match marker {
                 Some(None) => true,
-                Some(Some(number)) => number == *expected,
+                Some(Some(number)) => {
+                    number == *expected && (number != 1 || (*broke && i > 0) || two_after(i))
+                }
                 None => false,
             };
         // The item before ends here, as a sentence (at the next item's
@@ -2840,21 +2955,68 @@ const BUTS: &[&str] = &[
     " אך ",
 ];
 
+/// Where a disclaimer with no "but" gives way to advice: "I can't see your
+/// screen, so check…", "…, and Night Lord is fine anyway."
+const AND_SO: &[&str] = &[", so ", ", and ", ", אז "];
+
 /// `rest`, what follows one of the [`AI_OPENERS`], without the disclaimer
 /// it starts with, up to its "but": "I don't play the game myself, but
 /// this map is fine for your level." is "this map is fine for your
 /// level."; nothing when it was all disclaimer; as it is when it starts
-/// with none ("I'd say farm Zakum, but bring pots.").
+/// with none ("I'd say farm Zakum, but bring pots."). With no "but", the
+/// advice after it stays: from a ", so" or an ", and" ("I can't see your
+/// screen, so check that the game is open."), or a comma before an order
+/// or a "you" ("אני לא רואה את המסך, תבדוק שהמשחק פתוח."). A "but" left
+/// after a dash goes ("I can't pick — but Night Lord suits you.").
 fn past_disclaimer(rest: &str) -> String {
     let plain = format!("{} ", plain_words(rest));
     if !DISCLAIMERS.iter().any(|d| plain.starts_with(d)) {
         return rest.to_string();
     }
-    BUTS.iter()
+    let after_but = BUTS
+        .iter()
         .filter_map(|b| rest.find(b).map(|at| at + b.len()))
-        .min()
-        .map(|at| rest[at..].trim().to_string())
-        .unwrap_or_default()
+        .min();
+    if let Some(at) = after_but {
+        let said = rest[at..].trim();
+        let lower = said.to_lowercase();
+        let but = ["but ", "though ", "אבל ", "אך "]
+            .iter()
+            .find(|b| lower.starts_with(*b));
+        return match but {
+            Some(b) => said[b.len()..].trim_start().to_string(),
+            None => said.to_string(),
+        };
+    }
+    // No "but": the advice after an "and so", or after a comma before an
+    // order or a "you" (a disclaimer again is a disclaimer: "I don't have
+    // eyes, and I can't see your screen." goes whole).
+    let advises = |after: &str| {
+        let first = plain_words(after.split_whitespace().next().unwrap_or_default());
+        is_order(&first)
+            || matches!(
+                first.as_str(),
+                "you" | "youre" | "youll" | "youd" | "youve" | "אתה" | "אתם"
+            )
+    };
+    let and_so = AND_SO
+        .iter()
+        .filter_map(|s| rest.find(s).map(|at| at + s.len()))
+        .min();
+    let comma = rest
+        .match_indices(", ")
+        .map(|(at, s)| at + s.len())
+        .find(|&at| advises(&rest[at..]));
+    let Some(at) = [and_so, comma].into_iter().flatten().min() else {
+        return String::new();
+    };
+    let said = rest[at..].trim();
+    let plain = format!("{} ", plain_words(said));
+    if DISCLAIMERS.iter().any(|d| plain.starts_with(d)) {
+        past_disclaimer(said)
+    } else {
+        said.to_string()
+    }
 }
 
 /// Whether the word that `rest` starts with is "I" ("I", "I'm", "אני",
@@ -3177,6 +3339,8 @@ const VERBS: &[&str] = &[
     "תענה",
     "שחק",
     "תשחק",
+    "תבדוק",
+    "בדוק",
     "תפתח",
     "תסגור",
     "יכול",
@@ -4871,5 +5035,318 @@ clearly talking to someone else (stream chat, a friend, a call), reply with exac
             "Farm Root Abyss bosses."
         );
         assert_eq!(without_announcement("Here's the deal."), "Here's the deal.");
+    }
+
+    /// His character on `map` (w38's p38a facts).
+    fn on(map: &str, level: u32, hp: f32) -> Facts {
+        Facts {
+            level: Some(level),
+            map: Some(map.into()),
+            name: Some("WanWanBoggi".into()),
+            job: Some("Night Lord".into()),
+            bars: vec![hp, 90.0, 34.36],
+        }
+    }
+
+    #[test]
+    fn an_order_or_an_everyday_word_is_no_place_of_his_map() {
+        // w38's p38a (round K): "48 אחוז חיים, לשתות!" on Kerning City was
+        // silence — "שתות" has the consonants of "City" (ST) — and on every
+        // Victoria Island map "בהארד" and "בירידה" were "Road" (RD), "לקטר"
+        // was "Victoria" (KTR).
+        const VICTORIA: &[&str] = &["בהארד", "בירידה", "להורדה", "בהורדה", "ברדיו", "לקטר"];
+        let rows: &[(&str, &[&str])] = &[
+            ("Victoria Road / Kerning City", &["לשתות", "בשיטה", "בסתיו"]),
+            ("Victoria Road / Lith Harbor", &["לעלות", "בעלות"]),
+            (
+                "Victoria Road / Henesys",
+                &["בנושא", "לנושא", "בנסיעה", "לנסיעה", "לנוס"],
+            ),
+            ("Victoria Road / Ellinia", &["ללון"]),
+            ("Gate of the Future", &["לגעת", "לגאות"]),
+            (
+                "Temple of Time / Memory Lane",
+                &["לטעום", "בטעם", "בתום", "לומר", "ללון"],
+            ),
+            (
+                "Chu Chu Island / Hungry Muto",
+                &["באמת", "למטה", "למות", "לאמת"],
+            ),
+            ("Lachelein / Lachelein Main Street", &["לימין"]),
+            (
+                "Esfera / Mirror-touched Sea",
+                &["לספר", "לספור", "לשפר", "בספר", "בסיפור", "לומר"],
+            ),
+            ("Arcane River / Vanishing Journey", &["לגרון"]),
+        ];
+        for (map, words) in rows {
+            let victoria: &[&str] = if map.starts_with("Victoria") {
+                VICTORIA
+            } else {
+                &[]
+            };
+            for word in words.iter().chain(victoria) {
+                for reply in [format!("48 אחוז חיים, {word}!"), format!("רמה 9, {word}!")]
+                {
+                    let facts = on(map, 9, 48.0);
+                    assert_eq!(unasked(&reply, "סתם", &facts), reply, "{map}: {reply:?}");
+                }
+            }
+        }
+        // Through the worker's filter, w38's p38b lines.
+        let kerning = on("Victoria Road / Kerning City", 9, 48.0);
+        assert_eq!(
+            unasked("48 אחוז חיים, לשתות! הבוס מגיע.", "יאללה", &kerning),
+            "48 אחוז חיים, לשתות! הבוס מגיע."
+        );
+        let ellinia = on("Victoria Road / Ellinia", 9, 48.0);
+        assert_eq!(
+            unasked("48 אחוז חיים ובירידה. תשתה.", "יאללה", &ellinia),
+            "48 אחוז חיים ובירידה. תשתה."
+        );
+        // His places in Hebrew are still places: a recital (and the
+        // renderings w38 found said: "בארקיין ריבר", "בצ'וצ'ו", "בלכליין",
+        // "באלנאת", "בלודי").
+        let places: &[(&str, &[&str])] = &[
+            (
+                "Victoria Road / Ellinia",
+                &[
+                    "אתה באליניה, רמה 9.",
+                    "אתה באלינייה, רמה 9.",
+                    "אתה באלניה, רמה 9.",
+                    "רמה 9 בויקטוריה רואד.",
+                    "רמה 9 בויקטוריה.",
+                    "רמה 9 ברואד.",
+                    "רמה 9 בדרך לאליניה.",
+                    "רמה 9 ובאליניה.",
+                ],
+            ),
+            (
+                "Victoria Road / Henesys",
+                &[
+                    "אתה בהנסיס, רמה 9.",
+                    "אתה בהניסיס, רמה 9.",
+                    "רמה 9 בהנסייס.",
+                ],
+            ),
+            (
+                "Victoria Road / Kerning City",
+                &[
+                    "רמה 9 בקרנינג.",
+                    "רמה 9 בקרנינג סיטי.",
+                    "רמה 9 בכרנינג סיטי.",
+                    "רמה 9 בסיטי.",
+                ],
+            ),
+            (
+                "Victoria Road / Lith Harbor",
+                &[
+                    "רמה 9 בלית' הארבור.",
+                    "רמה 9 בלית הרבור.",
+                    "רמה 9 בליט הארבור.",
+                ],
+            ),
+            (
+                "Victoria Road / Perion",
+                &["רמה 9 בפריון.", "רמה 9 בפריאון.", "רמה 9 בפרי און."],
+            ),
+            ("Dungeon / Sleepywood", &["רמה 9 בסליפיווד."]),
+            ("Ossyria / Orbis", &["רמה 9 באורביס."]),
+            (
+                "Ossyria / El Nath",
+                &["רמה 9 באל נאת.", "רמה 9 באלנאת.", "רמה 9 באל-נאת."],
+            ),
+            (
+                "Ludus Lake / Ludibrium",
+                &["רמה 9 בלודיבריום.", "רמה 9 בלודי."],
+            ),
+            (
+                "Gate of the Future",
+                &[
+                    "רמה 9 בגייט אוף דה פיוצ'ר.",
+                    "רמה 9 בגייט.",
+                    "רמה 9 בטמפל אוף טיים.",
+                ],
+            ),
+            (
+                "Arcane River / Vanishing Journey",
+                &["רמה 9 בארקיין ריבר.", "רמה 9 בוונישינג ג'רני."],
+            ),
+            (
+                "Chu Chu Island / Hungry Muto",
+                &[
+                    "רמה 9 בצ'וצ'ו.",
+                    "רמה 9 בצ'ו צ'ו איילנד.",
+                    "רמה 9 בהאנגרי מוטו.",
+                ],
+            ),
+            (
+                "Lachelein / Lachelein Main Street",
+                &["רמה 9 בלכליין.", "רמה 9 בלאשלן."],
+            ),
+            (
+                "Arcana / Cavern Lower Path",
+                &["רמה 9 בארקנה.", "רמה 9 בארקאנה."],
+            ),
+            (
+                "Morass / Shadowdance Hall",
+                &["רמה 9 במוראס.", "רמה 9 במורס."],
+            ),
+            (
+                "Esfera / Mirror-touched Sea",
+                &["רמה 9 באספרה.", "רמה 9 באספירה."],
+            ),
+        ];
+        for (map, replies) in places {
+            for reply in *replies {
+                assert_eq!(
+                    unasked(reply, "סתם", &on(map, 9, 48.0)),
+                    "",
+                    "{map}: {reply:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_hold_after_a_colon_is_still_an_announcement() {
+        // w38's p38b (round K): what follows a colon is the answer only when
+        // it says something — "one sec", "let me look", "בודק" hold.
+        assert!(is_announcement("Let me check: one sec."));
+        assert!(is_announcement("Hold on: let me look."));
+        assert!(is_announcement("רגע: בודק."));
+        assert!(is_announcement("שנייה: רגע אחד."));
+        assert!(!is_announcement("Here's how: farm Zakum helmets."));
+        assert!(!is_announcement(
+            "Here's the deal: the left side respawns faster."
+        ));
+        assert!(!is_announcement(
+            "Here's the thing: hold on to your elixirs."
+        ));
+        for piece in [1, 5, 300] {
+            assert_eq!(
+                split("Let me check: one sec. Farm the left side first.", piece),
+                ["Farm the left side first."],
+                "{piece}"
+            );
+            assert_eq!(
+                split("Hold on: let me look. Rebuff first, then go left.", piece),
+                ["Rebuff first, then go left."],
+                "{piece}"
+            );
+            assert_eq!(
+                split("רגע: בודק. תלך שמאלה לפורטל.", piece),
+                ["תלך שמאלה לפורטל."],
+                "{piece}"
+            );
+            // A list after "Here's how:" keeps its first item, an order of
+            // two words too.
+            assert_eq!(
+                split("Here's how:\n1. Pot up\n2. Rebuff\n3. Go left", piece).join(" "),
+                "Here's how: Pot up. Rebuff. Go left.",
+                "{piece}"
+            );
+            assert_eq!(
+                split(
+                    "Here's how:\n1. Farm Zakum helmets\n2. Sell them in the Free Market",
+                    piece
+                )
+                .join(" "),
+                "Here's how: Farm Zakum helmets. Sell them in the Free Market.",
+                "{piece}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_lone_one_is_a_number_and_not_a_list() {
+        // w38's p38b (round K): a count after a question lost its number
+        // ("Deaths today? 1. Not bad." → "Deaths today? Not bad."): a "1."
+        // is a list's mark only when a "2." follows it.
+        for piece in [1, 3, 5, 300] {
+            for (reply, said) in [
+                (
+                    "Deaths today? 1. Not bad at all.",
+                    "Deaths today? 1. Not bad at all.",
+                ),
+                ("1. לא רע בכלל.", "1. לא רע בכלל."),
+                (
+                    "Deaths today? 1. Not bad at all. Keep going like that.",
+                    "Deaths today? 1. Not bad at all. Keep going like that.",
+                ),
+                // A list still loses its marks.
+                (
+                    "1. Farm Zakum helmets. 2. Sell them in the Free Market.",
+                    "Farm Zakum helmets. Sell them in the Free Market.",
+                ),
+                ("1. Pot up 2. Rebuff 3. Go left", "Pot up. Rebuff. Go left."),
+                (
+                    "Here's how: 1. Farm Zakum helmets 2. Sell them in the Free Market",
+                    "Here's how: Farm Zakum helmets. Sell them in the Free Market.",
+                ),
+                (
+                    "1. Farm Zakum helmets\n2. Sell them in the Free Market",
+                    "Farm Zakum helmets. Sell them in the Free Market.",
+                ),
+            ] {
+                assert_eq!(split(reply, piece).join(" "), said, "{piece}: {reply:?}");
+            }
+        }
+        assert_eq!(
+            for_speech("Deaths today? 1. Not bad at all."),
+            "Deaths today? 1. Not bad at all."
+        );
+        assert_eq!(for_speech("1. לא רע בכלל."), "1. לא רע בכלל.");
+        assert_eq!(
+            for_speech("1. Pot up 2. Rebuff 3. Go left"),
+            "Pot up. Rebuff. Go left."
+        );
+    }
+
+    #[test]
+    fn what_follows_a_disclaimer_with_no_but_is_kept_when_it_advises() {
+        // w38's p38a D (round K): a disclaimer with no "but" took the advice
+        // after it, and a "— but" left a "But" dangling.
+        for (reply, said) in [
+            (
+                "As an AI, I can't see your screen, so check that the game is open. Then tell me your HP.",
+                "Check that the game is open. Then tell me your HP.",
+            ),
+            (
+                "כבינה מלאכותית אני לא רואה את המסך, תבדוק שהמשחק פתוח. ואז תגיד לי כמה חיים יש לך.",
+                "תבדוק שהמשחק פתוח. ואז תגיד לי כמה חיים יש לך.",
+            ),
+            (
+                "As an AI I don't know your build, and Night Lord is fine anyway. Max Shadow Partner first.",
+                "Night Lord is fine anyway. Max Shadow Partner first.",
+            ),
+            (
+                "As an AI, I can't see your screen, check the game is open. Then pot.",
+                "Check the game is open. Then pot.",
+            ),
+            (
+                "As an AI, I can't pick for you — but Night Lord suits you. Max Shadow Partner first.",
+                "Night Lord suits you. Max Shadow Partner first.",
+            ),
+            (
+                "כבינה מלאכותית אני לא יכול לבחור בשבילך — אבל המפה הזאת טובה לך. תמשיך לחרוש.",
+                "המפה הזאת טובה לך. תמשיך לחרוש.",
+            ),
+            // All disclaimer: it goes, as before.
+            (
+                "As an AI, I don't play the game myself. Farm Zakum helmets.",
+                "Farm Zakum helmets.",
+            ),
+            (
+                "As an AI, I can't see your screen, unfortunately. Farm Zakum helmets.",
+                "Farm Zakum helmets.",
+            ),
+            (
+                "As an AI, I don't have eyes, and I can't see your screen. Farm Zakum helmets.",
+                "Farm Zakum helmets.",
+            ),
+        ] {
+            assert_eq!(humanise(reply), said, "{reply:?}");
+        }
     }
 }
