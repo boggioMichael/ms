@@ -848,10 +848,24 @@ fn snapshot_file(session: &str) -> String {
 
 /// The files under `metrics/` in the settings folder, shared by the main
 /// loop (which writes the session's record) and the phone link (which
-/// shows the stats and turns sharing on and off). One at a time.
+/// shows the stats and turns sharing on and off). One at a time — and one
+/// copy of MapleSyrup at a time (see [`Store::guard`]).
 pub struct Store {
     dir: PathBuf,
     lock: Mutex<()>,
+}
+
+/// Held while the files are read and written (see [`Store::guard`]); the
+/// folder's lock is let go of first (fields drop in order).
+struct Held<'a> {
+    _folder: Option<std::fs::File>,
+    _here: MutexGuard<'a, ()>,
+}
+
+/// The half-written file of `name`: this process's own, so that another
+/// copy of MapleSyrup never writes into it, nor puts it in place.
+fn partial(name: &str) -> String {
+    format!("{name}.{}.partial", std::process::id())
 }
 
 impl Store {
@@ -863,19 +877,45 @@ impl Store {
         })
     }
 
-    fn guard(&self) -> MutexGuard<'_, ()> {
-        self.lock.lock().unwrap_or_else(|e| e.into_inner())
+    /// The files to this one alone, until what it returns is dropped: this
+    /// process's lock, and the folder's — `metrics/.lock`, locked, which a
+    /// second copy of MapleSyrup (another process) waits for, so that two
+    /// copies ending at once never read the records both and each write
+    /// back its own (w38's p38d: half the sessions lost, and "kept" said
+    /// of some). Held for milliseconds; the system lets go of it with the
+    /// handle, and when a copy dies. (A folder where no lock file can be
+    /// had is one where nothing can be written either: this one's own
+    /// lock, then, as before.)
+    fn guard(&self) -> Held<'_> {
+        let here = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let folder = std::fs::create_dir_all(&self.dir)
+            .and_then(|()| {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(false)
+                    .open(self.path(".lock"))
+            })
+            .and_then(|file| file.lock().map(|()| file))
+            .ok();
+        Held {
+            _folder: folder,
+            _here: here,
+        }
     }
 
     fn path(&self, name: &str) -> PathBuf {
         self.dir.join(name)
     }
 
-    /// Write `text` to `name` whole or not at all: beside it, then put in
-    /// its place (what a write that failed left half done is deleted).
+    /// Write `text` to `name` whole or not at all: beside it (in this
+    /// process's own half-written file), then put in its place (what a
+    /// write that failed left half done is deleted). Only under
+    /// [`Store::guard`].
     fn write(&self, name: &str, text: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(&self.dir)?;
-        let partial = self.path(&format!("{name}.partial"));
+        let partial = self.path(&partial(name));
         let written = std::fs::write(&partial, text)
             .and_then(|()| std::fs::rename(&partial, self.path(name)));
         if written.is_err() {
@@ -1093,7 +1133,12 @@ impl Store {
 
     /// Sharing off: `share.json`, `share-export.json` and every `*.partial`
     /// (what a write that failed left half done, which may hold the id)
-    /// deleted, then looked for: an error names what is still there.
+    /// deleted, then looked for: an error names what is still there. No
+    /// copy's write is under way meanwhile — every write is made under the
+    /// folder's lock, held here — so a `*.partial` found is one a write
+    /// left when its copy died (or an older version's `<name>.partial`).
+    /// (A copy that had no lock to take: its rename then fails, it says
+    /// "not kept", and its snapshot is kept at the next start.)
     fn turn_off(&self) -> Result<(), ShareError> {
         let mut files = vec!["share.json".to_string(), "share-export.json".to_string()];
         files.extend(
@@ -1977,7 +2022,7 @@ mod tests {
         stats.said();
         stats.save_every(&coach, None);
         stats.said();
-        std::fs::create_dir_all(metrics.join("sessions.jsonl.partial")).unwrap();
+        std::fs::create_dir_all(metrics.join(partial("sessions.jsonl"))).unwrap();
         assert!(!stats.finish(&coach, None));
         let left: SessionStats = serde_json::from_slice(&std::fs::read(&own).unwrap()).unwrap();
         assert_eq!(left.sentences, 2, "the session as it ended");
@@ -1989,7 +2034,7 @@ mod tests {
         assert!(own.exists());
         assert_eq!(Store::new(&settings).kept().len(), 0);
         // Once it can be written, the next start keeps it, once.
-        std::fs::remove_dir(metrics.join("sessions.jsonl.partial")).unwrap();
+        std::fs::remove_dir(metrics.join(partial("sessions.jsonl"))).unwrap();
         let third = Stats::start(&settings);
         assert!(!own.exists());
         let kept = Store::new(&settings).kept();
@@ -2072,6 +2117,74 @@ mod tests {
     }
 
     #[test]
+    fn two_copies_ending_at_the_same_moment_lose_no_session_and_kept_means_kept() {
+        // w38's p38d: two copies of MapleSyrup are two processes, and two
+        // `Store`s on one folder are as two (each its own in-process lock
+        // and its own handle on `metrics/.lock`). A hundred pairs of
+        // sessions ending at the same instant (a Windows shutdown closing
+        // both): at 03303a9 101–102 of the 200 were kept, and `finish()`
+        // said "kept" of some that were not (A's rename moved B's file,
+        // written over A's at the one shared `sessions.jsonl.partial`).
+        let settings = temp_dir("race");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let copies: Vec<_> = ["A", "B"]
+            .into_iter()
+            .map(|who| {
+                let (store, barrier) = (Store::new(&settings), barrier.clone());
+                std::thread::spawn(move || {
+                    (0..100)
+                        .filter(|i| {
+                            let record = SessionStats {
+                                session: format!("{who}{i:03}"),
+                                day: "2026-10-10".into(),
+                                ..Default::default()
+                            };
+                            store.snapshot(&record);
+                            barrier.wait();
+                            store.finish(&record)
+                        })
+                        .count()
+                })
+            })
+            .collect();
+        let said_kept: usize = copies.into_iter().map(|c| c.join().unwrap()).sum();
+        let store = Store::new(&settings);
+        assert_eq!(store.kept().len(), 200);
+        assert_eq!(said_kept, 200);
+        assert_eq!(store.snapshot_files(), Vec::<String>::new());
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
+    #[test]
+    fn a_copy_waits_for_the_other_and_deletes_only_what_no_write_is_making() {
+        // While one copy reads or writes the files, the other waits (the
+        // lock is the folder's, not the process's): its "Delete it" comes
+        // after the write in flight, never in the middle of it.
+        let settings = temp_dir("wait");
+        let metrics = settings.join("metrics");
+        let (a, b) = (Store::new(&settings), Store::new(&settings));
+        a.finish(&full_record("s0", "2026-10-09"));
+        let held = a.guard();
+        let other = std::thread::spawn(move || b.delete_shared());
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!other.is_finished(), "the other copy did not wait");
+        drop(held);
+        assert_eq!(other.join().unwrap(), Ok(Consent::default()));
+        // A write's half-written file is its own process's: another copy's
+        // (or an older version's) left by a write that died half way is
+        // deleted with sharing; this one's never collides with it.
+        let theirs = metrics.join("share-export.json.4242.partial");
+        std::fs::write(&theirs, "half").unwrap();
+        std::fs::create_dir_all(metrics.join("sessions.jsonl.4242.partial")).unwrap();
+        assert!(a.finish(&full_record("s1", "2026-10-10")));
+        assert_eq!(a.kept().len(), 2);
+        assert_eq!(a.delete_shared(), Ok(Consent::default()));
+        assert!(!theirs.exists());
+        assert!(!metrics.join("sessions.jsonl.4242.partial").exists());
+        let _ = std::fs::remove_dir_all(&settings);
+    }
+
+    #[test]
     fn turning_sharing_off_deletes_every_file_of_it_and_never_fails_silently() {
         let settings = temp_dir("withdraw");
         let metrics = settings.join("metrics");
@@ -2121,11 +2234,14 @@ mod tests {
         assert_eq!(store.delete_shared(), left);
         std::fs::remove_dir_all(&export).unwrap();
         assert_eq!(store.delete_shared(), Ok(Consent::default()));
-        assert_eq!(
-            std::fs::read_dir(&metrics).unwrap().count(),
-            1,
-            "sessions.jsonl only"
-        );
+        // (And `.lock`, the copies' lock: empty, never written.)
+        let mut left: Vec<String> = std::fs::read_dir(&metrics)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, [".lock", "sessions.jsonl"]);
+        assert_eq!(std::fs::metadata(metrics.join(".lock")).unwrap().len(), 0);
         let _ = std::fs::remove_dir_all(&settings);
     }
 

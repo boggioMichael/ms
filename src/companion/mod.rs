@@ -450,12 +450,6 @@ pub struct Companion {
     /// HP lately (when, percent), to tell a death a sooner warning could
     /// have helped with from a sudden one, and a beating as it happens.
     hp_lately: std::collections::VecDeque<(f64, f32)>,
-    /// The last HP reading that held (two frames in a row) outside a swing
-    /// hold, and when it was taken; EXP lately (when, percent): what tells
-    /// a death from a cursor parked on the bar's start (see
-    /// [`Companion::zero_is_death`]).
-    steady_hp: Option<(f64, f32)>,
-    exp_lately: std::collections::VecDeque<(f64, f32)>,
     /// Frames in a row in which HP has fallen fast, and when that was last
     /// said.
     falling_frames: u32,
@@ -512,9 +506,9 @@ pub struct Companion {
     mp_steady: Steadiness,
     /// Since when HP has read as zero.
     zero_hp_since: f64,
-    /// MP read lately (when, percent; not an empty fill), and whether the
-    /// empty fill being read now is a reading (`None`: MP is not empty;
-    /// see [`Companion::mp_reading`]).
+    /// MP read lately (when, percent; not a sliver), and whether the
+    /// sliver being read now is a reading (`None`: MP is no sliver; see
+    /// [`Companion::mp_reading`]).
     mp_lately: std::collections::VecDeque<(f64, f32)>,
     mp_empty: Option<bool>,
     /// Alerts said with no sign of life from the player since, and the
@@ -732,22 +726,32 @@ fn held_readings(
     })
 }
 
-/// A death read from the bar's fill (not the printed number) must last
-/// this long: a dialog over the bar reads as an empty bar too.
-const ZERO_HOLD_SECS: f64 = 2.0;
-/// An empty bar read from its fill is no death on its own, held or not:
-/// the learned sight gives no reading at all for an empty bar, so a fill
-/// at zero is a sliver — and the everyday sliver is the cursor's tip
-/// parked on the bar's start. It needs a second sign (see
-/// [`Companion::zero_is_death`]): EXP fell by this much within this long
-/// (the death's penalty)…
-const DEATH_EXP_LOSS: f32 = QUIET_EXP_BAR;
-const DEATH_EXP_SECS: f64 = 10.0;
-/// …or the way down was seen: this many readings under the mark (not the
-/// swing's) within this long before the bar read empty — a cursor jumps
-/// from where the bar was to its start; HP that runs out goes through the
-/// red first. (An empty MP fill is a reading only so: see
-/// [`Companion::mp_reading`].)
+/// A bar's fill read at this or under, in percent, is no reading at all —
+/// neither a value nor an empty bar — for HP and the close calls
+/// ([`reading`]); MP's only after a way down (see
+/// [`Companion::mp_reading`]). The learned sight gives no reading for an empty bar, so
+/// a fill this low is a sliver, and the everyday sliver is the cursor's
+/// tip on the bar's start: parked at 2 px then 1 px, or easing onto it
+/// (a glide down the bar reads like HP draining), it was a death said to
+/// a player at 85% — "אוי, אמרתי לשתות" after a false "פחות משני אחוז
+/// חיים" (w38's p38c C1, C4, C6, C7) — and a close call counted. A living
+/// character's 1–2 px of red lasts no time in play. A number read in the
+/// game's font is believed as it comes, 0 and 1 too: the only zero that
+/// is a death. (A death seen only in the fill is missed so — the old
+/// detector's bar at 0 with EXP lost, or after a way down through the red
+/// — as every death on the learned sight with the number unread already
+/// was: its sign is a fall seen, then no reading held; not yet looked for.)
+pub const SLIVER: f32 = 2.0;
+
+/// `gauge` as a reading: none when it is the bar's fill at [`SLIVER`] or
+/// under.
+pub fn reading(gauge: Option<Gauge>) -> Option<Gauge> {
+    gauge.filter(|g| g.read || g.percent > SLIVER)
+}
+
+/// MP's fill at [`SLIVER`] or under is a reading after the way down was
+/// seen: this many readings over it and under the mark (not the swing's)
+/// within this long before (see [`Companion::mp_reading`]).
 const WAY_DOWN_READINGS: usize = 2;
 const WAY_DOWN_SECS: f64 = 3.0;
 
@@ -2520,8 +2524,6 @@ impl Companion {
             zero_hp_frames: 0,
             dead: false,
             hp_lately: std::collections::VecDeque::new(),
-            steady_hp: None,
-            exp_lately: std::collections::VecDeque::new(),
             falling_frames: 0,
             fall_told: f64::NEG_INFINITY,
             fall_at: f64::NEG_INFINITY,
@@ -3008,96 +3010,25 @@ impl Companion {
             self.hp_at_change = hp.or(self.hp_at_change);
             self.exp_at_change = exp.map(|g| g.percent).or(self.exp_at_change);
         }
-        if let Some(exp) = exp {
-            self.exp_lately.push_back((now, exp.percent));
-        }
-        while self
-            .exp_lately
-            .front()
-            .is_some_and(|(t, _)| now - t > DEATH_EXP_SECS)
-        {
-            self.exp_lately.pop_front();
-        }
-    }
-
-    /// Whether EXP fell lately — by more than the bar's flicker, and held
-    /// (one frame read low is a misread; a one-frame spike up is not where
-    /// it fell from) — and not by a level-up's wrap: what a death costs.
-    fn exp_fell(&self) -> bool {
-        let Some(high) = held_readings(&self.exp_lately)
-            .map(|(_, p)| p)
-            .reduce(f32::max)
-        else {
-            return false;
-        };
-        let now = self
-            .exp_lately
-            .iter()
-            .rev()
-            .take(HELD_FRAMES as usize)
-            .map(|(_, p)| *p)
-            .fold(f32::MIN, f32::max);
-        let fell = high - now;
-        self.exp_lately.len() > HELD_FRAMES as usize && (DEATH_EXP_LOSS..50.0).contains(&fell)
-    }
-
-    /// Whether HP at zero (`hp`, since `zero_hp_since`) is a death. The
-    /// number read 0 in the game's font is. The bar's fill at zero is a
-    /// sliver (the learned sight gives no reading for an empty bar), and
-    /// the everyday sliver is the cursor's tip parked on the bar's start,
-    /// steady bar or swinging (the cursor makes the swing): it is a death
-    /// only with a second sign — EXP fell (the death's penalty); or the
-    /// way down was seen, readings under the mark just before it
-    /// ([`WAY_DOWN_READINGS`] in [`WAY_DOWN_SECS`]); or HP read steady
-    /// under the mark before a swing that hid the rest. Readings that were
-    /// the swing's are no sign: its first frames, before it was found to
-    /// swing, can rest a moment where the cursor rests ("12, 12", "10,
-    /// 10" — a steady 10 under the mark, taken from a cursor coming in,
-    /// had a parked cursor counted as a warned death). With none, it is no
-    /// death, said or counted: a death missed is better than one made up
-    /// — "your HP hit zero" to a player at 85% — counted in the stats and
-    /// told to the coach. (A death in the red is still seen; one from
-    /// high with no EXP to lose and the number unread is not.)
-    fn zero_is_death(&self, hp: Gauge) -> bool {
-        if hp.read {
-            return true;
-        }
-        // (The mark, or the default's 30 when it is lower or off: a death
-        // is seen with the warnings off too.)
-        let mark = self.settings.hp_low.max(Settings::default().hp_low);
-        let steady = &self.hp_steady;
-        let fall = self
-            .hp_lately
-            .iter()
-            .filter(|&&(t, p)| {
-                p > 0.5
-                    && p < mark
-                    && t < self.zero_hp_since
-                    && self.zero_hp_since - t <= WAY_DOWN_SECS
-                    && !steady.swung_at(t)
-            })
-            .count();
-        let steady_under = self
-            .steady_hp
-            .is_some_and(|(t, p)| p < mark && !steady.swung_at(t));
-        self.exp_fell() || fall >= WAY_DOWN_READINGS || steady_under
     }
 
     /// MP as this frame reads it; `None` where it is no reading. A number
-    /// read in the game's font is believed as it comes. The bar's fill
-    /// read empty is a sliver, as HP's is (see `zero_is_death`), and the
-    /// everyday sliver is the cursor's tip parked on the bar's start: it
-    /// is a reading only when the way down was seen — [`WAY_DOWN_READINGS`]
-    /// readings under the mark (the default's when the warnings are set
-    /// lower, or off), none of them the swing's, within [`WAY_DOWN_SECS`]
-    /// before the bar first read empty; a drain goes so, and is warned of
-    /// at the mark on its way down. Otherwise it is no reading for as long
-    /// as the bar reads empty: no warning ("less than 2% MP" four times in
-    /// two minutes to a player at 80, then the hold), and the cursor moving
-    /// off is no potion ("There you go.").
+    /// read in the game's font is believed as it comes. The bar's fill at
+    /// [`SLIVER`] or under is a sliver, and the everyday sliver is the
+    /// cursor's tip on the bar's start: it is a reading — low MP, for the
+    /// warning and its hold — only when the way down was seen:
+    /// [`WAY_DOWN_READINGS`] readings over the sliver and under the mark
+    /// (the default's when the warnings are set lower, or off), none of
+    /// them the swing's, within [`WAY_DOWN_SECS`] before the first sliver.
+    /// A drain goes so, fast ones too (80 to empty in 4 s is under the mark
+    /// for less than the warning's hold before the bar reads empty).
+    /// Otherwise it is no reading for as long as the bar reads a sliver: no
+    /// warning ("less than 2% MP" four times in two minutes to a player at
+    /// 80, then the hold), and the cursor moving off is no potion ("There
+    /// you go."). (HP's sliver is never a reading: see [`SLIVER`].)
     fn mp_reading(&mut self, now: f64, mp: Option<Gauge>) -> Option<Gauge> {
         let mp = mp?;
-        if mp.read || mp.percent > 0.5 {
+        if mp.read || mp.percent > SLIVER {
             self.mp_empty = None;
             self.mp_lately.push_back((now, mp.percent));
             while self
@@ -3109,7 +3040,7 @@ impl Companion {
             }
             return Some(mp);
         }
-        // (Decided as it first reads empty, from the readings before.)
+        // (Decided as it first reads a sliver, from the readings before.)
         let believed = match self.mp_empty {
             Some(believed) => believed,
             None => {
@@ -3118,7 +3049,7 @@ impl Companion {
                     .mp_lately
                     .iter()
                     .filter(|&&(t, p)| {
-                        p > 0.5
+                        p > SLIVER
                             && p < mark
                             && now - t <= WAY_DOWN_SECS
                             && !self.mp_steady.swung_at(t)
@@ -3162,8 +3093,10 @@ impl Companion {
         let mut alerts = Vec::new();
         self.track_window(now, &obs, &mut out);
         if obs.game.is_seen() {
-            // (An empty MP fill with no way down seen is no reading, to
-            // everything after: see `mp_reading`.)
+            // (A fill at 2% or under is no reading, to everything after —
+            // and to the chat, which is given this frame: see `SLIVER`; MP's
+            // is one after a way down: see `mp_reading`.)
+            obs.hp = reading(obs.hp);
             obs.mp = self.mp_reading(now, obs.mp);
             self.track_change(now, &obs);
             self.watch_hp(now, &obs, &mut out, &mut alerts);
@@ -3535,31 +3468,19 @@ impl Companion {
                 self.hp_steady.noted = now;
                 out.push(Action::Say(Say::info(self.unsteady_note(Bar::Hp), false)));
             }
-            // …except an empty bar that stays empty: that is no swing, and
-            // a death is counted through the hold as on a steady bar (a
-            // swing that touches 0 for a frame or two starts the count over
-            // at its next reading). The hold lasts 20 s, doubling up to ten
-            // minutes while a cursor sits on the bar: a death waited it out.
-            if hp.percent > 0.5 {
-                self.zero_hp_frames = 0;
-                return;
-            }
+            // (A swing is the fill's, and a fill is never at zero: see
+            // `SLIVER`.)
+            self.zero_hp_frames = 0;
+            return;
         }
-        // A death: HP at zero for a moment (longer when that is the bar's
-        // fill rather than the printed number: a dialog over the bar reads
-        // as empty too) — and from the fill, with a second sign (see
-        // `zero_is_death`: the cursor parked on the bar's start reads so).
+        // A death: HP at zero for a moment — the number read 0 in the
+        // game's font (a fill at zero is no reading: see `SLIVER`).
         if hp.percent <= 0.5 {
             if self.zero_hp_frames == 0 {
                 self.zero_hp_since = now;
             }
             self.zero_hp_frames += 1;
-            let held = if hp.read { 0.0 } else { ZERO_HOLD_SECS };
-            if self.zero_hp_frames >= 3
-                && now - self.zero_hp_since >= held
-                && !self.dead
-                && self.zero_is_death(hp)
-            {
+            if self.zero_hp_frames >= 3 && !self.dead {
                 self.dead = true;
                 self.deaths += 1;
                 self.last_death = now;
@@ -3585,9 +3506,9 @@ impl Companion {
                 let warned = beaten
                     || (self.low_hp.warned_this_fight(now, self.fall_at)
                         && before_swing(self.low_hp.told));
-                // (Nor for a death seen through a swinging bar: the way down
-                // was a guess, not seen.)
-                let sooner = if watched || unsteady || holding {
+                // (Nor for a death after a swinging bar: the way down was a
+                // guess, not seen.)
+                let sooner = if watched || holding {
                     None
                 } else {
                     self.sooner_warning(warned)
@@ -3600,13 +3521,6 @@ impl Companion {
             return;
         }
         self.zero_hp_frames = 0;
-        // (A reading that holds: the frame before alike.)
-        if let Some(&(t, before)) = self.hp_lately.back()
-            && now - t <= 1.0
-            && (hp.percent - before).abs() <= QUIET_HP_POINTS
-        {
-            self.steady_hp = Some((now, hp.percent));
-        }
         self.hp_lately.push_back((now, hp.percent));
         while self.hp_lately.front().is_some_and(|(t, _)| now - t > 10.0) {
             self.hp_lately.pop_front();
@@ -5236,26 +5150,21 @@ mod tests {
         let mut c = Companion::seeded(Settings::default(), SEED);
         c.observe(0.0, frame(50.0, 50.0, 10.0));
         let mut lines = Vec::new();
-        // From the bar's fill, a death must last two seconds (a dialog
-        // over the bar reads as empty too) — and come with a second sign:
-        // here the death's EXP penalty, 10% to 9%.
-        for i in 0..15 {
+        // From the bar's fill, none: a fill at zero is no reading (see
+        // `SLIVER`), EXP penalty (10% to 9%) or not. (At 03303a9 this was
+        // a death after two seconds: a death missed now.)
+        for i in 0..40 {
             lines.extend(said(
                 &c.observe(1.0 + i as f64 * 0.1, frame(0.0, 50.0, 9.0)),
             ));
         }
         assert!(lines.is_empty(), "{lines:?}");
-        for i in 15..40 {
-            lines.extend(said(
-                &c.observe(1.0 + i as f64 * 0.1, frame(0.0, 50.0, 9.0)),
-            ));
-        }
-        assert_eq!(lines, ["Your HP hit zero. Time to revive and head back."]);
-        // From the printed number, at once.
+        assert_eq!(c.deaths, 0);
+        // From the printed number, at once, and once.
         let mut c = Companion::seeded(Settings::default(), SEED);
         c.observe(0.0, frame(50.0, 50.0, 10.0));
         let mut lines = Vec::new();
-        for i in 0..5 {
+        for i in 0..40 {
             let mut dead = frame(0.0, 50.0, 10.0);
             dead.hp = Some(Gauge {
                 percent: 0.0,
@@ -5334,15 +5243,14 @@ mod tests {
         // His cursor over the start of the HP bar (Classic, the number
         // unread, the bar's fill guessed at): 100, 3, 100, 46, 9… ten
         // times a second — a swing, held — and now and then an empty bar
-        // for a frame or two. No death in that. Then he dies for real: the
-        // bar reads 0 and stays 0 for 3 s, inside the hold, and the death
-        // costs EXP (10% to 9%: the second sign a death through the hold
-        // needs — an empty fill alone is the cursor parked on the bar's
-        // start as often). The death is said, once, two seconds in — and
-        // the mark does not move for it (the way down was not seen). At
-        // a095e2b the hold reset the count of empty frames every frame: the
-        // death waited out the hold, 20 s that doubles up to ten minutes
-        // while the cursor stays.
+        // for a frame or two. No death in that. Then he dies for real,
+        // inside the hold: the number reads 0 in the game's font for 3 s.
+        // The death is said, once, at once — and the mark does not move for
+        // it (the way down was not seen). At a095e2b the hold reset the
+        // count of empty frames every frame: the death waited out the hold,
+        // 20 s that doubles up to ten minutes while the cursor stays. (The
+        // bar's fill at 0 with EXP lost was a death too, through the hold,
+        // until a fill at 2% or under was made no reading: see `SLIVER`.)
         let swing = [
             100.0, 3.0, 100.0, 46.0, 9.0, 0.0, 100.0, 28.0, 0.0, 0.0, 3.0, 100.0,
         ];
@@ -5367,15 +5275,20 @@ mod tests {
         assert!(!c.dead());
         // (Held: the swing is still being guessed at as it ends.)
         assert!(c.hp_steady.unsteady_until > 30.0, "{lines:?}");
+        let zero_read = |exp: f32| {
+            let mut obs = frame(0.0, 90.0, exp);
+            obs.hp = gauge(0.0, true);
+            obs
+        };
         for i in 300..330 {
             let t = i as f64 * 0.1;
-            for line in dealt(&c.observe(t, frame(0.0, 90.0, 9.0))) {
+            for line in dealt(&c.observe(t, zero_read(9.0))) {
                 lines.push((t, line));
             }
         }
         let died = deaths(&lines);
         assert_eq!(died.len(), 1, "{lines:?}");
-        assert!((died[0].0 - 32.0).abs() < 0.15, "{died:?}");
+        assert!((died[0].0 - 30.2).abs() < 0.05, "{died:?}");
         assert!(without_sooner(&died[0].1, 35).is_none(), "{died:?}");
         assert!(c.dead());
         assert_eq!(c.settings.hp_low, 30.0);
@@ -5391,25 +5304,25 @@ mod tests {
         assert!(!c.dead());
         // The bar read steady at 40% — over the mark, in the band where a
         // sooner warning would have come — then the cursor on it (40, 10,
-        // 40, 10…), then the death (EXP down with it): no warning came, but
+        // 40, 10…), then the death (read in the font): no warning came, but
         // the way down was a guess, and the mark stays where it is.
         let mut c = Companion::seeded(Settings::default(), SEED);
         let mut lines: Vec<(f64, String)> = Vec::new();
         for i in 0..400 {
             let t = i as f64 * 0.1;
-            let (hp, exp) = match i {
-                0..50 => (40.0, 10.0),
-                50..372 if i % 2 == 1 => (10.0, 10.0),
-                50..372 => (40.0, 10.0),
-                _ => (0.0, 9.0),
+            let obs = match i {
+                0..50 => frame(40.0, 90.0, 10.0),
+                50..372 if i % 2 == 1 => frame(10.0, 90.0, 10.0),
+                50..372 => frame(40.0, 90.0, 10.0),
+                _ => zero_read(9.0),
             };
-            for line in dealt(&c.observe(t, frame(hp, 90.0, exp))) {
+            for line in dealt(&c.observe(t, obs)) {
                 lines.push((t, line));
             }
         }
         let died = deaths(&lines);
         assert_eq!(died.len(), 1, "{lines:?}");
-        assert!((died[0].0 - 39.2).abs() < 0.15, "{died:?}");
+        assert!((died[0].0 - 37.4).abs() < 0.05, "{died:?}");
         assert!(from(lines::DEATH, &died[0].1), "{died:?}");
         assert_eq!(c.settings.hp_low, 30.0, "{died:?}");
     }
@@ -5426,8 +5339,9 @@ mod tests {
             100.0, 3.0, 100.0, 46.0, 9.0, 0.0, 100.0, 28.0, 0.0, 0.0, 3.0, 100.0,
         ];
         let is_death = |l: &str| from(lines::DEATH, l) || from(lines::DEATH_WARNED, l);
-        // (`before`: HP steady for 5 s before the swing, or not.)
-        let run = |before: Option<f32>, exp_at_zero: f32| -> (Vec<(f64, String)>, bool) {
+        // (`before`: HP steady for 5 s before the swing, or not; `read`:
+        // the zero read in the game's font — a real death — or the fill.)
+        let run = |before: Option<f32>, exp_at_zero: f32, read: bool| {
             let mut c = Companion::seeded(Settings::default(), SEED);
             let mut lines = Vec::new();
             let start = if before.is_some() { 0 } else { 50 };
@@ -5439,14 +5353,18 @@ mod tests {
                     150..175 => (0.0, exp_at_zero),
                     _ => (80.0, exp_at_zero),
                 };
-                for line in dealt(&c.observe(t, frame(hp, 90.0, exp))) {
+                let mut obs = frame(hp, 90.0, exp);
+                if (150..175).contains(&i) {
+                    obs.hp = gauge(0.0, read);
+                }
+                for line in dealt(&c.observe(t, obs)) {
                     lines.push((t, line));
                 }
             }
             (lines, c.deaths > 0)
         };
         // Parked: no death.
-        let (parked, died) = run(None, 10.0);
+        let (parked, died) = run(None, 10.0, false);
         assert!(!died, "{parked:?}");
         assert!(parked.iter().all(|(_, l)| !is_death(l)), "{parked:?}");
         // (The swing's first frames did pass for a beating: nothing is
@@ -5457,27 +5375,226 @@ mod tests {
                 .any(|(t, l)| *t < 6.0 && from(lines::BEATING, l)),
             "{parked:?}"
         );
-        // A death through the hold that cost EXP: said — and not as one it
-        // warned of: that beating was the swing's.
-        let (lines, died) = run(None, 9.0);
+        // A death through the hold (read 0 in the font): said — and not as
+        // one it warned of: that beating was the swing's.
+        let (lines, died) = run(None, 9.0, true);
         let deaths: Vec<&(f64, String)> = lines.iter().filter(|(_, l)| is_death(l)).collect();
         assert!(died);
         assert_eq!(deaths.len(), 1, "{lines:?}");
         assert!(from(lines::DEATH, &deaths[0].1), "{deaths:?}");
         // HP read steady under the mark before the swing (and warned of
-        // then): the empty bar is a death — a warned one — EXP or no EXP.
-        let (lines, died) = run(Some(20.0), 10.0);
+        // then): a warned death.
+        let (lines, died) = run(Some(20.0), 10.0, true);
         let deaths: Vec<&(f64, String)> = lines.iter().filter(|(_, l)| is_death(l)).collect();
         assert!(died);
         assert_eq!(deaths.len(), 1, "{lines:?}");
         assert!(from(lines::DEATH_WARNED, &deaths[0].1), "{deaths:?}");
+        // The same two from the fill's 0 (EXP lost; steady under the mark
+        // before): deaths at 03303a9, none now — a fill at 2% or under is
+        // no reading (see `SLIVER`). Missed, as on the learned sight.
+        assert!(!run(None, 9.0, false).1);
+        assert!(!run(Some(20.0), 10.0, false).1);
         // Steady over the mark before it: parked, no death.
-        let (lines, died) = run(Some(80.0), 10.0);
+        let (lines, died) = run(Some(80.0), 10.0, false);
         assert!(!died, "{lines:?}");
     }
 
     #[test]
-    fn an_empty_fill_is_a_death_only_with_a_second_sign_on_a_steady_bar_or_through_a_hold() {
+    fn a_fill_at_two_percent_or_under_is_no_reading_and_a_number_read_is_believed() {
+        // w38's p38c, through `observe` in Hebrew, each script at 10 fps
+        // and at 4 fps (the main loop's tick). The cursor's tip on a bar's
+        // start reads a sliver — 0.3, or 0.67 then 0.33 (2 px, 1 px) — and
+        // a cursor easing onto it reads like HP draining. At 03303a9: C1
+        // (10 fps), C4, C6 and C7 were deaths said to a player at 85%, C6
+        // and C7 after a false "פחות משני אחוז חיים"; and the MP tip was
+        // "פחות משני אחוז מאנה". A fill at 2% or under is no reading now —
+        // neither a value nor an empty bar — while a number read in the
+        // game's font is believed as it comes, 0 and 1 too. `script(t)`:
+        // HP and MP (None: none), whether HP was read in the font, EXP.
+        type Script = dyn Fn(f64) -> (Option<f32>, f32, bool, f32);
+        fn lerp(t: f64, t0: f64, t1: f64, a: f32, b: f32) -> f32 {
+            a + (b - a) * ((t - t0) / (t1 - t0)).clamp(0.0, 1.0) as f32
+        }
+        let run = |fps: f64, secs: f64, script: &Script| {
+            let mut c = Companion::seeded(Settings::default(), SEED);
+            c.set_language(Some("he-IL"));
+            c.settled(false);
+            let mut lines: Vec<(f64, String)> = Vec::new();
+            for f in 0..(secs * fps) as usize {
+                let t = f as f64 / fps;
+                let (hp, mp, read, exp) = script(t);
+                let obs = Observation {
+                    game: GameView::Seen("MapleStory".into()),
+                    hp: hp.and_then(|p| gauge(p, read)),
+                    mp: gauge(mp, false),
+                    exp: gauge(exp, false),
+                    level: Some(9),
+                    name: None,
+                    job: None,
+                };
+                for line in said(&c.observe(t, obs)) {
+                    lines.push((t, line));
+                }
+            }
+            (c.deaths, lines)
+        };
+        let sliver = |lines: &[(f64, String)]| lines.iter().any(|(_, l)| l.contains(LESS_THAN_TWO));
+        // The cursor, HP really 85 all along (MP 80): no death, and no
+        // "less than two percent".
+        let cursor: [(&str, Box<Script>); 5] = [
+            (
+                "C1 slow sweep onto the start, parked",
+                Box::new(|t| {
+                    let hp = match t {
+                        t if t < 5.0 => 85.0,
+                        t if t < 6.0 => lerp(t, 5.0, 6.0, 85.0, 0.3),
+                        t if t < 12.0 => 0.3,
+                        _ => 85.0,
+                    };
+                    (Some(hp), 80.0, false, 40.0)
+                }),
+            ),
+            (
+                "C4 eases in: fast to 30, slow over the last 30, parked",
+                Box::new(|t| {
+                    let hp = match t {
+                        t if t < 5.0 => 85.0,
+                        t if t < 5.1 => 30.0,
+                        t if t < 5.7 => lerp(t, 5.1, 5.7, 30.0, 0.3),
+                        t if t < 11.7 => 0.3,
+                        _ => 85.0,
+                    };
+                    (Some(hp), 80.0, false, 40.0)
+                }),
+            ),
+            (
+                "C6 tip 0.67 then 0.33, twice",
+                Box::new(|t| {
+                    let hp = match t {
+                        t if t < 5.0 => 85.0,
+                        t if t < 5.6 => 0.67,
+                        t if t < 8.6 => 0.33,
+                        t if t < 9.2 => 0.67,
+                        t if t < 12.2 => 0.33,
+                        _ => 85.0,
+                    };
+                    (Some(hp), 80.0, false, 40.0)
+                }),
+            ),
+            (
+                "C7 tip 0.67 for 6 s, then 0.33",
+                Box::new(|t| {
+                    let hp = match t {
+                        t if t < 5.0 => 85.0,
+                        t if t < 11.0 => 0.67,
+                        t if t < 15.0 => 0.33,
+                        _ => 85.0,
+                    };
+                    (Some(hp), 80.0, false, 40.0)
+                }),
+            ),
+            (
+                "MP: the tip on the MP bar, 0.67 for 6 s, then 1.5",
+                Box::new(|t| {
+                    let mp = match t {
+                        t if t < 5.0 => 80.0,
+                        t if t < 11.0 => 0.67,
+                        t if t < 15.0 => 1.5,
+                        _ => 80.0,
+                    };
+                    (Some(85.0), mp, false, 40.0)
+                }),
+            ),
+        ];
+        for (label, script) in &cursor {
+            for fps in [10.0, 4.0] {
+                let (deaths, lines) = run(fps, 20.0, script.as_ref());
+                assert_eq!(deaths, 0, "{label} at {fps} fps: {lines:?}");
+                assert!(!sliver(&lines), "{label} at {fps} fps: {lines:?}");
+            }
+        }
+        // A number read in the game's font is believed as it comes: 0 is
+        // a death at once (R6), 1 is "less than two percent".
+        for fps in [10.0, 4.0] {
+            let (deaths, lines) = run(fps, 20.0, &|t| {
+                let hp = if t < 5.0 {
+                    80.0
+                } else if t < 13.0 {
+                    0.0
+                } else {
+                    100.0
+                };
+                (Some(hp), 80.0, true, 40.0)
+            });
+            assert_eq!(deaths, 1, "R6 at {fps} fps: {lines:?}");
+            let (deaths, lines) = run(fps, 20.0, &|t| {
+                let hp = if t < 5.0 {
+                    80.0
+                } else if t < 13.0 {
+                    1.0
+                } else {
+                    80.0
+                };
+                (Some(hp), 80.0, true, 40.0)
+            });
+            assert_eq!(deaths, 0, "read 1 at {fps} fps: {lines:?}");
+            assert!(sliver(&lines), "read 1 at {fps} fps: {lines:?}");
+        }
+        // What this costs: a death seen only in the fill — the bar's 0, with
+        // EXP lost (R3), the way down through the red (R4) or HP steady
+        // under the mark before it (R7) — is no longer counted (each was at
+        // 03303a9). A fill at zero is the cursor's tip as often as a death,
+        // and the learned sight gives no reading at all for an empty bar.
+        // (The next round's sign: a fall seen, then no reading held ≥ 2 s.)
+        let fill_deaths: [(&str, Box<Script>); 3] = [
+            (
+                "R3 one-shot from 80, EXP 40 -> 39",
+                Box::new(|t| {
+                    let hp = if t < 5.0 {
+                        80.0
+                    } else if t < 13.0 {
+                        0.0
+                    } else {
+                        100.0
+                    };
+                    (Some(hp), 80.0, false, if t < 5.0 { 40.0 } else { 39.0 })
+                }),
+            ),
+            (
+                "R4 through the red over 1.5 s",
+                Box::new(|t| {
+                    let hp = match t {
+                        t if t < 5.0 => 80.0,
+                        t if t < 6.5 => lerp(t, 5.0, 6.5, 80.0, 0.0),
+                        t if t < 14.5 => 0.0,
+                        _ => 100.0,
+                    };
+                    (Some(hp), 80.0, false, 40.0)
+                }),
+            ),
+            (
+                "R7 steady 25, then 0",
+                Box::new(|t| {
+                    let hp = if t < 5.0 {
+                        25.0
+                    } else if t < 13.0 {
+                        0.0
+                    } else {
+                        100.0
+                    };
+                    (Some(hp), 80.0, false, 40.0)
+                }),
+            ),
+        ];
+        for (label, script) in &fill_deaths {
+            let (deaths, lines) = run(10.0, 20.0, script.as_ref());
+            assert_eq!(deaths, 0, "{label}: {lines:?}");
+            assert!(!sliver(&lines), "{label}: {lines:?}");
+        }
+    }
+
+    #[test]
+    fn an_empty_fill_is_no_death_and_a_zero_read_in_the_font_is() {
         // The learned sight gives no reading for an empty bar, so the fill
         // read at zero is a sliver, and the everyday sliver is his cursor
         // parked on the bar's start (w32's D1, p21 A6/A7). At 72c97ff: on a
@@ -5509,7 +5626,8 @@ mod tests {
             assert_eq!(deaths.len() as u32, c.deaths, "{lines:?}");
             (deaths, lines)
         };
-        let run = |frames: usize, script: Script| run(Settings::default(), frames, script);
+        let run_with = run;
+        let run = |frames: usize, script: Script| run_with(Settings::default(), frames, script);
         // Parked on a steady bar: 85%, the cursor's tip at the bar's start
         // for 3 s, then off. (Fails at 72c97ff: a death at 7.0 s.)
         let (deaths, lines) = run(200, &|i| match i {
@@ -5549,16 +5667,7 @@ mod tests {
             _ => (85.0, false, 40.0),
         });
         assert!(deaths.is_empty(), "{lines:?}");
-        // Deaths, each with its sign. Through a hold: EXP lost (40 → 39);
-        // the 0 read in the font (at once); HP read steady at 20 before
-        // the swing (warned of then, so a warned death).
-        let (deaths, lines) = run(300, &|i| match i {
-            0..50 => (70.0, false, 40.0),
-            50..150 => (swing[i % swing.len()], false, 40.0),
-            150..230 => (0.0, false, 39.0),
-            _ => (100.0, false, 39.0),
-        });
-        assert_eq!(deaths.len(), 1, "{lines:?}");
+        // A death: the 0 read in the font, through a hold, at once.
         let (deaths, lines) = run(300, &|i| match i {
             0..50 => (70.0, false, 40.0),
             50..150 => (swing[i % swing.len()], false, 40.0),
@@ -5567,49 +5676,55 @@ mod tests {
         });
         assert_eq!(deaths.len(), 1, "{lines:?}");
         assert!(deaths[0].0 < 15.3, "{deaths:?}");
-        let (deaths, lines) = run(300, &|i| match i {
-            0..50 => (20.0, false, 40.0),
-            50..150 => (swing[i % swing.len()], false, 40.0),
-            150..230 => (0.0, false, 40.0),
-            _ => (100.0, false, 40.0),
-        });
-        assert_eq!(deaths.len(), 1, "{lines:?}");
-        assert!(from(lines::DEATH_WARNED, &deaths[0].1), "{deaths:?}");
-        // On a steady bar, the way down seen: 85, 45, 25, 12, then empty,
-        // EXP flat — a death two seconds on; with the warnings off too
-        // (the red is under 30 then).
-        let fall = |i: usize| match i {
-            0..50 => (85.0, false, 40.0),
-            50 => (45.0, false, 40.0),
-            51 => (25.0, false, 40.0),
-            52 => (12.0, false, 40.0),
-            53..133 => (0.0, false, 40.0),
-            _ => (100.0, false, 40.0),
+        // The fill's 0 with a second sign — EXP lost (40 → 39) through a
+        // hold; HP read steady at 20 before the swing; the way down seen
+        // on a steady bar (85, 45, 25, 12), the warnings on or off — was a
+        // death at 03303a9, and is none now: a fill at 2% or under is no
+        // reading (see `SLIVER`). Missed, as every death on the learned
+        // sight with the number unread already was; and from 70% straight
+        // to an empty fill, with no EXP to lose, as before (p21 A1).
+        let exp_lost = |i: usize| -> (f32, bool, f32) {
+            match i {
+                0..50 => (70.0, false, 40.0),
+                50..150 => (swing[i % swing.len()], false, 40.0),
+                150..230 => (0.0, false, 39.0),
+                _ => (100.0, false, 39.0),
+            }
         };
-        let (deaths, lines) = run(200, &fall);
-        assert_eq!(deaths.len(), 1, "{lines:?}");
-        assert!((deaths[0].0 - 7.3).abs() < 0.15, "{deaths:?}");
+        let steady_under = |i: usize| -> (f32, bool, f32) {
+            match i {
+                0..50 => (20.0, false, 40.0),
+                50..150 => (swing[i % swing.len()], false, 40.0),
+                150..230 => (0.0, false, 40.0),
+                _ => (100.0, false, 40.0),
+            }
+        };
+        let fall = |i: usize| -> (f32, bool, f32) {
+            match i {
+                0..50 => (85.0, false, 40.0),
+                50 => (45.0, false, 40.0),
+                51 => (25.0, false, 40.0),
+                52 => (12.0, false, 40.0),
+                53..133 => (0.0, false, 40.0),
+                _ => (100.0, false, 40.0),
+            }
+        };
+        let straight = |i: usize| -> (f32, bool, f32) {
+            match i {
+                50..130 => (0.0, false, 40.0),
+                0..50 => (70.0, false, 40.0),
+                _ => (100.0, false, 40.0),
+            }
+        };
+        for script in [&exp_lost as Script, &steady_under, &fall, &straight] {
+            let (deaths, lines) = run(300, script);
+            assert!(deaths.is_empty(), "{lines:?}");
+        }
         let off = Settings {
             hp_low: 0.0,
             ..Settings::default()
         };
-        let mut c = Companion::seeded(off, SEED);
-        for i in 0..200 {
-            let (hp, read, exp) = fall(i);
-            let mut obs = frame(hp, 90.0, exp);
-            obs.hp = gauge(hp, read);
-            c.observe(i as f64 * 0.1, obs);
-        }
-        assert_eq!(c.deaths, 1);
-        // The price, chosen (w32's D2: a death missed is better than one
-        // made up): from 70% straight to an empty fill, with no EXP to lose
-        // and the number unread, is no death — it is the parked cursor's
-        // very shape. (p21 A1.)
-        let (deaths, lines) = run(250, &|i| match i {
-            50..130 => (0.0, false, 40.0),
-            0..50 => (70.0, false, 40.0),
-            _ => (100.0, false, 40.0),
-        });
+        let (deaths, lines) = run_with(off, 200, &fall);
         assert!(deaths.is_empty(), "{lines:?}");
     }
 
@@ -5619,10 +5734,11 @@ mod tests {
         // as an empty MP bar. At b28cdfb, 0.3 on a steady 80 for five
         // minutes was four MP warnings in two minutes, the hold note, and
         // "There you go." when the cursor moved off — taken for a potion
-        // at last. An empty fill counts only when the way down was seen —
-        // two readings under the mark in the 3 s before it, not the
-        // swing's — as an empty HP bar's death does; else it is no
-        // reading. Ten frames a second; `script` gives MP and whether it
+        // at last. An empty fill — any fill at 2% or under (see `SLIVER`;
+        // 0.5 until round K) — counts only when the way down was seen —
+        // two readings over 2% and under the mark in the 3 s before it,
+        // not the swing's — else it is no reading. (HP's never counts.)
+        // Ten frames a second; `script` gives MP and whether it
         // was read in the game's font. Returns what was said after the
         // first frame (when, the line), and the companion.
         type Script<'a> = &'a dyn Fn(usize) -> (f32, bool);
@@ -5698,10 +5814,13 @@ mod tests {
             _ => (80.0, false),
         });
         assert!(mp_low(&lines).is_empty(), "{lines:?}");
-        // A real drain, 80 to empty over 4 s, empty 30 s, then a potion:
-        // warned at the mark on the way down, the empty bar believed (the
-        // line comes again 12 s on, as for any low bar), and the potion
-        // seen — it answers the line.
+        // A real drain, 80 to empty over 4 s (20 points a second: under the
+        // mark for less than the low line's hold before it reads 2% or
+        // under), empty 30 s, then a potion: warned — the empty bar after
+        // the way down is believed (the line comes again 12 s on, as for
+        // any low bar) — and the potion seen: it answers the line. (w39's
+        // M4; not warned at all while every fill at 2% or under was no
+        // reading.)
         let drain = |i: usize| match i {
             0..50 => (80.0, false),
             50..90 => ((80.0 - (i - 50) as f32 * 2.0).max(0.3), false),
@@ -5720,7 +5839,7 @@ mod tests {
         let (lines, c) = run_off(500, &drain);
         assert!(lines.is_empty(), "{lines:?}");
         assert!((39.0..39.3).contains(&c.potion_at), "{}", c.potion_at);
-        // A fast one — 80, 40, 12, 6, empty — is a way down too.
+        // A fast one — 80, 40, 12, 6, empty — is a way down too (w39's M5).
         let (lines, _) = run(300, &|i| match i {
             0..50 => (80.0, false),
             50 => (40.0, false),
@@ -5731,6 +5850,15 @@ mod tests {
         });
         let warned = mp_low(&lines);
         assert!(!warned.is_empty() && warned[0] < 6.0, "{lines:?}");
+        // A tip of 2 px then 1 px (0.67, then 0.33) on a steady 80 is no
+        // way down: no reading, no line, and moving off is no potion.
+        let (lines, c) = run(300, &|i| match i {
+            50..110 => (0.67, false),
+            110..150 => (0.33, false),
+            _ => (80.0, false),
+        });
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(c.potion_at, f64::NEG_INFINITY, "{lines:?}");
         // A 0 read in the game's font is believed at once.
         let (lines, _) = run(300, &|i| match i {
             50..150 => (0.0, true),
@@ -7260,14 +7388,17 @@ mod tests {
             }
         }
         assert!(filled > 100, "{filled}");
-        // As said: the beating's lead at 1%, then the low line's.
+        // As said: the beating's lead at 1%, then the low line's — read in
+        // the game's font (the fill at 1.2 is no reading: see `SLIVER`).
         let mut c = Companion::seeded(Settings::default(), SEED);
         c.set_language(Some("he-IL"));
         c.observe(0.0, frame(80.0, 90.0, 10.0));
         c.observe(0.1, frame(80.0, 90.0, 10.0));
         let mut lines: Vec<String> = Vec::new();
         for i in 2..30 {
-            lines.extend(dealt(&c.observe(i as f64 * 0.1, frame(1.2, 90.0, 10.0))));
+            let mut obs = frame(1.2, 90.0, 10.0);
+            obs.hp = gauge(1.2, true);
+            lines.extend(dealt(&c.observe(i as f64 * 0.1, obs)));
         }
         assert_eq!(
             lines.first().map(String::as_str),
@@ -7476,9 +7607,9 @@ mod tests {
         let mut c = Companion::seeded(Settings::default(), SEED);
         // Worn down through 40% and 32% over a few seconds: above 30%, so
         // no warning came, and slowly enough for one at 35 to have helped.
-        // Each death costs EXP (10% to 9%, then 8%…): a death read from the
-        // bar's fill needs that second sign (a fill at zero from over the
-        // mark is the cursor parked on the bar's start as often).
+        // Each death is the number read 0 in the game's font, and costs EXP
+        // (10% to 9%, then 8%…). (The bar's fill at 0 is no reading: see
+        // `SLIVER`.)
         let mut t = 0.0;
         let mut exp = 10.0;
         let mut step = |c: &mut Companion, hp: f32, frames: usize| {
@@ -7488,7 +7619,11 @@ mod tests {
                 if hp <= 0.0 && i == 0 {
                     exp -= 1.0;
                 }
-                lines.extend(said(&c.observe(t, frame(hp, 50.0, exp))));
+                let mut obs = frame(hp, 50.0, exp);
+                if hp <= 0.0 {
+                    obs.hp = gauge(0.0, true);
+                }
+                lines.extend(said(&c.observe(t, obs)));
             }
             lines
         };
@@ -7498,8 +7633,7 @@ mod tests {
         assert!(step(&mut c, 60.0, 31).is_empty());
         assert!(step(&mut c, 40.0, 31).is_empty());
         assert!(step(&mut c, 32.0, 3).is_empty());
-        // (A death read from the bar takes two seconds to believe.) The
-        // death line, with the change after it.
+        // The death line, with the change after it.
         let death = step(&mut c, 0.0, 25);
         assert_eq!(death.len(), 1, "{death:?}");
         let line = without_sooner(&death[0], 35).unwrap_or_else(|| panic!("{death:?}"));

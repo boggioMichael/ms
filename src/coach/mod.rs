@@ -471,9 +471,11 @@ impl CloseCalls {
             self.lately.clear();
             return None;
         }
-        // No reading, or a zero (a dialog over the bar, or a death on its
-        // way: `dead` says which): the scare stands as it is.
-        let reading = hp.filter(|g| g.percent > 0.5)?;
+        // No reading — a fill at 2% or under is none (the cursor's tip on
+        // the bar's start, as often as not: see `companion::SLIVER`) — or
+        // a zero read (a death on its way: `dead` says): the scare stands
+        // as it is.
+        let reading = crate::companion::reading(hp).filter(|g| g.percent > 0.5)?;
         let hp = reading.percent;
         // (The way down: the readings between the marks before this one.)
         let way_down = self
@@ -1793,6 +1795,43 @@ mod tests {
         talked.extend(hp_frames(&mut coach, 1071.0, 60.0, 60.0, false, false));
         assert!(close_calls(&talked).is_empty(), "{talked:?}");
         assert_eq!(coach.pending, None);
+    }
+
+    #[test]
+    fn a_fill_at_two_percent_or_under_is_no_reading_for_a_close_call() {
+        // A cursor easing onto the HP bar's start (HP really 85): 30, 25…
+        // 5 on its way down the bar — a way down, by value — then its tip
+        // parked there 3 s, then off. At 03303a9 a tip of 2 px (0.67%) or
+        // a 2.0 was a reading under 10, held, then "back": a close call,
+        // counted in the stats and remarked on by the coach. A fill at 2%
+        // or under is no reading now; a number read in the game's font is
+        // believed as it comes (1: a close call).
+        let feed = |read: bool, tip: f32| {
+            let mut calls = CloseCalls::default();
+            let mut found = Vec::new();
+            for i in 0..200u32 {
+                let t = f64::from(i) * 0.1;
+                let percent = match i {
+                    0..50 => 85.0,
+                    50..56 => 30.0 - (i - 50) as f32 * 5.0,
+                    56..86 => tip,
+                    _ => 85.0,
+                };
+                let gauge = Gauge {
+                    percent,
+                    current: None,
+                    max: None,
+                    read,
+                };
+                if let Some(lowest) = calls.track(t, Some(gauge), false) {
+                    found.push((t, lowest));
+                }
+            }
+            found
+        };
+        assert_eq!(feed(false, 0.67), vec![]);
+        assert_eq!(feed(false, 2.0), vec![]);
+        assert_eq!(feed(true, 1.0).len(), 1, "{:?}", feed(true, 1.0));
     }
 
     #[test]
