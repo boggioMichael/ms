@@ -244,20 +244,39 @@ Workshop (off unless you turn it on)
   dependencies and takes longer.
 
 Privacy
-  Your OpenAI key stays on this PC (a live call uses a key that works for a few
-  minutes only, made for it). With a key, what you say to MapleSyrup (on a
-  live call, your voice itself) and pictures of your game window are sent to
-  OpenAI to answer you; pictures only while MapleStory is the window in front.
-  To learn, every few minutes it sends the text of the conversation (not the
-  pictures) to OpenAI to update its notebook; what it learns is kept on your
-  PC only. With an xAI key, what you say and a small picture of the game go to
-  xAI (Grok) for the regular replies. With an ElevenLabs key, what it says
-  goes to ElevenLabs to be spoken. Your keys stay on this PC
-  (%APPDATA%\MapleSyrup).
+  Your keys stay on this PC (%APPDATA%\MapleSyrup); a live call uses a key
+  that works for a few minutes only, made for it.
+  With an OpenAI key, to answer you, OpenAI gets: what you say (on a live
+  call, your voice itself), the conversation, what it reads off the game
+  (level, bars, map), pictures of your game window - only while MapleStory
+  is the window in front - and its notebook about you (memory.json,
+  about-me.txt and the lessons in knowledge.json), with each reply and with
+  each look the coach takes (about every minute or three while you play).
+  Every few minutes it also sends the notebook and the latest conversation
+  (not the pictures) to update the notebook, which is kept on your PC. While
+  it learns to read your HUD, it sends a picture of the game window and
+  crops of the HUD.
+  With an xAI key, the regular replies go to xAI (Grok) with the same: what
+  you say, a small picture of the game and the notebook. With an ElevenLabs
+  key, what it says goes to ElevenLabs to be spoken.
+  Outside a live call, your phone's browser turns your speech into text with
+  its own speech service (Google's on Chrome and Android, Apple's on
+  Safari): your voice goes there, with or without any key. With "phone over
+  the internet", everything the phone and the PC exchange goes through
+  Cloudflare.
+  Updates: it asks datta-syrup.ai for a new version 45 s after it starts and
+  then hourly (a plain request: your IP address, and that MapleSyrup runs);
+  off with --no-update or on the phone.
+  The workshop (off unless you turn it on) hands your request and the end of
+  the session's log to the coding agent on your PC, which sends them to its
+  own provider (Anthropic or OpenAI).
+  "The game" is any window whose title contains "MapleStory".
   OpenAI bills your account: a live call costs more than the PC voice (very
-  roughly a dollar or two per hour of play, depending on how much you talk). Without a key, nothing leaves your PC
-  except the phone link on your own network.
-  Recordings are made and kept on your PC only, and only when you ask for one.
+  roughly a dollar or two per hour of play, depending on how much you talk).
+  Without a key and with updates off, nothing leaves your PC except the
+  phone link on your own network (and the phone's own speech recognition).
+  Recordings are made and kept on your PC only, and only when you ask for one;
+  a recording holds the whole screen and every sound of the PC.
   Play stats: MapleSyrup keeps numbers about each session on this PC (minutes,
   levels, deaths, warnings, how fast it answered; in %APPDATA%\MapleSyrup\metrics)
   and never your character's name, what you say, your voice, pictures or your
