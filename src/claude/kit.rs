@@ -55,20 +55,49 @@ pub fn settings_json() -> String {
     serde_json::to_string_pretty(&settings).unwrap_or_default() + "\n"
 }
 
-/// `Start Claude.cmd`: MapleSyrup (the program one folder up) started if it
-/// is not running, then Claude Code with the channel — Sonnet at low
-/// effort, quick enough to talk with (`/model` and `/effort` change it), and
-/// with Remote Control on, so the session is in the Claude app too. (Claude
-/// Code asks each time whether to load a development channel: custom
-/// channels need that while channels are a research preview.)
+/// `Start Claude.cmd`: Claude Code found (or, when it is not on this PC,
+/// installed from claude.ai once the player agrees), MapleSyrup (the
+/// program one folder up) started if it is not running — and if an older
+/// one without Claude's channel is, a word to close it — then Claude Code
+/// with the channel: Sonnet at low effort, quick enough to talk with
+/// (`/model` and `/effort` change it), and Remote Control on, so the
+/// session is in the Claude app too. (Claude Code asks each time whether to
+/// load a development channel: custom channels need that while channels
+/// are a research preview.) Plain ASCII: cmd reads it in the console's code
+/// page, and the paths with the player's name in them come from variables.
 pub fn launcher() -> String {
     [
         "@echo off",
         "rem Claude with MapleSyrup's live channel: MapleSyrup reads the game, Claude talks with you.",
         "cd /d \"%~dp0\"",
+        "set \"CLAUDE=claude\"",
+        "where claude >nul 2>nul",
+        "if not errorlevel 1 goto :maplesyrup",
+        "set \"CLAUDE=%USERPROFILE%\\.local\\bin\\claude.exe\"",
+        "if exist \"%CLAUDE%\" goto :maplesyrup",
+        "echo Claude Code is not installed on this PC yet.",
+        "echo Press any key to install it now from claude.ai - it takes about a minute - or close this window.",
+        "pause >nul",
+        "curl -fsSL https://claude.ai/install.cmd -o \"%TEMP%\\claude-install.cmd\"",
+        "call \"%TEMP%\\claude-install.cmd\"",
+        "del \"%TEMP%\\claude-install.cmd\" >nul 2>nul",
+        "if not exist \"%CLAUDE%\" (",
+        "  echo Claude Code did not install. See https://code.claude.com/docs/en/setup",
+        "  pause",
+        "  exit /b 1",
+        ")",
+        ":maplesyrup",
         "tasklist /FI \"IMAGENAME eq MapleSyrup.exe\" 2>nul | find /I \"MapleSyrup.exe\" >nul",
-        "if errorlevel 1 start \"MapleSyrup\" \"%~dp0..\\MapleSyrup.exe\"",
-        "claude --dangerously-load-development-channels server:maplesyrup --model sonnet --effort low --remote-control MapleSyrup",
+        "if errorlevel 1 goto :start",
+        "if exist \"%APPDATA%\\MapleSyrup\\claude-link.json\" goto :claude",
+        "echo MapleSyrup is open, but a version without Claude's channel.",
+        "echo Close MapleSyrup, then run this again.",
+        "pause",
+        "exit /b 1",
+        ":start",
+        "start \"MapleSyrup\" \"%~dp0..\\MapleSyrup.exe\"",
+        ":claude",
+        "\"%CLAUDE%\" --dangerously-load-development-channels server:maplesyrup --model sonnet --effort low --remote-control MapleSyrup",
         "",
     ]
     .join("\r\n")
