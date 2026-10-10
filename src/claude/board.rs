@@ -615,17 +615,19 @@ mod tests {
     #[test]
     fn a_poll_waits_for_the_next_event() {
         let board = Board::new(KEY.into());
+        // Nothing was ever posted: the first poll after a fresh start is
+        // `since=0`, and it waits like any other.
+        let got = json_of(&board.handle(&get(&format!("/local/events?k={KEY}&fresh=1"))));
+        let since = got["last"].as_u64().unwrap();
+        assert_eq!(since, 0);
+        // (Posted only now: a test thread held up longer than the poster's
+        // nap — a busy Windows runner does that — must not see it early.)
         let poster = Arc::clone(&board);
         let started = Instant::now();
         let handle = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(150));
             poster.post("heard", "He said: hi", "He said: hi".into());
         });
-        // Nothing was ever posted: the first poll after a fresh start is
-        // `since=0`, and it waits like any other.
-        let got = json_of(&board.handle(&get(&format!("/local/events?k={KEY}&fresh=1"))));
-        let since = got["last"].as_u64().unwrap();
-        assert_eq!(since, 0);
         let got = json_of(&board.handle(&get(&format!(
             "/local/events?k={KEY}&since={since}&wait=5000"
         ))));
