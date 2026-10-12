@@ -13,10 +13,16 @@ Start
      chow chow from the logo) and a small HP/MP/EXP panel appear at the top
      right of the game.
   3. On your phone (same Wi-Fi as the PC), scan the QR code in MapleSyrup's window.
-     The phone warns that the page is "not private": the certificate was made
-     on your PC, not by a public authority.
+     Until your phone trusts this PC, it warns that the page is "not
+     private": the certificate was made on your PC, not by a public authority.
        iPhone:  Show Details -> visit this website -> Visit Website
        Android: Advanced -> Proceed
+     The page then offers "Trust this PC": once, the phone trusts MapleSyrup's
+     own certificate authority on your PC, and the warning is gone for good
+     (iPhone: allow the profile, Settings -> Profile Downloaded -> Install,
+     then Settings -> General -> About -> Certificate Trust Settings -> turn
+     on "MapleSyrup ..."). That authority can sign only for addresses on your
+     own network (and local names), so trusting it trusts nothing else.
   4. Tap "Start listening", allow the microphone, and just talk to it:
      "hey, how am I doing?", "how long until I level?", "mark that!".
      It says hello once per visit (a page reloaded within half an hour is
@@ -253,9 +259,12 @@ Claude, live (talk with Claude while it sees the game)
   knows about you (your about-me.txt, which Claude can add to).
   Once: double-click "Add MapleSyrup to Claude.cmd" (or run
   MapleSyrup.exe --install-claude), then quit the Claude app completely (its
-  icon by the clock -> Quit) and open it again. From then on Claude starts
-  MapleSyrup by itself when it needs it, and stops it when it is done.
-  It needs the Claude desktop app on this PC.
+  icon by the clock -> Quit) and open it again. From then on, in any chat,
+  Claude uses the MapleSyrup that runs, or starts one in the background
+  itself (it stops a few minutes after Claude's last question). The app
+  runs a copy of MapleSyrup of its own (in %LOCALAPPDATA%\MapleSyrup), so
+  MapleSyrup.exe itself is never held open by it. It needs the Claude
+  desktop app on this PC.
   Claude Code too, with the game pushed to it as it happens (a death, a
   level-up, a new map, HP in danger) and MapleSyrup's voice to talk through
   from the phone: run MapleSyrup.exe --setup-claude once, then "Start
@@ -269,6 +278,15 @@ Claude, live (talk with Claude while it sees the game)
   channel" - choose "I am using this for local development". Each start
   sets the folder up again; a MapleSyrup-new.exe left beside MapleSyrup.exe
   is put in its place first.
+  Started this way, MapleSyrup leaves all the talking to Claude: none of its
+  own answers, live calls or remarks, and while Claude isn't connected (its
+  window waits for an answer, say), it tells you so instead. Both can run at
+  once - the live session and Claude in the Claude app's chats: they use
+  the same MapleSyrup (the one with a window takes over from one the app
+  started in the background).
+  Claude can save a picture of the game (save_picture, into Documents\Claude
+  projects\MapleSyrup pictures) to work with, and show you your character
+  in other items (drawn by maplestory.io).
 
 Privacy
   Your keys stay on this PC (%APPDATA%\MapleSyrup); a live call uses a key

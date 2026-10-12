@@ -353,6 +353,9 @@ pub struct Hub {
     changed: Condvar,
     /// What answers a live call's requests (with an OpenAI key).
     service: Mutex<Option<Arc<dyn Service>>>,
+    /// MapleSyrup's certificate authority on this PC (DER), offered to the
+    /// phone to trust once: then the link opens with no warning.
+    authority: Mutex<Option<Vec<u8>>>,
     /// Where the phone's sound goes while the session is recorded.
     recording: Mutex<Option<Arc<dyn Recording>>>,
     /// The session's stats kept on the PC, and the sharing the player
@@ -393,6 +396,7 @@ impl Hub {
             }),
             changed: Condvar::new(),
             service: Mutex::new(None),
+            authority: Mutex::new(None),
             recording: Mutex::new(None),
             metrics: Mutex::new(None),
             sharing_offered: AtomicBool::new(crate::metrics::SHARING_OFFERED),
@@ -403,6 +407,13 @@ impl Hub {
 
     /// Serve Claude's channel under `/local/` (on the local listener; a
     /// request through the tunnel is refused by the board itself).
+    /// The certificate authority the phone is offered to trust.
+    pub fn set_authority(&self, der: Vec<u8>) {
+        if let Ok(mut slot) = self.authority.lock() {
+            *slot = Some(der);
+        }
+    }
+
     pub fn set_claude(&self, board: Arc<crate::claude::board::Board>) {
         if let Ok(mut slot) = self.claude.lock() {
             *slot = Some(board);
@@ -613,6 +624,16 @@ impl Hub {
                 Response::new(200, "image/png", DOG_PARTS).with_header("Cache-Control", "no-cache")
             }
             ("GET", "/favicon.ico") => Response::empty(204),
+            // (Public: a certificate is no secret. A phone offered it opens
+            // the install of a profile.)
+            ("GET", "/maplesyrup-ca.crt") => {
+                match self.authority.lock().ok().and_then(|a| a.clone()) {
+                    Some(der) => Response::new(200, "application/x-x509-ca-cert", der)
+                        .with_header("Content-Disposition", "inline; filename=\"MapleSyrup.crt\"")
+                        .with_header("Cache-Control", "no-cache"),
+                    None => Response::text(404, "not found"),
+                }
+            }
             (_, path) if path.starts_with("/local/") => match self.claude() {
                 Some(board) => board.handle(request),
                 None => Response::text(404, "not found"),
@@ -1391,6 +1412,20 @@ mod tests {
                 Some(crate::ai::Effect::Note(format!("ran {name}"))),
             )
         }
+    }
+
+    #[test]
+    fn the_phone_is_offered_the_authority_to_trust() {
+        let hub = Hub::new("k1".into(), None, VoiceOn::Phone);
+        assert_eq!(
+            hub.handle(&request("GET", "/maplesyrup-ca.crt", "")).status,
+            404
+        );
+        hub.set_authority(vec![0x30, 0x82, 1, 2]);
+        let offered = hub.handle(&request("GET", "/maplesyrup-ca.crt", ""));
+        assert_eq!(offered.status, 200);
+        assert_eq!(offered.body, vec![0x30, 0x82, 1, 2]);
+        assert_eq!(offered.content_type, "application/x-x509-ca-cert");
     }
 
     #[test]

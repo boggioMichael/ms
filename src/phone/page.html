@@ -205,6 +205,21 @@
 
 <div id="banner"></div>
 
+<section class="card" id="trustCard" hidden>
+  <h2 data-t="trust_title">No more “not private”</h2>
+  <div class="sub" data-t="trust_why">Once, let this phone trust MapleSyrup on your PC. From then on the link opens with no warning.</div>
+  <ol class="sub" id="trustIos" hidden>
+    <li data-t="trust_ios1"></li><li data-t="trust_ios2"></li><li data-t="trust_ios3"></li><li data-t="trust_ios4"></li>
+  </ol>
+  <ol class="sub" id="trustAndroid" hidden>
+    <li data-t="trust_and1"></li><li data-t="trust_and2"></li><li data-t="trust_and3"></li>
+  </ol>
+  <div class="buttons two">
+    <button id="trustGet" data-t="trust_get">Trust this PC</button>
+    <button id="trustDone" data-t="trust_done">Done</button>
+  </div>
+</section>
+
 <div class="buddy">
   <canvas id="dogBox" aria-label="MapleSyrup's dog"></canvas>
   <div class="bubble" id="bubble">
@@ -299,6 +314,8 @@
       <div class="sub" id="shareState" style="margin:6px 0 0"></div>
       </div>
     </section>
+
+    <button class="linkish" id="trustAgain" hidden data-t="trust_again">No “not private” warning: trust this PC</button>
 
     <footer>
       <span data-t="footer1"></span><br>
@@ -440,6 +457,12 @@
       share_err_not_deleted: "Not deleted: a file of it is still on the PC (another program may be holding it). Try again in a moment.",
       h_sessions: "Your sessions", col_day: "Day", col_min: "Minutes", col_levels: "Levels up", col_deaths: "Deaths", col_warnings: "Warnings",
       sessions_empty: "No sessions yet: each one is added as it goes (every minute) and when it ends.", sessions_note: "Kept on this PC only.",
+      trust_title: "No more “not private”", trust_why: "Once, let this phone trust MapleSyrup on your PC. From then on the link opens with no warning.",
+      trust_get: "Trust this PC", trust_done: "Done", trust_again: "No “not private” warning: trust this PC",
+      trust_ios1: "Tap “Trust this PC”, then Allow.", trust_ios2: "Open Settings: at the top, “Profile Downloaded” → Install.",
+      trust_ios3: "Settings → General → About → Certificate Trust Settings → turn on “MapleSyrup…”.", trust_ios4: "Scan MapleSyrup's QR code again: no warning.",
+      trust_and1: "Tap “Trust this PC”: MapleSyrup.crt downloads.", trust_and2: "Settings → Security → Encryption & credentials → Install a certificate → CA certificate → choose MapleSyrup.crt.",
+      trust_and3: "Scan MapleSyrup's QR code again: no warning.",
     },
     he: {
       h_details: "פרטים", done: "סיום", voice_search: "חפש קול…", coach: "מדבר מעצמו בזמן שאתה משחק", coach_hint: "טיפים והערות בלי שתשאל: מפה חדשה, עליית רמה, EXP שלא זז. כבוי: עונה רק כששואלים (ועדיין מזהיר על HP או MP נמוכים).", ws_title: "סדנה", ws_on: "משכתב את עצמו על המחשב הזה כשמבקשים", ws_hint: "תגיד \"תשנה את עצמך: …\" או תכתוב כאן. סוכן קוד שמותקן על המחשב (Claude Code או Codex) משנה את הקוד, הוא נבנה ונבדק, והגרסה החדשה מותקנת בהפעלה הבאה של MapleSyrup. רק על המחשב הזה: שום דבר לא מתפרסם.", ws_coder: "סוכן", ws_ph: "מה לשנות…", ws_build: "בצע את השינוי", ws_undo: "בטל את השינוי האחרון", ws_working: "עובד: {s} ({t})", ws_idle: "פנוי", ws_queued: "{n} ממתינים", ws_none: "לא נמצא סוכן קוד על המחשב: התקן Claude Code או Codex CLI והפעל את MapleSyrup מחדש.", version: "גרסה", update_now: "עדכן עכשיו", auto_update: "מתעדכן לבד כשיוצאת גרסה חדשה", upd_ok: "מעודכן", upd_dl: "מוריד את {v}…", upd_ready: "{v} מוכנה: תותקן בהפעלה הבאה של MapleSyrup", upd_off: "כבוי", upd_blocked: "{v} יצאה, אבל לא עלתה בפעם הקודמת; מחכה לבאה", upd_failed: "הבדיקה נכשלה: {why}",
@@ -490,6 +513,12 @@
       share_err_not_deleted: "לא נמחק: קובץ שלו עדיין נמצא במחשב (אולי תוכנה אחרת מחזיקה אותו). נסה שוב עוד רגע.",
       h_sessions: "הסשנים שלך", col_day: "יום", col_min: "דקות", col_levels: "+רמות", col_deaths: "מיתות", col_warnings: "אזהרות",
       sessions_empty: "עדיין אין סשנים: כל סשן נשמר תוך כדי (כל דקה) וכשהוא נגמר.", sessions_note: "נשמר רק במחשב הזה.",
+      trust_title: "בלי „not private”", trust_why: "פעם אחת, תן לטלפון הזה לסמוך על MapleSyrup במחשב שלך. מאז הקישור ייפתח בלי אזהרה.",
+      trust_get: "סמוך על המחשב הזה", trust_done: "סיימתי", trust_again: "בלי אזהרת „not private”: סמוך על המחשב הזה",
+      trust_ios1: "לחץ „סמוך על המחשב הזה”, ואז Allow.", trust_ios2: "פתח את Settings: למעלה, „Profile Downloaded” ← Install.",
+      trust_ios3: "Settings ← General ← About ← Certificate Trust Settings ← הפעל את „MapleSyrup…”.", trust_ios4: "סרוק שוב את קוד ה-QR של MapleSyrup: בלי אזהרה.",
+      trust_and1: "לחץ „סמוך על המחשב הזה”: הקובץ MapleSyrup.crt יורד.", trust_and2: "הגדרות ← אבטחה ← הצפנה ואישורים ← התקנת אישור ← אישור CA ← בחר MapleSyrup.crt.",
+      trust_and3: "סרוק שוב את קוד ה-QR של MapleSyrup: בלי אזהרה.",
     },
     es: {
       h_details: "Detalles", done: "Listo", voice_search: "Buscar voces…", coach: "Habla por su cuenta mientras juegas", coach_hint: "Consejos y avisos sin que preguntes: un mapa nuevo, subir de nivel, EXP parada. Apagado: solo responde (y sigue avisando de HP o MP bajos).", version: "Versión", update_now: "Actualizar ahora", auto_update: "Se actualiza solo cuando sale una versión nueva", upd_ok: "al día", upd_dl: "descargando {v}…", upd_ready: "{v} está lista: se instala la próxima vez que inicie MapleSyrup", upd_off: "apagado", upd_blocked: "{v} salió, pero no arrancó la última vez; esperando la siguiente", upd_failed: "no se pudo comprobar: {why}",
@@ -2752,6 +2781,29 @@
     if (audio && audio.ctx.state !== "running") audio.ctx.resume().catch(() => {});
     if (wantRec && rec && !held) { try { rec.start(); } catch (e) {} }
   });
+
+  // ---- trusting this PC: no "not private" warning ---------------------------
+  // On the home network the page comes from the PC's own address, with a
+  // certificate MapleSyrup's authority on the PC signed: once the phone
+  // trusts that authority, no warning. (A tunnel's certificate is a public one.)
+  const onLan = location.protocol === "https:" &&
+    (/^\d+\.\d+\.\d+\.\d+$/.test(location.hostname) || /\.local$/.test(location.hostname) || location.hostname === "localhost");
+  const apple = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  function showTrust(on) {
+    $("trustCard").hidden = !on;
+    $(apple ? "trustIos" : "trustAndroid").hidden = false;
+  }
+  if (onLan) {
+    $("trustAgain").hidden = false;
+    showTrust(recall("trusted") !== "1");
+    $("trustGet").addEventListener("click", () => { location.href = "/maplesyrup-ca.crt"; });
+    $("trustDone").addEventListener("click", () => { remember("trusted", "1"); showTrust(false); });
+    $("trustAgain").addEventListener("click", () => {
+      $("sheetDone").click();
+      showTrust(true);
+      window.scrollTo(0, 0);
+    });
+  }
 
   $("listen").textContent = t("start");
   if (KEY) hello();

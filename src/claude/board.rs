@@ -83,6 +83,8 @@ pub struct Board {
     /// What MapleSyrup knows about the game and the player (None: nothing
     /// kept, as in the tests).
     learning: Mutex<Option<crate::ai::Learning>>,
+    /// Where pictures of the game are saved for Claude (None: nowhere).
+    pictures: Mutex<Option<std::path::PathBuf>>,
     /// This run's: a bridge that sees it change knows the companion
     /// started again (and numbers its events from one).
     boot: String,
@@ -96,6 +98,7 @@ impl Board {
         Arc::new(Board {
             key,
             learning: Mutex::new(None),
+            pictures: Mutex::new(None),
             boot: crate::phone::tls::random_hex(4),
             started: Instant::now(),
             inner: Mutex::new(Inner {
@@ -163,6 +166,14 @@ impl Board {
         }
     }
 
+    /// Where `/local/picture` saves the pictures it takes (made when
+    /// needed).
+    pub fn set_pictures_dir(&self, dir: std::path::PathBuf) {
+        if let Ok(mut slot) = self.pictures.lock() {
+            *slot = Some(dir);
+        }
+    }
+
     fn learning(&self) -> Option<crate::ai::Learning> {
         self.learning.lock().ok().and_then(|l| l.clone())
     }
@@ -206,6 +217,11 @@ impl Board {
         if !same(key.as_bytes(), self.key.as_bytes()) {
             return Response::json(403, &json!({"error": "wrong key"}));
         }
+        // Any use of it (not a look whether it is up, nor a word to stop)
+        // says a Claude is there.
+        if !matches!(request.path.as_str(), "/local/hello" | "/local/quit") {
+            self.lock().bridge_seen = Some(Instant::now());
+        }
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/local/hello") => {
                 Response::json(200, &json!({"ok": true, "pid": std::process::id()}))
@@ -229,6 +245,7 @@ impl Board {
                 Response::json(200, &json!({"ok": true}))
             }
             ("GET", "/local/look") => self.look(request),
+            ("GET", "/local/picture") => self.picture(request),
             ("GET", "/local/wiki") => self.wiki(request.param("q").unwrap_or_default()),
             ("POST", "/local/wiki") => {
                 let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
@@ -476,6 +493,55 @@ impl Board {
     }
 }
 
+impl Board {
+    /// The game's window (or a part of it) saved as a PNG file at full
+    /// size, for Claude to edit or keep: its path.
+    fn picture(&self, request: &Request) -> Response {
+        use crate::ai::images;
+        let Some(dir) = self.pictures.lock().ok().and_then(|d| d.clone()) else {
+            return Response::json(503, &json!({"error": "MapleSyrup keeps no pictures here"}));
+        };
+        let Some(frame) = self.lock().frame.clone() else {
+            return Response::json(
+                404,
+                &json!({"error": "MapleStory isn't the window in front, so there is no picture of it"}),
+            );
+        };
+        let name = request.param("region").unwrap_or("full");
+        let Some(region) = region(name) else {
+            return Response::json(400, &json!({"error": format!("no such region: {name}")}));
+        };
+        let part = images::crop(&frame, &region);
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H-%M-%S");
+        let label: String = name
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let path = dir.join(format!("MapleStory {stamp} {label}.png"));
+        let saved = std::fs::create_dir_all(&dir)
+            .map_err(|e| e.to_string())
+            .and_then(|_| part.save(&path).map_err(|e| e.to_string()));
+        match saved {
+            Ok(()) => Response::json(
+                200,
+                &json!({
+                    "path": path.to_string_lossy(),
+                    "width": part.width(),
+                    "height": part.height(),
+                    "region": name,
+                }),
+            ),
+            Err(e) => Response::json(500, &json!({"error": format!("couldn't save it: {e}")})),
+        }
+    }
+}
+
 /// The part of the screen a region's name means, as fractions of it:
 /// `full`, `center` (around the character: the camera follows him),
 /// `top`, `bottom`, `left`, `right`, the four corners (`top-left`: the
@@ -692,6 +758,30 @@ mod tests {
                 .status,
             400
         );
+    }
+
+    #[test]
+    fn a_picture_of_the_game_is_saved_whole_for_claude_to_edit() {
+        let dir = std::env::temp_dir().join(format!(
+            "ms-claude-pictures-{}",
+            crate::phone::tls::random_hex(4)
+        ));
+        let board = Board::new(KEY.into());
+        let take =
+            |region: &str| board.handle(&get(&format!("/local/picture?k={KEY}&region={region}")));
+        assert_eq!(take("full").status, 503, "nowhere to keep it");
+        board.set_pictures_dir(dir.clone());
+        assert_eq!(take("full").status, 404, "the game isn't in front");
+        let frame = RgbaImage::from_pixel(3840, 2160, image::Rgba([200, 40, 90, 255]));
+        board.set_frame(Some(Arc::new(frame)));
+        let saved = json_of(&take("center"));
+        let path = std::path::PathBuf::from(saved["path"].as_str().unwrap());
+        assert!(path.starts_with(&dir), "{path:?}");
+        assert_eq!(saved["width"], 1920, "at full size");
+        let picture = image::open(&path).unwrap();
+        assert_eq!((picture.width(), picture.height()), (1920, 1404));
+        assert_eq!(take("nowhere").status, 400);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

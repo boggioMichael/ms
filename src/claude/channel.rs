@@ -61,6 +61,12 @@ current one.
 - look_at_screen: a picture of his screen, or a part of it (center = around his character, top-left = the minimap \
 and the map's name, bottom = the HUD). Use it for names — monsters, NPCs, items, quests, windows — and whatever \
 the reading doesn't say.
+- save_picture: the same, saved as a PNG file on his PC at full size, with its path — to edit (his character), \
+compare or keep.
+- His character in other clothes: maplestory.io draws a MapleStory character in any items by their IDs (for \
+example https://maplestory.io/api/GMS/latest/Character/2000/1040002,1060002,1072005?resize=2); find the IDs \
+through its API or the web. What the Cash Shop has now: look at it on his screen while he has it open, or search \
+the web (for Classic World, its own Cash Shop).
 - maple_wiki_search / maple_wiki_save: MapleSyrup's own MapleStory wiki, kept on his PC. Look there first for \
 game facts. When you have checked a fact (on the web, or he corrected you), save it, short and specific, with its \
 source, so it is known next time. When he plays MapleStory Classic World (the reading says so), a fact must hold \
@@ -79,6 +85,7 @@ events, each ending with the whole reading at that moment:
 kind=\"hello\": the link to MapleSyrup came up. kind=\"heard\": he said this out loud through MapleSyrup's phone \
 page (speech recognition; may be misheard) — about anything, not only the game: answer him as you would any \
 message, with say when he can't read the screen. \
+kind=\"phone\": his phone connected — he can talk to you now. \
 kind=\"death\" | \"level_up\" | \"map\" | \"hp\" | \"mp\" | \"dialog\" | \"thing\" | \"window\" | \"state\": something \
 changed. Speak up only when it helps him right now — danger, a real milestone, a quest or dialog you can help \
 with, something he asked you to watch; otherwise stay silent. kind=\"offline\": MapleSyrup stopped.";
@@ -104,6 +111,8 @@ pub trait Api: Send + Sync {
     fn say(&self, text: &str) -> Result<(), String>;
     /// `{mime, data, width, height, region, frame}`.
     fn look(&self, region: &str) -> Result<Value, String>;
+    /// The region saved as a PNG file at full size: `{path, width, height, region}`.
+    fn picture(&self, region: &str) -> Result<Value, String>;
     /// `{found: [{about, answer, from, when}], size}`.
     fn wiki(&self, query: &str) -> Result<Value, String>;
     fn wiki_save(&self, about: &str, answer: &str, source: &str) -> Result<(), String>;
@@ -120,16 +129,30 @@ pub struct Local {
     /// Until when a companion this bridge started may still be coming up:
     /// a call meanwhile waits for it rather than failing.
     starting: Mutex<Option<Instant>>,
+    /// Start a companion in the background when a call finds none.
+    on_demand: bool,
+    /// The companion this bridge started, while it may be running.
+    child: Mutex<Option<std::process::Child>>,
+    /// When this bridge last started one (not again within [`AGAIN_AFTER`]).
+    started_at: Mutex<Option<Instant>>,
 }
 
 /// How long a companion takes to come up, at most.
 const COMING_UP: Duration = Duration::from_secs(25);
 
+/// How soon a bridge starts a companion again after starting one.
+const AGAIN_AFTER: Duration = Duration::from_secs(30);
+
 impl Local {
-    pub fn new(settings: &Path) -> Local {
+    /// The companion found through the link in `settings`; with `on_demand`,
+    /// one is started in the background when a call finds none.
+    pub fn new(settings: &Path, on_demand: bool) -> Local {
         Local {
             settings: settings.to_path_buf(),
             starting: Mutex::new(None),
+            on_demand,
+            child: Mutex::new(None),
+            started_at: Mutex::new(None),
         }
     }
 
@@ -150,14 +173,21 @@ impl Local {
         Ok(value)
     }
 
-    /// One request; while a companion this bridge started is coming up,
-    /// again until it answers.
+    /// One request; with none running, a companion started first (when
+    /// on demand); while one this bridge started is coming up, again until
+    /// it answers.
     fn call(&self, method: &str, path: &str, body: &[u8], wait: Duration) -> Result<Value, String> {
+        let mut started = false;
         loop {
             match self.once(method, path, body, wait) {
-                Err(why) if self.coming_up() => {
-                    let _ = why;
+                Err(_) if self.coming_up() => {
                     std::thread::sleep(Duration::from_millis(500));
+                }
+                Err(why) if self.on_demand && !started => {
+                    started = true;
+                    if !self.start_if_none() {
+                        return Err(why);
+                    }
                 }
                 done => return done,
             }
@@ -179,12 +209,21 @@ impl Local {
     }
 
     /// Start the companion in the background (no window, no voice, no
-    /// phone) unless one answers already. Returns the one started.
-    pub fn start(&self) -> Option<std::process::Child> {
+    /// phone) unless one answers already, or this bridge started one a
+    /// moment ago. Whether one was started.
+    pub fn start_if_none(&self) -> bool {
         if self.up() {
-            return None;
+            return false;
         }
-        let exe = std::env::current_exe().ok()?;
+        if let Ok(mut at) = self.started_at.lock() {
+            if at.is_some_and(|at| at.elapsed() < AGAIN_AFTER) {
+                return false;
+            }
+            *at = Some(Instant::now());
+        }
+        let Ok(exe) = std::env::current_exe() else {
+            return false;
+        };
         let mut command = std::process::Command::new(exe);
         command
             .arg("--background")
@@ -203,21 +242,40 @@ impl Local {
                 if let Ok(mut starting) = self.starting.lock() {
                     *starting = Some(Instant::now() + COMING_UP);
                 }
-                Some(child)
+                if let Ok(mut slot) = self.child.lock() {
+                    // (One started before has stopped by itself by now.)
+                    if let Some(mut old) = slot.replace(child) {
+                        let _ = old.try_wait();
+                    }
+                }
+                true
             }
             Err(e) => {
                 eprintln!("maplesyrup: could not start the companion: {e}");
-                None
+                false
             }
         }
     }
 
-    /// Stop the companion this bridge started: asked to finish, then made to.
-    pub fn stop(&self, mut child: std::process::Child) {
+    /// The bridge is done: the companion it started is asked to finish,
+    /// then made to — while it is the one serving. One that made way for a
+    /// companion with a window (or stopped already) is left to go; the
+    /// companion serving now, which this bridge did not start, is never
+    /// told to stop.
+    pub fn stop(&self) {
         if let Ok(mut starting) = self.starting.lock() {
             *starting = None;
         }
-        let _ = self.once("POST", "/local/quit", b"{}", Duration::from_secs(3));
+        let Some(mut child) = self.child.lock().ok().and_then(|mut c| c.take()) else {
+            return;
+        };
+        if let Ok(Some(_)) = child.try_wait() {
+            return;
+        }
+        let serving = link::load(&self.settings).is_some_and(|l| l.pid == child.id());
+        if serving {
+            let _ = self.once("POST", "/local/quit", b"{}", Duration::from_secs(3));
+        }
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
             if let Ok(Some(_)) = child.try_wait() {
@@ -227,6 +285,29 @@ impl Local {
         }
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// The companion at the link, when it runs in the background (the
+    /// Claude app's), asked to make way for one with a window. Whether it
+    /// has gone.
+    pub fn quit_background(&self) -> bool {
+        if !link::load(&self.settings).is_some_and(|l| l.background) {
+            return false;
+        }
+        if self
+            .once("POST", "/local/quit", b"{}", Duration::from_secs(3))
+            .is_err()
+        {
+            return false;
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if !self.up() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        false
     }
 }
 
@@ -273,6 +354,19 @@ impl Api for Local {
             &format!("/local/look?region={region}"),
             &[],
             Duration::from_secs(15),
+        )
+    }
+
+    fn picture(&self, region: &str) -> Result<Value, String> {
+        let region: String = region
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | ',' | '.'))
+            .collect();
+        self.call(
+            "GET",
+            &format!("/local/picture?region={region}"),
+            &[],
+            Duration::from_secs(20),
         )
     }
 
@@ -447,10 +541,15 @@ impl<A: Api + 'static> Bridge<A> {
     }
 
     fn notified(&mut self, method: &str) {
-        // The client is ready: the companion is followed from now on (its
-        // events passed on to Claude Code; for any client, the companion
-        // knows Claude is there).
-        if method == "notifications/initialized" && !self.feeding {
+        // The client is ready: a client that takes the events (Claude Code)
+        // is passed them from now on, and the companion knows Claude listens.
+        // (Another — the Claude app — only calls the tools: the companion
+        // knows it is there from the calls, and one started for it stops a
+        // while after the last.)
+        if method == "notifications/initialized"
+            && !self.feeding
+            && self.channel.load(Ordering::Relaxed)
+        {
             self.feeding = true;
             let (api, out, channel, stop, timing) = (
                 Arc::clone(&self.api),
@@ -549,6 +648,18 @@ impl<A: Api + 'static> Bridge<A> {
                             },
                         ],
                     }),
+                    Err(why) => failed(&format!("No picture: {why}.")),
+                }
+            }
+            "save_picture" => {
+                let region = arguments["region"].as_str().unwrap_or("full");
+                match self.api.picture(region) {
+                    Ok(saved) => said(&format!(
+                        "Saved, {}×{}: {}",
+                        saved["width"],
+                        saved["height"],
+                        saved["path"].as_str().unwrap_or_default()
+                    )),
                     Err(why) => failed(&format!("No picture: {why}.")),
                 }
             }
@@ -688,6 +799,25 @@ fn tools(channel: bool) -> Value {
                 "additionalProperties": false,
             },
             "annotations": read_only("Look at his screen"),
+        }),
+        json!({
+            "name": "save_picture",
+            "title": "Save a picture of his game",
+            "description": "Save the game's window as it is now (only while MapleStory is the window in front), or \
+        a part of it, as a PNG file on his PC at full size, and get its path: to edit it, compare or keep it — his \
+        character to dress up, an outfit, a map. (look_at_screen is for seeing; this is for working with the picture.)",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "region": {
+                        "type": "string",
+                        "description": "full (default), center (around his character), top, bottom, left, right, \
+        top-left, top-right, bottom-left, bottom-right, or x0,y0,x1,y1 as fractions of the screen (0 to 1 from the top left).",
+                    }
+                },
+                "additionalProperties": false,
+            },
+            "annotations": keeps("Save a picture of his game"),
         }),
         json!({
             "name": "maple_wiki_search",
@@ -844,13 +974,13 @@ it is started again.",
     }
 }
 
-/// Run the server on stdin and stdout until the client goes; with
-/// `autostart`, the companion is started in the background when it is not
-/// running (and stopped again at the end). Returns the process's exit code.
-pub fn run(settings: &Path, autostart: bool) -> i32 {
+/// Run the server on stdin and stdout until the client goes. With
+/// `on_demand`, a call that finds no companion running starts one in the
+/// background (stopped again at the end, if it is still the one serving).
+/// Returns the process's exit code.
+pub fn run(settings: &Path, on_demand: bool) -> i32 {
     let out: Out = Arc::new(Mutex::new(Box::new(std::io::stdout())));
-    let local = Arc::new(Local::new(settings));
-    let started = if autostart { local.start() } else { None };
+    let local = Arc::new(Local::new(settings, on_demand));
     let mut bridge = Bridge::new(Arc::clone(&local), out);
     let stdin = std::io::stdin();
     let mut line = String::new();
@@ -862,9 +992,7 @@ pub fn run(settings: &Path, autostart: bool) -> i32 {
         }
     }
     bridge.stop();
-    if let Some(child) = started {
-        local.stop(child);
-    }
+    local.stop();
     0
 }
 
@@ -882,6 +1010,8 @@ mod tests {
         facts: Mutex<Vec<String>>,
         /// Whether the last poll said Claude takes the events.
         listening: AtomicBool,
+        /// How many polls there were.
+        polls: std::sync::atomic::AtomicUsize,
         down: AtomicBool,
     }
 
@@ -905,6 +1035,7 @@ mod tests {
             _wait: Duration,
             listening: bool,
         ) -> Result<Batch, String> {
+            self.polls.fetch_add(1, Ordering::Relaxed);
             if self.down.load(Ordering::Relaxed) {
                 return Err("MapleSyrup isn't running".into());
             }
@@ -940,6 +1071,11 @@ mod tests {
         fn look(&self, region: &str) -> Result<Value, String> {
             Ok(
                 json!({"mime": "image/jpeg", "data": "AAAA", "width": 800, "height": 450, "region": region, "frame": [3840, 2160]}),
+            )
+        }
+        fn picture(&self, region: &str) -> Result<Value, String> {
+            Ok(
+                json!({"path": format!("C:\\Users\\x\\Documents\\Claude projects\\MapleSyrup pictures\\MapleStory {region}.png"), "width": 1920, "height": 1404, "region": region}),
             )
         }
         fn wiki(&self, query: &str) -> Result<Value, String> {
@@ -1095,6 +1231,7 @@ mod tests {
             [
                 "game_status",
                 "look_at_screen",
+                "save_picture",
                 "maple_wiki_search",
                 "maple_wiki_save",
                 "player_profile",
@@ -1117,7 +1254,7 @@ mod tests {
         desktop.on_line(r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#);
         let names = tool_names(&sink.lines(), 3);
         assert!(!names.contains(&"say".to_string()), "{names:?}");
-        assert_eq!(names.len(), 6);
+        assert_eq!(names.len(), 7);
         desktop.stop();
     }
 
@@ -1181,6 +1318,12 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("top-left")
+        );
+        let saved = call(&mut bridge, 21, "save_picture", json!({"region": "center"}));
+        let text = saved["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with("Saved, 1920×1404: ") && text.ends_with("MapleStory center.png"),
+            "{text}"
         );
         // The wiki: nothing yet, then what was saved.
         let none = call(
@@ -1272,7 +1415,7 @@ mod tests {
     }
 
     #[test]
-    fn the_desktop_app_is_sent_no_events_and_the_companion_keeps_talking() {
+    fn the_desktop_app_only_calls_the_tools_and_the_companion_keeps_talking() {
         let (mut bridge, fake, sink) = bridge();
         bridge.on_line(DESKTOP);
         bridge.on_line(READY);
@@ -1280,10 +1423,10 @@ mod tests {
         fake.post("level_up", "Level up: 16 → 17.");
         std::thread::sleep(Duration::from_millis(400));
         assert!(channel_events(&sink.lines()).is_empty());
-        assert!(
-            !fake.listening.load(Ordering::Relaxed),
-            "polled, but not listening"
-        );
+        // Nothing polls for it: a companion started for it stops a while
+        // after its last call, and Claude never listens through it.
+        assert_eq!(fake.polls.load(Ordering::Relaxed), 0);
+        assert!(!fake.listening.load(Ordering::Relaxed));
         bridge.stop();
     }
 

@@ -126,6 +126,9 @@ OPTIONS
                         it starts MapleSyrup in the background if need be
   --background          watch the game with no window, voice or phone: for
                         Claude (what --mcp starts)
+  --claude-only         Claude talks with you, nothing of MapleSyrup's own does
+                        (when Claude isn't connected, MapleSyrup says so):
+                        what Start Claude.cmd starts
   --no-claude           don't offer Claude the live channel
   --claude-port N       the channel's port on this PC (default 8790)
   --help
@@ -189,6 +192,11 @@ struct Options {
     /// Watch the game for Claude with no window, voice or phone; stop when
     /// no Claude has asked for anything for a while.
     background: bool,
+    /// Claude talks with him, and nothing of MapleSyrup's own does — no
+    /// answer, live call, hello or remark of its own, even while Claude is
+    /// not connected (then it says so instead): what the Claude launcher
+    /// starts.
+    claude_only: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -233,6 +241,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         setup_claude: false,
         install_claude: false,
         background: false,
+        claude_only: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -302,6 +311,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--setup-claude" => o.setup_claude = true,
             "--install-claude" => o.install_claude = true,
             "--background" => o.background = true,
+            "--claude-only" => {
+                o.claude_only = true;
+                o.claude = true;
+            }
             "-h" | "--help" | "/?" => return Err(String::new()),
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             path => o.input = Some(PathBuf::from(path)),
@@ -376,11 +389,48 @@ fn main() {
             Err(e) => eprintln!("{e}\nCarrying on with this one."),
         }
     }
+    if options.claude && !claude_neighbours(&options) {
+        return;
+    }
     if let Err(e) = run(options, args) {
         eprintln!("\nMapleSyrup stopped: {e}");
         pause_if_double_clicked();
         std::process::exit(1);
     }
+}
+
+/// Who else serves Claude on this PC, and whether this run goes on. One
+/// running in the background (started by the Claude app) makes way for one
+/// with a window; with one with a window there already, one started in the
+/// background or for Claude only is not needed (Claude uses that one).
+fn claude_neighbours(options: &Options) -> bool {
+    let settings = tls::settings_dir();
+    let local = ms::claude::channel::Local::new(&settings, false);
+    let Some(link) = ms::claude::link::load(&settings) else {
+        return true;
+    };
+    if !local.up() {
+        return true;
+    }
+    if link.background {
+        if options.background {
+            return false;
+        }
+        if local.quit_background() {
+            println!(
+                "MapleSyrup: the one the Claude app started in the background made way for this one."
+            );
+        }
+        return true;
+    }
+    if options.background || options.claude_only {
+        println!(
+            "MapleSyrup is running already (pid {}): Claude uses that one.",
+            link.pid
+        );
+        return false;
+    }
+    true
 }
 
 /// `--setup-claude`: the Claude folder written beside this program, with
@@ -398,6 +448,14 @@ fn setup_claude() -> i32 {
         return 1;
     };
     let about = std::fs::read_to_string(tls::settings_dir().join("about-me.txt")).ok();
+    // The Claude app's copy of the program, when there is one, keeps up
+    // with it (while the app is closed: it holds its copy open).
+    let bridge = ms::claude::kit::bridge_dir(&tls::settings_dir());
+    if let Some(name) = exe.file_name()
+        && bridge.join(name).exists()
+    {
+        let _ = ms::claude::kit::bridge_copy(&exe, &bridge);
+    }
     // His folders, which Claude may read without asking.
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
@@ -441,6 +499,15 @@ fn install_claude() -> i32 {
         );
         return 1;
     }
+    // The app runs its own copy: this program is never held open by it.
+    let dir = ms::claude::kit::bridge_dir(&tls::settings_dir());
+    let exe = match ms::claude::kit::bridge_copy(&exe, &dir) {
+        Ok(copy) => copy,
+        Err(why) => {
+            eprintln!("{why}");
+            return 1;
+        }
+    };
     let mut failed = false;
     for config in &configs {
         match ms::claude::kit::add_to_desktop_config(config, &exe) {
@@ -456,7 +523,7 @@ fn install_claude() -> i32 {
         return 1;
     }
     println!(
-        "\nQuit Claude completely (its icon by the clock -> Quit) and open it again. Then, in any chat, ask Claude about your game: it starts MapleSyrup in the background by itself."
+        "\nQuit Claude completely (its icon by the clock -> Quit) and open it again. Then, in any chat, ask Claude about your game: it uses the MapleSyrup that runs (Start Claude.cmd's), or starts one in the background by itself."
     );
     0
 }
@@ -499,6 +566,7 @@ fn start_phone(
     }
     let identity = tls::load_or_create(settings, &names)?;
     let config = tls::server_config(&identity)?;
+    hub.set_authority(identity.ca_der.clone());
     let port = phone::serve_tls(Arc::clone(&hub), config, options.port)?;
     let lan_link = lan_ip.map(|ip| phone::link(&format!("https://{ip}:{port}"), &key));
 
@@ -1655,6 +1723,39 @@ fn claude_says(out: &mut Outputs, text: String) {
             }
         }
     }
+}
+
+/// How often, at most, the player hears that Claude isn't connected.
+const CLAUDE_ABSENT_AGAIN: Duration = Duration::from_secs(20);
+
+/// What the player hears when he talks while Claude, which is to answer
+/// him, isn't connected — in his language (Hebrew when he speaks it), at
+/// most every [`CLAUDE_ABSENT_AGAIN`].
+fn claude_absent_line(language: Option<&str>, said: &str) -> &'static str {
+    let hebrew = language.is_some_and(|l| l.starts_with("he"))
+        || said.chars().any(|c| ('\u{05d0}'..='\u{05ea}').contains(&c));
+    if hebrew {
+        "Claude עוד לא מחובר, אז אין מי שיענה לך. תסתכל בחלון של Claude במחשב."
+    } else {
+        "Claude isn't connected yet, so nobody can answer you. Look at the Claude window on your PC."
+    }
+}
+
+fn claude_absent(
+    out: &mut Outputs,
+    told: &mut Option<Instant>,
+    language: Option<&str>,
+    said: &str,
+) {
+    if told.is_some_and(|at| at.elapsed() < CLAUDE_ABSENT_AGAIN) {
+        return;
+    }
+    *told = Some(Instant::now());
+    out.session.line(
+        "claude",
+        "not connected: told him to look at the Claude window",
+    );
+    claude_says(out, claude_absent_line(language, said).to_string());
 }
 
 /// The HUD's bars as last seen, and when: the reading for Claude says a
@@ -3353,6 +3454,18 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             let key = ms::claude::link::key(&settings_dir);
             let board = ms::claude::board::Board::new(key.clone());
             board.set_learning(learning.clone());
+            // Pictures of the game Claude saves to work with: with his projects.
+            board.set_pictures_dir(
+                std::env::var_os("USERPROFILE")
+                    .or_else(|| std::env::var_os("HOME"))
+                    .map(|home| {
+                        PathBuf::from(home)
+                            .join("Documents")
+                            .join("Claude projects")
+                            .join("MapleSyrup pictures")
+                    })
+                    .unwrap_or_else(|| settings_dir.join("pictures")),
+            );
             hub.set_claude(Arc::clone(&board));
             match phone::serve_local(Arc::clone(hub), options.claude_port) {
                 Ok(port) => {
@@ -3360,6 +3473,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         port,
                         key,
                         pid: std::process::id(),
+                        background: options.background,
                     };
                     if let Err(e) = ms::claude::link::save(&settings_dir, &link) {
                         eprintln!("Claude's channel: couldn't write where to find it ({e})");
@@ -3377,6 +3491,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // Whether the vision thread looks at the whole scene (Claude listens).
     // (In the background it is there for Claude only: always.)
     let claude_rich = Arc::new(AtomicBool::new(options.background));
+    // Whether Claude listens (as last seen), and when the player was last
+    // told it isn't connected (started for Claude only).
+    let mut claude_listening = false;
+    let mut claude_absent_told: Option<Instant> = None;
 
     // The header, printed once.
     let (b, d, s, r) = if ansi {
@@ -3402,7 +3520,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             );
         } else {
             println!(
-                "{d}  The phone warns the page is \"not private\" (the certificate was made on this PC): on iPhone tap Show Details → visit this website.{r}"
+                "{d}  Until the phone trusts this PC it warns the page is \"not private\": tap Show Details → visit this website, then \"Trust this PC\" on the page, once, and it won't again.{r}"
             );
             println!(
                 "{d}  Phone on the same Wi-Fi. If Windows asks, allow MapleSyrup on private networks. No luck? Start it with --tunnel.{r}"
@@ -3924,6 +4042,16 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 &headline,
                                 format!("{headline}\n\n{claude_reading}"),
                             );
+                            // Started for Claude only, with no Claude there:
+                            // nobody answers, so he hears why.
+                            if !board.connected() {
+                                claude_absent(
+                                    &mut out,
+                                    &mut claude_absent_told,
+                                    player_language.as_deref(),
+                                    &text,
+                                );
+                            }
                             continue;
                         }
                         if let Some(on) = commands::recording_request(&text) {
@@ -4306,6 +4434,31 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         if let Some(command) = Command::from_word(&word) {
                             let actions = companion.command(now, command);
                             out.apply(actions, &mut companion, latest_image.clone());
+                        }
+                    }
+                    // Started for Claude only, the phone's hello is Claude's
+                    // to say (told it is there), or, with no Claude, why
+                    // nobody will answer.
+                    Inbound::Hello { agent, .. } if options.claude_only => {
+                        out.call_ended(&mut companion);
+                        out.push(Kind::Info, format!("{} connected", device_of(&agent)));
+                        if let Some(board) = &claude_board {
+                            if board.connected() {
+                                let headline =
+                                    "His phone connected: he can talk to you through it now.";
+                                board.post(
+                                    "phone",
+                                    headline,
+                                    format!("{headline}\n\n{claude_reading}"),
+                                );
+                            } else {
+                                claude_absent(
+                                    &mut out,
+                                    &mut claude_absent_told,
+                                    player_language.as_deref(),
+                                    "",
+                                );
+                            }
                         }
                     }
                     Inbound::Hello { agent, live, away } => {
@@ -4942,19 +5095,29 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             // Claude's channel: whether it listens (then MapleSyrup only
             // watches and speaks for it), the reading now, and what changed.
             if let Some(board) = &claude_board {
+                // Claude does the talking while it listens — and always when
+                // started for Claude only.
                 let listening = board.connected();
-                if listening != out.claude {
-                    if listening && out.live {
+                let talking = listening || options.claude_only;
+                if talking != out.claude {
+                    if talking && out.live {
                         out.call_ended(&mut companion);
                     }
-                    out.claude = listening;
+                    out.claude = talking;
                     if let Some(hub) = &out.phone {
-                        hub.pause_live(listening);
+                        hub.pause_live(talking);
                     }
-                    let line = if listening {
-                        "Claude is listening: it talks with you now, and I watch the game and speak for it."
-                    } else {
-                        "Claude went away: I'm talking myself again."
+                }
+                if listening != claude_listening {
+                    claude_listening = listening;
+                    let line = match (listening, options.claude_only) {
+                        (true, _) => {
+                            "Claude is listening: it talks with you now, and I watch the game and speak for it."
+                        }
+                        (false, false) => "Claude went away: I'm talking myself again.",
+                        (false, true) => {
+                            "Claude isn't connected: look at the Claude window. Till it is, I only say so."
+                        }
                     };
                     out.session.line("claude", line);
                     out.push(Kind::Info, line.to_string());

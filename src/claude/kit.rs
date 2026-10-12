@@ -123,18 +123,19 @@ pub fn rule_path(path: &Path) -> String {
 
 /// `Start Claude.cmd`: Claude Code found (or, when it is not on this PC,
 /// installed from claude.ai once the player agrees); a new MapleSyrup left
-/// beside the program as `MapleSyrup-new.exe` put in its place while
-/// neither runs; the folder set up again by the program (so it keeps up
-/// with it); MapleSyrup (one folder up) started if it is not running — and
-/// if an older one without Claude's channel is, a word to close it — then
-/// Claude Code with the channel: Sonnet at low effort, quick enough to talk
-/// with (`/model` and `/effort` change it); auto mode, where Claude's own
-/// check of each action stands in for the prompts nobody would answer while
-/// he plays; and Remote Control on, so the session is in the Claude app
-/// too. (Claude Code asks each time whether to load a development channel:
-/// custom channels need that while channels are a research preview.) Plain
-/// ASCII: cmd reads it in the console's code page, and the paths with the
-/// player's name in them come from variables.
+/// beside the program as `MapleSyrup-new.exe` put in its place (when
+/// nothing runs it); the folder set up again by the program (so it keeps up
+/// with it); MapleSyrup (one folder up) started for Claude only — it makes
+/// do with one already running with a window, and takes over from one the
+/// Claude app runs in the background — then Claude Code with the channel:
+/// Sonnet at low effort, quick enough to talk with (`/model` and `/effort`
+/// change it); auto mode, where Claude's own check of each action stands in
+/// for the prompts nobody would answer while he plays; and Remote Control
+/// on, so the session is in the Claude app too. (Claude Code asks each time
+/// whether to load a development channel: custom channels need that while
+/// channels are a research preview — the window says what to answer.)
+/// Plain ASCII: cmd reads it in the console's code page, and the paths with
+/// the player's name in them come from variables.
 pub fn launcher() -> String {
     [
         "@echo off",
@@ -157,27 +158,19 @@ pub fn launcher() -> String {
         "  exit /b 1",
         ")",
         ":maplesyrup",
-        "if not exist \"%~dp0..\\MapleSyrup-new.exe\" goto :setup",
-        "tasklist /FI \"IMAGENAME eq MapleSyrup.exe\" 2>nul | find /I \"MapleSyrup.exe\" >nul",
-        "if not errorlevel 1 goto :setup",
-        "move /y \"%~dp0..\\MapleSyrup-new.exe\" \"%~dp0..\\MapleSyrup.exe\" >nul",
-        ":setup",
+        "if exist \"%~dp0..\\MapleSyrup-new.exe\" move /y \"%~dp0..\\MapleSyrup-new.exe\" \"%~dp0..\\MapleSyrup.exe\" >nul 2>nul",
+        "if exist \"%~dp0..\\MapleSyrup-new.exe\" echo A new MapleSyrup is waiting: it goes in once MapleSyrup and the Claude app are both closed.",
         "echo.| \"%~dp0..\\MapleSyrup.exe\" --setup-claude >nul",
-        "if exist \"%~dp0.mcp.json\" goto :running",
+        "if exist \"%~dp0.mcp.json\" goto :start",
         "echo MapleSyrup couldn't set this folder up: is MapleSyrup.exe one folder up?",
         "pause",
         "exit /b 1",
-        ":running",
-        "tasklist /FI \"IMAGENAME eq MapleSyrup.exe\" 2>nul | find /I \"MapleSyrup.exe\" >nul",
-        "if errorlevel 1 goto :start",
-        "if exist \"%APPDATA%\\MapleSyrup\\claude-link.json\" goto :claude",
-        "echo MapleSyrup is open, but a version without Claude's channel.",
-        "echo Close MapleSyrup, then run this again.",
-        "pause",
-        "exit /b 1",
         ":start",
-        "start \"MapleSyrup\" \"%~dp0..\\MapleSyrup.exe\"",
-        ":claude",
+        "start \"MapleSyrup\" \"%~dp0..\\MapleSyrup.exe\" --claude-only",
+        "echo.",
+        "echo Claude is starting in this window. Answer its questions here: to \"development channel\" choose",
+        "echo \"I am using this for local development\"; to auto mode, yes. Then talk to it from the phone.",
+        "echo.",
         "\"%CLAUDE%\" --dangerously-load-development-channels server:maplesyrup --model sonnet --effort low --permission-mode auto --remote-control MapleSyrup",
         // (An error — an old Claude Code without auto mode, say — stays on
         // screen to be read.)
@@ -272,6 +265,52 @@ pub fn add_to_desktop_config(path: &Path, exe: &Path) -> Result<bool, String> {
     let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())? + "\n";
     fs::write(path, text).map_err(|e| e.to_string())?;
     Ok(true)
+}
+
+/// Where the Claude app's copy of the program goes (Windows:
+/// `%LOCALAPPDATA%\MapleSyrup\for the Claude app`; elsewhere in `settings`).
+/// The app keeps its MCP server running as long as it is open: run from a
+/// copy, the program itself is never held open by it, and a new version can
+/// go in while the app runs.
+pub fn bridge_dir(settings: &Path) -> PathBuf {
+    match std::env::var_os("LOCALAPPDATA") {
+        Some(local) if cfg!(windows) => PathBuf::from(local)
+            .join("MapleSyrup")
+            .join("for the Claude app"),
+        _ => settings.join("for the Claude app"),
+    }
+}
+
+/// The program copied into `dir` for the Claude app (when it differs from
+/// the copy there), and the copy's path. A copy the app is running is left
+/// as it is — it is used as it is, and refreshed once the app is closed.
+pub fn bridge_copy(exe: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let name = exe
+        .file_name()
+        .ok_or_else(|| format!("{} is not a program", exe.display()))?;
+    let copy = dir.join(name);
+    let same = match (fs::metadata(exe), fs::metadata(&copy)) {
+        (Ok(a), Ok(b)) => a.len() == b.len() && fs::read(exe).ok() == fs::read(&copy).ok(),
+        _ => false,
+    };
+    if same {
+        return Ok(copy);
+    }
+    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    // Written beside it first, then put in its place: a copy never half there.
+    let partial = dir.join(format!("{}.partial", name.to_string_lossy()));
+    let put = fs::copy(exe, &partial).and_then(|_| fs::rename(&partial, &copy));
+    match put {
+        Ok(()) => Ok(copy),
+        Err(_) if copy.exists() => {
+            let _ = fs::remove_file(&partial);
+            Ok(copy)
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&partial);
+            Err(format!("couldn't copy MapleSyrup for the Claude app: {e}"))
+        }
+    }
 }
 
 /// `Add MapleSyrup to Claude.cmd`, beside the program: runs
@@ -393,10 +432,35 @@ mod tests {
         // The folder is set up each time, after a new program went in.
         let swap = launcher.find("MapleSyrup-new.exe").unwrap();
         let setup = launcher.find("--setup-claude").unwrap();
+        let start = launcher.find("--claude-only").unwrap();
         let claude = launcher.find("--dangerously-load").unwrap();
-        assert!(swap < setup && setup < claude);
-        assert!(!launcher.contains("if exist \"%~dp0.mcp.json\" goto :running\r\necho Setting"));
+        assert!(swap < setup && setup < start && start < claude);
+        // MapleSyrup itself sees who runs (a bridge of the Claude app's is
+        // MapleSyrup.exe too, and no companion).
+        assert!(!launcher.contains("tasklist"));
+        assert!(launcher.contains("I am using this for local development"));
         assert!(launcher.contains("\r\n"));
+    }
+
+    #[test]
+    fn the_claude_app_runs_a_copy_of_its_own_that_keeps_up() {
+        let dir = std::env::temp_dir().join(format!(
+            "ms-claude-bridge-{}",
+            crate::phone::tls::random_hex(4)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("MapleSyrup.exe");
+        fs::write(&exe, b"version one").unwrap();
+        let bridge = dir.join("for the Claude app");
+        let copy = bridge_copy(&exe, &bridge).unwrap();
+        assert_eq!(copy, bridge.join("MapleSyrup.exe"));
+        assert_eq!(fs::read(&copy).unwrap(), b"version one");
+        // A new program: the copy follows.
+        fs::write(&exe, b"version two!").unwrap();
+        assert_eq!(bridge_copy(&exe, &bridge).unwrap(), copy);
+        assert_eq!(fs::read(&copy).unwrap(), b"version two!");
+        assert!(!bridge.join("MapleSyrup.exe.partial").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

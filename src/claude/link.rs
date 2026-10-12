@@ -21,6 +21,11 @@ pub struct Link {
     /// The companion's process, for a bridge that wonders whether it is
     /// still the one running.
     pub pid: u32,
+    /// It runs in the background (started by a Claude), with no window,
+    /// voice or phone of its own: one started with a window takes over.
+    /// (Written only when true, so the launcher can look for the word.)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub background: bool,
 }
 
 /// The board's key: saved, or made (128 bits) and saved for next time.
@@ -97,6 +102,7 @@ mod tests {
             port: 8790,
             key: "ab".repeat(16),
             pid: 42,
+            background: false,
         };
         save(&dir, &link).unwrap();
         assert_eq!(load(&dir), Some(link.clone()));
@@ -108,6 +114,29 @@ mod tests {
         // Garbage is no link.
         fs::write(dir.join(FILE), "{not json").unwrap();
         assert_eq!(load(&dir), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_background_run_says_so_and_only_it_has_the_word() {
+        let dir = temp_dir("background");
+        let mut link = Link {
+            port: 8790,
+            key: "cd".repeat(16),
+            pid: 7,
+            background: false,
+        };
+        save(&dir, &link).unwrap();
+        let text = fs::read_to_string(dir.join(FILE)).unwrap();
+        assert!(!text.contains("background"), "{text}");
+        link.background = true;
+        save(&dir, &link).unwrap();
+        let text = fs::read_to_string(dir.join(FILE)).unwrap();
+        assert!(text.contains("\"background\": true"), "{text}");
+        assert_eq!(load(&dir), Some(link));
+        // A link from before the word: not in the background.
+        fs::write(dir.join(FILE), r#"{"port": 8790, "key": "ab", "pid": 3}"#).unwrap();
+        assert!(!load(&dir).unwrap().background);
         let _ = fs::remove_dir_all(&dir);
     }
 }
