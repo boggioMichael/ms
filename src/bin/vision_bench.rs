@@ -74,13 +74,16 @@ struct Options {
     /// A folder to write what each frame gave into, one file per run, for
     /// checking that a faster build sees exactly what the old one saw.
     outputs: Option<PathBuf>,
+    /// A sight learned in a session (a copy of MapleSyrup's `learned`
+    /// folder) to look with, instead of teaching from the first frame.
+    learned: Option<PathBuf>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: vision_bench [--image PNG]... [--video MP4]... [--frames N] [--sizes WxH,...]
                     [--fps F] [--ffmpeg PATH] [--json FILE] [--no-teach] [--all]
-                    [--outputs DIR]
+                    [--outputs DIR] [--learned DIR]
        vision_bench --capture N [--window TITLE] [--fps F] [--json FILE]
 
   --image PNG     a still frame (default: resources/maplestory.png, when it exists)
@@ -98,6 +101,9 @@ fn usage() -> ! {
   --outputs DIR   write what every frame gave (the HUD's values, each taught
                   thing's reading, the near misses queued) to DIR, a file per
                   run, to compare two builds frame by frame
+  --learned DIR   look with what a session learned (a copy of MapleSyrup's
+                  learned folder: its things, HUD layout and font) instead of
+                  teaching from the first frame; the folder is not changed
   --capture N     time the capture itself instead, live: N frames of the game
                   window at the frame rate, on each path the system has (the
                   GPU, then the CPU)
@@ -120,6 +126,7 @@ fn parse(args: &[String]) -> Options {
         capture: None,
         window: None,
         outputs: None,
+        learned: None,
     };
     let mut explicit_inputs = false;
     let mut i = 0;
@@ -158,6 +165,7 @@ fn parse(args: &[String]) -> Options {
             "--capture" => o.capture = Some(value(&mut i).parse().unwrap_or_else(|_| usage())),
             "--window" => o.window = Some(value(&mut i)),
             "--outputs" => o.outputs = Some(PathBuf::from(value(&mut i))),
+            "--learned" => o.learned = Some(PathBuf::from(value(&mut i))),
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("unknown argument {other}");
@@ -325,7 +333,34 @@ fn scratch(name: &str) -> PathBuf {
 /// A calibrated sight for `first`: the HUD bars the geometry found,
 /// learned as bar models with their fills as the game's numbers, and three
 /// objects taught from the frame itself.
-fn prepare_sight(dir: &Path, first: &RgbaImage, teach: bool) -> (Sight, bool, usize) {
+fn prepare_sight(
+    dir: &Path,
+    first: &RgbaImage,
+    teach: bool,
+    learned: Option<&Path>,
+) -> (Sight, bool, usize) {
+    if let Some(learned) = learned {
+        // A copy, so the run's new pictures and saves stay in the scratch
+        // folder: the files at the top and one folder down (the font's).
+        let copy = |from: &Path, to: &Path| -> std::io::Result<()> {
+            std::fs::create_dir_all(to)?;
+            for entry in std::fs::read_dir(from)? {
+                let entry = entry?;
+                if entry.file_type()?.is_file() {
+                    std::fs::copy(entry.path(), to.join(entry.file_name()))?;
+                }
+            }
+            Ok(())
+        };
+        let copied =
+            copy(learned, dir).and_then(|_| copy(&learned.join("font"), &dir.join("font")));
+        if let Err(e) = copied {
+            eprintln!("{}: {e}", learned.display());
+        }
+        let sight = Sight::load(dir);
+        let (hud, things) = (sight.layout.is_some(), sight.things.list.len());
+        return (sight, hud, things);
+    }
     let mut sight = Sight::load(dir);
     if !teach {
         return (sight, false, 0);
@@ -458,10 +493,11 @@ fn run(
     wanted: Detectors,
     recorder: &StageRecorder,
     outputs: Option<&Path>,
+    learned: Option<&Path>,
 ) -> Run {
     let (width, height) = frames[0].dimensions();
     let dir = scratch(&format!("{}x{}", width, height));
-    let (mut sight, hud_learned, taught) = prepare_sight(&dir, &frames[0], teach);
+    let (mut sight, hud_learned, taught) = prepare_sight(&dir, &frames[0], teach, learned);
     let mut pipeline = PerceptionPipeline::new();
     recorder.reset();
     let period = Duration::from_secs_f64(1.0 / fps);
@@ -781,6 +817,7 @@ fn main() {
                 wanted,
                 &recorder,
                 options.outputs.as_deref(),
+                options.learned.as_deref(),
             );
             print_run(&run);
             runs.push(run);
@@ -806,9 +843,10 @@ fn main() {
                                     wanted,
                                     &recorder,
                                     options.outputs.as_deref(),
+                                    options.learned.as_deref(),
                                 );
                                 print_run(&run);
-                                runs.push(run);
+                                                    runs.push(run);
                             }
                             Err(e) => eprintln!("{} at {w}x{h}: {e}", path.display()),
                         }
