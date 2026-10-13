@@ -71,12 +71,16 @@ struct Options {
     capture: Option<usize>,
     /// The window to capture, instead of the game.
     window: Option<String>,
+    /// A folder to write what each frame gave into, one file per run, for
+    /// checking that a faster build sees exactly what the old one saw.
+    outputs: Option<PathBuf>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: vision_bench [--image PNG]... [--video MP4]... [--frames N] [--sizes WxH,...]
                     [--fps F] [--ffmpeg PATH] [--json FILE] [--no-teach] [--all]
+                    [--outputs DIR]
        vision_bench --capture N [--window TITLE] [--fps F] [--json FILE]
 
   --image PNG     a still frame (default: resources/maplestory.png, when it exists)
@@ -91,6 +95,9 @@ fn usage() -> ! {
   --no-teach      do not teach objects or learn the HUD bars
   --all           run every detector, as the companion does with --preview
                   (by default only the HUD, as it runs without)
+  --outputs DIR   write what every frame gave (the HUD's values, each taught
+                  thing's reading, the near misses queued) to DIR, a file per
+                  run, to compare two builds frame by frame
   --capture N     time the capture itself instead, live: N frames of the game
                   window at the frame rate, on each path the system has (the
                   GPU, then the CPU)
@@ -112,6 +119,7 @@ fn parse(args: &[String]) -> Options {
         all: false,
         capture: None,
         window: None,
+        outputs: None,
     };
     let mut explicit_inputs = false;
     let mut i = 0;
@@ -149,6 +157,7 @@ fn parse(args: &[String]) -> Options {
             "--all" => o.all = true,
             "--capture" => o.capture = Some(value(&mut i).parse().unwrap_or_else(|_| usage())),
             "--window" => o.window = Some(value(&mut i)),
+            "--outputs" => o.outputs = Some(PathBuf::from(value(&mut i))),
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("unknown argument {other}");
@@ -393,6 +402,54 @@ fn prepare_sight(dir: &Path, first: &RgbaImage, teach: bool) -> (Sight, bool, us
     (sight, learned, taught)
 }
 
+/// FNV-1a over `bytes`: a fingerprint of a near miss's picture, to tell two
+/// builds' queues apart without writing the pictures out.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+        (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// One frame's line of `--outputs`: everything the sight made of it, in a
+/// form two builds can be compared by (floats in their shortest exact form).
+fn output_line(i: usize, perceived: &ms::perceive::Perceived, sight: &Sight) -> String {
+    use std::fmt::Write as _;
+    let seen = &perceived.seen;
+    let mut line = format!(
+        "{i}\thp={:?} mp={:?} exp={:?} hp#={:?} mp#={:?} exp#={:?} leveled={} fired={:?}",
+        seen.hp,
+        seen.mp,
+        seen.exp,
+        seen.hp_number,
+        seen.mp_number,
+        seen.exp_number,
+        seen.leveled,
+        seen.fired
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>()
+    );
+    for thing in &sight.things.list {
+        let _ = write!(
+            line,
+            "\t{}={:?} pictures={}",
+            thing.id,
+            thing.live.reading,
+            thing.images.len()
+        );
+    }
+    for candidate in &sight.things.candidates {
+        let _ = write!(
+            line,
+            "\tnear {}={:016x}",
+            candidate.id,
+            fingerprint(candidate.picture.as_raw())
+        );
+    }
+    line.push('\n');
+    line
+}
+
 fn run(
     name: &str,
     frames: &[RgbaImage],
@@ -400,6 +457,7 @@ fn run(
     teach: bool,
     wanted: Detectors,
     recorder: &StageRecorder,
+    outputs: Option<&Path>,
 ) -> Run {
     let (width, height) = frames[0].dimensions();
     let dir = scratch(&format!("{}x{}", width, height));
@@ -409,6 +467,7 @@ fn run(
     let period = Duration::from_secs_f64(1.0 / fps);
     let start = Instant::now();
     let mut queued = 0usize;
+    let mut lines = outputs.map(|_| String::new());
     for (i, frame) in frames.iter().enumerate() {
         // The sight paces its searches by the clock; a simulated one runs
         // them at the cadence of a real session rather than of this loop.
@@ -429,8 +488,17 @@ fn run(
             )
         };
         std::hint::black_box(&perceived.obs);
+        if let Some(lines) = lines.as_mut() {
+            lines.push_str(&output_line(i, &perceived, &sight));
+        }
         queued += sight.things.candidates.len();
         sight.things.candidates.clear();
+    }
+    if let (Some(dir), Some(lines)) = (outputs, lines) {
+        let file = dir.join(format!("{name}-{width}x{height}.tsv"));
+        if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&file, lines)) {
+            eprintln!("{}: {e}", file.display());
+        }
     }
     let mut stages = recorder.stats();
     // Outermost first, then the rest by the time they took.
@@ -712,6 +780,7 @@ fn main() {
                 options.teach,
                 wanted,
                 &recorder,
+                options.outputs.as_deref(),
             );
             print_run(&run);
             runs.push(run);
@@ -736,6 +805,7 @@ fn main() {
                                     options.teach,
                                     wanted,
                                     &recorder,
+                                    options.outputs.as_deref(),
                                 );
                                 print_run(&run);
                                 runs.push(run);

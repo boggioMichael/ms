@@ -780,7 +780,7 @@ impl Things {
         prepared: &Prepared<'_>,
         now: Instant,
         stripe: usize,
-        near: &mut Vec<RgbaImage>,
+        near: &mut Vec<syrup::Rect>,
         new_pose: &mut Option<RgbaImage>,
     ) -> Reading {
         let frame = prepared.image();
@@ -866,13 +866,41 @@ impl Things {
                         .map(|m| (m, true));
             }
             if found.is_none() {
-                found = template::find_set_near(
-                    prepared,
-                    &poses.all,
-                    (cx, cy),
-                    TRACK_RADIUS,
-                    near_miss(1),
-                )
+                found = match last.filter(|_| own.is_some()) {
+                    // Every other pose, one at a time: the one just tried
+                    // would fail the same way again, so it is left out, and
+                    // the strongest of the rest (the first of equals) is
+                    // what a look with every pose finds.
+                    Some(l) => {
+                        let mut best: Option<SetMatch> = None;
+                        for (i, one) in poses.each.iter().enumerate() {
+                            if i == l.picture {
+                                continue;
+                            }
+                            let near = template::find_set_near(
+                                prepared,
+                                one,
+                                (cx, cy),
+                                TRACK_RADIUS,
+                                near_miss(1),
+                            );
+                            if let Some(mut m) = near
+                                && best.as_ref().is_none_or(|b| m.score > b.score)
+                            {
+                                m.picture = i;
+                                best = Some(m);
+                            }
+                        }
+                        best
+                    }
+                    None => template::find_set_near(
+                        prepared,
+                        &poses.all,
+                        (cx, cy),
+                        TRACK_RADIUS,
+                        near_miss(1),
+                    ),
+                }
                 .map(|m| (m, false));
             }
             if found.is_none() {
@@ -965,7 +993,9 @@ impl Things {
                     // the pictures on disk.
                     *new_pose = Some(crop());
                 }
-                _ => near.push(crop()),
+                // Where it is, not its picture: at most one near miss a
+                // frame is ever kept, and the caller crops just that one.
+                _ => near.push(b),
             }
         }
         let mut places: Vec<(f32, f32)> = tracking
@@ -989,7 +1019,7 @@ impl Things {
         prepared: &Prepared<'_>,
         now: Instant,
         stripe: usize,
-        near: &mut Vec<RgbaImage>,
+        near: &mut Vec<syrup::Rect>,
         new_pose: &mut Option<RgbaImage>,
     ) -> Reading {
         let frame = prepared.image();
@@ -1055,7 +1085,7 @@ impl Things {
         // thread: the things are independent, and the frame is shared. (On
         // a machine with one worker, right here: a hop to another thread
         // would cost without buying anything.)
-        let look = |thing: &mut Thing| -> Option<(Reading, Vec<RgbaImage>, Option<RgbaImage>)> {
+        let look = |thing: &mut Thing| -> Option<(Reading, Vec<syrup::Rect>, Option<RgbaImage>)> {
             let every = match thing.kind {
                 // Followed on every frame, cheaply, around where they are.
                 Kind::Object => Duration::ZERO,
@@ -1085,7 +1115,7 @@ impl Things {
             Some((reading, near, new_pose))
         };
         let pool = crate::util::pool::pool();
-        let looked: Vec<(usize, Reading, Vec<RgbaImage>, Option<RgbaImage>)> =
+        let looked: Vec<(usize, Reading, Vec<syrup::Rect>, Option<RgbaImage>)> =
             if pool.current_num_threads() > 1 {
                 pool.install(|| {
                     self.list
@@ -1113,8 +1143,10 @@ impl Things {
             }
             // A few near misses to check, not a flood.
             if self.candidates.len() < 4 && self.list[i].images.len() < MAX_PICTURES {
-                for picture in near.into_iter().take(1) {
+                for b in near.into_iter().take(1) {
                     if self.candidates.iter().filter(|c| c.id == id).count() < 2 {
+                        let picture =
+                            image::imageops::crop_imm(frame, b.x, b.y, b.w, b.h).to_image();
                         self.candidates.push_back(Candidate {
                             id: id.clone(),
                             picture,
