@@ -485,6 +485,7 @@ fn output_line(i: usize, perceived: &ms::perceive::Perceived, sight: &Sight) -> 
     line
 }
 
+#[allow(clippy::too_many_arguments)] // the bench's knobs, one per option
 fn run(
     name: &str,
     frames: &[RgbaImage],
