@@ -873,8 +873,15 @@ impl Things {
                     // what a look with every pose finds.
                     Some(l) => {
                         let mut best: Option<SetMatch> = None;
+                        // A pose kept twice (the same picture) looks the
+                        // same both times: the first of its copies is
+                        // tried, and none whose copy just failed.
+                        let first_of = |i: usize| poses.all.same_as(i).unwrap_or(i);
                         for (i, one) in poses.each.iter().enumerate() {
-                            if i == l.picture {
+                            if i == l.picture
+                                || first_of(i) != i
+                                || first_of(i) == first_of(l.picture)
+                            {
                                 continue;
                             }
                             let near = template::find_set_near(

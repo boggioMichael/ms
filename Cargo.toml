@@ -22,7 +22,7 @@ rayon = "1"
 # whose window capture keeps the window between frames and says why a
 # capture failed, computed several times faster (SIMD and dot-product
 # kernels chosen at run time).
-syrup = { git = "https://github.com/boggioMichael/syrup", rev = "8774538f35aee71e1da2ffefd4ec226cc8e85c65", features = ["serde"] }
+syrup = { git = "https://github.com/boggioMichael/syrup", rev = "04dcd2517caa0c451fbb2bbb5ad0d2bfc7cdba29", features = ["serde"] }
 
 # The phone link: HTTPS on the local network (a phone browser only opens the
 # microphone for a secure page), with a self-signed certificate made on the

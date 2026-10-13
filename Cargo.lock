@@ -1711,7 +1711,7 @@ dependencies = [
 [[package]]
 name = "syrup"
 version = "0.1.0"
-source = "git+https://github.com/boggioMichael/syrup?rev=8774538f35aee71e1da2ffefd4ec226cc8e85c65#8774538f35aee71e1da2ffefd4ec226cc8e85c65"
+source = "git+https://github.com/boggioMichael/syrup?rev=04dcd2517caa0c451fbb2bbb5ad0d2bfc7cdba29#04dcd2517caa0c451fbb2bbb5ad0d2bfc7cdba29"
 dependencies = [
  "block2",
  "image",
