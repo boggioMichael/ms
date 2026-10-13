@@ -1,25 +1,17 @@
-# The vision bench on a Windows runner: the build MapleSyrup shipped with
-# (ms 8a14965, syrup 54dad1e) against this branch's, built the same way and
-# run in turns on the same machine, on the frames in the repository (the
-# still and the Zakum recording, at three window sizes). Their outputs are
-# compared frame by frame, for the HUD alone and with every detector (the
-# companion's preview). Runs on a push to a bench/ branch only, and
-# publishes what it found where it can be read with git:
-#
-#   build-output/<branch>/results   the timings, the summary and the outputs
-#
-# The shipped tree gets today's vision_bench.rs (the same program, with
-# --outputs and --learned), so both builds are timed by the same harness.
+# vision_bench.exe for Windows, built as MapleSyrup is (static C runtime),
+# for timing the capture on a player's PC: `vision_bench --capture N` with
+# the game open. Runs on a push to a bench/ branch; the program is the
+# workflow's artifact.
 name: Speed bench (Windows)
 on:
   push:
     branches: ["bench/**"]
 permissions:
-  contents: write
+  contents: read
 jobs:
-  bench:
+  build:
     runs-on: windows-latest
-    timeout-minutes: 150
+    timeout-minutes: 60
     defaults:
       run:
         shell: bash
@@ -27,87 +19,15 @@ jobs:
       RUSTFLAGS: "-C target-feature=+crt-static"
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - name: The machine
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force results | Out-Null
-          & { Get-CimInstance Win32_Processor | Format-List Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed
-              Get-CimInstance Win32_OperatingSystem | Format-List Caption, Version } | Out-String | Tee-Object -FilePath results/machine.txt
-      - name: ffmpeg
-        run: |
-          command -v ffmpeg > /dev/null || choco install ffmpeg -y --no-progress > /dev/null
-          ffmpeg -version | head -1
-      - name: Build both
+      - name: Build
         run: |
           set -o pipefail
-          git worktree add "$RUNNER_TEMP/shipped" 8a14965
-          cp src/bin/vision_bench.rs "$RUNNER_TEMP/shipped/src/bin/vision_bench.rs"
-          (cd "$RUNNER_TEMP/shipped" && cargo build --release --locked --bin vision_bench) 2>&1 | tail -3
           cargo build --release --locked --bin vision_bench 2>&1 | tail -3
-          mkdir -p bin
-          cp "$RUNNER_TEMP/shipped/target/release/vision_bench.exe" bin/shipped.exe
-          cp target/release/vision_bench.exe bin/now.exe
-      - name: Bench, in turns
-        run: |
-          set -o pipefail
-          for r in 1 2 3; do
-            for b in shipped now; do
-              ./bin/$b.exe --frames 300 --sizes 1366x768,1920x1080 --json results/$b-small-$r.json --outputs results/$b-out > results/$b-small-$r.txt 2>&1
-              ./bin/$b.exe --frames 60 --sizes 3840x2160 --json results/$b-4k-$r.json --outputs results/$b-out > results/$b-4k-$r.txt 2>&1
-              ./bin/$b.exe --all --frames 100 --sizes 1920x1080 --json results/$b-all-$r.json --outputs results/$b-all-out > results/$b-all-$r.txt 2>&1
-              ./bin/$b.exe --all --frames 40 --sizes 3840x2160 --json results/$b-all4k-$r.json --outputs results/$b-all-out > results/$b-all4k-$r.txt 2>&1
-            done
-            echo "round $r done"
-          done
-          head -5 results/now-4k-1.txt
-      - name: Summary
-        run: |
-          python - <<'PY' | tee results/summary.txt
-          import glob, json, os, statistics
-          runs = {}
-          for path in glob.glob('results/*.json'):
-              build = os.path.basename(path).split('-')[0]
-              for run in json.load(open(path))['runs']:
-                  key = (bool(run.get('all_detectors')), run['width'], run['height'], run['input'])
-                  stages = {s['name']: s for s in run['stages']}
-                  mean = lambda name: stages.get(name, {}).get('mean', 0.0)
-                  runs.setdefault((key, build), []).append((mean('frame'), mean('sight.things'), mean('vision')))
-          keys = sorted({k for k, _ in runs})
-          print(f"{'input':52s} {'shipped ms':>11s} {'now ms':>8s} {'speedup':>8s}   things: shipped, now   detectors: shipped, now")
-          for k in keys:
-              s, n = runs.get((k, 'shipped'), []), runs.get((k, 'now'), [])
-              if not s or not n:
-                  continue
-              med = lambda rows, i: statistics.median(r[i] for r in rows)
-              ms, mn = med(s, 0), med(n, 0)
-              every, width, height, name = k
-              label = f"{name} {width}x{height}" + (" (every detector)" if every else "")
-              print(f"{label:52s} {ms:11.2f} {mn:8.2f} {ms / mn:7.1f}x   {med(s, 1):7.2f} {med(n, 1):6.2f}   {med(s, 2):10.2f} {med(n, 2):6.2f}")
-          PY
-          for d in out all-out; do
-            for f in results/shipped-$d/*.tsv; do
-              b=$(basename "$f")
-              if cmp -s "$f" "results/now-$d/$b"; then echo "same outputs ($d): $b"; else echo "DIFFERENT outputs ($d): $b"; fi
-            done
-          done | tee results/outputs.txt
+          mkdir -p out
+          cp target/release/vision_bench.exe out/
+          git rev-parse HEAD > out/commit.txt
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: speed-bench
-          path: results
-      - name: Publish the results
-        if: always()
-        run: |
-          set -e
-          out="$RUNNER_TEMP/results-branch"
-          mkdir -p "$out"
-          cp -r results/. "$out/"
-          git rev-parse HEAD > "$out/commit.txt"
-          cd "$out"
-          git init -q && git checkout -q -b out
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" add -A
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "speed bench of $(cat commit.txt) [skip ci]"
-          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" "out:refs/heads/build-output/$GITHUB_REF_NAME/results"
+          name: vision-bench-windows
+          path: out
