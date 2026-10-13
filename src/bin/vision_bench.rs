@@ -846,7 +846,7 @@ fn main() {
                                     options.learned.as_deref(),
                                 );
                                 print_run(&run);
-                                                    runs.push(run);
+                                runs.push(run);
                             }
                             Err(e) => eprintln!("{} at {w}x{h}: {e}", path.display()),
                         }
