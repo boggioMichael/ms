@@ -5,5 +5,5 @@ pub use syrup::color::{is_color_pixel, is_text_pixel};
 pub use syrup::geometry::{
     Rect, dominant_color_bucket, find_color_bar, find_color_regions, find_text_block,
     find_text_block_in_regions, find_uniform_color_panel, group_segments, horizontal_edges,
-    measure_bar_fill, segment_row,
+    measure_bar_fill, measure_color_bar_fill, segment_row,
 };

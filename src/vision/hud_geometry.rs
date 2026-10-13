@@ -17,7 +17,7 @@ use syrup::draw::draw_rect;
 // implementation instead of duplicating it.
 pub use crate::vision::geometry::Rect;
 use crate::vision::geometry::{
-    dominant_color_bucket, find_color_bar, find_color_regions, is_color_pixel, measure_bar_fill,
+    dominant_color_bucket, find_color_bar, find_color_regions, measure_color_bar_fill,
 };
 
 /// A parsed HUD metric from OCR.
@@ -187,12 +187,10 @@ pub fn detect_ui_markers(image: &RgbaImage) -> UiMarkers {
     let mp_bar = mp_fill.map(|fill| metric_region(fill, 140));
     let exp_bar = exp_fill.map(|fill| metric_region(fill, width / 8));
 
+    // The fill's share of its track, each column voted on by the pixels of
+    // the bar's colour (`is_color_pixel`), tested a row at a time.
     let fill_percent = |fill: Option<Rect>, hue: (f32, f32), sat: f32, val: f32| {
-        fill.and_then(|fill| {
-            measure_bar_fill(image, fill, status_band, |pixel| {
-                is_color_pixel(pixel, hue, sat, val)
-            })
-        })
+        fill.and_then(|fill| measure_color_bar_fill(image, fill, status_band, (hue, sat, val)))
     };
 
     // Character-stat panels use a vertical stack of pink field labels. Extending
