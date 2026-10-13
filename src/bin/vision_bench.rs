@@ -447,7 +447,12 @@ fn fingerprint(bytes: &[u8]) -> u64 {
 
 /// One frame's line of `--outputs`: everything the sight made of it, in a
 /// form two builds can be compared by (floats in their shortest exact form).
-fn output_line(i: usize, perceived: &ms::perceive::Perceived, sight: &Sight) -> String {
+fn output_line(
+    i: usize,
+    perceived: &ms::perceive::Perceived,
+    sight: &Sight,
+    every: bool,
+) -> String {
     use std::fmt::Write as _;
     let seen = &perceived.seen;
     let mut line = format!(
@@ -481,8 +486,41 @@ fn output_line(i: usize, perceived: &ms::perceive::Perceived, sight: &Sight) -> 
             fingerprint(candidate.picture.as_raw())
         );
     }
+    if every {
+        line.push_str(&world_fields(&perceived.world));
+    }
     line.push('\n');
     line
+}
+
+/// What every detector made of a frame, for `--outputs` with `--all`: each
+/// detection's value, confidence, reliability and failure, without its
+/// time (which no two runs share).
+fn world_fields(world: &ms::vision::snapshot::WorldState) -> String {
+    fn field<T: std::fmt::Debug>(name: &str, d: &ms::vision::types::Detection<T>) -> String {
+        format!(
+            "\t{name}={:?} {:?} {:?} {:?}",
+            d.value, d.confidence, d.reliability, d.failure_reason
+        )
+    }
+    let hud = &world.hud;
+    [
+        format!("\thud.markers={:?}", hud.markers),
+        field("hud.hp", &hud.hp),
+        field("hud.mp", &hud.mp),
+        field("hud.exp", &hud.exp),
+        field("hud.name", &hud.player_name),
+        field("hud.class", &hud.character_class),
+        field("hud.level", &hud.level),
+        field("motion", &world.motion),
+        field("dialog", &world.dialog),
+        field("minimap", &world.minimap),
+        field("chat_log", &world.chat_log),
+        field("icon_row", &world.icon_row),
+        field("footholds", &world.footholds),
+        field("combat", &world.combat_intensity),
+    ]
+    .concat()
 }
 
 #[allow(clippy::too_many_arguments)] // the bench's knobs, one per option
@@ -526,7 +564,12 @@ fn run(
         };
         std::hint::black_box(&perceived.obs);
         if let Some(lines) = lines.as_mut() {
-            lines.push_str(&output_line(i, &perceived, &sight));
+            lines.push_str(&output_line(
+                i,
+                &perceived,
+                &sight,
+                wanted == Detectors::ALL,
+            ));
         }
         queued += sight.things.candidates.len();
         sight.things.candidates.clear();
