@@ -1,4 +1,13 @@
 # MapleSyrup
+
+**Download the installer: [MapleSyrup-Setup.exe](https://github.com/boggioMichael/ms/raw/refs/heads/build-output/master/windows/MapleSyrup-Setup.exe)** — the whole setup, Claude included, built from `master` by CI on every push (Windows 10 1903+ or 11, 64-bit; no administrator). The portable zip and the build's logs are beside it, on the [`build-output/master/windows`](https://github.com/boggioMichael/ms/tree/build-output/master/windows) branch.
+
+1. Run it. If Windows says "Windows protected your PC": *More info* → *Run anyway* (the program is not code-signed yet). It asks for an OpenAI API key, optional.
+2. Start **MapleSyrup** from the Start menu and MapleStory (windowed or borderless windowed); scan the QR code in MapleSyrup's window with your phone (same Wi-Fi), tap **Start listening** and talk.
+3. With Claude (optional): Start menu → **Add MapleSyrup to the Claude app** (needs the Claude desktop app; quit it and open it again afterwards), or **MapleSyrup with Claude** for the live session, with the game pushed to Claude and its voice on your phone (it installs Claude Code the first time).
+
+[בעברית: הוראות התקנה והפעלה](installer/release-notes.md#בעברית-התקנה-והפעלה) · everything it does: [package/README.txt](package/README.txt)
+
 [![logo](https://github.com/boggioMichael/ms/blob/mvp/logos/final_logo.png)](https://youtu.be/yXIR59gGKhE)
 
 https://github.com/user-attachments/assets/0ce354f2-6cfe-4d13-8a45-432393b07cec
@@ -9,7 +18,10 @@ It is non-invasive by design: no game-memory reads, code injection, or input aut
 
 ## Get MapleSyrup
 
-Download **`MapleSyrup-Setup-<version>.exe`** from [Releases](https://github.com/boggioMichael/ms/releases) (none is published yet) and run it (Windows 10 1903 or later, 64-bit, no administrator needed). Start MapleSyrup and MapleStory, scan the QR code with your phone, tap **Start listening**, and talk to it.
+Download **[MapleSyrup-Setup.exe](https://github.com/boggioMichael/ms/raw/refs/heads/build-output/master/windows/MapleSyrup-Setup.exe)** (master's build; versioned releases will be on [Releases](https://github.com/boggioMichael/ms/releases)) and run it (Windows 10 1903 or later, 64-bit, no administrator needed). Start MapleSyrup and MapleStory, scan the QR code with your phone, tap **Start listening**, and talk to it.
+
+- **Claude, live.** Add MapleSyrup to the Claude desktop app (Start menu) and in any chat Claude sees your game: HP, MP and EXP, level and map, what moves on the screen, a dialog's text, what you taught it, a look at the screen. Or start *MapleSyrup with Claude*: Claude Code with the game pushed to it as it happens and MapleSyrup's voice on your phone — Claude for anything, with your game besides.
+- **Several times faster eyes, the same answers.** The vision runs on the widest instructions your CPU has: 25.6 → 3.4 ms a 4K frame with the HUD in view on a Ryzen 7 9800X3D, every reading checked to be what it was before ([bench/README.md](bench/README.md)).
 
 - **Talks like a friend sitting next to you.** With an OpenAI API key it answers in a natural voice, knowing what is on your screen. It answers as soon as you stop talking, and you can talk over it. Without a key it answers simple questions in the Windows voice.
 - **A real gaming buddy.** One short sentence, the point first, no "let me check"; bossy, and as rude as you want (Friendly, Blunt or Savage, picked on the phone). Your own numbers are answered instantly; facts are checked in the background. Grok answers with an xAI key, OpenAI otherwise.

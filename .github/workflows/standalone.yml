@@ -5,8 +5,8 @@ name: MapleSyrup standalone
 # can be read with git:
 #
 #   build-output/<branch>   the Windows package (MapleSyrup.zip), the
-#                           installer (MapleSyrup-Setup-<version>.exe) and
-#                           every log
+#                           installer (MapleSyrup-Setup-<version>.exe, and
+#                           the same as MapleSyrup-Setup.exe) and every log
 #   build-cache/vendor      the crates this tree depends on, for offline builds
 #                           (only for a commit whose message says [vendor])
 #
@@ -186,6 +186,11 @@ jobs:
           cp -r logs "$out/" 2>/dev/null || true
           cp "$RUNNER_TEMP/MapleSyrup.zip" "$out/" 2>/dev/null || true
           cp "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe "$out/" 2>/dev/null || true
+          # The installer under a fixed name too, so that a link to it (the
+          # README's, to master's build) holds from version to version.
+          for setup in "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe; do
+            if [ -f "$setup" ]; then cp "$setup" "$out/MapleSyrup-Setup.exe"; fi
+          done
           git rev-parse HEAD > "$out/commit.txt"
           echo "${{ job.status }}" > "$out/status.txt"
           cd "$out"
