@@ -1,13 +1,15 @@
 # vision_bench.exe for Windows, built as MapleSyrup is (static C runtime),
 # for timing the capture on a player's PC: `vision_bench --capture N` with
-# the game open. Runs on a push to a bench/ branch; the program is the
-# workflow's artifact.
+# the game open. Runs on a push to a bench/ branch, and publishes the
+# program where it can be fetched with git:
+#
+#   build-output/<branch>/windows   vision_bench.exe and the commit it is of
 name: Speed bench (Windows)
 on:
   push:
     branches: ["bench/**"]
 permissions:
-  contents: read
+  contents: write
 jobs:
   build:
     runs-on: windows-latest
@@ -27,7 +29,11 @@ jobs:
           mkdir -p out
           cp target/release/vision_bench.exe out/
           git rev-parse HEAD > out/commit.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: vision-bench-windows
-          path: out
+      - name: Publish the program
+        run: |
+          set -e
+          cd out
+          git init -q && git checkout -q -b out
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" add -A
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -qm "vision_bench.exe of $(cat commit.txt) [skip ci]"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" "out:refs/heads/build-output/$GITHUB_REF_NAME/windows"
