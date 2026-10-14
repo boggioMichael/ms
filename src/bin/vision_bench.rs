@@ -52,6 +52,10 @@ use ms::util::stages::{StageRecorder, StageStats};
 use ms::vision::hud_geometry::detect_ui_markers;
 use ms::vision::{Detectors, PerceptionPipeline};
 
+/// While Claude listens, one frame in this many also goes through the
+/// scene's detectors (the companion's own `RICH_EVERY`).
+const RICH_EVERY: u64 = 3;
+
 /// How long the teacher waits between near-miss confirmations
 /// (`ai::teaching`): the most such calls an hour can hold.
 const NEAR_MISS_EVERY: Duration = Duration::from_secs(20);
@@ -67,16 +71,26 @@ struct Options {
     teach: bool,
     /// Every detector, as with the preview window open, rather than the HUD alone.
     all: bool,
+    /// The scene's detectors too on every third frame, as while Claude
+    /// listens (`RICH_EVERY` in the companion).
+    claude: bool,
     /// Time the capture itself, live, over this many frames.
     capture: Option<usize>,
     /// The window to capture, instead of the game.
     window: Option<String>,
+    /// A folder to write what each frame gave into, one file per run, for
+    /// checking that a faster build sees exactly what the old one saw.
+    outputs: Option<PathBuf>,
+    /// A sight learned in a session (a copy of MapleSyrup's `learned`
+    /// folder) to look with, instead of teaching from the first frame.
+    learned: Option<PathBuf>,
 }
 
 fn usage() -> ! {
     eprintln!(
         "usage: vision_bench [--image PNG]... [--video MP4]... [--frames N] [--sizes WxH,...]
                     [--fps F] [--ffmpeg PATH] [--json FILE] [--no-teach] [--all]
+                    [--claude] [--outputs DIR] [--learned DIR]
        vision_bench --capture N [--window TITLE] [--fps F] [--json FILE]
 
   --image PNG     a still frame (default: resources/maplestory.png, when it exists)
@@ -91,6 +105,14 @@ fn usage() -> ! {
   --no-teach      do not teach objects or learn the HUD bars
   --all           run every detector, as the companion does with --preview
                   (by default only the HUD, as it runs without)
+  --claude        as the companion runs while Claude listens: every third
+                  frame also looks for motion, dialogs and the panels
+  --outputs DIR   write what every frame gave (the HUD's values, each taught
+                  thing's reading, the near misses queued) to DIR, a file per
+                  run, to compare two builds frame by frame
+  --learned DIR   look with what a session learned (a copy of MapleSyrup's
+                  learned folder: its things, HUD layout and font) instead of
+                  teaching from the first frame; the folder is not changed
   --capture N     time the capture itself instead, live: N frames of the game
                   window at the frame rate, on each path the system has (the
                   GPU, then the CPU)
@@ -110,8 +132,11 @@ fn parse(args: &[String]) -> Options {
         json: None,
         teach: true,
         all: false,
+        claude: false,
         capture: None,
         window: None,
+        outputs: None,
+        learned: None,
     };
     let mut explicit_inputs = false;
     let mut i = 0;
@@ -147,8 +172,11 @@ fn parse(args: &[String]) -> Options {
             "--json" => o.json = Some(PathBuf::from(value(&mut i))),
             "--no-teach" => o.teach = false,
             "--all" => o.all = true,
+            "--claude" => o.claude = true,
             "--capture" => o.capture = Some(value(&mut i).parse().unwrap_or_else(|_| usage())),
             "--window" => o.window = Some(value(&mut i)),
+            "--outputs" => o.outputs = Some(PathBuf::from(value(&mut i))),
+            "--learned" => o.learned = Some(PathBuf::from(value(&mut i))),
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("unknown argument {other}");
@@ -278,6 +306,9 @@ struct Run {
     frames: usize,
     /// Whether every detector ran, or the HUD alone.
     all_detectors: bool,
+    /// Whether every third frame also ran the scene's detectors, as while
+    /// Claude listens.
+    claude: bool,
     /// Simulated frames per second (the clock the sight paces by).
     fps: f64,
     hud_learned: bool,
@@ -316,7 +347,34 @@ fn scratch(name: &str) -> PathBuf {
 /// A calibrated sight for `first`: the HUD bars the geometry found,
 /// learned as bar models with their fills as the game's numbers, and three
 /// objects taught from the frame itself.
-fn prepare_sight(dir: &Path, first: &RgbaImage, teach: bool) -> (Sight, bool, usize) {
+fn prepare_sight(
+    dir: &Path,
+    first: &RgbaImage,
+    teach: bool,
+    learned: Option<&Path>,
+) -> (Sight, bool, usize) {
+    if let Some(learned) = learned {
+        // A copy, so the run's new pictures and saves stay in the scratch
+        // folder: the files at the top and one folder down (the font's).
+        let copy = |from: &Path, to: &Path| -> std::io::Result<()> {
+            std::fs::create_dir_all(to)?;
+            for entry in std::fs::read_dir(from)? {
+                let entry = entry?;
+                if entry.file_type()?.is_file() {
+                    std::fs::copy(entry.path(), to.join(entry.file_name()))?;
+                }
+            }
+            Ok(())
+        };
+        let copied =
+            copy(learned, dir).and_then(|_| copy(&learned.join("font"), &dir.join("font")));
+        if let Err(e) = copied {
+            eprintln!("{}: {e}", learned.display());
+        }
+        let sight = Sight::load(dir);
+        let (hud, things) = (sight.layout.is_some(), sight.things.list.len());
+        return (sight, hud, things);
+    }
     let mut sight = Sight::load(dir);
     if !teach {
         return (sight, false, 0);
@@ -393,44 +451,162 @@ fn prepare_sight(dir: &Path, first: &RgbaImage, teach: bool) -> (Sight, bool, us
     (sight, learned, taught)
 }
 
+/// FNV-1a over `bytes`: a fingerprint of a near miss's picture, to tell two
+/// builds' queues apart without writing the pictures out.
+fn fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+        (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3)
+    })
+}
+
+/// One frame's line of `--outputs`: everything the sight made of it, in a
+/// form two builds can be compared by (floats in their shortest exact form).
+fn output_line(
+    i: usize,
+    perceived: &ms::perceive::Perceived,
+    sight: &Sight,
+    every: bool,
+) -> String {
+    use std::fmt::Write as _;
+    let seen = &perceived.seen;
+    let mut line = format!(
+        "{i}\thp={:?} mp={:?} exp={:?} hp#={:?} mp#={:?} exp#={:?} leveled={} fired={:?}",
+        seen.hp,
+        seen.mp,
+        seen.exp,
+        seen.hp_number,
+        seen.mp_number,
+        seen.exp_number,
+        seen.leveled,
+        seen.fired
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>()
+    );
+    for thing in &sight.things.list {
+        let _ = write!(
+            line,
+            "\t{}={:?} pictures={}",
+            thing.id,
+            thing.live.reading,
+            thing.images.len()
+        );
+    }
+    for candidate in &sight.things.candidates {
+        let _ = write!(
+            line,
+            "\tnear {}={:016x}",
+            candidate.id,
+            fingerprint(candidate.picture.as_raw())
+        );
+    }
+    if every {
+        line.push_str(&world_fields(&perceived.world));
+    }
+    line.push('\n');
+    line
+}
+
+/// What every detector made of a frame, for `--outputs` with `--all`: each
+/// detection's value, confidence, reliability and failure, without its
+/// time (which no two runs share).
+fn world_fields(world: &ms::vision::snapshot::WorldState) -> String {
+    fn field<T: std::fmt::Debug>(name: &str, d: &ms::vision::types::Detection<T>) -> String {
+        format!(
+            "\t{name}={:?} {:?} {:?} {:?}",
+            d.value, d.confidence, d.reliability, d.failure_reason
+        )
+    }
+    let hud = &world.hud;
+    [
+        format!("\thud.markers={:?}", hud.markers),
+        field("hud.hp", &hud.hp),
+        field("hud.mp", &hud.mp),
+        field("hud.exp", &hud.exp),
+        field("hud.name", &hud.player_name),
+        field("hud.class", &hud.character_class),
+        field("hud.level", &hud.level),
+        field("motion", &world.motion),
+        field("dialog", &world.dialog),
+        field("minimap", &world.minimap),
+        field("chat_log", &world.chat_log),
+        field("icon_row", &world.icon_row),
+        field("footholds", &world.footholds),
+        field("combat", &world.combat_intensity),
+    ]
+    .concat()
+}
+
+#[allow(clippy::too_many_arguments)] // the bench's knobs, one per option
 fn run(
     name: &str,
     frames: &[RgbaImage],
     fps: f64,
     teach: bool,
-    wanted: Detectors,
+    (wanted, claude): (Detectors, bool),
     recorder: &StageRecorder,
+    outputs: Option<&Path>,
+    learned: Option<&Path>,
 ) -> Run {
     let (width, height) = frames[0].dimensions();
     let dir = scratch(&format!("{}x{}", width, height));
-    let (mut sight, hud_learned, taught) = prepare_sight(&dir, &frames[0], teach);
+    let (mut sight, hud_learned, taught) = prepare_sight(&dir, &frames[0], teach, learned);
     let mut pipeline = PerceptionPipeline::new();
     recorder.reset();
     let period = Duration::from_secs_f64(1.0 / fps);
     let start = Instant::now();
     let mut queued = 0usize;
+    let mut lines = outputs.map(|_| String::new());
     for (i, frame) in frames.iter().enumerate() {
         // The sight paces its searches by the clock; a simulated one runs
         // them at the cadence of a real session rather than of this loop.
         let clock = start + period * i as u32;
+        // While Claude listens, the companion's every third frame goes
+        // through the scene's detectors too (its `RICH_EVERY`).
+        let frame_id = i as u64 + 1;
+        let rich = claude && frame_id.is_multiple_of(RICH_EVERY);
+        let this_frame = if rich {
+            Detectors {
+                motion: true,
+                dialog: true,
+                panels: true,
+                ..wanted
+            }
+        } else {
+            wanted
+        };
         let perceived = {
             let _frame_span = tracing::trace_span!("frame").entered();
             perceive(
                 &mut pipeline,
                 Some(&mut sight),
-                wanted,
+                this_frame,
                 &Look {
                     title: name,
                     frame,
-                    frame_id: i as u64 + 1,
+                    frame_id,
                     now: clock,
                     in_view: true,
                 },
             )
         };
         std::hint::black_box(&perceived.obs);
+        if let Some(lines) = lines.as_mut() {
+            lines.push_str(&output_line(
+                i,
+                &perceived,
+                &sight,
+                this_frame == Detectors::ALL || rich,
+            ));
+        }
         queued += sight.things.candidates.len();
         sight.things.candidates.clear();
+    }
+    if let (Some(dir), Some(lines)) = (outputs, lines) {
+        let file = dir.join(format!("{name}-{width}x{height}.tsv"));
+        if let Err(e) = std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&file, lines)) {
+            eprintln!("{}: {e}", file.display());
+        }
     }
     let mut stages = recorder.stats();
     // Outermost first, then the rest by the time they took.
@@ -461,6 +637,7 @@ fn run(
         height,
         frames: frames.len(),
         all_detectors: wanted == Detectors::ALL,
+        claude,
         fps,
         hud_learned,
         font_glyphs: sight.numbers.glyphs(),
@@ -609,10 +786,10 @@ fn print_run(run: &Run) {
         run.height,
         run.frames,
         run.fps,
-        if run.all_detectors {
-            "every detector"
-        } else {
-            "the HUD alone"
+        match (run.all_detectors, run.claude) {
+            (true, _) => "every detector",
+            (false, true) => "the HUD, and the scene every third frame (Claude listening)",
+            (false, false) => "the HUD alone",
         },
         if run.hud_learned { "yes" } else { "no" },
         run.font_glyphs,
@@ -710,8 +887,10 @@ fn main() {
                 &frames,
                 options.fps,
                 options.teach,
-                wanted,
+                (wanted, options.claude),
                 &recorder,
+                options.outputs.as_deref(),
+                options.learned.as_deref(),
             );
             print_run(&run);
             runs.push(run);
@@ -734,8 +913,10 @@ fn main() {
                                     &frames,
                                     options.fps,
                                     options.teach,
-                                    wanted,
+                                    (wanted, options.claude),
                                     &recorder,
+                                    options.outputs.as_deref(),
+                                    options.learned.as_deref(),
                                 );
                                 print_run(&run);
                                 runs.push(run);

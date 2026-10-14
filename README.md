@@ -1,4 +1,13 @@
 # MapleSyrup
+
+**Download the installer: [MapleSyrup-Setup.exe](https://github.com/boggioMichael/ms/raw/refs/heads/build-output/master/windows/MapleSyrup-Setup.exe)** — the whole setup, Claude included, built from `master` by CI on every push (Windows 10 1903+ or 11, 64-bit; no administrator). The portable zip and the build's logs are beside it, on the [`build-output/master/windows`](https://github.com/boggioMichael/ms/tree/build-output/master/windows) branch.
+
+1. Run it. If Windows says "Windows protected your PC": *More info* → *Run anyway* (the program is not code-signed yet). It asks for an OpenAI API key, optional.
+2. Start **MapleSyrup** from the Start menu and MapleStory (windowed or borderless windowed); scan the QR code in MapleSyrup's window with your phone (same Wi-Fi), tap **Start listening** and talk.
+3. With Claude (optional): Start menu → **Add MapleSyrup to the Claude app** (needs the Claude desktop app; quit it and open it again afterwards), or **MapleSyrup with Claude** for the live session, with the game pushed to Claude and its voice on your phone (it installs Claude Code the first time).
+
+[בעברית: הוראות התקנה והפעלה](installer/release-notes.md#בעברית-התקנה-והפעלה) · everything it does: [package/README.txt](package/README.txt)
+
 [![logo](https://github.com/boggioMichael/ms/blob/mvp/logos/final_logo.png)](https://youtu.be/yXIR59gGKhE)
 
 https://github.com/user-attachments/assets/0ce354f2-6cfe-4d13-8a45-432393b07cec
@@ -9,18 +18,22 @@ It is non-invasive by design: no game-memory reads, code injection, or input aut
 
 ## Get MapleSyrup
 
-Download **`MapleSyrup-Setup-<version>.exe`** from [Releases](https://github.com/boggioMichael/ms/releases) and run it (Windows 10 1903 or later, 64-bit, no administrator needed). Start MapleSyrup and MapleStory, scan the QR code with your phone, tap **Start listening**, and talk to it.
+Download **[MapleSyrup-Setup.exe](https://github.com/boggioMichael/ms/raw/refs/heads/build-output/master/windows/MapleSyrup-Setup.exe)** (master's build; versioned releases will be on [Releases](https://github.com/boggioMichael/ms/releases)) and run it (Windows 10 1903 or later, 64-bit, no administrator needed). Start MapleSyrup and MapleStory, scan the QR code with your phone, tap **Start listening**, and talk to it.
+
+- **Claude, live.** Add MapleSyrup to the Claude desktop app (Start menu) and in any chat Claude sees your game: HP, MP and EXP, level and map, what moves on the screen, a dialog's text, what you taught it, a look at the screen. Or start *MapleSyrup with Claude*: Claude Code with the game pushed to it as it happens and MapleSyrup's voice on your phone — Claude for anything, with your game besides.
+- **Several times faster eyes, the same answers.** The vision runs on the widest instructions your CPU has: 25.6 → 3.4 ms a 4K frame with the HUD in view on a Ryzen 7 9800X3D, every reading checked to be what it was before ([bench/README.md](bench/README.md)).
 
 - **Talks like a friend sitting next to you.** With an OpenAI API key it answers in a natural voice, knowing what is on your screen. It answers as soon as you stop talking, and you can talk over it. Without a key it answers simple questions in the Windows voice.
 - **A real gaming buddy.** One short sentence, the point first, no "let me check"; bossy, and as rude as you want (Friendly, Blunt or Savage, picked on the phone). Your own numbers are answered instantly; facts are checked in the background. Grok answers with an xAI key, OpenAI otherwise.
 - **Its own voice, and a dog that's alive.** Pick its voice on the phone from your ElevenLabs account (OpenAI's voice steps in when ElevenLabs can't). The dog — the chow chow from the logo — lives in a box on the phone page: it hops, runs, jumps, naps and plays with its ball as it likes, looks at you while you talk, and its mouth moves with the voice.
-- **Learns as you play.** It keeps a notebook about you (your characters, goals, how you like it to talk, what you did last time), answers fast from what it knows, and keeps your corrections for good. It adapts how long it waits before answering, and its warnings. The phone shows what it knows, with Forget; it all stays on your PC.
+- **Learns as you play.** It keeps a notebook about you (your characters, goals, how you like it to talk, what you did last time), answers fast from what it knows, and keeps your corrections for good. It adapts how long it waits before answering, and its warnings. The phone shows what it knows, with Forget; the notebook is kept on your PC, and goes with each question to the model that answers (OpenAI or xAI).
 - **Sees your game and learns it.** It finds your HUD by itself (any resolution or layout), measures HP, MP and EXP on every frame, and learns what you teach it by talking: "that's an Orange Mushroom, tell me when one shows up".
-- **Watches your back.** Low HP and MP warnings, a beating called as it happens ("Back off, you're getting shredded"), level-ups, EXP per hour and time to level, with MapleStory's sound turned down while it talks.
-- **Coaches on its own.** You play, it talks: it watches the game go by and speaks up when there is something worth saying — you just arrived somewhere new, you went up a level, your EXP hasn't moved for minutes, something on screen deserves a callout — one short instruction, never a question. It looks now and then (less often when there is nothing to say) and keeps quiet while anyone talks. Say "stop coaching" or "only talk when I ask" and it only answers; "coach me" turns it back on.
+- **Watches your back.** Low HP and MP warnings and a beating called as it happens ("Back off, you're getting shredded"): once per fight, again only when no potion answers it or the bar goes lower, never on one odd frame, the beating watched rather than shouted once you've potted in time three fights running, and the rest held after four that nothing answers until you're back or ten minutes pass. Level-ups, EXP per hour and time to level, with MapleStory's sound turned down while it talks; a warning is shouted and a death or a level-up told, in six or seven wordings dealt like a deck.
+- **Coaches on its own.** You play, it talks: it speaks up when there is something worth saying — a close call, a third death in ten minutes, somewhere new, a level-up, minutes of fighting with no EXP, something on screen — with one short reaction, never a run-down of the screen and never a question; it looks now and then (less often when there is nothing to say, and the more you talk), keeps quiet while anyone talks, and never holds up a warning. Say "stop coaching" or "only talk when I ask" and it only answers; "coach me" turns it back on.
 - **Your phone is its microphone and a second screen**, in 14 languages.
 - **Updates itself.** A new version is fetched in the background, verified against the release key built in, and installed the next time it starts — the previous version kept beside it to go back to if the new one does not come up (the way Android updates its APEX modules). *Update now* on the phone, or `--no-update`.
 - **Rewrites itself, on your PC alone (the workshop).** "Change yourself: stop calling out the quest marker" — a coding agent installed on the PC (Claude Code or Codex) changes the source in the local checkout, the program is built and tested, and the new version installs at the next start through the same updater; "undo the last change" takes it back. Local only: a branch of the PC's own, nothing pushed, nothing published. Off unless turned on (Details on the phone, or `--workshop`).
+- **Your play stats stay on your PC.** It keeps numbers about each session (minutes, levels, deaths, warnings, reply times) on the PC, never your character's name, your words, your voice or pictures; sharing them with anyone is not offered: it first needs a rights review for MapleStory and consent asked for each purpose. Nothing is sent anywhere ([docs/data-and-metrics.md](docs/data-and-metrics.md)).
 - **Records the session for you.** Tap *Record the session* on the phone (or say "start recording"): a video of the whole screen with every sound — the game, its voice and yours — each sound placed where it was heard, saved in the session folder.
 
 Everything it does, recording and streaming, and privacy: [package/README.txt](package/README.txt).
@@ -175,7 +188,7 @@ cargo test --all-targets
 cargo bench --bench vision_pipeline
 ```
 
-The tree passes about 250 tests on Windows (the vision engine, the real-image HP-bar and HUD accuracy tests, the companion, the phone link, and the OpenAI client and conversation against a stand-in server), all target checks, and the Criterion vision benchmark. Benchmark latency depends heavily on frame size and OCR work; use the generated Criterion report and measured evidence rather than assuming a fixed real-time rate.
+The tree passes about 420 tests on Windows (the vision engine, the real-image HP-bar and HUD accuracy tests, the companion, the phone link, and the OpenAI client and conversation against a stand-in server), all target checks, and the Criterion vision benchmark. Benchmark latency depends heavily on frame size and OCR work; use the generated Criterion report and measured evidence rather than assuming a fixed real-time rate.
 
 ## Contributing
 

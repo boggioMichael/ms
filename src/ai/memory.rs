@@ -269,9 +269,16 @@ impl Memory {
     /// known yet).
     pub fn prompt(&self) -> String {
         let mut text = String::new();
-        if !self.facts.is_empty() {
+        // (A name for him the notebook got from speech is not his name:
+        // only his own file says it.)
+        let facts: Vec<&Fact> = self
+            .facts
+            .iter()
+            .filter(|f| !names_the_player(&f.text))
+            .collect();
+        if !facts.is_empty() {
             text.push_str("What you know about them:\n");
-            for fact in &self.facts {
+            for fact in facts {
                 text.push_str(&format!("- {}\n", fact.text));
             }
         }
@@ -356,7 +363,7 @@ impl Memory {
         if facts.is_empty() && self.facts.len() >= 5 {
             return Err("the notebook came back empty".into());
         }
-        facts.retain(|f| !self.is_forgotten(f));
+        facts.retain(|f| !self.is_forgotten(f) && !names_the_player(f));
         self.facts = facts.iter().map(|f| Fact::new(f)).collect();
         let mut style = list("style", MOST_STYLE, 200);
         style.retain(|s| !self.is_forgotten(s));
@@ -398,6 +405,119 @@ pub struct Read {
     pub to: ReadTo,
     /// The sessions the player said something in (in what was read).
     pub talked_in: Vec<String>,
+    /// Names the vision engine read off the HUD (the character's), each
+    /// time it read one, for the words to hear right.
+    pub hud: Vec<String>,
+    /// What was heard that was a remainder of MapleSyrup's own voice heard
+    /// back (`[echo] … (kept: …)`): left out of the talk.
+    pub echoes: usize,
+}
+
+impl Read {
+    /// The player's sentences in what was read (its own voice heard back
+    /// left out already).
+    fn player_sentences(&self) -> impl Iterator<Item = &str> {
+        self.talk.iter().filter_map(|l| l.strip_prefix("Player: "))
+    }
+}
+
+/// Whether `word` is in `sentence` as a word of its own, any case.
+fn has_word(sentence: &str, word: &str) -> bool {
+    let word = word.to_lowercase();
+    let words: Vec<String> = sentence
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let parts: Vec<&str> = word
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    !parts.is_empty()
+        && words
+            .windows(parts.len())
+            .any(|w| w.iter().zip(&parts).all(|(a, b)| a == b))
+}
+
+/// What a name for the player follows: in his words ("my name is Miguel",
+/// "call me…") and in MapleSyrup's ("Hey Mako", "Got it, Mikael", "I'll
+/// call you Armani", "היי מיכאל").
+const NAME_BEFORE: &[&str] = &[
+    "my name is ",
+    "name is ",
+    "call me ",
+    "call you ",
+    "got it, ",
+    "got it ",
+    "hey ",
+    "hi ",
+    "sorry ",
+    "היי ",
+    "מזל טוב, ",
+];
+
+/// The names the player was called or called himself in what was read
+/// (all misheard, on the owner's evening: Armani, Miha, Mako, Miguel,
+/// Mikael): never words to hear right.
+pub fn names_for_him(read: &Read) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for line in &read.talk {
+        let text = line.split_once(": ").map_or(line.as_str(), |(_, t)| t);
+        let lower = text.to_lowercase();
+        for before in NAME_BEFORE {
+            let mut from = 0;
+            while let Some(at) = lower[from..].find(before) {
+                let start = from + at + before.len();
+                from = start;
+                let word: String = text
+                    .get(start..)
+                    .unwrap_or("")
+                    .chars()
+                    .take_while(|c| c.is_alphabetic())
+                    .collect();
+                // A name: written with a capital (or in Hebrew), not a word
+                // of the sentence ("hey there", "my name is not").
+                let named = word
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_uppercase() || ('\u{05d0}'..='\u{05ea}').contains(&c));
+                let common = ["not", "the", "there", "and", "i", "you", "that", "what"]
+                    .contains(&word.to_lowercase().as_str());
+                if named && !common && !names.iter().any(|n| n.eq_ignore_ascii_case(&word)) {
+                    names.push(word);
+                }
+            }
+        }
+    }
+    names
+}
+
+impl Memory {
+    /// The words to hear right, as a look back gave them (`self.words`),
+    /// kept only when there is reason: in the notebook before (`before`),
+    /// read off the HUD, or said by the player in two sentences or more of
+    /// what was read — never one sentence, never a remainder of its own
+    /// voice — and never a name he was called or called himself
+    /// ([`names_for_him`]; the owner's "Armani", "Miha", "Mako", "Miguel",
+    /// "Mikael" were all his name misheard), known before or not.
+    pub fn vet_words(&mut self, before: &[String], read: &Read) {
+        let sentences: Vec<&str> = read.player_sentences().collect();
+        let names = names_for_him(read);
+        self.words.retain(|w| {
+            let named = names.iter().any(|n| n.eq_ignore_ascii_case(w));
+            let known = before.iter().any(|b| b.eq_ignore_ascii_case(w));
+            // (Read three times or more: one misread is not his
+            // character's name — "ANWANBUIIO" was read twice.)
+            let on_hud = read
+                .hud
+                .iter()
+                .filter(|h| h.eq_ignore_ascii_case(w))
+                .count()
+                >= 3;
+            let said_twice = sentences.iter().filter(|s| has_word(s, w)).count() >= 2;
+            !named && (known || on_hud || said_twice)
+        });
+    }
 }
 
 /// Read the session logs under `base` from where the last reading stopped.
@@ -431,10 +551,31 @@ pub fn read_logs(base: &Path, from: &ReadTo) -> Read {
         }
         let mut live = false;
         let mut said = false;
+        // What of its own voice heard back was kept as the player's words
+        // ("[echo] … (kept: my name is Armani)"): the "[heard]" after it is
+        // that remainder, not the player.
+        let mut echo_kept: Option<String> = None;
         for (i, line) in lines.iter().enumerate() {
             let Some((kind, text)) = parse_line(line) else {
                 continue;
             };
+            if kind == "echo" {
+                echo_kept = text
+                    .rsplit_once("(kept: ")
+                    .map(|(_, kept)| kept.trim_end_matches(')').trim().to_string());
+                continue;
+            }
+            let remainder = kind == "heard" && echo_kept.take().is_some_and(|kept| kept == text);
+            if i >= skip
+                && kind == "sight"
+                && let Some(name) = text
+                    .split(", ")
+                    .find_map(|part| part.strip_prefix("name "))
+                    .map(|n| n.split([';', ',', ' ']).next().unwrap_or("").to_string())
+                    .filter(|n| n.chars().count() >= 3)
+            {
+                read.hud.push(name);
+            }
             // Whether a live call was on is known from the whole file.
             if kind == "info" {
                 if text.starts_with("live call on the phone") {
@@ -449,7 +590,11 @@ pub fn read_logs(base: &Path, from: &ReadTo) -> Read {
             match kind {
                 "heard" => {
                     said = true;
-                    read.talk.push(format!("Player: {text}"));
+                    if remainder {
+                        read.echoes += 1;
+                    } else {
+                        read.talk.push(format!("Player: {text}"));
+                    }
                     if !live {
                         read.counts.sentences += 1;
                     }
@@ -462,7 +607,8 @@ pub fn read_logs(base: &Path, from: &ReadTo) -> Read {
                         read.counts.replies += 1;
                     }
                 }
-                "alert" => read.talk.push(format!("MapleSyrup (game watcher): {text}")),
+                // (A warning and news both: what the watcher said.)
+                "warning" | "alert" => read.talk.push(format!("MapleSyrup (game watcher): {text}")),
                 "turn" if text.starts_with("talked over") => read.counts.talked_over += 1,
                 "turn" if text.starts_with("still talking") => read.counts.continued += 1,
                 "turn" if text.starts_with("jumped in") => read.counts.jumped_in += 1,
@@ -556,13 +702,16 @@ const LOOK_BACK: &str = "You keep the notebook of MapleSyrup, a buddy who watche
 and talks with them while they play. Read the latest conversation and give back the whole notebook, updated:
 - facts: what is worth knowing about the player for next time: their characters (names, classes, levels), what \
 they're working towards, where they train and what they're doing in the game, what they enjoy or find annoying, \
-their name if they said it, who they play with. Keep what is still true, update what changed (a new level), drop \
-what is no longer true or no longer matters, merge repeats; most important first, at most 40, each one short \
-sentence in the third person. Never passwords, payment details, addresses or private things about other people.
+who they play with. Keep what is still true, update what changed (a new level), drop what is no longer true or no \
+longer matters, merge repeats; most important first, at most 40, each one short sentence in the third person \
+(\"the player\", or the name in what they asked to be remembered). Never their own name or what to call them: \
+speech-to-text can't spell names, and their name comes only from what they asked to be remembered. Never \
+passwords, payment details, addresses or private things about other people.
 - style: how they like MapleSyrup to talk to them, only from what they said or showed (shorter, more jokes, the \
 language they speak, less warnings...); at most 8.
-- words: names and words they say that speech-to-text could get wrong (their character's name, maps, bosses, \
-items, slang), spelled right; at most 40.
+- words: names and words they say that speech-to-text could get wrong (their character's name as the game shows \
+it, maps, bosses, items, slang), spelled right — only a word they said in two sentences or more, never a name for \
+the player, never from a line of theirs that repeats what MapleSyrup had just said; at most 40.
 - last_time: two or three sentences on what they did and talked about lately, so MapleSyrup can pick up from \
 there.
 - lessons: only what the player corrected MapleSyrup on in this conversation (a game fact, a name, how to do \
@@ -592,6 +741,94 @@ fn told_lines(text: &str) -> impl Iterator<Item = &str> {
         .filter(|l| !l.is_empty())
 }
 
+/// How a line of the player's own file says his name ("My name is Michael
+/// (מיכאל)", "Name: Michael", "שמי מיכאל"), lower case for English.
+const NAME_SAYS: &[&str] = &[
+    "my name is ",
+    "my name's ",
+    "name: ",
+    "name - ",
+    "player's name is ",
+    "players name is ",
+    "player name: ",
+    "his name is ",
+    "call me ",
+    "i'm called ",
+    "שמי ",
+    "השם שלי ",
+    "השם שלי הוא ",
+    "קוראים לי ",
+    "שם: ",
+];
+
+/// The player's name as his own file says it (`about-me.txt`): the first
+/// line that says it ("My name is Michael (מיכאל)" is "Michael (מיכאל)"),
+/// cut where it goes on to something else (", not Armani"). The name never
+/// comes from what was heard: speech-to-text can't spell it.
+pub fn name_in(told: &str) -> Option<String> {
+    for line in told_lines(told) {
+        let lower = line.to_lowercase();
+        // (The character's name is the HUD's, not his.)
+        if lower.contains("character") || lower.contains("דמות") {
+            continue;
+        }
+        let Some((at, says)) = NAME_SAYS
+            .iter()
+            .filter_map(|s| lower.find(s).map(|at| (at, s.len())))
+            .min_by_key(|(at, _)| *at)
+        else {
+            continue;
+        };
+        // (Lower case keeps the byte offsets of these phrases.)
+        let rest = line.get(at + says..).unwrap_or("").trim();
+        let cut = [",", ";", " not ", " but ", " and ", ". "]
+            .iter()
+            .filter_map(|c| rest.find(c))
+            .min()
+            .unwrap_or(rest.len());
+        let name = rest[..cut].trim().trim_end_matches(['.', '!', ' ']).trim();
+        if !name.is_empty() && name.chars().count() <= 40 {
+            return Some(name.to_string());
+        }
+    }
+    None
+}
+
+/// Whether `fact` says what the player's own name is (or that he wants to
+/// be called something): never kept from a conversation — only his own file
+/// says it ([`name_in`]). His character's name is not his name.
+pub fn names_the_player(fact: &str) -> bool {
+    let lower = fact.to_lowercase();
+    let ign = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|w| w == "ign");
+    if lower.contains("character") || lower.contains("דמות") || ign {
+        return false;
+    }
+    [
+        "name is",
+        "name's",
+        "named",
+        "call him",
+        "call them",
+        "call me",
+        "calls himself",
+        "goes by",
+        "player name",
+        "player's name",
+        "their name",
+        "his name",
+        "שמו",
+        "השם שלו",
+        "קוראים לו",
+        "שמי",
+        "קוראים לי",
+        "השם שלי",
+    ]
+    .iter()
+    .any(|says| lower.contains(says))
+}
+
 impl Learning {
     /// What is kept in `settings`.
     pub fn load(settings: &Path) -> Learning {
@@ -613,6 +850,11 @@ impl Learning {
     /// What the player asked it to remember.
     pub fn told(&self) -> String {
         std::fs::read_to_string(self.settings.join(TOLD)).unwrap_or_default()
+    }
+
+    /// The player's name, as his own file says it ([`name_in`]).
+    pub fn player_name(&self) -> Option<String> {
+        name_in(&self.told())
     }
 
     /// For the model: what it knows about the player, how they like it to
@@ -770,9 +1012,11 @@ pub fn spawn(openai: Arc<OpenAi>, learning: Learning, sessions: PathBuf, news: S
                         .and_then(|a| serde_json::from_str::<Value>(&a.text).map_err(|e| e.to_string()));
                     let taken = {
                         let mut memory = learning.memory();
-                        notebook
-                            .and_then(|n| memory.take(&n))
-                            .map(|lessons| (lessons, memory.facts.len(), memory.style.len()))
+                        let before = memory.words.clone();
+                        notebook.and_then(|n| memory.take(&n)).map(|lessons| {
+                            memory.vet_words(&before, &read);
+                            (lessons, memory.facts.len(), memory.style.len())
+                        })
                     };
                     match taken {
                         Ok((lessons, facts, style)) => {
@@ -782,7 +1026,11 @@ pub fn spawn(openai: Arc<OpenAi>, learning: Learning, sessions: PathBuf, news: S
                                 let knowledge = learning.knowledge();
                                 lessons
                                     .into_iter()
-                                    .filter(|(_, right)| !knowledge.has_lesson(right))
+                                    .filter(|(about, right)| {
+                                        !knowledge.has_lesson(right)
+                                            && !names_the_player(about)
+                                            && !names_the_player(right)
+                                    })
                                     .collect()
                             };
                             if !lessons.is_empty() {
@@ -836,7 +1084,14 @@ fn finish(memory: &mut Memory, read: &Read, news: &Sender<String>) {
 /// The lessons as lines for a model, newest first (empty when there are
 /// none).
 pub fn lessons_prompt(knowledge: &Knowledge, n: usize) -> String {
-    let lessons = knowledge.lessons(n);
+    // (A name for him taken from speech is no lesson: only his own file
+    // says his name.)
+    let lessons: Vec<Entry> = knowledge
+        .lessons(n + 8)
+        .into_iter()
+        .filter(|e| !names_the_player(&e.about) && !names_the_player(&e.answer))
+        .take(n)
+        .collect();
     if lessons.is_empty() {
         return String::new();
     }
@@ -876,7 +1131,8 @@ mod tests {
                 "20:00:06  [reply] You're level 61!",
                 "20:00:09  [turn] still talking: what's my level and",
                 "20:00:10  [turn] talked over: wait",
-                "20:00:12  [alert] Careful, your HP's down to 25%.",
+                "20:00:12  [warning] Careful, your HP's down to 25%.",
+                "20:00:40  [alert] Aw, you died. Revive and get back in there.",
             ],
         );
         session(
@@ -896,6 +1152,7 @@ mod tests {
                 "Player: what's my level",
                 "MapleSyrup: You're level 61!",
                 "MapleSyrup (game watcher): Careful, your HP's down to 25%.",
+                "MapleSyrup (game watcher): Aw, you died. Revive and get back in there.",
                 "Player: מה הרמה שלי",
                 "MapleSyrup: רמה 62!",
             ]
@@ -1167,5 +1424,119 @@ mod tests {
         assert!(text.contains("boss key is F10"));
         assert!(text.contains("Player: hi"));
         assert_eq!(ask.schema.as_ref().unwrap().0, "notebook");
+    }
+
+    /// Rows of the owner's real session (2026-10-10): his name misheard as
+    /// Mako, Miguel, Armani, Miha and Mikael, its own voice heard back as
+    /// his words, and the HUD read now and then (once wrong).
+    const OWNER_ROWS: &[&str] = &[
+        "11:44:59  [reply] Hey Mako, back in the game?",
+        "11:45:11  [heard] No my name is not Michael my name is Miguel with the talk to me bro",
+        "11:45:12  [reply] [ silent ]Got it Miguel, sorry for the mix-up. Talk to me.",
+        "11:45:21  [heard] Not Miguel Hebrew",
+        "11:45:48  [heard] Mikael",
+        "11:45:49  [reply] היי מיכאל, אתה במפה \"East Forest Trail\".",
+        "11:46:07  [sight] read level 16, HP 655/655, MP 671/671, EXP 80.42%, name WANWANBUJIO, job Magician; level 9 → 16; no line learned from this",
+        "11:47:35  [heard] Armani",
+        "11:47:41  [reply] אַרמני? זה השם שמופיע במשחק, או שאתה מתכוון למשהו אחר? ארמני—קלטתי. I'll call you Armani.",
+        "11:48:10  [sight] read level 16, HP 659/659, MP 671/671, EXP 80.42%, name WANWANBUJIO, job Magician; HP line not learned",
+        "11:49:05  [echo] that's me that's the monster  (kept: that's me)",
+        "11:49:05  [heard] that's me",
+        "11:49:08  [reply] Got it—that bunny-ear hat is you, Armani.",
+        "11:49:18  [echo] Got it that bunny hat is my name is Armani my name is Miha  (kept: my name is Armani my name is Miha)",
+        "11:49:18  [heard] my name is Armani my name is Miha",
+        "11:49:21  [reply] Got it, Miha—I’ll call you Miha.",
+        "11:49:27  [heard] I'll Miha",
+        "11:49:46  [heard] Mikael",
+        "11:49:49  [reply] Got it, Mikael.",
+        "11:52:11  [sight] read level 16, HP 653/653, MP 671/671, EXP 80.42%, name WANWANBUJIO, job Magician; no line learned from this",
+        "12:00:18  [heard] Table OMOK table",
+        "12:01:05  [heard] at OMOK table",
+        "12:41:05  [sight] read HP 567/671, MP 227/695, EXP 22.45%, name ANWANBUIIO, job Magician; MP bar not found",
+        "13:08:14  [sight] read HP 372/671, MP 227/695, EXP 44.63%, name ANWANBUIIO; learned 7 glyphs",
+    ];
+
+    #[test]
+    fn the_owners_misheard_names_are_never_learned_as_words_or_facts() {
+        let base = temp("names");
+        session(&base, "2026-10-10_11-44-49", OWNER_ROWS);
+        let read = read_logs(&base, &ReadTo::default());
+        // Its own voice heard back is not his: left out of the talk.
+        assert_eq!(read.echoes, 2);
+        assert!(!read.talk.iter().any(|l| l.contains("my name is Armani")));
+        assert!(!read.talk.iter().any(|l| l == "Player: that's me"));
+        assert!(read.talk.contains(&"Player: Mikael".to_string()));
+        // The character's name, as the HUD shows it.
+        assert_eq!(read.hud.iter().filter(|h| *h == "WANWANBUJIO").count(), 3);
+        // Every name he was called is one; none is a word to hear right.
+        let names = names_for_him(&read);
+        for name in ["Mako", "Miguel", "Armani", "Miha", "Mikael", "מיכאל"] {
+            assert!(names.iter().any(|n| n == name), "{name}: {names:?}");
+        }
+        let mut memory = Memory::default();
+        let notebook = json!({
+            "facts": [
+                "The player said their name is Armani.",
+                "The player's name is Miha, not Armani.",
+                "The player's character is named WANWANBUJIO.",
+                "They play a Magician."
+            ],
+            "style": [],
+            "words": ["Armani", "Miha", "Mako", "Miguel", "Mikael", "WANWANBUJIO", "ANWANBUIIO", "OMOK", "Hebrew"],
+            "last_time": "They played Classic World.",
+            "lessons": [],
+        });
+        memory.take(&notebook).unwrap();
+        memory.vet_words(&[], &read);
+        assert_eq!(memory.words, vec!["WANWANBUJIO", "OMOK"]);
+        // No fact names him; his character's name stays.
+        let facts: Vec<&str> = memory.facts.iter().map(|f| f.text.as_str()).collect();
+        assert_eq!(
+            facts,
+            vec![
+                "The player's character is named WANWANBUJIO.",
+                "They play a Magician."
+            ]
+        );
+        // Words he already had stay — but never a name he was called.
+        memory.words = vec!["Zakum".into(), "Miguel".into()];
+        memory.vet_words(&["Zakum".to_string(), "Miguel".to_string()], &read);
+        assert_eq!(memory.words, vec!["Zakum"]);
+        // A name fact already in the notebook is never given to the model.
+        memory.facts.push(Fact::new("The player's name is Mikael."));
+        assert!(!memory.prompt().contains("Mikael"));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn his_name_comes_from_his_own_file() {
+        assert_eq!(
+            name_in("- My name is Michael (מיכאל)\n- I play a Magician.\n").as_deref(),
+            Some("Michael (מיכאל)")
+        );
+        assert_eq!(name_in("Name: Michael").as_deref(), Some("Michael"));
+        assert_eq!(name_in("- שמי מיכאל\n").as_deref(), Some("מיכאל"));
+        assert_eq!(
+            name_in("- The player's name is Miha, not Armani.").as_deref(),
+            Some("Miha")
+        );
+        assert_eq!(name_in("- My character's name is WANWANBUJIO\n"), None);
+        assert_eq!(name_in("- I play a Magician.\n"), None);
+        for fact in [
+            "The player said their name is Armani.",
+            "The player's name is Miha, not Armani.",
+            "Player's name: The player's name is Mikael.",
+            "Call him Miguel.",
+            "קוראים לו מיכאל",
+        ] {
+            assert!(names_the_player(fact), "{fact}");
+        }
+        for fact in [
+            "The player's character is named WANWANBUJIO.",
+            "Character name: The character's name is WANWANBUJIO, not ANWANBUIIO.",
+            "They use lemons to restore MP.",
+        ] {
+            assert!(!names_the_player(fact), "{fact}");
+        }
     }
 }

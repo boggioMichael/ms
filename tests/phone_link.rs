@@ -68,7 +68,11 @@ fn the_page_and_the_api_work_over_tls() {
 #[test]
 fn a_certificate_other_than_ours_is_refused_by_the_pinned_client() {
     let (_hub, _identity, port) = setup();
-    let other = tls::create(&["127.0.0.1".into()]).unwrap();
+    // (Another PC's: its own authority, in a folder of its own.)
+    let elsewhere = std::env::temp_dir().join(format!("ms-other-pc-{}", tls::random_hex(4)));
+    let authority = tls::authority(&elsewhere).unwrap();
+    let other = tls::create(&["127.0.0.1".into()], &authority).unwrap();
+    let _ = std::fs::remove_dir_all(&elsewhere);
     assert!(client::request(port, &other.cert_der, "GET", "/health", b"").is_err());
 }
 

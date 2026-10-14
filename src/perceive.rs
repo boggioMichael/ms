@@ -52,13 +52,21 @@ pub fn perceive(
     look: &Look<'_>,
 ) -> Perceived {
     let (frame, frame_id) = (look.frame, look.frame_id);
+    // The HUD's geometry is the sight's to answer once it sees the HUD,
+    // whatever else runs (the scene's detectors, for Claude) — unless
+    // something shows the detector's own picture of it (the preview, which
+    // asks for its OCR too).
     let wanted = match &sight {
         Some(sight)
-            if wanted.only_the_hud()
+            if wanted.hud
+                && !wanted.hud_text
                 && look.in_view
                 && sight.sees_hud(frame.width(), frame.height()) =>
         {
-            Detectors::NONE
+            Detectors {
+                hud: false,
+                ..wanted
+            }
         }
         _ => wanted,
     };
@@ -128,8 +136,21 @@ mod tests {
         let hp = third.obs.hp.expect("the sight's HP");
         assert!((hp.percent - 80.0).abs() < 3.0, "{hp:?}");
         assert!(!hp.read);
+        // The scene's detectors for Claude: they run, and the HUD's is still
+        // the sight's to answer.
+        let scene = Detectors {
+            motion: true,
+            dialog: true,
+            panels: true,
+            ..Detectors::HUD
+        };
+        let rich = perceive(&mut pipeline, Some(&mut sight), scene, &look(4));
+        assert_eq!(rich.world.hud.hp.failure_reason.as_deref(), NOT_RUN);
+        assert_ne!(rich.world.motion.failure_reason.as_deref(), NOT_RUN);
+        assert_ne!(rich.world.icon_row.failure_reason.as_deref(), NOT_RUN);
+        assert!(rich.obs.hp.is_some(), "the sight's HP still");
         // The preview wants the detector's picture whatever the sight sees.
-        let shown = perceive(&mut pipeline, Some(&mut sight), Detectors::ALL, &look(4));
+        let shown = perceive(&mut pipeline, Some(&mut sight), Detectors::ALL, &look(5));
         assert_ne!(shown.world.hud.hp.failure_reason.as_deref(), NOT_RUN);
         let _ = std::fs::remove_dir_all(&dir);
     }

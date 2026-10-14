@@ -1,9 +1,10 @@
 //! The OpenAI client against a stand-in server on this machine, through the
 //! same `curl` the real calls use: model fallback, the reasoning retry,
 //! streamed replies, speech (streamed too), refused keys, calling a request
-//! off, the worker speaking a reply line by line, and learning: what it
-//! learned in every reply, a hello that picks up from last time, and the
-//! learner looking back on the session logs.
+//! off, the worker speaking a reply line by line (and what a reply talked
+//! over never said not counting as said), and learning: what it learned in
+//! every reply, a hello that picks up from last time, and the learner
+//! looking back on the session logs.
 
 use std::io::Write;
 use std::net::TcpListener;
@@ -28,7 +29,9 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
             let log = Arc::clone(&log);
             std::thread::spawn(move || {
                 let mut conn = Conn::new(stream);
-                while let Ok(Some(req)) = conn.read_request(1 << 20) {
+                // (A question about the screen sends it close up: a few
+                // pictures at full resolution.)
+                while let Ok(Some(req)) = conn.read_request(16 << 20) {
                     let auth = req.header("authorization").unwrap_or_default().to_string();
                     let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
                     log.lock()
@@ -145,9 +148,37 @@ Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
                                             })
                                             .unwrap_or("")
                                     });
-                                    let reply = format!(
-                                        "Hello there, my friend! ({model}) you said: {said}."
-                                    );
+                                    // Where they are: the first sentence is
+                                    // said slowly (see the speech above), so
+                                    // a test can talk over it while the
+                                    // second, complete (a word follows it),
+                                    // waits to be said.
+                                    let reply = if said.contains("where am I") {
+                                        "Take it slowly, you're at the Gate of the Future, level 165. \
+The quest marker is four maps to the left. Go!"
+                                            .to_string()
+                                    } else if said.contains("that sounds") {
+                                        // The owner's evening, the game not open
+                                        // yet: its window's state, to anything
+                                        // (two sentences glued, as it came).
+                                        "Game window closed, Danny.No game window open.".to_string()
+                                    } else if said.contains("let's play") {
+                                        // The next morning, the game open.
+                                        "Got it. What map are we on? MapleStory window is open, level 167."
+                                            .to_string()
+                                    } else if said.to_lowercase().contains("talk to me") {
+                                        // The owner's "Talk to me you fucker",
+                                        // the game not open yet.
+                                        "No MapleStory window open.".to_string()
+                                    } else if said.contains("תדבר איתי") {
+                                        // …and its Hebrew twin, as the model
+                                        // writes it in a Hebrew session.
+                                        "המשחק לא פתוח.".to_string()
+                                    } else {
+                                        format!(
+                                            "Hello there, my friend! ({model}) you said: {said}."
+                                        )
+                                    };
                                     // Server-sent events, the text a few characters at a time.
                                     let mut events = String::from(
                                         "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
@@ -157,16 +188,53 @@ Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
                                     let looked = body["input"].as_array().is_some_and(|items| {
                                         items.iter().any(|i| i["type"] == "function_call_output")
                                     });
-                                    if said.contains("look it up") && !looked {
+                                    // The model calling a tool on the owner's
+                                    // words (his real session): a setting on
+                                    // misheard words, a name heard once.
+                                    let tool: Option<(&str, Value, &str)> = if said
+                                        .contains("look it up")
+                                    {
+                                        Some((
+                                            "look_it_up",
+                                            json!({"question": "Easy Zakum level", "said": "Probably level 90.", "asked": true}),
+                                            "Probably level 90.",
+                                        ))
+                                    } else if said.contains("Don't stop don't stop") {
+                                        Some(("set_coaching", json!({"on": false}), ""))
+                                    } else if said.contains("23% still owe") {
+                                        Some((
+                                            "set_warnings",
+                                            json!({"what": "mp", "below": 23}),
+                                            "",
+                                        ))
+                                    } else if said.contains("warn me when my MP is under 30") {
+                                        Some((
+                                            "set_warnings",
+                                            json!({"what": "mp", "below": 30}),
+                                            "",
+                                        ))
+                                    } else if said == "Armani" {
+                                        Some((
+                                            "note_correction",
+                                            json!({"about": "Player name", "right": "The player said their name is Armani."}),
+                                            "",
+                                        ))
+                                    } else {
+                                        None
+                                    };
+                                    if let Some((name, arguments, quick)) = tool.filter(|_| !looked)
+                                    {
                                         let mut events = String::from(
                                             "event: response.created\ndata: {\"type\":\"response.created\"}\n\n",
                                         );
-                                        events.push_str(&format!(
-                                            "event: response.output_text.delta\ndata: {}\n\n",
-                                            json!({"type": "response.output_text.delta", "delta": "Probably level 90."})
-                                        ));
-                                        let call = json!({"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": "look_it_up",
-                                            "arguments": json!({"question": "Easy Zakum level", "said": "Probably level 90.", "asked": true}).to_string()});
+                                        if !quick.is_empty() {
+                                            events.push_str(&format!(
+                                                "event: response.output_text.delta\ndata: {}\n\n",
+                                                json!({"type": "response.output_text.delta", "delta": quick})
+                                            ));
+                                        }
+                                        let call = json!({"type": "function_call", "id": "fc_1", "call_id": "call_1", "name": name,
+                                            "arguments": arguments.to_string()});
                                         events.push_str(&format!(
                                             "event: response.output_item.done\ndata: {}\n\n",
                                             json!({"type": "response.output_item.done", "item": call})
@@ -212,8 +280,16 @@ Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
                                         .cloned()
                                         .unwrap_or_default();
                                     let watcher = last["content"][0]["text"].as_str().unwrap_or("");
+                                    // A look that takes its time (a slow day).
+                                    if watcher.contains("think it over") {
+                                        std::thread::sleep(Duration::from_secs(3));
+                                    }
                                     let text = if watcher.contains("nothing is happening") {
                                         "[silent]"
+                                    } else if watcher.contains("voice hangs") {
+                                        // (A line whose voice hangs: see the
+                                        // speech endpoint.)
+                                        "Rebuff, you're naked, this takes forever."
                                     } else {
                                         "Rebuff, you're naked."
                                     };
@@ -373,6 +449,7 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
     let id = worker.send(Job::Converse {
         heard: "can you see my game".into(),
         snapshot: "HP is about 80%.".into(),
+        facts: Default::default(),
         speak: true,
         eyes: None,
         language: None,
@@ -531,6 +608,7 @@ fn a_reply_talked_over_stops_and_the_next_is_answered() {
     let slow = worker.send(Job::Converse {
         heard: "think about this forever".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: true,
         eyes: None,
         language: None,
@@ -543,6 +621,7 @@ fn a_reply_talked_over_stops_and_the_next_is_answered() {
     let next = worker.send(Job::Converse {
         heard: "how am I doing".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -568,6 +647,432 @@ fn a_reply_talked_over_stops_and_the_next_is_answered() {
 }
 
 #[test]
+fn what_a_reply_talked_over_never_said_is_said_when_asked_again() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let ask = |heard: &str| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            facts: Default::default(),
+            speak: true,
+            eyes: None,
+            language: None,
+        })
+    };
+    // The reply is written in full while the voice is still on its first
+    // sentence, which is made slowly; the player talks over it there.
+    let first = ask("where am I");
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio {
+                id,
+                kind,
+                text,
+                start: true,
+                ..
+            }) => {
+                assert_eq!(id, first);
+                assert_eq!(kind, ms::companion::Kind::Reply);
+                assert!(text.starts_with("Take it slowly"), "{text}");
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    worker.cancel_all();
+    // (The main loop keeps what was heard of it in the conversation.)
+    worker.send(Job::Cut {
+        heard: "Take it slowly, you're at the".into(),
+    });
+    // Asked the same thing again, what it never got to say is new, and
+    // said: not silence, and not the sentence that was said.
+    let second = ask("where am I");
+    let text = loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id, text, .. }) if id == second => break text,
+            Ok(Done::Silent { id, heard }) if id == second => panic!("silent: {heard}"),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert_eq!(text, "The quest marker is four maps to the left. Go!");
+}
+
+#[test]
+fn the_same_question_twice_gets_a_word_not_silence() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let ask = |heard: &str| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            facts: Default::default(),
+            speak: true,
+            eyes: None,
+            language: Some("he-IL".into()),
+        })
+    };
+    // Answered, and said in full: nothing talked over. (The next question
+    // waits for the voice to finish.)
+    let first = ask("where am I");
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id, text, .. }) => {
+                assert_eq!(id, first);
+                assert_eq!(
+                    text,
+                    "Take it slowly, you're at the Gate of the Future, level 165. \
+The quest marker is four maps to the left. Go!"
+                );
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    // The same question again: all of the answer was said lately, so none
+    // of it is said again — but they hear a word for it, in their language
+    // (the stand-in "translates" by saying it back), shown and said.
+    let second = ask("where am I");
+    let (mut reply, mut spoken) = (None, None);
+    while reply.is_none() || spoken.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id, text, .. }) if id == second => reply = Some(text),
+            Ok(Done::Audio {
+                id,
+                text,
+                start: true,
+                ..
+            }) if id == second => spoken = Some(text),
+            Ok(Done::Silent { id, heard }) if id == second => panic!("silent: {heard}"),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}: {reply:?} {spoken:?}"),
+        }
+    }
+    // (The word is a card in its attitude — blunt, the usual.)
+    let reply = reply.unwrap();
+    let card = reply
+        .strip_prefix("(gpt-6.1-sol) you said: ")
+        .unwrap_or_else(|| panic!("not translated: {reply}"));
+    assert!(
+        [
+            "Nothing's changed.",
+            "Same as before.",
+            "Still the same. Keep up.",
+            "Already told you.",
+        ]
+        .contains(&card),
+        "{reply}"
+    );
+    assert_eq!(spoken.as_deref(), Some(reply.as_str()));
+}
+
+/// What came of reply `id`: its text (None: it was silent), the lines its
+/// voice began, and the notes that came with it, once the voice is done.
+fn outcome(worker: &ms::ai::Worker, id: u64) -> (Option<String>, Vec<String>, Vec<String>) {
+    let (mut text, mut done, mut spoken, mut notes) = (None, false, Vec::new(), Vec::new());
+    loop {
+        // (After the reply, a moment for the rest of its voice.)
+        let wait = Duration::from_secs(if done { 1 } else { 30 });
+        match worker.done.recv_timeout(wait) {
+            Ok(Done::Reply {
+                id: of, text: t, ..
+            }) if of == id => {
+                text = Some(t);
+                done = true;
+            }
+            Ok(Done::Silent { id: of, .. }) if of == id => done = true,
+            Ok(Done::Audio {
+                id: of,
+                text: t,
+                start: true,
+                ..
+            }) if of == id => spoken.push(t),
+            Ok(Done::Noted { line }) => notes.push(line),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(_) if done => return (text, spoken, notes),
+            Err(e) => panic!("{e}"),
+        }
+    }
+}
+
+#[test]
+fn a_hello_is_answered_at_once_and_never_reaches_the_model() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // The owner's "Hey", then "Hello": the model judged them not for it,
+    // every time ("[ silent ]"). The main loop asks the companion first,
+    // and a hello is its own to answer — at once, and said like a reply.
+    let mut companion = ms::companion::Companion::seeded(ms::companion::Settings::default(), 7);
+    for heard in ["Hey", "Hello"] {
+        let line = companion
+            .instant(heard)
+            .unwrap_or_else(|| panic!("{heard}: not answered at once"));
+        let id = worker.send(Job::Say {
+            heard: Some(heard.into()),
+            text: line.clone(),
+        });
+        let (reply, spoken, _) = outcome(&worker, id);
+        assert_eq!(reply.as_deref(), Some(line.as_str()));
+        assert_eq!(spoken, [line]);
+    }
+    // No model was asked: speech only.
+    let paths: Vec<Value> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| r["path"].clone())
+        .collect();
+    assert!(paths.iter().all(|p| p == "/v1/audio/speech"), "{paths:?}");
+    // More than a hello is the model's.
+    assert!(
+        companion
+            .instant("hey, which map should I grind?")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_status_line_nobody_asked_for_is_left_out_of_the_reply() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let ask = |heard: &str, facts: ms::ai::brain::Facts| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            facts,
+            speak: true,
+            eyes: None,
+            language: None,
+        })
+    };
+    // Before the game: "OK that sounds" got "Game window closed,
+    // Danny.No game window open." Nothing else in it, no question: quiet,
+    // not a word of it to the voice, and the log says what went.
+    let (reply, spoken, notes) = outcome(&worker, ask("OK that sounds", Default::default()));
+    assert_eq!((reply, spoken), (None, vec![]));
+    assert!(
+        notes.contains(
+            &"not said, nobody asked: Game window closed, Danny. No game window open.".to_string()
+        ),
+        "{notes:?}"
+    );
+    // The game open: the status line goes, the rest is said.
+    let level = ms::ai::brain::Facts {
+        level: Some(167),
+        ..Default::default()
+    };
+    let (reply, spoken, _) = outcome(&worker, ask("Welcome let's play Maple", level));
+    assert_eq!(reply.as_deref(), Some("Got it. What map are we on?"));
+    assert_eq!(spoken, ["Got it. What map are we on?"]);
+    // A question answered with nothing else keeps it: better than nothing.
+    let (reply, spoken, _) = outcome(&worker, ask("does that sounds right?", Default::default()));
+    let all = "Game window closed, Danny. No game window open.";
+    assert_eq!(reply.as_deref(), Some(all));
+    assert_eq!(spoken.concat(), all);
+}
+
+#[test]
+fn asked_to_talk_with_nothing_but_the_games_state_it_says_it_is_here() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let ask = |heard: &str, speak: bool| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            facts: Default::default(),
+            speak,
+            eyes: None,
+            language: None,
+        })
+    };
+    // The owner's "Talk to me you fucker" before the game got "No
+    // MapleStory window open." Now: a word that it is here, in its
+    // attitude (blunt, the usual); the window's state is not said.
+    let blunt = ms::ai::brain::HERE_EN[1];
+    let (reply, spoken, notes) = outcome(&worker, ask("Talk to me you fucker", true));
+    let reply = reply.expect("silent");
+    assert!(blunt.contains(&reply.as_str()), "{reply}");
+    assert_eq!(spoken, std::slice::from_ref(&reply));
+    assert!(
+        notes.contains(&"not said, nobody asked: No MapleStory window open.".to_string()),
+        "{notes:?}"
+    );
+    // Asked in Hebrew, the window recited in Hebrew ("המשחק לא פתוח." was
+    // taken for an order, "play!", and said): in Hebrew, the card.
+    let (reply, _, notes) = outcome(&worker, ask("תדבר איתי", true));
+    let reply = reply.expect("silent");
+    assert!(
+        ms::ai::brain::HERE_HE[1].contains(&reply.as_str()),
+        "{reply}"
+    );
+    assert!(
+        notes.contains(&"not said, nobody asked: המשחק לא פתוח.".to_string()),
+        "{notes:?}"
+    );
+    // Not spoken (on a call): the same word, shown.
+    let (reply, spoken, _) = outcome(&worker, ask("talk to me", false));
+    let reply = reply.expect("silent");
+    assert!(blunt.contains(&reply.as_str()), "{reply}");
+    assert!(spoken.is_empty());
+}
+
+#[test]
+fn a_warning_waits_two_seconds_for_its_translation_then_is_said_in_english() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // The translation hangs (the stand-in takes forever): a warning does
+    // not wait for it — said in English, about two seconds on.
+    let line = "HP 20 percent, this takes forever. Pot!";
+    let asked = Instant::now();
+    worker.send(Job::Speak {
+        text: line.into(),
+        language: Some("he-IL".into()),
+        kind: ms::companion::Kind::Warning,
+        show: true,
+        speak: false,
+    });
+    match worker.done.recv_timeout(Duration::from_secs(8)) {
+        Ok(Done::Shown { text, kind }) => {
+            assert_eq!(kind, ms::companion::Kind::Warning);
+            assert_eq!(text, line);
+        }
+        other => panic!("{}", describe(other)),
+    }
+    assert!(
+        asked.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        asked.elapsed()
+    );
+}
+
+#[test]
+fn a_line_that_comes_back_with_another_number_is_translated_once() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let shown = |text: &str| {
+        worker.send(Job::Speak {
+            text: text.into(),
+            language: Some("he-IL".into()),
+            kind: ms::companion::Kind::Warning,
+            show: true,
+            speak: false,
+        });
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, .. }) => text,
+            other => panic!("{}", describe(other)),
+        }
+    };
+    let asked = || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r["path"] == "/v1/responses")
+            .count()
+    };
+    // The stand-in "translates" by saying it back (its model's name has a
+    // number of its own, which stays).
+    assert_eq!(
+        shown("HP 25 percent. Pot now!"),
+        "(gpt-6.1-sol) you said: HP 25 percent. Pot now!"
+    );
+    let calls = asked();
+    assert!(calls > 0);
+    // The same warning a moment later, HP lower: no call, the number in.
+    assert_eq!(
+        shown("HP 20 percent. Pot now!"),
+        "(gpt-6.1-sol) you said: HP 20 percent. Pot now!"
+    );
+    assert_eq!(asked(), calls);
+    // Another line is another call.
+    shown("MP 10 percent. Drink!");
+    assert!(asked() > calls);
+}
+
+#[test]
+fn a_word_or_two_answered_as_before_gets_quiet_not_a_card() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let ask = |heard: &str| {
+        worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            facts: Default::default(),
+            speak: true,
+            eyes: None,
+            language: None,
+        })
+    };
+    // "OK", twice, and the stand-in says the same both times: the second
+    // reply was all said lately, and to an "OK" that is nothing to say —
+    // quiet, not "Nothing's changed."
+    let (first, ..) = outcome(&worker, ask("OK"));
+    assert_eq!(
+        first.as_deref(),
+        Some("Hello there, my friend! (gpt-6.1-sol) you said: OK.")
+    );
+    let (second, spoken, notes) = outcome(&worker, ask("OK"));
+    assert_eq!((second, spoken), (None, vec![]));
+    assert!(
+        notes.contains(&"2 of 2 sentences said before, left out".to_string()),
+        "{notes:?}"
+    );
+    // A sentence of more than two words still hears it was heard.
+    outcome(&worker, ask("ok that's fine by me"));
+    let (again, ..) = outcome(&worker, ask("ok that's fine by me"));
+    let card = again.expect("no word for the sentence said twice");
+    assert!(
+        [
+            "Nothing's changed.",
+            "Same as before.",
+            "Still the same. Keep up.",
+            "Already told you.",
+        ]
+        .contains(&card.as_str()),
+        "{card}"
+    );
+}
+
+#[test]
 fn its_own_lines_are_translated_shown_and_spoken() {
     if !have_curl() {
         return;
@@ -578,7 +1083,8 @@ fn its_own_lines_are_translated_shown_and_spoken() {
     worker.send(Job::Speak {
         text: "Level up! Nice.".into(),
         language: Some("he-IL".into()),
-        show: Some(ms::companion::Kind::Alert),
+        kind: ms::companion::Kind::Alert,
+        show: true,
         speak: true,
     });
     let mut shown = None;
@@ -590,8 +1096,16 @@ fn its_own_lines_are_translated_shown_and_spoken() {
                 shown = Some(text);
             }
             Ok(Done::Audio {
-                text, start: true, ..
-            }) => spoken = Some(text),
+                text,
+                kind,
+                start: true,
+                ..
+            }) => {
+                // (Its voice says what kind of line it is: the main loop
+                // keeps a warning's clip through a cut by it.)
+                assert_eq!(kind, ms::companion::Kind::Alert);
+                spoken = Some(text);
+            }
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
             Err(e) => panic!("{e}"),
@@ -621,7 +1135,8 @@ fn its_own_lines_are_translated_shown_and_spoken() {
     worker.send(Job::Speak {
         text: "Level up! Nice.".into(),
         language: Some("en-US".into()),
-        show: None,
+        kind: ms::companion::Kind::Alert,
+        show: false,
         speak: true,
     });
     loop {
@@ -638,6 +1153,444 @@ fn its_own_lines_are_translated_shown_and_spoken() {
         requests[before..]
             .iter()
             .all(|r| r["path"] == "/v1/audio/speech")
+    );
+}
+
+#[test]
+fn an_alerts_line_is_not_called_off_with_the_rest() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A reply under way, then a warning behind it, then the player talks
+    // over the reply: everything is called off, but the warning (its
+    // translation not even started) still comes back shown, and spoken.
+    let slow = worker.send(Job::Converse {
+        heard: "think about this forever".into(),
+        snapshot: String::new(),
+        facts: Default::default(),
+        speak: true,
+        eyes: None,
+        language: None,
+    });
+    std::thread::sleep(Duration::from_millis(400));
+    let alert = worker.send(Job::Speak {
+        text: "Pot now, your HP is at 20 percent.".into(),
+        language: Some("he-IL".into()),
+        kind: ms::companion::Kind::Warning,
+        show: true,
+        speak: true,
+    });
+    let hello = worker.send(Job::Speak {
+        text: "Hey! I'm here.".into(),
+        language: Some("he-IL".into()),
+        kind: ms::companion::Kind::Info,
+        show: true,
+        speak: true,
+    });
+    worker.cancel_all();
+    assert!(worker.cancelled(slow) && worker.cancelled(hello));
+    assert!(!worker.cancelled(alert));
+    let (mut shown, mut spoken) = (None, None);
+    while shown.is_none() || spoken.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, kind }) => {
+                assert_eq!(kind, ms::companion::Kind::Warning);
+                shown = Some(text);
+            }
+            Ok(Done::Audio {
+                id,
+                text,
+                start: true,
+                ..
+            }) => {
+                assert_eq!(id, alert);
+                spoken = Some(text);
+            }
+            Ok(Done::Audio { .. }) => {}
+            other => panic!("{}", describe(other)),
+        }
+    }
+    assert_eq!(
+        shown.as_deref(),
+        Some("(gpt-6.1-sol) you said: Pot now, your HP is at 20 percent.")
+    );
+    assert_eq!(spoken, shown);
+    // The other line of its own went with the call-off: nothing of it comes.
+    while let Ok(done) = worker.done.recv_timeout(Duration::from_millis(500)) {
+        match done {
+            Done::Audio { id, .. } => assert_eq!(id, alert),
+            Done::Failed { id, .. } => assert_eq!(id, slow),
+            other => panic!("{}", describe(Ok(other))),
+        }
+    }
+}
+
+#[test]
+fn what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A warning of its own, said aloud.
+    let alert = worker.send(Job::Speak {
+        text: "HP 20 percent. Pot now!".into(),
+        language: None,
+        kind: ms::companion::Kind::Warning,
+        show: false,
+        speak: true,
+    });
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio {
+                id,
+                kind,
+                end: true,
+                ..
+            }) if id == alert => {
+                assert_eq!(kind, ms::companion::Kind::Warning);
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    // The player answers it: the reply must know what "it" is.
+    let reply = worker.send(Job::Converse {
+        heard: "yeah yeah I'm potting".into(),
+        snapshot: "HP 80%".into(),
+        facts: Default::default(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id, .. }) if id == reply => break,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    let asked = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rfind(|r| r["path"] == "/v1/responses")
+        .cloned()
+        .unwrap();
+    let input = asked["body"]["input"].as_array().unwrap().clone();
+    // The watcher's word for it, the line as said, then the player's
+    // sentence — in that order.
+    assert_eq!(input.len(), 3, "{input:?}");
+    assert_eq!(input[0]["role"], "user");
+    assert_eq!(
+        input[0]["content"],
+        "[Your game watcher, not the player: a warning.]"
+    );
+    assert_eq!(input[1]["role"], "assistant");
+    assert_eq!(input[1]["content"], "HP 20 percent. Pot now!");
+    assert_eq!(input[2]["role"], "user");
+    let parts: Vec<&str> = input[2]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p["text"].as_str())
+        .collect();
+    assert_eq!(parts.last(), Some(&"yeah yeah I'm potting"));
+}
+
+#[test]
+fn a_warning_never_waits_for_a_look() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A look under way that takes three seconds (a slow day)…
+    let look = worker.send(Job::Coach {
+        reason: "They just arrived somewhere new (think it over).".into(),
+        label: "new scene".into(),
+        snapshot: "HP 80%".into(),
+        eyes: None,
+        said: Vec::new(),
+        language: None,
+        speak: true,
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    // …and a warning behind it.
+    let sent = Instant::now();
+    let alert = worker.send(Job::Speak {
+        text: "HP 20 percent. Pot now!".into(),
+        language: None,
+        kind: ms::companion::Kind::Warning,
+        show: false,
+        speak: true,
+    });
+    let (mut order, mut alert_after) = (Vec::new(), None);
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio {
+                id, start: true, ..
+            }) => {
+                if id == alert {
+                    alert_after = Some(sent.elapsed());
+                }
+                order.push(("audio", id));
+            }
+            Ok(Done::Coached { id, .. }) => {
+                order.push(("coached", id));
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}: {order:?}"),
+        }
+    }
+    // The warning was said at once, while the look was still out; the
+    // look's own line, and its report, came after it.
+    assert_eq!(
+        order,
+        [("audio", alert), ("audio", look), ("coached", look)],
+        "{order:?}"
+    );
+    let alert_after = alert_after.unwrap();
+    assert!(alert_after < Duration::from_millis(1500), "{alert_after:?}");
+}
+
+#[test]
+fn a_line_of_its_own_called_off_before_a_sound_was_not_said() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A line of its own whose voice hangs, called off before a sound of it
+    // was made: shown, never heard.
+    let line = worker.send(Job::Say {
+        heard: None,
+        text: "Hello there, my friend! This takes forever.".into(),
+    });
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, .. }) => {
+                assert_eq!(text, "Hello there, my friend! This takes forever.");
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    worker.cancel_all();
+    assert!(worker.cancelled(line));
+    // The model's next reply opens with the same sentence: it was never
+    // said, so it is not "said before", and goes out whole.
+    let reply = worker.send(Job::Converse {
+        heard: "yo".into(),
+        snapshot: String::new(),
+        facts: Default::default(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    let (mut text, mut notes) = (None, Vec::new());
+    while text.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id, text: t, .. }) if id == reply => text = Some(t),
+            Ok(Done::Noted { line }) => notes.push(line),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert_eq!(
+        text.as_deref(),
+        Some("Hello there, my friend! (gpt-6.1-sol) you said: yo."),
+        "{notes:?}"
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+}
+
+#[test]
+fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let look = |speak: bool| {
+        worker.send(Job::Coach {
+            reason: "They just arrived somewhere new (voice hangs).".into(),
+            label: "new scene".into(),
+            snapshot: "HP 80%".into(),
+            eyes: None,
+            said: Vec::new(),
+            language: None,
+            speak,
+        })
+    };
+    // A look with a line to say, whose voice hangs: the player speaks
+    // (the look is called off) before a sound of it was made.
+    let first = look(true);
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, .. }) => {
+                assert_eq!(text, "Rebuff, you're naked, this takes forever.");
+                break;
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    worker.cancel(first);
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Coached { id, .. }) if id == first => break,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    // The next look comes to the same line: never said, so it is said
+    // now (here, handed to the call), not left out as said before.
+    let second = look(false);
+    let (mut said, mut notes) = (None, Vec::new());
+    while said.is_none() {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Coached { id, text, .. }) if id == second => said = Some(text),
+            Ok(Done::Noted { line }) => notes.push(line),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert_eq!(
+        said.flatten().as_deref(),
+        Some("Rebuff, you're naked, this takes forever."),
+        "{notes:?}"
+    );
+    assert!(notes.is_empty(), "{notes:?}");
+}
+
+#[test]
+fn a_look_called_off_says_so_and_is_not_nothing_to_say() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let look = |reason: &str| {
+        worker.send(Job::Coach {
+            reason: reason.into(),
+            label: "a look".into(),
+            snapshot: "HP 80%".into(),
+            eyes: None,
+            said: Vec::new(),
+            language: None,
+            speak: true,
+        })
+    };
+    // A look that takes its time, and one queued behind it; the player
+    // speaks: both are called off — the one in flight and the one that
+    // never began — and say so. Neither is "nothing to say".
+    let slow = look("Nothing in particular happened (think it over).");
+    let queued = look("Nothing in particular happened (nothing is happening).");
+    std::thread::sleep(Duration::from_millis(300));
+    worker.cancel_all();
+    let mut came_back = Vec::new();
+    while came_back.len() < 2 {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Coached {
+                id,
+                text,
+                error,
+                called_off,
+                ..
+            }) => came_back.push((id, text, error, called_off)),
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert_eq!(
+        came_back,
+        [(slow, None, None, true), (queued, None, None, true)]
+    );
+    // A look that came back with nothing is nothing to say, not called off.
+    let quiet = look("Nothing in particular happened (nothing is happening).");
+    match worker.done.recv_timeout(Duration::from_secs(30)) {
+        Ok(Done::Coached {
+            id,
+            text,
+            called_off,
+            ..
+        }) => assert_eq!((id, text, called_off), (quiet, None, false)),
+        other => panic!("{}", describe(other)),
+    }
+}
+
+#[test]
+fn two_lines_pieces_are_never_shuffled_together() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // A line being made slowly (the voice streams it over a third of a
+    // second) on the one lane, a warning on the other: the warning's
+    // pieces come after the line's last one, not among them.
+    let line = worker.send(Job::Say {
+        heard: None,
+        text: "Take it slowly, the portal is on the left.".into(),
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let alert = worker.send(Job::Speak {
+        text: "HP 20 percent. Pot now!".into(),
+        language: None,
+        kind: ms::companion::Kind::Warning,
+        show: false,
+        speak: true,
+    });
+    let mut pieces: Vec<(u64, bool, bool)> = Vec::new();
+    let mut ended = 0;
+    while ended < 2 {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio { id, start, end, .. }) => {
+                pieces.push((id, start, end));
+                if end {
+                    ended += 1;
+                }
+            }
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}: {pieces:?}"),
+        }
+    }
+    let ids: Vec<u64> = pieces.iter().map(|(id, _, _)| *id).collect();
+    let line_pieces = ids.iter().filter(|id| **id == line).count();
+    assert!(line_pieces >= 3, "{pieces:?}");
+    assert_eq!(
+        ids,
+        [
+            vec![line; line_pieces],
+            vec![alert; ids.len() - line_pieces]
+        ]
+        .concat(),
+        "{pieces:?}"
     );
 }
 
@@ -663,11 +1616,16 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
     });
     match worker.done.recv_timeout(Duration::from_secs(30)) {
         Ok(Done::Coached {
-            id, text, error, ..
+            id,
+            text,
+            error,
+            called_off,
+            ..
         }) => {
             assert_eq!(id, quiet);
             assert_eq!(text, None);
             assert_eq!(error, None);
+            assert!(!called_off);
         }
         other => panic!("{}", describe(other)),
     }
@@ -690,11 +1648,13 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
             }
             Ok(Done::Audio {
                 id,
+                kind,
                 text,
                 start: true,
                 ..
             }) => {
                 assert_eq!(id, scene);
+                assert_eq!(kind, ms::companion::Kind::Alert);
                 spoken = Some(text);
             }
             Ok(Done::Coached { id, text, .. }) => {
@@ -743,6 +1703,7 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
     worker.send(Job::Converse {
         heard: "why?".into(),
         snapshot: "HP 80%".into(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -801,6 +1762,93 @@ fn speech_comes_back_as_samples() {
     assert_eq!(request["body"]["voice"], "cedar");
     assert_eq!(request["body"]["response_format"], "pcm");
     assert_eq!(request["body"]["instructions"], "warm");
+}
+
+#[test]
+fn a_warning_is_spoken_with_urgency_and_a_reply_at_the_usual_pace() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    // The voice's instructions for a line the worker says for `job`.
+    let instructions_for = |job: Job| {
+        let from = seen.lock().unwrap().len();
+        worker.send(job);
+        loop {
+            match worker.done.recv_timeout(Duration::from_secs(30)) {
+                Ok(Done::Audio { end: true, .. }) => break,
+                Ok(Done::Failed { error, .. }) => panic!("{error}"),
+                Ok(_) => {}
+                Err(e) => panic!("{e}"),
+            }
+        }
+        let requests = seen.lock().unwrap();
+        let speech: Vec<&Value> = requests[from..]
+            .iter()
+            .filter(|r| r["path"] == "/v1/audio/speech")
+            .collect();
+        assert_eq!(speech.len(), 1, "{speech:?}");
+        assert_eq!(speech[0]["body"]["model"], "gpt-4o-mini-tts");
+        speech[0]["body"]["instructions"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let alert = instructions_for(Job::Speak {
+        text: "Pot now, you're at 20.".into(),
+        language: None,
+        kind: ms::companion::Kind::Warning,
+        show: false,
+        speak: true,
+    });
+    let news = instructions_for(Job::Speak {
+        text: "Aw, you died. Revive and get back in there, you've got this.".into(),
+        language: None,
+        kind: ms::companion::Kind::Alert,
+        show: false,
+        speak: true,
+    });
+    let reply = instructions_for(Job::Say {
+        heard: None,
+        text: "Go left, the portal's there.".into(),
+    });
+    let long = instructions_for(Job::Say {
+        heard: None,
+        text:
+            "Zakum's arms go down in order, left first, and the body only once all eight arms are \
+gone, so keep hitting the arms until they drop."
+                .into(),
+    });
+    // The attitude's voice (blunt, the usual) in each; then how this line
+    // goes: a warning urgent, news (a death) told at the usual pace — not
+    // shouted: the character is dead, there is nothing to shout about — a
+    // reply at the usual pace, a long explanation a touch slower.
+    for text in [&alert, &news, &reply, &long] {
+        assert!(
+            text.contains("a cocky gamer friend on voice chat"),
+            "{text}"
+        );
+    }
+    assert!(alert.contains("This line is a warning"), "{alert}");
+    assert!(alert.contains("urgent, faster and sharper"), "{alert}");
+    assert!(news.contains("This line is news"), "{news}");
+    assert!(
+        news.contains("your usual pace, said like it matters"),
+        "{news}"
+    );
+    assert!(
+        !news.contains("warning") && !news.contains("urgent"),
+        "{news}"
+    );
+    assert!(!reply.contains("warning"), "{reply}");
+    assert!(reply.contains("your usual pace"), "{reply}");
+    assert!(long.contains("a touch slower and steadier"), "{long}");
+    assert_ne!(alert, news);
+    assert_ne!(news, reply);
+    assert_ne!(alert, reply);
+    assert_ne!(reply, long);
 }
 
 #[test]
@@ -955,6 +2003,7 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
     let id = worker.send(Job::Converse {
         heard: "what level is easy zakum".into(),
         snapshot: "HP is about 80%.".into(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -1048,6 +2097,7 @@ fn a_look_up_never_holds_the_answer_up_and_corrects_it_later() {
     let id = worker.send(Job::Converse {
         heard: "what level is easy zakum, look it up".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: Some("he-IL".into()),
@@ -1181,6 +2231,7 @@ fn grok_answers_and_openai_steps_in_when_it_fails() {
     worker.send(Job::Converse {
         heard: "yo".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -1219,6 +2270,7 @@ fn grok_answers_and_openai_steps_in_when_it_fails() {
     worker.send(Job::Converse {
         heard: "yo".into(),
         snapshot: String::new(),
+        facts: Default::default(),
         speak: false,
         eyes: None,
         language: None,
@@ -1259,6 +2311,7 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
         worker.send(Job::Converse {
             heard: heard.into(),
             snapshot: String::new(),
+            facts: Default::default(),
             speak: false,
             eyes: None,
             language: None,
@@ -1313,36 +2366,75 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
         .collect();
     assert_eq!(models.first().map(String::as_str), Some("grok-loop"));
     assert!(!models.last().unwrap().contains("grok"), "{models:?}");
-    // Asked to hear it again, the same lines are said again.
-    let worker = ms::ai::spawn_hybrid(
-        OpenAi::with_models(key, &base, "cedar", vec!["grok-loop".into()]),
-        None,
-        Brain::new(),
-        None,
-    );
-    for (heard, expect_reply) in [
-        ("where to", true),
-        ("where to now", false),
-        ("say it again", true),
-    ] {
+    // The same lines for the next question are not said again — a word
+    // says so, rather than silence; asked to hear it again, they are (as
+    // they came, nothing left out).
+    let looping = |brain: Brain| {
+        ms::ai::spawn_hybrid(
+            OpenAi::with_models(key, &base, "cedar", vec!["grok-loop".into()]),
+            None,
+            brain,
+            None,
+        )
+    };
+    let reply = |worker: &ms::ai::Worker, heard: &str| {
         worker.send(Job::Converse {
             heard: heard.into(),
             snapshot: String::new(),
+            facts: Default::default(),
             speak: false,
             eyes: None,
             language: None,
         });
-        let got = loop {
+        loop {
             match worker.done.recv_timeout(Duration::from_secs(30)) {
-                Ok(Done::Reply { .. }) => break true,
-                Ok(Done::Silent { .. }) => break false,
+                Ok(Done::Reply { text, .. }) => break text,
+                Ok(Done::Silent { heard, .. }) => panic!("silent: {heard}"),
                 Ok(Done::Failed { error, .. }) => panic!("{error}"),
                 Ok(_) => {}
                 Err(e) => panic!("{e}"),
             }
-        };
-        assert_eq!(got, expect_reply, "{heard}: a reply came back = {got}");
+        }
+    };
+    let worker = looping(Brain::new());
+    let once = "Temple of Time, Gate of the Future. Quest marker left four times. Follow it.";
+    let twice = format!("{once} {once}");
+    assert_eq!(reply(&worker, "where to"), once);
+    // The word is a card in its attitude (blunt, the usual), dealt like
+    // the companion's lines: asked three times over, three different
+    // ones, not "Same as before." three times.
+    let blunt = [
+        "Nothing's changed.",
+        "Same as before.",
+        "Still the same. Keep up.",
+        "Already told you.",
+    ];
+    let cards: Vec<String> = ["where to now", "and where to", "where then"]
+        .iter()
+        .map(|heard| reply(&worker, heard))
+        .collect();
+    for card in &cards {
+        assert!(blunt.contains(&card.as_str()), "{card}");
     }
+    assert_eq!(
+        cards.iter().collect::<std::collections::HashSet<_>>().len(),
+        3,
+        "{cards:?}"
+    );
+    assert_eq!(reply(&worker, "say it again"), twice);
+    // In another attitude, a card in that voice.
+    let mut brain = Brain::new();
+    brain.attitude = ms::companion::Attitude::Savage;
+    let worker = looping(brain);
+    assert_eq!(reply(&worker, "where to"), once);
+    let savage = [
+        "I said. Twice.",
+        "Nothing's changed, genius.",
+        "Same answer. Still.",
+        "Ask a third time, I dare you.",
+    ];
+    let card = reply(&worker, "where to now");
+    assert!(savage.contains(&card.as_str()), "{card}");
 }
 
 #[test]
@@ -1434,9 +2526,9 @@ fn the_learner_looks_back_on_the_sessions_and_keeps_what_it_learned() {
     std::fs::write(
         session.join("log.txt"),
         "20:00:01  [info] Maple companion is on.\n\
-20:00:05  [heard] I'm level 62 now on my night lord\n\
+20:00:05  [heard] I'm level 62 now on my night lord MoonWalker77\n\
 20:00:06  [reply] Nice, level 62! Easy Zakum is at 90, right?\n\
-20:00:09  [heard] no, easy zakum is level 50\n\
+20:00:09  [heard] no, easy zakum is level 50, MoonWalker77 can go\n\
 20:00:10  [reply] Got it, 50. Thanks!\n",
     )
     .unwrap();
@@ -1500,13 +2592,731 @@ fn the_learner_looks_back_on_the_sessions_and_keeps_what_it_learned() {
     assert_eq!(kept.read_to.session, "2026-10-02 20-00-00");
     assert_eq!(kept.read_to.lines, 5);
     assert_eq!(kept.counts.sentences, 2);
-    assert!(
-        learning
-            .memory()
-            .words_hint()
-            .unwrap()
-            .contains("MoonWalker77")
-    );
+    // A word to hear right is one he said in two sentences (or the HUD
+    // showed): his character's name is; "Zakum", said once, is not yet.
+    let hint = learning.memory().words_hint().unwrap();
+    assert!(hint.contains("MoonWalker77"), "{hint}");
+    assert!(!hint.contains("Zakum"), "{hint}");
     let _ = std::fs::remove_dir_all(settings);
     let _ = std::fs::remove_dir_all(sessions);
+}
+
+/// Bytes from standard base64 (what a data URL carries).
+fn unbase64(text: &str) -> Vec<u8> {
+    let value = |c: u8| match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    };
+    let digits: Vec<u8> = text.bytes().filter_map(value).collect();
+    let mut out = Vec::with_capacity(digits.len() * 3 / 4);
+    for chunk in digits.chunks(4) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, d)| n | (*d as u32) << (18 - 6 * i));
+        out.push((n >> 16) as u8);
+        if chunk.len() > 2 {
+            out.push((n >> 8) as u8);
+        }
+        if chunk.len() > 3 {
+            out.push(n as u8);
+        }
+    }
+    out
+}
+
+/// A picture in a request: its detail, size, colour in the middle, and how
+/// many bytes its URL is.
+type Picture = (String, (u32, u32), [u8; 3], usize);
+
+/// The pictures in the player's last turn of a request.
+fn pictures_of(request: &Value) -> Vec<Picture> {
+    let last = request["body"]["input"]
+        .as_array()
+        .and_then(|items| items.iter().rev().find(|i| i["role"] == "user"))
+        .cloned()
+        .unwrap_or_default();
+    last["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["type"] == "input_image")
+        .map(|p| {
+            let url = p["image_url"].as_str().unwrap();
+            let data = url.split_once(";base64,").unwrap().1;
+            let image = image::load_from_memory(&unbase64(data)).unwrap().to_rgb8();
+            let (w, h) = image.dimensions();
+            let middle = image.get_pixel(w / 2, h / 2).0;
+            (
+                p["detail"].as_str().unwrap().to_string(),
+                (w, h),
+                middle,
+                url.len(),
+            )
+        })
+        .collect()
+}
+
+/// A 4K frame like the owner's, its parts painted so a close-up shows
+/// which part it is: the minimap red, the HUD green, the middle blue.
+fn painted_4k_frame() -> image::RgbaImage {
+    let mut frame = image::RgbaImage::from_pixel(3840, 2160, image::Rgba([120, 120, 120, 255]));
+    for (x0, y0, x1, y1, color) in [
+        (0, 0, 921, 518, [220, 30, 30]),
+        (768, 1944, 2457, 2160, [30, 200, 30]),
+        (960, 432, 2880, 1836, [30, 30, 220]),
+        (2880, 0, 3840, 648, [230, 210, 40]),
+    ] {
+        for y in y0..y1 {
+            for x in x0..x1 {
+                frame.put_pixel(x, y, image::Rgba([color[0], color[1], color[2], 255]));
+            }
+        }
+    }
+    frame
+}
+
+/// The last request to the conversation's model.
+fn last_reply_request(seen: &Arc<Mutex<Vec<Value>>>) -> Value {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| r["path"] == "/v1/responses" && r["body"]["stream"] == true)
+        .cloned()
+        .unwrap()
+}
+
+fn close_to(color: [u8; 3], want: [u8; 3]) -> bool {
+    color
+        .iter()
+        .zip(want)
+        .all(|(a, b)| (*a as i32 - b as i32).abs() < 40)
+}
+
+#[test]
+fn a_question_about_the_screen_gets_it_close_up_at_full_resolution_and_chit_chat_does_not() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let eyes = ms::ai::Eyes {
+        frame: Arc::new(painted_4k_frame()),
+        status: None,
+    };
+    let ask = |heard: &str| {
+        let id = worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: "The MapleStory window is open and in view.".into(),
+            facts: Default::default(),
+            speak: false,
+            eyes: Some(eyes.clone()),
+            language: Some("en-US".into()),
+        });
+        let (reply, _, _) = outcome(&worker, id);
+        assert!(reply.is_some(), "{heard}");
+        last_reply_request(&seen)
+    };
+    // The owner's questions about the screen (his real session).
+    let mut added = Vec::new();
+    for heard in [
+        "where am I",
+        "I don't want money talk to me in English I don't want money I want to know what level am I and how do I look",
+        "what's equipped look at what's equipped and tell me what to get",
+        "Where are the blue mushroom",
+    ] {
+        let request = ask(heard);
+        let pictures = pictures_of(&request);
+        assert_eq!(pictures.len(), 4, "{heard}");
+        assert!(
+            pictures.iter().all(|p| p.0 == "high"),
+            "{heard}: {pictures:?}"
+        );
+        // The whole screen at 1280 across (rulers around it), then the
+        // minimap, the HUD and the middle at the frame's own pixels (the
+        // middle as OpenAI looks at it: 768 on its short side).
+        assert_eq!(pictures[0].1, (1280 + 44, 720 + 44));
+        assert_eq!(pictures[1].1, (922, 519));
+        assert!(close_to(pictures[1].2, [220, 30, 30]), "{:?}", pictures[1]);
+        assert_eq!(pictures[2].1, (1690, 216));
+        assert!(close_to(pictures[2].2, [30, 200, 30]), "{:?}", pictures[2]);
+        assert_eq!(pictures[3].1, (1050, 768));
+        assert!(close_to(pictures[3].2, [30, 30, 220]), "{:?}", pictures[3]);
+        // Each close-up says what it is.
+        let words = request["body"]["input"].to_string();
+        assert!(words.contains("Close-up 1 of 3, full resolution: the minimap"));
+        assert!(words.contains("Close-up 2 of 3, full resolution: the HUD"));
+        assert!(
+            words.contains(
+                "Close-up 3 of 3, full resolution: the middle of the screen: his character"
+            )
+        );
+        // Told to read it off them, never to guess.
+        let instructions = request["body"]["instructions"].as_str().unwrap();
+        assert!(
+            instructions.contains("Read the answer off them, as a person reading the screen would")
+        );
+        assert!(instructions.contains("Use look_closer for anything still too small"));
+        assert!(instructions.contains("never guess a map, a level or a look"));
+        added.push(pictures.iter().map(|p| p.3).sum::<usize>());
+    }
+    // Asked about his quests (12:52:06): the Quest Helper too, top right.
+    let request = ask("What's the next quest I should go to");
+    let pictures = pictures_of(&request);
+    assert_eq!(pictures.len(), 5);
+    assert!(pictures.iter().all(|p| p.0 == "high"));
+    assert_eq!(pictures[4].1, (960, 648));
+    assert!(close_to(pictures[4].2, [230, 210, 40]), "{:?}", pictures[4]);
+    assert!(
+        request["body"]["input"]
+            .to_string()
+            .contains("Close-up 4 of 4, full resolution: the Quest Helper")
+    );
+    // Chit-chat: the small picture at low detail, as before.
+    for heard in ["hey", "I need money", "Mikael"] {
+        let pictures = pictures_of(&ask(heard));
+        assert_eq!(pictures.len(), 1, "{heard}");
+        assert_eq!(pictures[0].0, "low");
+        assert_eq!(pictures[0].1, (640 + 44, 360 + 44));
+    }
+    println!("bytes of pictures per question about the screen (painted 4K frame): {added:?}");
+    // Where the vision engine found the HUD (another layout's, wider): the
+    // HUD's close-up takes it in too.
+    let found = ms::ai::Eyes {
+        frame: Arc::new(painted_4k_frame()),
+        status: Some(ms::ai::NBox::new(0.3, 0.92, 0.8, 1.0)),
+    };
+    let hud = found
+        .close_pictures()
+        .into_iter()
+        .filter(|p| p["type"] == "input_image")
+        .nth(2)
+        .unwrap();
+    let data = hud["image_url"]
+        .as_str()
+        .unwrap()
+        .split_once(";base64,")
+        .unwrap()
+        .1;
+    let image = image::load_from_memory(&unbase64(data)).unwrap();
+    // (0.2–0.8 of 3840 by 0.9–1.0 of 2160, within 2048 across.)
+    assert_eq!((image.width(), image.height()), (2048, 192));
+}
+
+/// The owner's frames (scratchpad, not in the repository): what a question
+/// about the screen costs with his real 4K screen — the bytes sent, and the
+/// tokens OpenAI counts for them (85 a picture, 170 a 512-pixel tile in
+/// high detail) — and the close-ups, saved to look at. Skipped without
+/// them (set MS_OWNER_FRAMES to their folder).
+#[test]
+fn the_owners_frames_close_up_cost_and_crops() {
+    let dir = std::env::var("MS_OWNER_FRAMES").unwrap_or_default();
+    let tokens = |(w, h): (u32, u32), detail: &str| -> u32 {
+        if detail == "low" {
+            return 85;
+        }
+        let scale = (2048.0 / w.max(h) as f32).min(1.0);
+        let (w, h) = (w as f32 * scale, h as f32 * scale);
+        let scale = (768.0 / w.min(h)).min(1.0);
+        let (w, h) = (w * scale, h * scale);
+        85 + 170 * ((w / 512.0).ceil() * (h / 512.0).ceil()) as u32
+    };
+    for name in ["mark-001.png", "hud-found.png"] {
+        let path = std::path::Path::new(&dir).join(name);
+        let Ok(frame) = image::open(&path) else {
+            return;
+        };
+        let eyes = ms::ai::Eyes {
+            frame: Arc::new(frame.to_rgba8()),
+            status: None,
+        };
+        let measure = |parts: Vec<Value>| -> (usize, u32, Vec<(u32, u32)>) {
+            let mut sizes = Vec::new();
+            let (mut bytes, mut cost) = (0, 0);
+            for p in parts.iter().filter(|p| p["type"] == "input_image") {
+                let url = p["image_url"].as_str().unwrap();
+                let data = url.split_once(";base64,").unwrap().1;
+                let image = image::load_from_memory(&unbase64(data)).unwrap();
+                let size = (image.width(), image.height());
+                bytes += url.len();
+                cost += tokens(size, p["detail"].as_str().unwrap());
+                sizes.push(size);
+                if let Ok(out) = std::env::var("MS_CLOSE_UPS_OUT") {
+                    let out = std::path::Path::new(&out)
+                        .join(format!("{name}-{}x{}.jpg", size.0, size.1));
+                    let _ = image.to_rgb8().save(out);
+                }
+            }
+            (bytes, cost, sizes)
+        };
+        let (small_bytes, small_tokens, _) = measure(eyes.pictures());
+        let (close_bytes, close_tokens, sizes) = measure(eyes.close_pictures());
+        println!(
+            "{name}: chit-chat {small_bytes} bytes, {small_tokens} tokens; about the screen {close_bytes} bytes, \
+{close_tokens} tokens ({sizes:?}); added {} bytes, {} tokens",
+            close_bytes - small_bytes,
+            close_tokens - small_tokens
+        );
+        assert!(close_bytes < 3 << 20);
+    }
+}
+
+#[test]
+fn classic_world_is_said_and_the_log_s_wrong_answers_are_ruled_out() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let snapshot = format!(
+        "The MapleStory window is open and in view.\nCharacter: level 16, Magician, named WANWANBUJIO.\n{}",
+        ms::ai::brain::CLASSIC_SNAPSHOT
+    );
+    // The owner's questions that got Classic World wrong (his session).
+    for heard in [
+        "How do I open in the map of the monsters",
+        "How do I make my stuff drop more items when I kill a monsters",
+        "How do I make slime shoes",
+        "Where is the blue mushroom Forest",
+    ] {
+        let id = worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: snapshot.clone(),
+            facts: Default::default(),
+            speak: false,
+            eyes: None,
+            language: Some("en-US".into()),
+        });
+        let _ = outcome(&worker, id);
+        let request = last_reply_request(&seen);
+        let instructions = request["body"]["instructions"].as_str().unwrap();
+        assert!(
+            instructions.contains("They play MapleStory Classic World"),
+            "{heard}"
+        );
+        // What he was sent to that his world doesn't have.
+        for not_there in [
+            "no Maple Guide",
+            "no world-map search",
+            "no Arcane River",
+            "no Fafnir",
+            "no Root Abyss",
+            "no Kanna",
+            "no Drop Coupons in the Cash Shop",
+        ] {
+            assert!(instructions.contains(not_there), "{not_there}");
+        }
+        // "Blue Mushroom Forest 2", a Slime Shoes recipe: invented.
+        assert!(instructions.contains(
+            "If you are not sure a fact holds in Classic World, say you're not sure — never invent maps, NPCs, \
+recipes or routes."
+        ));
+        // The snapshot carries it.
+        assert!(
+            request["body"]["input"]
+                .to_string()
+                .contains("MapleStory Classic World")
+        );
+    }
+    // Not Classic: not said.
+    let id = worker.send(Job::Converse {
+        heard: "How do I make slime shoes".into(),
+        snapshot: "The MapleStory window is open and in view.".into(),
+        facts: Default::default(),
+        speak: false,
+        eyes: None,
+        language: None,
+    });
+    let _ = outcome(&worker, id);
+    let request = last_reply_request(&seen);
+    assert!(
+        !request["body"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("They play MapleStory Classic World")
+    );
+}
+
+#[test]
+fn a_look_up_never_speaks_a_second_answer_it_shows_it() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let settings = scratch("look-up-shown");
+    let learning = ms::ai::Learning::load(&settings);
+    let openai = || OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let (lookups, found) = ms::ai::lookup::Lookups::new(Arc::new(openai()), Some(learning));
+    // Classic World: checked for that world, and shown only.
+    lookups.start(
+        &format!("Easy Zakum level ({})", ms::ai::lookup::CLASSIC),
+        "Probably level 90.",
+        false,
+        None,
+    );
+    let ms::ai::lookup::Found::Say(text) = found.recv_timeout(Duration::from_secs(30)).unwrap()
+    else {
+        panic!("no correction");
+    };
+    let check = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|r| {
+            r["body"]["instructions"]
+                .as_str()
+                .is_some_and(|i| i.starts_with("You check"))
+        })
+        .cloned()
+        .unwrap();
+    let instructions = check["body"]["instructions"].as_str().unwrap();
+    assert!(
+        instructions
+            .contains("MapleStory Classic World — the game as it was long ago, not today's GMS")
+    );
+    assert!(instructions.contains("If you can't find it for that version, reply with exactly OK"));
+    assert!(instructions.contains("never said"));
+    // The main loop hands it over as a line of its own: shown, not said.
+    let worker = ms::ai::spawn(openai(), Brain::new());
+    let id = worker.send(Job::Say {
+        heard: None,
+        text: text.clone(),
+    });
+    let mut shown = None;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        match worker.done.recv_timeout(Duration::from_millis(200)) {
+            Ok(Done::Shown { kind, text }) => shown = Some((kind, text)),
+            Ok(Done::Audio { id: of, .. }) if of == id => panic!("a look-up's finding was said"),
+            Ok(Done::Reply { .. }) => panic!("a look-up's finding became a reply"),
+            _ => {}
+        }
+    }
+    assert_eq!(shown, Some((ms::companion::Kind::Info, text)));
+    // A line of its own that no look-up found is said as before.
+    let id = worker.send(Job::Say {
+        heard: None,
+        text: "The workshop is done: restart to get it.".into(),
+    });
+    let said = loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio {
+                id: of,
+                start: true,
+                ..
+            }) if of == id => break true,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert!(said);
+    let _ = std::fs::remove_dir_all(settings);
+}
+
+#[test]
+fn settings_change_only_when_his_own_words_plainly_ask() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let settings = scratch("plainly");
+    let learning = ms::ai::Learning::load(&settings);
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn_with(ai, Brain::new(), Some(toolbox(&base, &settings, &learning)));
+    // Every Done of reply `id` (and what came between).
+    let all_of = |heard: &str| {
+        let id = worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            facts: Default::default(),
+            speak: false,
+            eyes: None,
+            language: None,
+        });
+        let mut got = Vec::new();
+        loop {
+            match worker.done.recv_timeout(Duration::from_secs(30)) {
+                Ok(Done::Reply { id: of, .. }) | Ok(Done::Silent { id: of, .. }) if of == id => {
+                    break;
+                }
+                Ok(Done::Failed { error, .. }) => panic!("{error}"),
+                Ok(done) => got.push(done),
+                Err(e) => panic!("{e}"),
+            }
+        }
+        got
+    };
+    // The owner's evening: its own warning heard back ("23% still owe")
+    // set MP warnings at 23%; "Don't stop… until I say stop" turned the
+    // coaching off; "Armani", heard once, became his name.
+    for heard in [
+        "23% still owe",
+        "Don't stop don't stop don't stop congratulate me until I say stop",
+        "Armani",
+    ] {
+        let got = all_of(heard);
+        assert!(
+            !got.iter()
+                .any(|d| matches!(d, Done::Warn { .. } | Done::Command { .. })),
+            "{heard}"
+        );
+        assert!(
+            got.iter()
+                .any(|d| matches!(d, Done::Noted { line } if line.starts_with("not changed"))),
+            "{heard}"
+        );
+    }
+    assert!(learning.knowledge().lessons(5).is_empty());
+    // Asked plainly, it changes.
+    let got = all_of("warn me when my MP is under 30%");
+    assert!(got.iter().any(|d| matches!(
+        d,
+        Done::Warn { what, below: Some(b) } if what == "mp" && (*b - 30.0).abs() < 0.01
+    )));
+    let _ = std::fs::remove_dir_all(settings);
+}
+
+#[test]
+fn each_answer_is_in_his_sentences_language_to_a_man_by_his_own_name() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let settings = scratch("tongue");
+    std::fs::write(
+        settings.join("about-me.txt"),
+        "- My name is Michael (מיכאל)\n",
+    )
+    .unwrap();
+    let learning = ms::ai::Learning::load(&settings);
+    let mut brain = Brain::new();
+    brain.learning = Some(learning);
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, brain);
+    let note_for = |heard: &str, language: Option<&str>| -> (String, String) {
+        let id = worker.send(Job::Converse {
+            heard: heard.into(),
+            snapshot: String::new(),
+            facts: Default::default(),
+            speak: false,
+            eyes: None,
+            language: language.map(String::from),
+        });
+        let _ = outcome(&worker, id);
+        let request = last_reply_request(&seen);
+        let parts: Vec<String> =
+            request["body"]["input"].as_array().unwrap().last().unwrap()["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|p| p["text"].as_str().map(String::from))
+                .collect();
+        let note = parts
+            .iter()
+            .find(|p| p.starts_with("[How to answer"))
+            .cloned()
+            .unwrap_or_default();
+        (
+            note,
+            request["body"]["instructions"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        )
+    };
+    // His session: English words with a Hebrew phone got Hebrew answers,
+    // "תראי", "פתחי" after a misheard "Miha".
+    let (note, instructions) = note_for("Not Miguel Hebrew", Some("he-IL"));
+    assert!(note.contains("Answer in English"), "{note}");
+    assert!(
+        instructions.contains("The player's name is Michael (מיכאל): it comes from his own file")
+    );
+    assert!(instructions.contains("never take a name from what you hear, never rename him"));
+    let (note, _) = note_for("איפה אני", Some("he-IL"));
+    assert!(note.contains("Answer in Hebrew"), "{note}");
+    assert!(note.contains("masculine (אתה, תפתח, תראה — never את, תפתחי, תראי)"));
+    // Asked for English, English it stays.
+    let (note, _) = note_for("talk to me in English", Some("he-IL"));
+    assert!(note.contains("Answer in English"));
+    let (note, _) = note_for("מה הרמה שלי", Some("he-IL"));
+    assert!(note.contains("Answer in English"), "{note}");
+    let _ = std::fs::remove_dir_all(settings);
+}
+
+/// The owner's real session log (scratchpad, not in the repository),
+/// replayed row by row through what decides now: which sentences get the
+/// screen close up, in which language each answer goes, which tool calls
+/// of the evening would still change a setting or the notebook, and which
+/// look-ups were said. Prints the counts; skipped without the log (set
+/// MS_OWNER_LOG to it).
+#[test]
+fn the_owners_session_replayed() {
+    let Ok(path) = std::env::var("MS_OWNER_LOG") else {
+        return;
+    };
+    let Ok(log) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let rows: Vec<(&str, &str)> = log
+        .lines()
+        .filter_map(|l| {
+            let rest = l.get(10..)?.strip_prefix('[')?;
+            let (kind, text) = rest.split_once("] ")?;
+            Some((kind, text.trim()))
+        })
+        .collect();
+    let hebrew = |t: &str| t.chars().any(|c| ('\u{05d0}'..='\u{05ea}').contains(&c));
+    // 1. The screen, close up.
+    let heard: Vec<&str> = rows
+        .iter()
+        .filter(|(k, _)| *k == "heard")
+        .map(|(_, t)| *t)
+        .collect();
+    let close: Vec<&&str> = heard
+        .iter()
+        .filter(|h| ms::ai::brain::about_the_screen(h))
+        .collect();
+    println!(
+        "screen: {} of {} sentences get the screen close up (HEAD: 0 — every reply got 640x400 low): {close:?}",
+        close.len(),
+        heard.len()
+    );
+    // 2. The language: an English sentence answered in Hebrew (HEAD), and
+    // what the note says now (his "talk to me in English" asked once).
+    let (mut wrong_before, mut wrong_after, mut feminine) = (0, 0, 0);
+    let mut brain = Brain::new();
+    let mut last_heard: Option<(&str, String)> = None;
+    for (kind, text) in &rows {
+        match *kind {
+            "heard" => {
+                let language = brain.language_for(text, Some("en-US"));
+                last_heard = Some((text, language));
+            }
+            "reply" => {
+                if let Some((h, language)) = last_heard.take() {
+                    let answered_hebrew = hebrew(text);
+                    if !hebrew(h) && answered_hebrew {
+                        wrong_before += 1;
+                    }
+                    if (language == "Hebrew") != answered_hebrew {
+                        wrong_after += 1;
+                    }
+                }
+                if ["תראי", "פתחי", "את מיה", "חפשי", "קוסמת"]
+                    .iter()
+                    .any(|f| text.contains(f))
+                {
+                    feminine += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    println!(
+        "language: {wrong_before} English sentences answered in Hebrew at HEAD; {wrong_after} replies in another \
+language than the note now asks for; {feminine} replies in the feminine at HEAD (the note now says masculine)"
+    );
+    // 3. What the tools changed that evening, and whether his sentence
+    // would still let them.
+    let mut changed_before = Vec::new();
+    let mut changed_after = Vec::new();
+    let mut said = String::new();
+    for (kind, text) in &rows {
+        if *kind == "heard" {
+            said = text.to_string();
+            continue;
+        }
+        let call: Option<(&str, Value)> = if let Some(fact) = text.strip_prefix("remembered: ") {
+            Some(("remember_fact", json!({"fact": fact})))
+        } else if let Some(note) = text.strip_prefix("learned: ") {
+            let (about, right) = note.split_once(": ").unwrap_or((note, note));
+            Some(("note_correction", json!({"about": about, "right": right})))
+        } else if let Some(rest) = text.strip_prefix("MP warnings below ") {
+            let below: f64 = rest
+                .trim_end_matches(|c: char| !c.is_ascii_digit())
+                .parse()
+                .unwrap_or(0.0);
+            Some(("set_warnings", json!({"what": "mp", "below": below})))
+        } else if *kind == "coach" && *text == "coaching off" {
+            Some(("set_coaching", json!({"on": false})))
+        } else if let Some(rest) = text.strip_prefix("corrected: ") {
+            let (what, value) = rest
+                .split_once(" set to ")
+                .unwrap_or((rest.split(' ').next().unwrap_or(""), ""));
+            Some(("correct_reading", json!({"what": what, "value": value})))
+        } else {
+            None
+        };
+        if let Some((name, args)) = call
+            && matches!(*kind, "info" | "coach")
+        {
+            changed_before.push(format!("{name} on {said:?}"));
+            if ms::ai::tools::refused(name, &args, &said).is_none() {
+                changed_after.push(format!("{name} {args} on {said:?}"));
+            }
+        }
+    }
+    println!(
+        "tools: {} changes at HEAD; {} still allowed now: {changed_after:#?}",
+        changed_before.len(),
+        changed_after.len()
+    );
+    // 4. Look-ups said aloud as a second answer.
+    let spoken = rows
+        .windows(2)
+        .filter(|w| w[0].0 == "lookup" && w[1].0 == "reply" && w[0].1 == w[1].1)
+        .count();
+    println!("look-ups: {spoken} said aloud at HEAD; now shown on the phone only");
+    // 5. Names learned from speech.
+    let names = rows
+        .iter()
+        .filter(|(k, t)| {
+            *k == "info"
+                && (t.starts_with("learned: ") || t.starts_with("remembered: "))
+                && ms::ai::memory::names_the_player(t)
+        })
+        .count();
+    println!("names: {names} names for him learned from speech at HEAD");
+    // 6. Level-ups in replies to sentences that didn't ask.
+    // (Asked about the level in his sentence or the two before it.)
+    let mut lately: Vec<&str> = Vec::new();
+    let mut last = "";
+    let (mut announced, mut left) = (0, 0);
+    for (kind, text) in &rows {
+        match *kind {
+            "heard" => {
+                last = text;
+                lately.push(text);
+                if lately.len() > 3 {
+                    lately.remove(0);
+                }
+            }
+            "reply" => {
+                let asked = lately
+                    .iter()
+                    .any(|h| ms::ai::brain::asks_about_the_level(h));
+                let (kept, gone) = ms::ai::brain::without_level_ups(text, asked);
+                if !gone.is_empty() {
+                    announced += 1;
+                    println!("  level-up left out of {text:?} (to {last:?}): {kept:?}");
+                }
+                if ms::ai::brain::announces_level_up(&kept) && !gone.is_empty() {
+                    left += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    println!(
+        "level-ups: {announced} replies announced a level-up nobody asked about at HEAD; {left} now"
+    );
 }

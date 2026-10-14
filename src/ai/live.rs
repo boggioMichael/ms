@@ -18,7 +18,12 @@
 //! while it talks (the phone cancels its own voice from its microphone), and
 //! stops and answers when talked over. MapleSyrup's own lines (low HP, a
 //! level-up) are handed to it to say, so they come in the same voice and
-//! language.
+//! language: the watcher's at most once per 20 s and with the reading
+//! behind them (the PC's `Relay`), so the call passes a number on for HP
+//! and MP, and the thing itself for anything else, instead of restating
+//! the watcher every few seconds. When the attitude changes mid-call the
+//! phone fetches the instructions again (`/api/instructions`) and hands
+//! them to the call (`session.update`).
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -53,17 +58,32 @@ const LIVE_MORE: &str = "On the call:
 they mix languages in one sentence (Hebrew and English, say), answer the same way. A language you were told to use \
 \"by default\" is for when their words have no language: it never overrides the one they are speaking now. Say \
 game words the way players say them.
-- Never say again what you said in your last two turns unless they ask again, and never open with where they are \
-unless they asked where they are. If what you heard makes no sense, say in a few words that you didn't catch it.
+- Never say again what you said in your last two turns unless they ask again. Never report their level, map or bars \
+unasked; while MapleStory isn't open, talk about whatever they say, and say it isn't open only when they ask about \
+the game. If what you heard makes no sense, say in a few words that you didn't catch it.
 - If they talk over you, stop and go with what they just said; don't repeat what you had said.
 - When they speak you may also get a message that is not from them: what your vision engine reads off the game \
 right now (level, HP, MP, EXP; values marked \"about\" are estimates) and, now and then, a small picture of the \
 screen with rulers on its edges (0 to 1000 across and down, for pointing at things). Use it like a friend looking \
 at the same screen; never ask them to read the screen to you (look_closer reads small print). If what they say \
 clearly disagrees with what you see, say what you see.
-- MapleSyrup's game watcher sometimes tells you something to say (low HP or MP, a level-up, something they asked \
-you to watch for, a correction from a look-up): say it right away, in a few words, in your attitude and in the \
-language you're speaking with them.
+- Now and then a message comes from MapleSyrup's game watcher, never from the player: a line it wants said (low \
+HP or MP, a death, a level-up, something they asked you to watch for, a tip, a correction from a look-up) and \
+the game as read right then; a warning about HP or MP comes with its reading of them at that moment. That \
+reading is newer than any picture you have. Pass the line on in one short clause, in the language you're \
+speaking with them and in your attitude: \
+when the line is about HP or MP, say the number (\"HP's at 11, pot now\"), not the watcher's words; otherwise say \
+the thing, in your words, short (\"Rebuff.\" is \"rebuff\", not \"HP's at 96, rebuff\"), and leave the numbers \
+out. Never both. Never restate the whole line, never argue with it, never answer it with what your side shows. \
+A line that comes late (\"N s ago\") is still said, as late news (\"you died a moment ago\"). If the player was \
+talking, their words come first: answer them, then the watcher in a few words.
+- Presence: greet only when your watcher says the phone just connected, never on your own; never ask whether \
+they're still there — your watcher does, when the game idles. When the session facts say they had been quiet for \
+a long while until just now, one short \"welcome back\" is fine, once. Those facts (how long, deaths, level-ups, \
+when they last spoke, the lowest HP) are for you, not for them: never recite them; one comes up only when it \
+changes what you'd say.
+- What you know about them from before comes in only when it bears on what they just said, as a clause, never \
+as a list: \"that boss again?\", not \"I remember you fought Zakum, wanted a Fafnir and play Mu Lung Dojo\".
 - You can't press keys or play for them; you watch and talk.
 
 Tools (never announce one before using it; after one, a few words at most):
@@ -390,6 +410,27 @@ mod tests {
         assert!(text.contains("MapleSyrup's rules"));
         assert!(text.contains("Your attitude: savage"));
         assert!(text.contains("look_it_up never makes them wait"));
+        // The watcher's line: the number when it is about HP or MP, the
+        // thing itself otherwise (never both), never argued with; late is
+        // still said. Only a warning comes with the reading (a death,
+        // "Rebuff." come without).
+        assert!(text.contains("newer than any picture you have"));
+        assert!(
+            text.contains("a warning about HP or MP comes with its reading of them at that moment")
+        );
+        assert!(!text.contains("with its reading of HP and MP at that moment and the game"));
+        assert!(text.contains("when the line is about HP or MP, say the number"));
+        assert!(text.contains("otherwise say the thing, in your words, short"));
+        assert!(text.contains("Never both."));
+        assert!(
+            !text.contains(
+                "with the number (\"HP's at 11, pot now\") rather than the watcher's words"
+            )
+        );
+        assert!(text.contains("A line that comes late (\"N s ago\") is still said"));
+        assert!(text.contains("never argue with it"));
+        assert!(text.contains("their words come first"));
+        assert!(!text.contains("say it right away"));
         assert!(text.contains("switch with them"));
         assert!(text.contains("set to Hebrew"));
         assert!(text.contains("learned from playing together"));
@@ -399,6 +440,60 @@ mod tests {
         assert!(fresh.contains("Your attitude: blunt"));
         assert!(!fresh.contains("conversation so far"));
         assert!(!fresh.contains("learned from playing together"));
+    }
+
+    /// The rules a call shares with the conversation word for word: how to
+    /// be present (greet when told the phone connected, "welcome back" once
+    /// after a long quiet, never ask after them, never recite the session
+    /// facts) and how what it knows about the
+    /// player comes up (a clause when it bears on what they said, never a
+    /// list). (They are copied: the conversation's live in its own
+    /// module, out of reach of a shared constant.)
+    fn shared_rules() -> Vec<&'static str> {
+        LIVE_MORE
+            .lines()
+            .filter(|l| l.starts_with("- Presence:") || l.starts_with("- What you know about them"))
+            .collect()
+    }
+
+    #[test]
+    fn a_call_keeps_the_conversations_rules_on_presence_and_on_what_it_knows() {
+        let rules = shared_rules();
+        assert_eq!(rules.len(), 2, "{rules:?}");
+        // Each, word for word, is the conversation's rule too.
+        let persona = super::super::Brain::new().persona();
+        for rule in &rules {
+            assert!(rule.split_whitespace().count() > 20, "{rule}");
+            assert!(persona.contains(rule), "the conversation lacks: {rule}");
+        }
+        // The rule on status reports and on talk before the game, too
+        // (in a bullet of its own on each side).
+        let rule = "Never report their level, map or bars unasked; while MapleStory isn't open, talk \
+about whatever they say, and say it isn't open only when they ask about the game.";
+        assert!(persona.contains(rule), "the conversation lacks: {rule}");
+        assert!(LIVE_MORE.contains(rule), "the call lacks: {rule}");
+        // And every call gets them, whatever the attitude.
+        for attitude in crate::companion::Attitude::ALL {
+            let text = instructions("", &[], None, attitude);
+            assert!(text.contains(
+                "greet only when your watcher says the phone just connected, never on your own"
+            ));
+            assert!(text.contains(
+                "never ask whether they're still there — your watcher does, when the game idles"
+            ));
+            assert!(text.contains(
+                "they had been quiet for a long while until just now, one short \"welcome back\" \
+is fine, once"
+            ));
+            assert!(
+                text.contains(
+                    "never recite them; one comes up only when it changes what you'd say"
+                )
+            );
+            assert!(text.contains(
+                "only when it bears on what they just said, as a clause, never as a list: \"that boss again?\""
+            ));
+        }
     }
 
     #[test]

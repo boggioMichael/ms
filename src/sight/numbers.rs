@@ -18,15 +18,22 @@
 //! What was read is cross-checked against the bar's fill every frame; the
 //! two disagreeing for a while means the font or the bar is wrong, and the
 //! sight asks for a fresh look.
+//!
+//! The classic HUD (Classic World) prints its numbers above the bars in a
+//! thin font of its own, `HP[178/178]`, reaching higher above the bar than
+//! a fixed [`Line`] does at 4K: its line is a [`Window`] measured in bar
+//! heights, learned into a font of its own (the [`Numbers`] keep both),
+//! and a field reads from whichever of its places reads.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use syrup::geometry::{NormRect, Rect};
-use syrup::glyphs::{GlyphOptions, GlyphSet};
+use syrup::glyphs::{GlyphOptions, GlyphSet, LearnError, TextReading};
+use syrup::threshold::text_evidence;
 
 use crate::vision::hud_text::{parse_current_max, parse_percent};
 
@@ -84,6 +91,80 @@ impl Line {
     }
 }
 
+/// The classic HUD's text line: above the bar, reaching up `reach` bar
+/// heights, and starting `from` across, as a share of the bar's width from
+/// its left end (just before it, `-6 px / width`, when nothing in front is
+/// left out).
+///
+/// Classic World prints `HP[178/178]` above its bars in a thin font: at 4K
+/// the digits stand 22 rows tall and end 11 rows above the bar, the field's
+/// name 30 rows tall beside them, out of reach of [`Line::Above`]'s 16 rows
+/// (which hold the digits' feet), while on and around the bar its nine
+/// tick marks and two ends split into eleven "glyphs". Measured in bar
+/// heights, the line is reached at any window size; and starting past the
+/// field's name ("EXP." in front of the number) the line reads as its
+/// number alone.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Window {
+    pub reach: f32,
+    pub from: f32,
+}
+
+impl Window {
+    /// The text region for a bar whose fill is `band`, in a frame of
+    /// `width`×`height`: from `from` across to just past the bar's right
+    /// end, and from `reach` bar heights (16 rows at the least) above the
+    /// bar down to it.
+    pub fn region(&self, band: &NormRect, width: u32, height: u32) -> Rect {
+        let (x, y, w, h) = band.pixels(width, height);
+        let up = ((h as f32 * self.reach).round() as u32).max(16).min(y);
+        let right = (x + w + 6).min(width);
+        let left = ((x as f32 + self.from * w as f32).round().max(0.0) as u32).min(right);
+        Rect {
+            x: left,
+            y: y - up,
+            w: right - left,
+            h: up,
+        }
+    }
+
+    /// The window over the whole line above `band` (nothing left out).
+    fn whole(band: &NormRect, width: u32, height: u32) -> Window {
+        let (x, _, _, _) = band.pixels(width, height);
+        Window::starting(x.saturating_sub(6), band, width, height)
+    }
+
+    /// The window starting at column `left` of the frame.
+    fn starting(left: u32, band: &NormRect, width: u32, height: u32) -> Window {
+        let (x, _, w, _) = band.pixels(width, height);
+        Window {
+            reach: CLASSIC_REACH,
+            from: (left as f32 - x as f32) / w.max(1) as f32,
+        }
+    }
+}
+
+/// Where a field's line is read: a [`Line`] on or by the bar, in the font,
+/// or the classic HUD's [`Window`] above it, in the classic font.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Place {
+    Line(Line),
+    Window(Window),
+}
+
+impl Place {
+    fn region(&self, band: &NormRect, width: u32, height: u32) -> Rect {
+        match self {
+            Place::Line(line) => line.region(band, width, height),
+            Place::Window(window) => window.region(band, width, height),
+        }
+    }
+
+    fn classic(&self) -> bool {
+        matches!(self, Place::Window(_))
+    }
+}
+
 /// A labelled example the font was learned from, as kept on disk.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sample {
@@ -92,15 +173,28 @@ pub struct Sample {
     pub text: String,
     /// The crop's file name, under the learned folder.
     pub picture: String,
+    /// For a classic example, [`Line::Above`]: what a MapleSyrup that does
+    /// not know windows takes it for.
     pub line: Line,
     /// "ocr" or "model".
     pub from: String,
     pub when: String,
+    /// The classic HUD's line it was learned from, when it was: the example
+    /// belongs to the classic font.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<Window>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Saved {
     samples: Vec<Sample>,
+    /// The classic HUD's examples, kept apart: a MapleSyrup from before
+    /// there was a classic font knows `samples` only, and would learn them
+    /// into its one font, where the classic digits (22 rows tall at 4K,
+    /// the same size as the modern ones' 18 to the glyph reader) would be
+    /// averaged with the modern ones and read as neither.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    classic: Vec<Sample>,
 }
 
 /// A number read from the HUD.
@@ -166,11 +260,40 @@ pub const DISAGREE_FOR: u32 = 30;
 pub struct Numbers {
     dir: PathBuf,
     font: GlyphSet,
+    /// The classic HUD's fonts, apart from the modern one (its thin digits
+    /// are as tall as the modern bold ones to the glyph reader, which would
+    /// average the two into one template per character), and one per
+    /// field: the game stretches the classic HUD by a fraction (2.81 at
+    /// 4K), so a digit is drawn a pixel wider or narrower depending on
+    /// where it lands, and each field's line lands where it lands. One
+    /// font for the three averaged them into templates none read surely:
+    /// on the owner's frames, learning his EXP line made the MP line just
+    /// learned unreadable, and with MP's and EXP's examples in the font
+    /// his HP[671/671] would not learn (it does alone).
+    classic: HashMap<Field, GlyphSet>,
+    /// Both fonts' examples; a classic one has its `window`.
     samples: Vec<Sample>,
     /// The line each field reads from, from the examples that worked.
     lines: HashMap<Field, Line>,
+    /// The classic line each field reads from, likewise.
+    windows: HashMap<Field, Window>,
+    /// Fields last read (or learned) from their classic line, which is
+    /// tried first for them: a player who switches between a character on
+    /// the classic HUD and one on the modern HUD has each read on the first
+    /// frame, and the line not shown is tried only when the one last read
+    /// will not read.
+    classic_first: HashSet<Field>,
+    /// Whether the last number read was on the classic HUD's line (None:
+    /// none read yet this run): the HUD's style, for the session's stats.
+    read_classic: Option<bool>,
     state: HashMap<Field, FieldState>,
+    /// Crops of lines that could not be learned, saved under
+    /// `debug/` for a look: how many so far this run.
+    failures_kept: u32,
 }
+
+/// How many lines that could not be learned are kept as pictures per run.
+const FAILURES_KEPT: u32 = 6;
 
 /// How surely a glyph must match a character the font knows. The game
 /// draws its HUD font pixel for pixel the same every frame, so a known
@@ -188,6 +311,76 @@ fn options() -> GlyphOptions {
     }
 }
 
+/// How surely a glyph must match a character of the classic font. The game
+/// stretches the classic HUD's pixels by a fraction (2.81 at 4K), and its 6,
+/// 8 and 9 differ by one stroke: a digit the font has not learned matches
+/// its look-alike at up to 0.954 (an 8 read as a 9, on the player's 4K
+/// frame), past the [`MIN_SCORE`] that serves the bold modern font, while
+/// every glyph of the font matches its own character at 0.986 or better.
+const CLASSIC_MIN_SCORE: f32 = 0.975;
+/// How far the best character of the classic font must lead the next. Its
+/// 8 leads the 9 by 0.038 to 0.059, its 9 the 8 by 0.042 to 0.057, its 6
+/// the 8 by 0.070: at the general 0.06, an 8 is never read once a 9 is
+/// known, nor learned beside one (learning reads the example back as
+/// surely as reading does). [`CLASSIC_MIN_SCORE`] is what keeps a digit
+/// the font does not know from passing for its look-alike.
+const CLASSIC_MIN_MARGIN: f32 = 0.02;
+/// How far above the bar the classic line is looked for, in bar heights:
+/// the field's name, the tallest of it, starts 1.22 bar heights up at 4K.
+const CLASSIC_REACH: f32 = 1.5;
+/// Runs of ink past the start of a classic window beyond the characters of
+/// a spelling, for the window to be tried with it.
+const CLASSIC_SPARE_RUNS: usize = 4;
+/// Windows and spellings tried at most for one label on the classic line
+/// (the player's lines learn within ten; a label that fits none is given up
+/// on while the frame loop waits for the sight).
+const CLASSIC_TRIES: usize = 32;
+/// The classic HUD writes its numbers on the grey panel above a bar, the
+/// modern HUD on a bar's fill: the line found above a modern MP bar is the
+/// HP bar's own, its numbers on its pink fill, and learned as MP's it would
+/// have MP read HP's numbers (a label that swaps the two passes the bar's
+/// check when both are full). The median saturation of the text's rows is
+/// 0.14 to 0.16 on the classic panel (the player's 4K frame), 0.71 on the
+/// modern HP bar, 0.54 in the scenery above it: over this, the line above
+/// the bar is not the classic HUD's.
+const PANEL_SATURATION: f32 = 0.3;
+
+/// A glyph of the classic font that matches its character below
+/// [`CLASSIC_MIN_SCORE`] is still that character when it matches at
+/// [`CLASSIC_LOOSE_SCORE`] or better and no other character comes within
+/// [`CLASSIC_LOOSE_MARGIN`] of it. The game stretches the classic HUD by
+/// 2.81 at 4K, so one character is drawn a pixel wider in one place than
+/// another: in the owner's `HP[671/671]` (10 October) the two 1s are 7 and
+/// 8 pixels wide, and each matches their one template at 0.969, margin
+/// 0.53 — under 0.975 the line was never learned, nor read, all session
+/// ("not surely"). A digit the font does not know matches its look-alike
+/// at up to 0.954, with other digits close behind (an 8 read as a 9): not
+/// that. (Two templates per character, one per width, would be syrup's to
+/// give: its glyph sets average one template per character and size.)
+const CLASSIC_LOOSE_SCORE: f32 = 0.96;
+const CLASSIC_LOOSE_MARGIN: f32 = 0.3;
+
+/// The classic font's options: the glyph reader's own bar is the loose
+/// one ([`CLASSIC_LOOSE_SCORE`]), and [`classic_sure`] holds every reading
+/// and every example learned to the rest.
+fn classic_options() -> GlyphOptions {
+    GlyphOptions {
+        min_score: CLASSIC_LOOSE_SCORE,
+        min_margin: CLASSIC_MIN_MARGIN,
+        ..GlyphOptions::default()
+    }
+}
+
+/// Whether every glyph of a classic reading is surely its character: at
+/// [`CLASSIC_MIN_SCORE`] with [`CLASSIC_MIN_MARGIN`], or at
+/// [`CLASSIC_LOOSE_SCORE`] with [`CLASSIC_LOOSE_MARGIN`].
+fn classic_sure(reading: &TextReading) -> bool {
+    reading.glyphs.iter().all(|g| {
+        (g.score >= CLASSIC_MIN_SCORE && g.margin >= CLASSIC_MIN_MARGIN)
+            || (g.score >= CLASSIC_LOOSE_SCORE && g.margin >= CLASSIC_LOOSE_MARGIN)
+    })
+}
+
 fn now_text() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
 }
@@ -195,6 +388,30 @@ fn now_text() -> String {
 /// The label as the glyph reader wants it: the characters drawn, no spaces.
 fn normalised(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// A line as read, with no space beside a decimal point or a thousands
+/// comma: the glyph reader puts one where the gap after a glyph is wide
+/// (the owner's classic `830[7.52%]` read "…7 .52%", which parsed as
+/// 0.52%), and no number is printed so. The space between the amount and
+/// the percent stays: with the classic HUD's brackets unseen, "830 7.52%"
+/// is the only thing between the two numbers.
+fn tight(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if c.is_whitespace() {
+            let before = chars[..i].iter().rev().find(|c| !c.is_whitespace());
+            let after = chars[i + 1..].iter().find(|c| !c.is_whitespace());
+            let point = |c: Option<&char>| matches!(c, Some('.' | ','));
+            let digit = |c: Option<&char>| c.is_some_and(char::is_ascii_digit);
+            if (digit(before) && point(after)) || (point(before) && digit(after)) {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The ways `label` (already normalised) might be printed on the line: as
@@ -280,6 +497,153 @@ fn spellings(field: Field, label: &str) -> Vec<String> {
     out
 }
 
+/// The ways `label` (already normalised) might read on the classic HUD's
+/// line: as on any line ([`spellings`]); then without its brackets, even
+/// where that runs two numbers together — the classic HUD draws them
+/// yellow-green, darker than its panel in the channel the glyph reader
+/// measures, so to the reader they are not there, and "619[49.84%]" reads
+/// as 619, a gap, 49.84% —; then with the field's name in front, where the
+/// line shows it and the labeller left it out. Those without the field's
+/// name go first, whatever the labeller said: the number alone is the
+/// cheaper line to read (see [`Numbers::learn`]'s classic attempts).
+///
+/// The name is not only dressing. On the player's 4K frame MP's number
+/// alone does not learn: at the digits' own height (22 rows) the glyph
+/// reader's cell rounds a 1 drawn 7 pixels wide and one drawn 8 (the game
+/// stretches its pixels by a fraction) to 5 columns and 6, and the two
+/// match at 0.92, under [`CLASSIC_MIN_SCORE`]; with "MP" in the line, 30
+/// rows tall, setting its height, both round to 4 and match at 0.998.
+fn classic_spellings(field: Field, label: &str) -> Vec<String> {
+    let mut out = spellings(field, label);
+    let bare: Vec<String> = out
+        .iter()
+        .map(|s| {
+            s.chars()
+                .filter(|c| !matches!(c, '[' | ']' | '(' | ')'))
+                .collect()
+        })
+        .collect();
+    for s in bare {
+        if !s.is_empty() && !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    let named: Vec<String> = out
+        .iter()
+        .filter(|s| !s.to_ascii_uppercase().starts_with(field.label()))
+        .map(|s| format!("{}{s}", field.label()))
+        .collect();
+    for s in named {
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    // Stable: each group keeps its order.
+    out.sort_by_key(|s| s.to_ascii_uppercase().starts_with(field.label()));
+    out
+}
+
+/// Note why `spelling` (of `label`) did not learn at `place`, when it is
+/// more telling than what `why` holds: a line that split into as many
+/// glyphs as the spelling has characters and still would not learn says
+/// more than a count that did not fit.
+fn note(why: &mut Option<(u8, String)>, e: &LearnError, spelling: &str, label: &str, place: &str) {
+    let rank = match e {
+        LearnError::DoesNotReadBack { .. } => 3,
+        LearnError::Inconsistent { .. } => 2,
+        LearnError::GlyphCountMismatch { .. } => 1,
+        LearnError::NoText => 0,
+    };
+    if why.as_ref().is_none_or(|(r, _)| rank > *r) {
+        let said = if spelling == label {
+            String::new()
+        } else {
+            format!(" (as \"{spelling}\")")
+        };
+        *why = Some((rank, format!("{e}{said}, {place}")));
+    }
+}
+
+/// Where the classic line's region may start, left to right, each with how
+/// many runs of ink lie past it: its own left end, then the middle of every
+/// gap between two runs of ink along the text's rows (as the glyph reader
+/// takes them: the tallest run of rows holding ink), so whatever stands in
+/// front of the number can be left out — the field's name, or the number
+/// in front of a percent a labeller gave alone. `None` when the region
+/// holds no text, or text written on something coloured rather than on
+/// the panel (see [`PANEL_SATURATION`]).
+fn cuts(frame: &RgbaImage, region: Rect) -> Option<Vec<(u32, usize)>> {
+    let o = classic_options();
+    let evidence = text_evidence(frame, region, o.channel, o.polarity, o.evidence_span);
+    let (w, h) = evidence.dimensions();
+    let ink = |x: u32, y: u32| evidence.get_pixel(x, y).0[0] >= o.ink_threshold;
+    let rows: Vec<bool> = (0..h).map(|y| (0..w).any(|x| ink(x, y))).collect();
+    let (top, bottom) = tallest_run(&rows)?;
+    // The median saturation of the text's rows, in 0..=255.
+    let mut saturation: Vec<u8> = (region.y + top..region.y + bottom)
+        .flat_map(|y| (region.x..region.x + w).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            let [r, g, b, _] = frame.get_pixel(x, y).0;
+            let (max, min) = (r.max(g).max(b), r.min(g).min(b));
+            if max == 0 {
+                0
+            } else {
+                (u32::from(max - min) * 255 / u32::from(max)) as u8
+            }
+        })
+        .collect();
+    let middle = saturation.len() / 2;
+    let median = *saturation.select_nth_unstable(middle).1;
+    if f32::from(median) / 255.0 > PANEL_SATURATION {
+        return None;
+    }
+    let mut runs: Vec<(u32, u32)> = Vec::new();
+    let mut start = None;
+    for x in 0..w {
+        match ((top..bottom).any(|y| ink(x, y)), start) {
+            (true, None) => start = Some(x),
+            (false, Some(s)) => {
+                runs.push((s, x));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(s) = start {
+        runs.push((s, w));
+    }
+    let mut cuts = vec![(region.x, runs.len())];
+    cuts.extend(
+        runs.windows(2)
+            .enumerate()
+            .map(|(i, pair)| (region.x + (pair[0].1 + pair[1].0) / 2, runs.len() - i - 1)),
+    );
+    Some(cuts)
+}
+
+/// The tallest run of `true` in `rows`, a one-row gap allowed (the dot of
+/// an i, the gap in a colon), as half-open `(start, end)`.
+fn tallest_run(rows: &[bool]) -> Option<(u32, u32)> {
+    let mut best: Option<(usize, usize)> = None;
+    let mut y = 0;
+    while y < rows.len() {
+        if !rows[y] {
+            y += 1;
+            continue;
+        }
+        let start = y;
+        let mut end = y + 1;
+        while end < rows.len() && (rows[end] || (end + 1 < rows.len() && rows[end + 1])) {
+            end += 1;
+        }
+        if best.is_none_or(|(s, e)| end - start > e - s) {
+            best = Some((start, end));
+        }
+        y = end;
+    }
+    best.map(|(s, e)| (s as u32, e as u32))
+}
+
 /// The number a line says, if it says one that makes sense for `field`.
 pub fn parse(field: Field, text: &str) -> Option<Value> {
     match field {
@@ -314,17 +678,22 @@ impl Numbers {
         let mut numbers = Numbers {
             dir: dir.to_path_buf(),
             font: GlyphSet::new(options()),
+            classic: HashMap::new(),
             samples: Vec::new(),
             lines: HashMap::new(),
+            windows: HashMap::new(),
+            classic_first: HashSet::new(),
+            read_classic: None,
             state: HashMap::new(),
+            failures_kept: 0,
         };
-        for sample in saved.samples {
+        for sample in saved.samples.into_iter().chain(saved.classic) {
             numbers.relearn(sample);
         }
         numbers
     }
 
-    /// Learn a kept example again, from its picture.
+    /// Learn a kept example again, from its picture, into its own font.
     fn relearn(&mut self, sample: Sample) {
         let Ok(picture) = image::open(self.dir.join(&sample.picture)) else {
             return;
@@ -336,34 +705,65 @@ impl Numbers {
             w: picture.width(),
             h: picture.height(),
         };
-        if self.font.learn(&picture, whole, &sample.text).is_ok() {
-            self.lines.entry(sample.field).or_insert(sample.line);
+        let font = match sample.window {
+            Some(_) => self
+                .classic
+                .entry(sample.field)
+                .or_insert_with(|| GlyphSet::new(classic_options())),
+            None => &mut self.font,
+        };
+        if font.learn(&picture, whole, &sample.text).is_ok() {
+            match sample.window {
+                Some(window) => {
+                    self.windows.entry(sample.field).or_insert(window);
+                }
+                None => {
+                    self.lines.entry(sample.field).or_insert(sample.line);
+                }
+            }
             self.samples.push(sample);
         }
     }
 
     fn save(&self) {
         let _ = std::fs::create_dir_all(&self.dir);
-        let saved = Saved {
-            samples: self.samples.clone(),
-        };
+        let (classic, samples) = self
+            .samples
+            .iter()
+            .cloned()
+            .partition(|s| s.window.is_some());
+        let saved = Saved { samples, classic };
         if let Ok(t) = serde_json::to_string_pretty(&saved) {
             let _ = std::fs::write(self.dir.join("font.json"), t);
         }
     }
 
-    /// How many characters the font knows.
+    /// How many characters the fonts know (each once, in either font).
     pub fn glyphs(&self) -> usize {
-        self.font.chars().count()
+        let mut chars: Vec<char> = self
+            .font
+            .chars()
+            .chain(self.classic.values().flat_map(GlyphSet::chars))
+            .collect();
+        chars.sort_unstable();
+        chars.dedup();
+        chars.len()
     }
 
     pub fn samples(&self) -> &[Sample] {
         &self.samples
     }
 
+    /// The HUD the numbers were last read on: the classic one (Classic
+    /// World's, the numbers above the bars) or the modern one; None until
+    /// a number has been read this run.
+    pub fn classic(&self) -> Option<bool> {
+        self.read_classic
+    }
+
     /// Whether anything has been learned for `field`'s line to be read from.
     pub fn knows(&self, field: Field) -> bool {
-        self.glyphs() > 0 && self.lines.contains_key(&field)
+        self.glyphs() > 0 && (self.lines.contains_key(&field) || self.windows.contains_key(&field))
     }
 
     /// The line `field` is read from: the one its examples came from, else
@@ -376,15 +776,42 @@ impl Numbers {
             .unwrap_or(Line::Above)
     }
 
+    /// Where `field` is read, in the order tried: its line (or the one the
+    /// other fields use), and its classic line, if it has one (or the first
+    /// field's that has one, if it has no line of its own); the classic
+    /// line first when it was the last to read.
+    fn places(&self, field: Field) -> Vec<Place> {
+        let mut places = vec![Place::Line(self.line_for(field))];
+        let window = self.windows.get(&field).copied().or_else(|| {
+            (!self.lines.contains_key(&field))
+                .then(|| Field::ALL.iter().find_map(|f| self.windows.get(f).copied()))
+                .flatten()
+        });
+        if let Some(window) = window {
+            places.push(Place::Window(window));
+            if self.classic_first.contains(&field) {
+                places.reverse();
+            }
+        }
+        places
+    }
+
     /// Read `field` beside the bar at `band`, if the glyphs are sure of
     /// every character and the line says a number that makes sense.
     pub fn read(&mut self, frame: &RgbaImage, field: Field, band: &NormRect) -> Option<Read> {
-        if self.glyphs() == 0 {
+        if self.font.chars().next().is_none()
+            && self.classic.values().all(|f| f.chars().next().is_none())
+        {
             return None;
         }
         let (fw, fh) = frame.dimensions();
-        let region = self.line_for(field).region(band, fw, fh);
-        if region.w < 8 || region.h < 6 {
+        let places: Vec<(Place, Rect)> = self
+            .places(field)
+            .into_iter()
+            .map(|place| (place, place.region(band, fw, fh)))
+            .filter(|(_, region)| region.w >= 8 && region.h >= 6)
+            .collect();
+        if places.is_empty() {
             return None;
         }
         let state = self.state.entry(field).or_default();
@@ -396,13 +823,40 @@ impl Numbers {
         {
             state.tries += 1;
         }
-        let reading = self.font.read(frame, region);
-        let read = reading.value.and_then(|r| {
-            parse(field, &r.text).map(|value| Read {
-                value,
-                text: r.text,
-            })
-        });
+        let mut read = None;
+        for (place, region) in places {
+            let font = if place.classic() {
+                match self.classic.get(&field) {
+                    Some(font) => font,
+                    None => continue,
+                }
+            } else {
+                &self.font
+            };
+            if font.chars().next().is_none() {
+                continue;
+            }
+            let reading = font.read(frame, region);
+            let reading = reading
+                .value
+                .filter(|r| !place.classic() || classic_sure(r));
+            read = reading.and_then(|r| {
+                parse(field, &tight(&r.text)).map(|value| Read {
+                    value,
+                    text: r.text,
+                })
+            });
+            if read.is_some() {
+                if place.classic() {
+                    self.classic_first.insert(field);
+                } else {
+                    self.classic_first.remove(&field);
+                }
+                self.read_classic = Some(place.classic());
+                break;
+            }
+        }
+        let state = self.state.entry(field).or_default();
         match read {
             Some(_) => state.unread = 0,
             None => state.unread = state.unread.saturating_add(1),
@@ -414,8 +868,7 @@ impl Numbers {
     /// learned for it yet, or the glyphs have not been able to read it, and
     /// not asked too recently.
     pub fn wants_sample(&self, field: Field, now: Instant) -> bool {
-        let kept = self.samples.iter().filter(|s| s.field == field).count();
-        if kept >= MAX_SAMPLES {
+        if self.full(field) {
             return false;
         }
         let state = self.state.get(&field);
@@ -439,8 +892,7 @@ impl Numbers {
     /// the engine was asked at least twice without an example coming of it
     /// (or was never there to ask). The sight asks the model then.
     pub fn wants_label(&self, field: Field) -> bool {
-        let kept = self.samples.iter().filter(|s| s.field == field).count();
-        if kept >= MAX_SAMPLES {
+        if self.full(field) {
             return false;
         }
         let state = self.state.get(&field);
@@ -450,10 +902,31 @@ impl Numbers {
         (!self.knows(field) || unread) && tried
     }
 
-    /// The region a labeller should read `field`'s text from: the line
-    /// known for it, or the band around the bar, which holds the line
-    /// wherever it is.
+    /// Whether `field` keeps all the examples it may, in both fonts: one
+    /// full of examples from the modern HUD still learns the classic one's
+    /// line (a player with a character on each), and the other way round.
+    fn full(&self, field: Field) -> bool {
+        let kept = |classic: bool| {
+            self.samples
+                .iter()
+                .filter(|s| s.field == field && s.window.is_some() == classic)
+                .count()
+        };
+        kept(false) >= MAX_SAMPLES && kept(true) >= MAX_SAMPLES
+    }
+
+    /// The region a labeller should read `field`'s text from: the classic
+    /// line when it is where the field was last read (or the only place it
+    /// was learned), else the line known for it, or the band around the
+    /// bar, which holds the line wherever it is.
     pub fn label_region(&self, field: Field, band: &NormRect, width: u32, height: u32) -> Rect {
+        if let Some(window) = self
+            .windows
+            .get(&field)
+            .filter(|_| self.classic_first.contains(&field) || !self.lines.contains_key(&field))
+        {
+            return window.region(band, width, height);
+        }
         self.lines
             .get(&field)
             .copied()
@@ -479,7 +952,9 @@ impl Numbers {
     /// (as the labeller saw it; spaces do not count). The line is looked
     /// for above the bar, on it and around it, and the first that splits
     /// into as many glyphs as the label has characters is learned from and
-    /// remembered for `field`. Returns what was learned, for the log.
+    /// remembered for `field`; failing those, the classic HUD's line above
+    /// the bar (a [`Window`]), into the classic font — first, for a field
+    /// last read there. Returns what was learned, for the log.
     pub fn learn(
         &mut self,
         frame: &RgbaImage,
@@ -494,6 +969,47 @@ impl Numbers {
             return Err("an empty label".into());
         }
         self.state.entry(field).or_default().last_sample = Some(now);
+        // Of all the ways tried (three lines, each spelling), the failure
+        // reported is the most telling one: a line that split into as many
+        // glyphs as a spelling has characters and still would not learn
+        // says more than a spelling whose count did not fit — the last
+        // tried used to be reported, and read "the label has 16 characters
+        // but the region splits into 18" for a line the first spelling had
+        // matched glyph for glyph. The places tried second (the classic
+        // line, for most) add theirs when they got as far.
+        let classic_first = self.classic_first.contains(&field);
+        let mut whys: [Option<(u8, String)>; 2] = [None, None];
+        for (classic, why) in [classic_first, !classic_first].into_iter().zip(&mut whys) {
+            let learned = if classic {
+                self.learn_classic(frame, field, band, &label, from, why)
+            } else {
+                self.learn_lines(frame, field, band, &label, from, why)
+            };
+            if let Some(line) = learned {
+                return Ok(line);
+            }
+        }
+        let [first, second] = whys;
+        let why = match (first, second) {
+            (Some((r1, w1)), Some((r2, w2))) if r2 >= r1 => format!("{w1}; {w2}"),
+            (Some((_, w)), _) | (None, Some((_, w))) => w,
+            (None, None) => "no line to learn from".into(),
+        };
+        let kept = self.keep_failure(frame, field, band, &label);
+        Err(format!("\"{label}\" could not be learned: {why}{kept}"))
+    }
+
+    /// Learn `field`'s line on, by or around the bar, into the font: what
+    /// was learned, or `None` with the most telling failure in `why`.
+    fn learn_lines(
+        &mut self,
+        frame: &RgbaImage,
+        field: Field,
+        band: &NormRect,
+        label: &str,
+        from: &str,
+        why: &mut Option<(u8, String)>,
+    ) -> Option<String> {
         let (fw, fh) = frame.dimensions();
         let first = self.line_for(field);
         let mut lines = vec![first];
@@ -502,8 +1018,7 @@ impl Numbers {
         // [6370/6370]" for a line that shows 6370 / 6370, or 8954288 for
         // 8,954,288. The line decides, among the ways the value could be
         // printed; the glyph reader keeps only what reads back.
-        let labels = spellings(field, &label);
-        let mut why = String::new();
+        let labels = spellings(field, label);
         for line in lines {
             let region = line.region(band, fw, fh);
             if region.w < 8 || region.h < 6 {
@@ -516,35 +1031,222 @@ impl Numbers {
                             frame, region.x, region.y, region.w, region.h,
                         )
                         .to_image();
-                        self.keep(field, spelling, crop, line, from);
+                        self.keep(field, spelling, crop, line, None, from);
                         self.lines.insert(field, line);
+                        self.classic_first.remove(&field);
                         self.state.entry(field).or_default().attempts = 0;
-                        let as_said = if *spelling == label {
+                        let as_said = if spelling == label {
                             String::new()
                         } else {
                             format!(" (the {from} said \"{label}\")")
                         };
-                        return Ok(format!(
+                        return Some(format!(
                             "learned {count} glyphs of \"{spelling}\"{as_said} ({:?} the {} bar, from the {from}); the font knows {} characters",
                             line,
                             field.label(),
                             self.glyphs()
                         ));
                     }
-                    Err(e) => why = e.to_string(),
+                    Err(e) => note(why, &e, spelling, label, &format!("{line:?} the bar")),
                 }
             }
         }
-        Err(format!("\"{label}\" could not be learned: {why}"))
+        None
     }
 
-    /// Keep an example on disk; with too many for a field, the oldest goes
-    /// and the font is rebuilt from the rest.
-    fn keep(&mut self, field: Field, label: &str, crop: RgbaImage, line: Line, from: &str) {
+    /// Learn `field`'s line as the classic HUD prints it, above the bar on
+    /// the panel, into the classic font: each spelling in turn, in the
+    /// window it was last learned from, then over the whole line above the
+    /// bar, then with whatever stands in front of each gap in it left out —
+    /// the first that learns (reading back as surely as the classic font
+    /// reads) is kept. The spellings without the field's name go before
+    /// those with it, in every window: the number alone, where it learns,
+    /// is read in a fraction of a millisecond, while a name drawn in a
+    /// bolder hand, its letters touching, is cut apart glyph by glyph on
+    /// every frame (EXP's: 4 ms). What was learned, or `None` with the most
+    /// telling failure in `why`.
+    fn learn_classic(
+        &mut self,
+        frame: &RgbaImage,
+        field: Field,
+        band: &NormRect,
+        label: &str,
+        from: &str,
+        why: &mut Option<(u8, String)>,
+    ) -> Option<String> {
+        let (fw, fh) = frame.dimensions();
+        let whole = Window::whole(band, fw, fh).region(band, fw, fh);
+        if whole.w < 8 || whole.h < 6 {
+            return None;
+        }
+        let Some(cuts) = cuts(frame, whole) else {
+            why.get_or_insert((
+                0,
+                "no text on the panel above the bar, where the classic HUD writes it".into(),
+            ));
+            return None;
+        };
+        // The window known for the field, then each cut, with the runs of
+        // ink past it.
+        let mut windows: Vec<(Window, Option<usize>)> = self
+            .windows
+            .get(&field)
+            .map(|w| (*w, None))
+            .into_iter()
+            .collect();
+        for (left, runs) in cuts {
+            let window = Window::starting(left, band, fw, fh);
+            if !windows.iter().any(|(w, _)| *w == window) {
+                windows.push((window, Some(runs)));
+            }
+        }
+        let labels = classic_spellings(field, label);
+        let mut tries = 0;
+        for spelling in &labels {
+            let chars = spelling.chars().count();
+            for &(window, runs) in &windows {
+                // Far more runs of ink than the spelling has characters is
+                // not its line (the scenery above a modern bar, or the
+                // screen's whole width above the modern EXP bar): passed
+                // over without the glyph reader, which would only cut it
+                // up for nothing. A few more are allowed: a name drawn bold
+                // is dropped as a block, a bar's corner is debris.
+                if runs.is_some_and(|r| r > chars + CLASSIC_SPARE_RUNS) {
+                    continue;
+                }
+                let region = window.region(band, fw, fh);
+                if region.w < 8 || region.h < 6 {
+                    continue;
+                }
+                if tries == CLASSIC_TRIES {
+                    return None;
+                }
+                tries += 1;
+                // Learned on the glyph reader's loose bar, kept only if the
+                // line reads back surely by the classic font's own
+                // (`classic_sure`).
+                let font = self
+                    .classic
+                    .entry(field)
+                    .or_insert_with(|| GlyphSet::new(classic_options()));
+                let before = font.clone();
+                let learned = font.learn(frame, region, spelling).and_then(|count| {
+                    match font.read(frame, region).value {
+                        Some(back) if classic_sure(&back) => Ok(count),
+                        back => Err(LearnError::DoesNotReadBack {
+                            read: format!(
+                                "{} (not surely)",
+                                back.map(|r| r.text).unwrap_or_default()
+                            ),
+                        }),
+                    }
+                });
+                if learned.is_err() {
+                    *font = before;
+                }
+                match learned {
+                    Ok(count) => {
+                        let crop = image::imageops::crop_imm(
+                            frame, region.x, region.y, region.w, region.h,
+                        )
+                        .to_image();
+                        self.keep(field, spelling, crop, Line::Above, Some(window), from);
+                        self.windows.insert(field, window);
+                        self.classic_first.insert(field);
+                        self.state.entry(field).or_default().attempts = 0;
+                        let as_said = if spelling == label {
+                            String::new()
+                        } else {
+                            format!(" (the {from} said \"{label}\")")
+                        };
+                        return Some(format!(
+                            "learned {count} glyphs of \"{spelling}\"{as_said} (the line above the {} bar, in the classic HUD's font, from the {from}); the font knows {} characters",
+                            field.label(),
+                            self.glyphs()
+                        ));
+                    }
+                    Err(e) => note(why, &e, spelling, label, "the line above the bar"),
+                }
+            }
+        }
+        None
+    }
+
+    /// A line that could not be learned, as a picture under `debug/` with
+    /// the label in its name, a few per run: what the labeller said and
+    /// what the pixels showed can then be compared.
+    fn keep_failure(
+        &mut self,
+        frame: &RgbaImage,
+        field: Field,
+        band: &NormRect,
+        label: &str,
+    ) -> String {
+        if self.failures_kept >= FAILURES_KEPT {
+            return String::new();
+        }
+        let (fw, fh) = frame.dimensions();
+        // Around the bar, and up to the classic line above it.
+        let around = Line::Around.region(band, fw, fh);
+        let top = Window::whole(band, fw, fh)
+            .region(band, fw, fh)
+            .y
+            .min(around.y);
+        let region = Rect {
+            x: around.x,
+            y: top,
+            w: around.w,
+            h: around.y + around.h - top,
+        };
+        if region.w < 8 || region.h < 6 {
+            return String::new();
+        }
+        self.failures_kept += 1;
+        let safe: String = label
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let name = format!(
+            "debug/unlearned-{}-{}-{safe}.png",
+            field.label().to_lowercase(),
+            self.failures_kept
+        );
+        let crop =
+            image::imageops::crop_imm(frame, region.x, region.y, region.w, region.h).to_image();
+        let _ = std::fs::create_dir_all(self.dir.join("debug"));
+        match crop.save(self.dir.join(&name)) {
+            Ok(()) => format!("; the line is kept as learned/{name}"),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// Keep an example on disk; with too many for a field in its font, the
+    /// oldest of them goes and the fonts are rebuilt from the rest. A
+    /// classic example's picture has a name of its own (`hp-classic-1.png`),
+    /// which a MapleSyrup that does not know classic examples never gives
+    /// one of its own.
+    fn keep(
+        &mut self,
+        field: Field,
+        label: &str,
+        crop: RgbaImage,
+        line: Line,
+        window: Option<Window>,
+        from: &str,
+    ) {
         let folder = self.dir.join("font");
         let _ = std::fs::create_dir_all(&folder);
-        let mut n = self.samples.iter().filter(|s| s.field == field).count() + 1;
-        let name = |n: usize| format!("font/{}-{n}.png", field.label().to_lowercase());
+        let classic = window.is_some();
+        let same = |s: &Sample| s.field == field && s.window.is_some() == classic;
+        let mut n = self.samples.iter().filter(|s| same(s)).count() + 1;
+        let name = |n: usize| {
+            let field = field.label().to_lowercase();
+            if classic {
+                format!("font/{field}-classic-{n}.png")
+            } else {
+                format!("font/{field}-{n}.png")
+            }
+        };
         while self.samples.iter().any(|s| s.picture == name(n)) {
             n += 1;
         }
@@ -557,10 +1259,11 @@ impl Numbers {
             line,
             from: from.to_string(),
             when: now_text(),
+            window,
         });
-        let kept = self.samples.iter().filter(|s| s.field == field).count();
+        let kept = self.samples.iter().filter(|s| same(s)).count();
         if kept > MAX_SAMPLES
-            && let Some(i) = self.samples.iter().position(|s| s.field == field)
+            && let Some(i) = self.samples.iter().position(same)
         {
             let old = self.samples.remove(i);
             let _ = std::fs::remove_file(self.dir.join(&old.picture));
@@ -569,11 +1272,13 @@ impl Numbers {
         self.save();
     }
 
-    /// The font from the kept examples alone.
+    /// The fonts from the kept examples alone.
     fn rebuild(&mut self) {
         let samples = std::mem::take(&mut self.samples);
         self.font = GlyphSet::new(options());
+        self.classic.clear();
         self.lines.clear();
+        self.windows.clear();
         for sample in samples {
             self.relearn(sample);
         }
@@ -600,8 +1305,11 @@ impl Numbers {
         }
         self.samples.clear();
         self.lines.clear();
+        self.windows.clear();
+        self.classic_first.clear();
         self.state.clear();
         self.font = GlyphSet::new(options());
+        self.classic.clear();
         self.save();
     }
 
@@ -678,6 +1386,161 @@ pub(crate) mod tests {
         let dir = std::env::temp_dir().join(format!("ms-numbers-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// The classic HUD of a player's 4K screen (see `tests/classic_hud.rs`)
+    /// and its HP, MP and EXP bars.
+    fn classic() -> (RgbaImage, [NormRect; 3]) {
+        let strip = image::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/resources/hud-classic-4k-strip.png"
+        ))
+        .expect("the classic 4K strip fixture")
+        .to_rgba8();
+        let mut frame = RgbaImage::from_pixel(3840, 2160, Rgba([20, 20, 30, 255]));
+        image::imageops::replace(&mut frame, &strip, 0, (2160 - strip.height()) as i64);
+        let bands = [
+            NormRect::new(0.36822918, 0.9777778, 0.4450521, 0.9925926),
+            NormRect::new(0.44739583, 0.9777778, 0.5239583, 0.9930556),
+            NormRect::new(0.53020835, 0.9777778, 0.6132866, 0.9930556),
+        ];
+        (frame, bands)
+    }
+
+    #[test]
+    fn the_classic_line_is_reached_at_any_size_of_the_screen() {
+        let (_, bands) = classic();
+        let hp = bands[0];
+        // At 4K the HP bar is 295 × 32 at (1414, 2112), and its line stands
+        // 39 to 9 rows above it: the window reaches 48 up, from just before
+        // the bar to just past it.
+        let whole = Window::whole(&hp, 3840, 2160);
+        assert_eq!(
+            whole.region(&hp, 3840, 2160),
+            Rect {
+                x: 1408,
+                y: 2064,
+                w: 307,
+                h: 48
+            }
+        );
+        // Line::Above holds 16 rows of it: the digits' feet.
+        assert_eq!(Line::Above.region(&hp, 3840, 2160).y, 2096);
+        // On a screen half the size, half of everything (give or take a
+        // pixel), and a window that leaves the field's name out keeps its
+        // place on the line.
+        let half = whole.region(&hp, 1920, 1080);
+        assert!(
+            half.x.abs_diff(704) <= 1 && half.y.abs_diff(1032) <= 1,
+            "{half:?}"
+        );
+        assert!(
+            half.h.abs_diff(24) <= 1 && half.w.abs_diff(154) <= 3,
+            "{half:?}"
+        );
+        let past = Window::starting(1460, &hp, 3840, 2160);
+        assert_eq!(past.region(&hp, 3840, 2160).x, 1460);
+        assert!(past.region(&hp, 1920, 1080).x.abs_diff(730) <= 1);
+    }
+
+    #[test]
+    fn font_json_with_classic_examples_is_read_by_an_older_maplesyrup_and_reads_its_files() {
+        // A MapleSyrup from before the classic font read font.json as this
+        // (its own types, as they were): it must still read the new file.
+        #[derive(Deserialize)]
+        #[allow(dead_code)]
+        struct OldSample {
+            field: Field,
+            text: String,
+            picture: String,
+            line: Line,
+            from: String,
+            when: String,
+        }
+        #[derive(Deserialize)]
+        struct OldSaved {
+            samples: Vec<OldSample>,
+        }
+        let dir = temp_dir("compat");
+        let mut numbers = Numbers::load(&dir);
+        let now = Instant::now();
+        let (frame, bands) = hud((400, 400), (1291, 1351), 37.51);
+        numbers
+            .learn(&frame, Field::Hp, &bands[0], "HP [400/400]", "ocr", now)
+            .unwrap();
+        let (classic, classic_bands) = classic();
+        let learned = numbers
+            .learn(
+                &classic,
+                Field::Mp,
+                &classic_bands[1],
+                "MP[101/101]",
+                "model",
+                now,
+            )
+            .unwrap();
+        assert!(learned.contains("the line above the MP bar"), "{learned}");
+        let text = std::fs::read_to_string(dir.join("font.json")).unwrap();
+        let old: OldSaved = serde_json::from_str(&text).expect("an older MapleSyrup reads it");
+        // It sees the modern example only: the classic one, learned into
+        // its one font, would be averaged with the modern digits.
+        assert_eq!(old.samples.len(), 1, "{text}");
+        assert_eq!(old.samples[0].text, "HP[400/400]");
+        assert!(
+            text.contains("\"classic\"") && text.contains("mp-classic-1.png"),
+            "{text}"
+        );
+        assert!(dir.join("font/mp-classic-1.png").exists());
+        // Both kept between runs, each in its font.
+        let mut again = Numbers::load(&dir);
+        assert_eq!(again.samples().len(), 2);
+        assert!(again.read(&frame, Field::Hp, &bands[0]).is_some());
+        let mp = again.read(&classic, Field::Mp, &classic_bands[1]);
+        assert_eq!(
+            mp.map(|r| r.value),
+            Some(Value::Amount {
+                current: 101,
+                max: 101
+            })
+        );
+        // And a font.json an older MapleSyrup wrote (no classic examples,
+        // no windows) is read as it always was.
+        let older = r#"{"samples":[{"field":"hp","text":"HP[400/400]","picture":"font/hp-1.png","line":"above","from":"ocr","when":"2026-10-03 21:00"}]}"#;
+        std::fs::write(dir.join("font.json"), older).unwrap();
+        let mut older = Numbers::load(&dir);
+        assert_eq!(older.samples().len(), 1);
+        assert!(older.samples()[0].window.is_none());
+        assert_eq!(older.glyphs(), 7, "H, P, the brackets, the slash, 4 and 0");
+        assert!(older.read(&frame, Field::Hp, &bands[0]).is_some());
+        assert!(older.read(&classic, Field::Mp, &classic_bands[1]).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_line_that_will_not_learn_says_the_most_telling_reason_and_keeps_its_picture() {
+        let dir = temp_dir("unlearned");
+        let mut numbers = Numbers::load(&dir);
+        let now = Instant::now();
+        let (frame, bands) = hud((240, 400), (1291, 1351), 37.51);
+        // The line shows HP[240/400]; the labeller says HP[240/440]. As
+        // given, the glyph count fits and the two 4s do not look alike;
+        // the other spellings do not even fit the count. The reason
+        // reported is the first, not the last tried.
+        let why = numbers
+            .learn(&frame, Field::Hp, &bands[0], "HP [240/440]", "model", now)
+            .unwrap_err();
+        assert!(why.contains("look nothing alike"), "{why}");
+        assert!(!why.contains("splits into"), "{why}");
+        // The line is kept as a picture, named after the label.
+        let kept = dir.join("debug/unlearned-hp-1-HP_240_440_.png");
+        assert!(why.contains("unlearned-hp-1-HP_240_440_.png"), "{why}");
+        assert!(kept.exists());
+        // A label no spelling of which fits: the count mismatch it is.
+        let why = numbers
+            .learn(&frame, Field::Hp, &bands[0], "2400/400", "model", now)
+            .unwrap_err();
+        assert!(why.contains("splits into"), "{why}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -887,6 +1750,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_space_beside_a_decimal_point_is_not_read() {
+        assert_eq!(tight("830[7 .52%]"), "830[7.52%]");
+        assert_eq!(tight("1, 185,906 [34. 36%]"), "1,185,906 [34.36%]");
+        assert_eq!(
+            tight("830 7.52%"),
+            "830 7.52%",
+            "the two numbers stay apart"
+        );
+        assert_eq!(
+            parse(Field::Exp, &tight("830[7 .52%]")),
+            Some(Value::Percent(7.52))
+        );
+    }
+
+    #[test]
     fn values_parse_the_lines_the_game_prints() {
         assert_eq!(
             parse(Field::Hp, "HP[400/400]"),
@@ -914,5 +1792,255 @@ pub(crate) mod tests {
         assert_eq!(parse(Field::Hp, "HP 400"), None, "no maximum");
         assert!((Value::Amount { current: 1, max: 3 }.percent() - 33.33).abs() < 0.01);
         assert_eq!(normalised(" HP [400 / 400] "), "HP[400/400]");
+    }
+}
+
+/// The owner's Classic World HUD lines of 10 October, as his MapleSyrup kept
+/// them under `learned/debug/` when they would not learn: the line above
+/// the bar and the bar (no name in them). Read from `$MS_OWNER_FRAMES`, or
+/// `resources/owner-classic/`; the test says so and passes when neither
+/// holds them.
+#[cfg(test)]
+mod owner_classic {
+    use super::*;
+
+    /// A crop and its bar: 6 px in from each side, 1.5 bar heights down
+    /// (`keep_failure`'s region), 8 rows above the crop's bottom.
+    fn owner(name: &str) -> Option<(RgbaImage, NormRect)> {
+        let dirs = [
+            std::env::var("MS_OWNER_FRAMES").ok().map(PathBuf::from),
+            Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/owner-classic")),
+        ];
+        let frame = dirs
+            .into_iter()
+            .flatten()
+            .find_map(|d| image::open(d.join(name)).ok())?
+            .to_rgba8();
+        let (w, h) = frame.dimensions();
+        let bar = ((h - 8) as f32 / 2.5).round() as u32;
+        Some((
+            frame,
+            NormRect::from_pixels(6, h - 8 - bar, w - 12, bar, w, h),
+        ))
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ms-owner-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    const HP_671: &str = "unlearned-hp-4-HP_671_671_.png";
+    const MP_695: &str = "unlearned-mp-5-MP_695_695_.png";
+    const HP_655: &str = "unlearned-hp-1-659_659.png";
+    const EXP_752: &str = "unlearned-exp-6-830_7_32__.png";
+
+    #[test]
+    fn the_owners_classic_lines_learn_from_what_they_say_and_not_from_misreads() {
+        let names = [HP_671, MP_695, HP_655, EXP_752];
+        let Some(crops) = names.iter().map(|n| owner(n)).collect::<Option<Vec<_>>>() else {
+            eprintln!(
+                "the owner's crops are not here (MS_OWNER_FRAMES, resources/owner-classic): skipped"
+            );
+            return;
+        };
+        let now = Instant::now();
+        let read = |n: &mut Numbers, i: usize, field: Field| {
+            let (frame, band) = &crops[i];
+            let read = n.read(frame, field, band);
+            eprintln!("{} {field:?}: {read:?}", names[i]);
+            read.map(|r| r.value)
+        };
+        let amount = |current, max| Some(Value::Amount { current, max });
+        // HP[671/671]: its two 1s are drawn 7 and 8 pixels wide; at
+        // 12:12:36 and 12:53:10 it was "not surely" learned. Now it is,
+        // read, and read after a reload.
+        let dir = temp_dir("671");
+        let mut n = Numbers::load(&dir);
+        let (frame, band) = &crops[0];
+        let learned = n.learn(frame, Field::Hp, band, "HP[671/671]", "model", now);
+        assert!(learned.is_ok(), "{learned:?}");
+        assert_eq!(read(&mut n, 0, Field::Hp), amount(671, 671));
+        assert_eq!(
+            read(&mut Numbers::load(&dir), 0, Field::Hp),
+            amount(671, 671)
+        );
+        // A line with a digit it does not know (5) is not read as another.
+        assert_eq!(read(&mut n, 2, Field::Hp), None);
+        // The teacher's misreads are not learned (11:48:10 "659/659" for
+        // 655/655; 12:21:12 "830[7.32%]" for 830[7.52%]), what the lines
+        // say is, and each line then reads as it says.
+        let (frame, band) = &crops[2];
+        assert!(
+            n.learn(frame, Field::Hp, band, "659/659", "model", now)
+                .is_err()
+        );
+        assert_eq!(read(&mut n, 2, Field::Hp), None);
+        let learned = n.learn(frame, Field::Hp, band, "655/655", "model", now);
+        assert!(learned.is_ok(), "{learned:?}");
+        assert_eq!(read(&mut n, 2, Field::Hp), amount(655, 655));
+        let (frame, band) = &crops[3];
+        assert!(
+            n.learn(frame, Field::Exp, band, "830[7.32%]", "model", now)
+                .is_err()
+        );
+        let learned = n.learn(frame, Field::Exp, band, "830[7.52%]", "model", now);
+        assert!(learned.is_ok(), "{learned:?}");
+        assert_eq!(read(&mut n, 3, Field::Exp), Some(Value::Percent(7.52)));
+        // MP[695/695] with all that learned, and every line still right.
+        let (frame, band) = &crops[1];
+        let learned = n.learn(frame, Field::Mp, band, "MP[695/695]", "model", now);
+        assert!(learned.is_ok(), "{learned:?}");
+        assert_eq!(read(&mut n, 1, Field::Mp), amount(695, 695));
+        assert_eq!(read(&mut n, 0, Field::Hp), amount(671, 671));
+        assert_eq!(read(&mut n, 2, Field::Hp), amount(655, 655));
+        assert_eq!(read(&mut n, 3, Field::Exp), Some(Value::Percent(7.52)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One of the owner's whole 4K frames (`mark-001.png` at 11:52:59,
+    /// `hud-found.png` at 12:38), whose HUD lies where the classic fixture's
+    /// does (`tests/classic_hud.rs`).
+    /// (`hud-found.png` is the frame MapleSyrup saved with its own "HUD
+    /// found" box drawn on it: the box's top edge, rows 2,082 – 2,083 from
+    /// x 1,072 to 2,400, crosses the text line, and is repaired from the
+    /// rows above and below, as the repository's classic fixture was.)
+    fn owner_frame(name: &str) -> Option<RgbaImage> {
+        let dir = std::env::var("MS_OWNER_FRAMES").ok()?;
+        let mut frame = image::open(Path::new(&dir).join(name)).ok()?.to_rgba8();
+        if name == "hud-found.png" {
+            for x in 1072..=2400 {
+                let (above, below) = (*frame.get_pixel(x, 2081), *frame.get_pixel(x, 2084));
+                for (y, w) in [(2082, 1.0 / 3.0), (2083, 2.0 / 3.0)] {
+                    let mix = |c: usize| {
+                        (f32::from(above.0[c]) * (1.0 - w) + f32::from(below.0[c]) * w).round()
+                            as u8
+                    };
+                    frame.put_pixel(x, y, image::Rgba([mix(0), mix(1), mix(2), 255]));
+                }
+            }
+        }
+        Some(frame)
+    }
+
+    const BANDS: [NormRect; 3] = [
+        NormRect {
+            x0: 0.36822918,
+            y0: 0.9777778,
+            x1: 0.4450521,
+            y1: 0.9925926,
+        },
+        NormRect {
+            x0: 0.44739583,
+            y0: 0.9777778,
+            x1: 0.5239583,
+            y1: 0.9930556,
+        },
+        NormRect {
+            x0: 0.53020835,
+            y0: 0.9777778,
+            x1: 0.6132866,
+            y1: 0.9930556,
+        },
+    ];
+
+    #[test]
+    fn the_owners_session_replayed_on_his_frames_reads_nothing_wrong() {
+        let (Some(market), Some(later), Some((hp4, hp4_band)), Some((mp5, mp5_band))) = (
+            owner_frame("mark-001.png"),
+            owner_frame("hud-found.png"),
+            owner(HP_671),
+            owner(MP_695),
+        ) else {
+            eprintln!("the owner's frames are not here (MS_OWNER_FRAMES): skipped");
+            return;
+        };
+        let dir = temp_dir("session");
+        let mut n = Numbers::load(&dir);
+        let now = Instant::now();
+        let fields = Field::ALL;
+        // What each frame says.
+        let truth = |frame: &str, field: Field| match (frame, field) {
+            ("market", Field::Hp) => Value::Amount {
+                current: 655,
+                max: 655,
+            },
+            ("market", Field::Mp) => Value::Amount {
+                current: 671,
+                max: 671,
+            },
+            ("market", Field::Exp) => Value::Percent(80.42),
+            (_, Field::Hp) => Value::Amount {
+                current: 416,
+                max: 671,
+            },
+            (_, Field::Mp) => Value::Amount {
+                current: 189,
+                max: 695,
+            },
+            (_, Field::Exp) => Value::Percent(19.32),
+        };
+        let check = |n: &mut Numbers, name: &str, frame: &RgbaImage| {
+            let mut read = Vec::new();
+            for (field, band) in fields.into_iter().zip(BANDS) {
+                let value = n.read(frame, field, &band).map(|r| r.value);
+                eprintln!("{name} {field:?}: {value:?}");
+                assert!(
+                    value.is_none() || value == Some(truth(name, field)),
+                    "{name} {field:?} read wrong: {value:?}"
+                );
+                read.push(value.is_some());
+            }
+            read
+        };
+        // 11:48:10, the teacher's labels on the market's lines: HP
+        // "659/659" (it says 655/655) is not learned, MP "671/671" is, and
+        // EXP "7,105[80.42%]" (it says 7,109) is — a 9 kept as a 5, which
+        // nothing in that one label can tell.
+        assert!(
+            n.learn(&market, Field::Hp, &BANDS[0], "659/659", "model", now)
+                .is_err()
+        );
+        assert!(
+            n.learn(&market, Field::Mp, &BANDS[1], "671/671", "model", now)
+                .is_ok()
+        );
+        let poisoned = n.learn(
+            &market,
+            Field::Exp,
+            &BANDS[2],
+            "7,105[80.42%]",
+            "model",
+            now,
+        );
+        eprintln!("EXP 7,105[80.42%]: {poisoned:?}");
+        check(&mut n, "market", &market);
+        // 12:12:36: HP[671/671] — its 1s 7 and 8 px wide — is learned now.
+        let learned = n.learn(&hp4, Field::Hp, &hp4_band, "HP[671/671]", "model", now);
+        assert!(learned.is_ok(), "{learned:?}");
+        let mp = n.learn(&mp5, Field::Mp, &mp5_band, "MP[695/695]", "model", now);
+        eprintln!("MP[695/695]: {mp:?}");
+        // 12:38: nothing on the frame is read wrong; then the teacher's
+        // labels of 12:38:44, right as the frame shows, each tried in its
+        // own field's font. (EXP's font holds the 9 kept as a 5 at
+        // 11:48:10, and refuses "19.32".)
+        check(&mut n, "later", &later);
+        for (field, band, label) in [
+            (Field::Hp, BANDS[0], "416/671"),
+            (Field::Mp, BANDS[1], "189/695"),
+            (Field::Exp, BANDS[2], "2,133[19.32%]"),
+        ] {
+            let learned = n.learn(&later, field, &band, label, "model", now);
+            eprintln!("{field:?} {label}: {learned:?}");
+        }
+        // MP is read. HP's "416/671" is not learned: its 7 is drawn 15 px
+        // wide here and 16 at 12:12, and matches the template at 0.939 —
+        // a second template per drawn width is syrup's to give — but it is
+        // not read wrong either.
+        let read = check(&mut n, "later", &later);
+        assert!(read[1], "MP[189/695] read at 12:38: {read:?}");
+        // The market's lines, with all that learned: nothing read wrong.
+        check(&mut n, "market", &market);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

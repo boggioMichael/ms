@@ -281,6 +281,8 @@ pub fn render(view: &View, ansi: bool) -> Vec<String> {
     for entry in &view.log[start..] {
         let (who, color) = match entry.kind {
             Kind::Heard => ("you", DIM),
+            // A warning in red; news in its own colour.
+            Kind::Warning => ("syrup!", RED),
             Kind::Alert => ("syrup!", SYRUP),
             Kind::Reply => ("syrup", GREEN),
             Kind::Info => ("·", DIM),
