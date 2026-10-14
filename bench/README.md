@@ -210,15 +210,23 @@ vector widths, regions past the edges, text in a pixel font, bars, motion)
 by the shipped syrup and this one, in every instruction set and with
 overflow checks on: the same outputs, no panic.
 
-Milliseconds per frame (mean), on the owner's two 4K frames with his
-learned folder, on his PC (Zen 5, 9800X3D, one worker of a Linux VM):
+Milliseconds per frame, on the owner's two 4K frames with his learned
+folder, on his PC (Zen 5, Ryzen 7 9800X3D, a Linux VM with two cores): the
+median over three rounds of each run's mean, the two builds run in turns,
+this branch's final syrup (08834f8) against the build MapleSyrup shipped
+with. Before timing, both builds wrote every frame's outputs in all three
+modes, and the files were the same:
 
 | | shipped | now | |
 |---|--:|--:|--:|
-| the HUD being looked for (frame a) | 46.4 | 4.2 | 11× |
-| the HUD in view (frame b) | 25.5 | 3.4 | 7.5× |
-| every detector (the preview), frame a / b | 83 | 10.8 / 11.4 | 7.3–7.7× |
-| the HUD alone, AVX2 only (`SYRUP_SIMD=avx2`), frame a / b | 46.4 / 25.5 | 10.0 / 8.7 | 2.9–4.6× |
+| the HUD being looked for (frame a) | 47.8 | 4.2 | 11.5× |
+| the HUD in view (frame b) | 25.6 | 3.4 | 7.6× |
+| while Claude listens (`--claude`), frame a / b | 57.0 / 35.8 | 6.2 / 5.8 | 9.2× / 6.2× |
+| every detector (the preview), frame a / b | 83.4 / 83.7 | 10.7 / 11.3 | 7.8× / 7.4× |
+| the HUD alone, AVX2 only (`SYRUP_SIMD=avx2`), frame a / b | 47.8 / 25.6 | 9.9 / 8.6 | 4.8× / 3.0× |
+| while Claude listens, AVX2 only, frame a / b | 57.0 / 35.8 | 12.1 / 11.0 | 4.7× / 3.3× |
+
+(The AVX2 rows are one round each, against the shipped build's own times.)
 
 `--claude` is the companion as it runs while Claude listens: every third
 frame also looks for motion, dialogs and the panels (`RICH_EVERY`).
