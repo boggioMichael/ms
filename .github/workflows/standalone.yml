@@ -162,6 +162,9 @@ jobs:
           sha256sum "$RUNNER_TEMP"/MapleSyrup-Setup-*.exe | tee -a logs/installer.log
       - name: Installer test (install, run, uninstall)
         continue-on-error: true
+        # A step of the install that waited for an answer nobody gives would
+        # hold the job (and its publishing) for hours.
+        timeout-minutes: 10
         run: |
           set -o pipefail
           {
@@ -173,6 +176,10 @@ jobs:
             test -f "$app/MapleSyrup.exe" && echo "INSTALLED: $app"
             echo "sessions folder: $(cat "$app/sessions-folder.txt")"
             test -f "$menu/MapleSyrup.lnk" && echo "SHORTCUT: MapleSyrup.lnk"
+            # The Claude folder the install writes (MapleSyrup --setup-claude),
+            # its launcher handing --tunnel on to MapleSyrup.
+            grep -q -- "--claude-only %\*" "$app/Claude/Start Claude.cmd" && echo "CLAUDE FOLDER: written"
+            test -f "$app/Claude/.mcp.json" && echo "CLAUDE FOLDER: .mcp.json"
             "$app/MapleSyrup.exe" --self-test && echo "INSTALLED COPY: self-test passed"
             MSYS_NO_PATHCONV=1 "$app/unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
             for i in $(seq 1 30); do [ -f "$app/MapleSyrup.exe" ] || break; sleep 1; done

@@ -4,6 +4,8 @@ MapleSyrup watches your MapleStory window and talks with you through your phone 
 
 With an OpenAI API key it talks like ChatGPT in a natural voice, **sees your screen**, finds your HUD by itself (any resolution or layout) and **learns what you teach it** by talking: "see that? that's an Orange Mushroom — tell me when one shows up", "warn me when the boss is under 20%", "I'm level 70", "remember that my boss key is F10".
 
+**New in 0.9.1: one installer, everything.** The installer asks for each of your API keys — OpenAI, ElevenLabs (the voices on the phone), xAI (optional) — installs Claude Code when the PC doesn't have it, and adds MapleSyrup to the Claude desktop app when it's there. One icon on the desktop, **MapleSyrup**, then starts it all: Claude, the voices, and the phone over the internet (any network, mobile data too).
+
 **New in 0.9: Claude, live.** Talk with Claude while it sees your game. Add MapleSyrup to the Claude desktop app once (Start menu → *Add MapleSyrup to the Claude app*) and in any chat Claude sees what MapleSyrup sees: HP, MP and EXP with how old each number is, your level and map, what moves on the screen, a dialog and its text, the things you taught it, a look at the screen, MapleSyrup's own MapleStory wiki and what it knows about you. Or start **MapleSyrup with Claude** (Start menu): Claude Code with the game pushed to it as it happens — a death, a level-up, a new map, HP in danger — and MapleSyrup's voice on your phone; Claude for anything, as in the Claude app, with your game besides. Claude can save a picture of the game and show you your character in other items.
 
 **And its eyes are several times faster, with the same answers.** Syrup, the vision engine, now runs on the widest instructions your CPU has (AVX-512 VNNI, AVX-VNNI, AVX2 or SSE2, chosen when it starts). On 4K frames on a Ryzen 7 9800X3D: 25.6 → 3.4 ms a frame with the HUD in view, 47.8 → 4.2 ms while it looks for the HUD, 57 → 6.2 ms while Claude listens — every reading checked to be exactly what it was before.
@@ -31,29 +33,27 @@ It talks like a person, on a live call like ChatGPT's voice mode: speak any lang
 It speaks your language: the phone page comes in 14 languages (English, עברית, Español, Português, Français, Deutsch, 한국어, 日本語, 简体中文, 繁體中文, ไทย, Tiếng Việt, Bahasa Indonesia, Русский), it listens in the one you pick, and it answers in the language you talk to it.
 
 ### Install
-1. Download **MapleSyrup-Setup-….exe** below and run it. It installs for your user only (no administrator), adds MapleSyrup to the Start menu and the desktop, and asks for an OpenAI API key (optional; you can add it later).
-2. Start MapleSyrup and MapleStory (windowed or borderless windowed).
-3. Scan the QR code in MapleSyrup's window with your phone (same Wi-Fi), tap **Start listening**, and just talk.
-4. **With Claude** (optional):
-   - *In the Claude app:* install the Claude desktop app (claude.ai/download) and open it once. Then Start menu → **Add MapleSyrup to the Claude app**, quit Claude completely (its icon by the clock → Quit) and open it again. In any chat, ask about your game.
-   - *Live, with the game pushed to Claude and its voice on your phone:* Start menu → **MapleSyrup with Claude**. The first time it installs Claude Code (about a minute) and Claude Code asks you to log in with your Claude account. When it asks about the "development channel", choose *I am using this for local development*; to auto mode, say yes. Then talk to it from the phone.
+1. Download **MapleSyrup-Setup-….exe** below and run it. It installs for your user only (no administrator). It asks for your API keys: **OpenAI** (talking, seeing your screen), **ElevenLabs** (the voices on the phone), **xAI** (optional: Grok). Each stays on your PC. It installs **Claude Code** if this PC doesn't have it (a window opens for about a minute), and adds MapleSyrup to the Claude desktop app if it's there.
+2. Double-click **MapleSyrup** on the desktop. Two windows open: MapleSyrup's, with a QR code, and Claude's. The first time, Claude Code asks you to log in to your Claude account (a browser opens). To the "development channel" question choose *I am using this for local development*; to auto mode, say yes.
+3. Start MapleStory (windowed or borderless windowed). Scan the QR code with your phone (any network, mobile data too), tap **Start listening** and talk: Claude answers, in the voice you pick on the phone (Settings → Voice).
+
+Without Claude: Start menu → **MapleSyrup without Claude** (MapleSyrup's own answers, the same voices). The phone on the same Wi-Fi, without the internet link: **MapleSyrup (phone on the same Wi-Fi)**. Claude in any chat of the Claude app: quit the app completely (its icon by the clock → Quit) and open it again after installing.
 
 No installer? **MapleSyrup-…-portable.zip** has the same program: unzip it anywhere and double-click MapleSyrup.exe (*Add MapleSyrup to Claude.cmd* and *MapleSyrup with Claude.cmd* are beside it).
 
 ### בעברית: התקנה והפעלה
-1. מורידים את **MapleSyrup-Setup-….exe** ומריצים. ההתקנה למשתמש שלך בלבד (בלי מנהל מערכת), מוסיפה את MapleSyrup לתפריט התחל ולשולחן העבודה, ושואלת על מפתח OpenAI (לא חובה; אפשר להוסיף אחר כך).
-2. מפעילים את MapleSyrup ואת MapleStory (בחלון, או בחלון ללא מסגרת).
-3. סורקים את קוד ה-QR שבחלון של MapleSyrup עם הטלפון (באותה רשת Wi-Fi), לוחצים **Start listening** ומדברים.
-4. **עם Claude** (לא חובה):
-   - *באפליקציית Claude:* מתקינים את אפליקציית Claude למחשב (claude.ai/download) ופותחים אותה פעם אחת. אחר כך בתפריט התחל: **הוספת MapleSyrup לאפליקציית Claude**, סוגרים את Claude לגמרי (האייקון ליד השעון → Quit) ופותחים מחדש. מעכשיו בכל שיחה אפשר לשאול על המשחק.
-   - *בזמן אמת, עם המשחק נשלח ל-Claude והקול בטלפון:* בתפריט התחל: **MapleSyrup עם Claude**. בפעם הראשונה הוא מתקין את Claude Code (בערך דקה), ו-Claude Code מבקש להתחבר עם חשבון Claude. כשהוא שואל על "development channel" בוחרים *I am using this for local development*, ועל auto mode עונים כן. ואז מדברים איתו מהטלפון.
+1. מורידים את **MapleSyrup-Setup-….exe** ומריצים. ההתקנה למשתמש שלך בלבד (בלי מנהל מערכת). היא מבקשת את מפתחות ה-API: **OpenAI** (דיבור וראיית המסך), **ElevenLabs** (הקולות בטלפון), **xAI** (לא חובה: Grok). כל מפתח נשמר רק במחשב שלך. אם אין במחשב **Claude Code** היא מתקינה אותו (נפתח חלון לבערך דקה), ואם אפליקציית Claude מותקנת היא מוסיפה אליה את MapleSyrup.
+2. לוחצים פעמיים על **MapleSyrup** בשולחן העבודה. נפתחים שני חלונות: של MapleSyrup, עם קוד QR, ושל Claude. בפעם הראשונה Claude Code מבקש להתחבר לחשבון Claude (נפתח דפדפן). כשהוא שואל על "development channel" בוחרים *I am using this for local development*, ועל auto mode עונים כן.
+3. מפעילים את MapleStory (בחלון, או בחלון ללא מסגרת). סורקים את קוד ה-QR עם הטלפון (מכל רשת, גם סלולרית), לוחצים **Start listening** ומדברים: Claude עונה, בקול שבוחרים בטלפון (Settings → Voice).
+
+בלי Claude: בתפריט התחל, **MapleSyrup בלי Claude** (התשובות של MapleSyrup עצמו, אותם קולות). טלפון באותה רשת Wi-Fi, בלי הקישור דרך האינטרנט: **MapleSyrup (טלפון באותו Wi-Fi)**. ‏Claude בכל שיחה באפליקציית Claude: אחרי ההתקנה סוגרים את האפליקציה לגמרי (האייקון ליד השעון → Quit) ופותחים מחדש.
 
 אם Windows מזהיר "Windows protected your PC": *More info → Run anyway* (התוכנה עוד לא חתומה דיגיטלית).
 
 ### Good to know
 - **Windows 10 (1903) or 11, 64-bit.** Nothing else to install: the voice, the text reading and `curl` come with Windows.
 - **The program is not code-signed yet.** Windows SmartScreen may say "Windows protected your PC": click *More info → Run anyway*. If *Smart App Control* is on, Windows blocks unsigned programs entirely; it can be turned off in Windows Security → App & browser control.
-- **The phone link** is HTTPS on your local network with a certificate made on your PC, so the phone warns the page is "not private" (iPhone: *Show Details → visit this website*). Allow MapleSyrup on private networks if Windows asks. Or use **MapleSyrup (phone over the internet)** from the Start menu: no warning, works on mobile data.
+- **The phone link** is HTTPS on your local network with a certificate made on your PC, so the phone warns the page is "not private" (iPhone: *Show Details → visit this website*). Allow MapleSyrup on private networks if Windows asks. **MapleSyrup** on the desktop and **MapleSyrup without Claude** link the phone over the internet instead: no warning, works on mobile data; only **MapleSyrup (phone on the same Wi-Fi)** uses this link.
 - **Recording:** the first recording downloads ffmpeg once (about 150 MB). **MapleSyrup (recording and streaming)** in the Start menu records from the start, and shows the dog in OBS for streaming (use *Display Capture*).
 - **Privacy:** your OpenAI key stays on your PC (`%APPDATA%\MapleSyrup`). With a key, what you say to MapleSyrup and pictures of your game window are sent to OpenAI to answer you (OpenAI charges your account for it: roughly cents per hour). What it learns about you is kept on your PC only (`memory.json` and `knowledge.json` there; delete them to make it forget). With an xAI key, your words and a small picture of the game go to xAI (Grok) for the regular replies; with an ElevenLabs key, what it says goes to ElevenLabs to be spoken. Without a key, nothing leaves your PC except the phone link on your own network.
 - Sessions (a log of what was said, marked moments, recordings, `hud-found.png`) are kept in *Documents\MapleSyrup sessions*.

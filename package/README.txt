@@ -1,6 +1,22 @@
 MapleSyrup - the MapleStory companion
 =====================================
 
+Installed with the installer
+  The installer asks for your API keys - OpenAI (talking, seeing your
+  screen), ElevenLabs (the voices on the phone), xAI (optional: Grok) - and
+  keeps them in %APPDATA%\MapleSyrup; it installs Claude Code when this PC
+  doesn't have it, and adds MapleSyrup to the Claude desktop app when that
+  is here. Then "MapleSyrup" on the desktop (or in the Start menu) starts it
+  all: MapleSyrup with the phone over the internet (scan its QR code from
+  any network, mobile data too) and Claude in a window of its own, talking
+  with you through the phone in the voice you pick (Settings -> Voice). The
+  first time, Claude Code asks you to log in to your Claude account (a
+  browser opens); to "development channel" choose "I am using this for
+  local development", and to auto mode say yes.
+  Without Claude: "MapleSyrup without Claude" in the Start menu. The phone on
+  the same Wi-Fi, without the internet link: "MapleSyrup (phone on the same
+  Wi-Fi)".
+
 Start
   1. Start MapleSyrup: from the Start menu or the desktop icon if you used the
      installer, or double-click MapleSyrup.exe from the zip.
@@ -212,10 +228,11 @@ Streaming it
   game window).
 
 If the phone cannot connect
-  Start "MapleSyrup (phone over the internet)" from the Start menu (in the zip:
-  double-click "MapleSyrup (phone over internet).cmd"). It links the phone
-  through a Cloudflare tunnel: no certificate warning, no firewall question,
-  works on mobile data too.
+  Start "MapleSyrup" or "MapleSyrup without Claude" from the Start menu (in
+  the zip: double-click "MapleSyrup with Claude.cmd" or "MapleSyrup (phone
+  over internet).cmd"). They link the phone through a Cloudflare tunnel: no
+  certificate warning, no firewall question, works on mobile data too. The
+  address changes each time: scan the QR code again.
 
 If Windows blocks MapleSyrup.exe ("Smart App Control" / "blocked by your
 organization's Device Guard policy")
@@ -268,12 +285,14 @@ Claude, live (talk with Claude while it sees the game)
   desktop app on this PC.
   Claude Code too, with the game pushed to it as it happens (a death, a
   level-up, a new map, HP in danger) and MapleSyrup's voice to talk through
-  from the phone: "MapleSyrup with Claude" in the Start menu (from the zip,
-  double-click "MapleSyrup with Claude.cmd"). It writes the Claude folder
-  beside MapleSyrup.exe and starts Claude there; the first time it installs
-  Claude Code from claude.ai (about a minute), and Claude Code asks you to
-  log in with your Claude account. (By hand: MapleSyrup.exe --setup-claude,
-  then "Start Claude.cmd" in the Claude folder.) That
+  from the phone: "MapleSyrup" on the desktop or in the Start menu (from the
+  zip, double-click "MapleSyrup with Claude.cmd"), with the phone over the
+  internet. It writes the Claude folder beside MapleSyrup.exe and starts
+  Claude there; when Claude Code isn't on the PC (the installer puts it in)
+  it installs it from claude.ai (about a minute), and Claude Code asks you
+  to log in with your Claude account. (By hand: MapleSyrup.exe
+  --setup-claude, then "Start Claude.cmd" in the Claude folder, which hands
+  what it is given to MapleSyrup: "Start Claude.cmd" --tunnel.) That
   session is Claude for anything, as in the Claude app - talk about
   anything, search the web, read and open your files (Desktop, Documents,
   Downloads, Pictures...), build projects (in Documents\Claude projects) -
