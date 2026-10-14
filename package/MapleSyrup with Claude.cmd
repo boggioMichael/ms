@@ -1,7 +1,8 @@
 @echo off
-rem MapleSyrup with Claude: writes the Claude folder beside MapleSyrup.exe, then starts
-rem Claude there (Claude Code, installed from claude.ai the first time), with MapleSyrup's
-rem live view of the game and its voice on the phone.
+rem MapleSyrup with everything: writes the Claude folder beside MapleSyrup.exe, then starts
+rem Claude there (Claude Code, installed from claude.ai the first time) and MapleSyrup with
+rem the phone over the internet (a Cloudflare tunnel: any network, mobile data too) -
+rem MapleSyrup's live view of the game, and its voices on the phone.
 cd /d "%~dp0"
 echo.| "%~dp0MapleSyrup.exe" --setup-claude >nul
 if not exist "%~dp0Claude\Start Claude.cmd" (
@@ -9,4 +10,4 @@ if not exist "%~dp0Claude\Start Claude.cmd" (
   pause
   exit /b 1
 )
-call "%~dp0Claude\Start Claude.cmd"
+call "%~dp0Claude\Start Claude.cmd" --tunnel

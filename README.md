@@ -2,9 +2,9 @@
 
 **Download the installer: [MapleSyrup-Setup.exe](https://github.com/boggioMichael/ms/raw/refs/heads/build-output/master/windows/MapleSyrup-Setup.exe)** — the whole setup, Claude included, built from `master` by CI on every push (Windows 10 1903+ or 11, 64-bit; no administrator). The portable zip and the build's logs are beside it, on the [`build-output/master/windows`](https://github.com/boggioMichael/ms/tree/build-output/master/windows) branch.
 
-1. Run it. If Windows says "Windows protected your PC": *More info* → *Run anyway* (the program is not code-signed yet). It asks for an OpenAI API key, optional.
-2. Start **MapleSyrup** from the Start menu and MapleStory (windowed or borderless windowed); scan the QR code in MapleSyrup's window with your phone (same Wi-Fi), tap **Start listening** and talk.
-3. With Claude (optional): Start menu → **Add MapleSyrup to the Claude app** (needs the Claude desktop app; quit it and open it again afterwards), or **MapleSyrup with Claude** for the live session, with the game pushed to Claude and its voice on your phone (it installs Claude Code the first time).
+1. Run it. If Windows says "Windows protected your PC": *More info* → *Run anyway* (the program is not code-signed yet). It asks for your API keys — OpenAI, ElevenLabs (the voices on the phone), xAI (optional) — installs Claude Code if the PC doesn't have it, and adds MapleSyrup to the Claude desktop app if it's there.
+2. Double-click **MapleSyrup** on the desktop: MapleSyrup's window (a QR code) and Claude's open. The first time, Claude Code asks you to log in to your Claude account; to "development channel" choose *I am using this for local development*, to auto mode say yes.
+3. Start MapleStory (windowed or borderless windowed), scan the QR code with your phone (any network, mobile data too), tap **Start listening** and talk. Without Claude: Start menu → **MapleSyrup without Claude**.
 
 [בעברית: הוראות התקנה והפעלה](installer/release-notes.md#בעברית-התקנה-והפעלה) · everything it does: [package/README.txt](package/README.txt)
 

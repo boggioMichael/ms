@@ -1,11 +1,15 @@
 ﻿; MapleSyrup's installer (Inno Setup 6).
 ;
 ; Installs for the current user only (no administrator needed), under
-; %LOCALAPPDATA%\Programs\MapleSyrup; Start menu entries (MapleSyrup, over the
-; internet, for recording and streaming, with Claude, added to the Claude
-; app, the sessions folder, read me, uninstall) and a desktop icon; asks for
-; an OpenAI API key (optional, kept in %APPDATA%\MapleSyrup); keeps sessions
-; in Documents\MapleSyrup sessions.
+; %LOCALAPPDATA%\Programs\MapleSyrup, everything MapleSyrup works with: asks
+; for the API keys (OpenAI, ElevenLabs, xAI; each optional, kept in
+; %APPDATA%\MapleSyrup where MapleSyrup reads them), installs Claude Code when
+; the PC doesn't have it and writes the Claude folder, adds MapleSyrup to the
+; Claude desktop app when it is there; one desktop icon and Start menu entry
+; start it all (Claude, the voices, the phone over the internet: a Cloudflare
+; tunnel, any network); Start menu entries for MapleSyrup without Claude, on
+; the same Wi-Fi, for recording and streaming, the sessions folder, read me,
+; uninstall; keeps sessions in Documents\MapleSyrup sessions.
 ; Installing again over it updates it (a running MapleSyrup is closed first).
 ; Uninstalling leaves the user's settings, key, what it learned and the
 ; sessions in place.
@@ -80,11 +84,24 @@ Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [CustomMessages]
 ; English, and any language without its own words below.
-KeyTitle=OpenAI API key
-KeyHeading=Optional: lets MapleSyrup talk like ChatGPT, in a natural voice, and see your screen
-KeyText=Paste an OpenAI API key (from platform.openai.com/api-keys; the account needs a little credit). It stays on this PC, in your user folder.%n%nLeave it empty to add it later (MapleSyrup asks when it starts) or to use simple answers and the Windows voice.
-KeyLabel=API key:
-KeyWrong=That doesn't look like an OpenAI API key (they start with sk-). Leave it empty to add one later.
+; The keys page.
+KeysTitle=Your API keys
+KeysHeading=They make MapleSyrup talk like a person, in the voices you pick on the phone
+KeysText=Paste the keys you have. They stay on this PC, in your user folder. Leave a field empty to skip it, or to keep the key this PC has already.%nOpenAI: platform.openai.com/api-keys · ElevenLabs: elevenlabs.io → Developers → API keys · xAI: console.x.ai
+KeyOpenAI=OpenAI (sk-...): talking, and seeing your screen
+KeyEleven=ElevenLabs (sk_...): the voices on the phone
+KeyXai=xAI (xai-...), optional: Grok, quicker answers
+KeySaved=[saved already: empty keeps it]
+KeyWrong=That doesn't look like an %1 API key (they start with %2). Fix it, or leave the field empty.
+; Claude.
+ClaudeGroup=Claude:
+TaskClaude=Install Claude Code and connect it to MapleSyrup (needs a Claude Pro or Max account)
+TaskClaudeApp=Add MapleSyrup to the Claude desktop app, if it's on this PC
+SettingUpClaude=Setting up Claude...
+InstallingClaude=Installing Claude Code (about a minute)...
+; Start menu entries (PhoneOverInternet and WithClaude are 0.9.0's: removed on an update).
+WithoutClaude=MapleSyrup without Claude
+SameWifi=MapleSyrup (phone on the same Wi-Fi)
 PhoneOverInternet=MapleSyrup (phone over the internet)
 Recording=MapleSyrup (recording and streaming)
 Sessions=MapleSyrup sessions
@@ -92,11 +109,21 @@ ReadMe=Read me
 WithClaude=MapleSyrup with Claude
 AddToClaude=Add MapleSyrup to the Claude app
 #if FileExists(AddBackslash(CompilerPath) + "Languages\Hebrew.isl")
-hebrew.KeyTitle=מפתח OpenAI API
-hebrew.KeyHeading=לא חובה: כך MapleSyrup ידבר כמו ChatGPT, בקול טבעי, ויראה את המסך שלך
-hebrew.KeyText=הדבק מפתח OpenAI API (מ-platform.openai.com/api-keys; צריך קצת קרדיט בחשבון). הוא נשמר רק במחשב הזה, בתיקיית המשתמש שלך.%n%nאפשר להשאיר ריק ולהוסיף אחר כך (MapleSyrup ישאל כשהוא עולה), או להסתפק בתשובות פשוטות ובקול של Windows.
-hebrew.KeyLabel=מפתח:
-hebrew.KeyWrong=זה לא נראה כמו מפתח OpenAI (הם מתחילים ב-sk-). אפשר להשאיר ריק ולהוסיף אחר כך.
+hebrew.KeysTitle=מפתחות ה-API שלך
+hebrew.KeysHeading=בזכותם MapleSyrup מדבר כמו בן אדם, בקולות שתבחר בטלפון
+hebrew.KeysText=הדבק את המפתחות שיש לך. הם נשמרים רק במחשב הזה, בתיקיית המשתמש שלך. שדה ריק מדלגים עליו, או שנשאר המפתח שכבר שמור במחשב.%nOpenAI: platform.openai.com/api-keys · ElevenLabs: elevenlabs.io → Developers → API keys · xAI: console.x.ai
+hebrew.KeyOpenAI=OpenAI (sk-...): דיבור וראיית המסך
+hebrew.KeyEleven=ElevenLabs (sk_...): הקולות בטלפון
+hebrew.KeyXai=xAI (xai-...), לא חובה: Grok, תשובות מהירות יותר
+hebrew.KeySaved=[כבר שמור: ריק משאיר אותו]
+hebrew.KeyWrong=זה לא נראה כמו מפתח API של %1 (הם מתחילים ב-%2). תקן, או השאר את השדה ריק.
+hebrew.ClaudeGroup=Claude:
+hebrew.TaskClaude=להתקין את Claude Code ולחבר אותו ל-MapleSyrup (צריך חשבון Claude Pro או Max)
+hebrew.TaskClaudeApp=להוסיף את MapleSyrup לאפליקציית Claude במחשב, אם היא מותקנת
+hebrew.SettingUpClaude=מכין את Claude...
+hebrew.InstallingClaude=מתקין את Claude Code (בערך דקה)...
+hebrew.WithoutClaude=MapleSyrup בלי Claude
+hebrew.SameWifi=MapleSyrup (טלפון באותו Wi-Fi)
 hebrew.PhoneOverInternet=MapleSyrup (טלפון דרך האינטרנט)
 hebrew.Recording=MapleSyrup (להקלטה ולסטרים)
 hebrew.ReadMe=קרא אותי
@@ -104,77 +131,44 @@ hebrew.WithClaude=MapleSyrup עם Claude
 hebrew.AddToClaude=הוספת MapleSyrup לאפליקציית Claude
 #endif
 #if FileExists(AddBackslash(CompilerPath) + "Languages\Spanish.isl")
-spanish.KeyTitle=Clave de API de OpenAI
-spanish.KeyHeading=Opcional: MapleSyrup hablará como ChatGPT, con una voz natural, y verá tu pantalla
-spanish.KeyText=Pega una clave de API de OpenAI (de platform.openai.com/api-keys; la cuenta necesita un poco de saldo). Se queda en este PC, en tu carpeta de usuario.%n%nDéjala vacía para añadirla más tarde (MapleSyrup la pide al iniciar) o para usar respuestas sencillas y la voz de Windows.
-spanish.KeyLabel=Clave de API:
-spanish.KeyWrong=Eso no parece una clave de API de OpenAI (empiezan por sk-). Déjala vacía para añadirla más tarde.
 spanish.PhoneOverInternet=MapleSyrup (teléfono por internet)
 spanish.Recording=MapleSyrup (grabar y transmitir)
 spanish.ReadMe=Léeme
 #endif
 #if FileExists(AddBackslash(CompilerPath) + "Languages\BrazilianPortuguese.isl")
-brazilianportuguese.KeyTitle=Chave de API da OpenAI
-brazilianportuguese.KeyHeading=Opcional: o MapleSyrup fala como o ChatGPT, com voz natural, e vê a sua tela
-brazilianportuguese.KeyText=Cole uma chave de API da OpenAI (em platform.openai.com/api-keys; a conta precisa de um pouco de crédito). Ela fica neste PC, na sua pasta de usuário.%n%nDeixe em branco para adicionar depois (o MapleSyrup pede ao iniciar) ou para usar respostas simples e a voz do Windows.
-brazilianportuguese.KeyLabel=Chave de API:
-brazilianportuguese.KeyWrong=Isso não parece uma chave de API da OpenAI (elas começam com sk-). Deixe em branco para adicionar depois.
 brazilianportuguese.PhoneOverInternet=MapleSyrup (celular pela internet)
 brazilianportuguese.Recording=MapleSyrup (gravação e transmissão)
 brazilianportuguese.ReadMe=Leia-me
 #endif
 #if FileExists(AddBackslash(CompilerPath) + "Languages\French.isl")
-french.KeyTitle=Clé d'API OpenAI
-french.KeyHeading=Facultatif : MapleSyrup parle comme ChatGPT, avec une voix naturelle, et voit votre écran
-french.KeyText=Collez une clé d'API OpenAI (sur platform.openai.com/api-keys ; le compte a besoin d'un peu de crédit). Elle reste sur ce PC, dans votre dossier utilisateur.%n%nLaissez vide pour l'ajouter plus tard (MapleSyrup la demande au démarrage) ou pour utiliser des réponses simples et la voix de Windows.
-french.KeyLabel=Clé d'API :
-french.KeyWrong=Cela ne ressemble pas à une clé d'API OpenAI (elles commencent par sk-). Laissez vide pour l'ajouter plus tard.
 french.PhoneOverInternet=MapleSyrup (téléphone par Internet)
 french.Recording=MapleSyrup (enregistrement et streaming)
 french.ReadMe=Lisez-moi
 #endif
 #if FileExists(AddBackslash(CompilerPath) + "Languages\German.isl")
-german.KeyTitle=OpenAI-API-Schlüssel
-german.KeyHeading=Optional: Damit spricht MapleSyrup wie ChatGPT, mit natürlicher Stimme, und sieht Ihren Bildschirm
-german.KeyText=Fügen Sie einen OpenAI-API-Schlüssel ein (von platform.openai.com/api-keys; das Konto braucht etwas Guthaben). Er bleibt auf diesem PC, in Ihrem Benutzerordner.%n%nLassen Sie das Feld leer, um ihn später hinzuzufügen (MapleSyrup fragt beim Start danach) oder um einfache Antworten und die Windows-Stimme zu nutzen.
-german.KeyLabel=API-Schlüssel:
-german.KeyWrong=Das sieht nicht wie ein OpenAI-API-Schlüssel aus (diese beginnen mit sk-). Lassen Sie das Feld leer, um später einen hinzuzufügen.
 german.PhoneOverInternet=MapleSyrup (Handy über das Internet)
 german.Recording=MapleSyrup (Aufnahme und Streaming)
 german.ReadMe=Liesmich
 #endif
 #if FileExists(AddBackslash(CompilerPath) + "Languages\Korean.isl")
-korean.KeyTitle=OpenAI API 키
-korean.KeyHeading=선택 사항: MapleSyrup이 ChatGPT처럼 자연스러운 목소리로 말하고 화면을 볼 수 있게 됩니다
-korean.KeyText=OpenAI API 키를 붙여 넣으세요 (platform.openai.com/api-keys에서 만들 수 있으며, 계정에 약간의 크레딧이 필요합니다). 키는 이 PC의 사용자 폴더에만 저장됩니다.%n%n나중에 추가하려면 비워 두세요 (MapleSyrup이 시작할 때 물어봅니다). 비워 두면 간단한 대답과 Windows 음성을 사용합니다.
-korean.KeyLabel=API 키:
-korean.KeyWrong=OpenAI API 키가 아닌 것 같습니다 (키는 sk-로 시작합니다). 나중에 추가하려면 비워 두세요.
 korean.PhoneOverInternet=MapleSyrup (인터넷으로 휴대폰 연결)
 korean.Recording=MapleSyrup (녹화 및 방송)
 korean.ReadMe=읽어 보기
 #endif
 #if FileExists(AddBackslash(CompilerPath) + "Languages\Japanese.isl")
-japanese.KeyTitle=OpenAI API キー
-japanese.KeyHeading=任意：MapleSyrup が ChatGPT のように自然な声で話し、画面を見られるようになります
-japanese.KeyText=OpenAI API キーを貼り付けてください（platform.openai.com/api-keys で作成できます。アカウントに少しクレジットが必要です）。キーはこの PC のユーザー フォルダーにだけ保存されます。%n%n後で追加する場合は空欄のままにしてください（MapleSyrup の起動時に聞かれます）。空欄のままだと、簡単な返事と Windows の音声を使います。
-japanese.KeyLabel=API キー:
-japanese.KeyWrong=OpenAI API キーではないようです（キーは sk- で始まります）。後で追加する場合は空欄のままにしてください。
 japanese.PhoneOverInternet=MapleSyrup（インターネット経由でスマホ）
 japanese.Recording=MapleSyrup（録画・配信用）
 japanese.ReadMe=はじめにお読みください
 #endif
 #if FileExists(AddBackslash(CompilerPath) + "Languages\Russian.isl")
-russian.KeyTitle=Ключ API OpenAI
-russian.KeyHeading=Необязательно: с ним MapleSyrup говорит как ChatGPT, естественным голосом, и видит ваш экран
-russian.KeyText=Вставьте ключ API OpenAI (с platform.openai.com/api-keys; на счёте нужно немного средств). Он хранится только на этом ПК, в вашей папке пользователя.%n%nОставьте поле пустым, чтобы добавить ключ позже (MapleSyrup спросит при запуске) или пользоваться простыми ответами и голосом Windows.
-russian.KeyLabel=Ключ API:
-russian.KeyWrong=Это не похоже на ключ API OpenAI (они начинаются с sk-). Оставьте поле пустым, чтобы добавить ключ позже.
 russian.PhoneOverInternet=MapleSyrup (телефон через интернет)
 russian.Recording=MapleSyrup (запись и стриминг)
 russian.ReadMe=Инструкция
 #endif
 
 [Tasks]
+Name: "claude"; Description: "{cm:TaskClaude}"; GroupDescription: "{cm:ClaudeGroup}"
+Name: "claudeapp"; Description: "{cm:TaskClaudeApp}"; GroupDescription: "{cm:ClaudeGroup}"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
@@ -189,18 +183,40 @@ Source: "..\assets\maplesyrup.ico"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{userdocs}\MapleSyrup sessions"; Flags: uninsneveruninstall
 
 [Icons]
-Name: "{group}\MapleSyrup"; Filename: "{app}\MapleSyrup.exe"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
-Name: "{group}\{cm:PhoneOverInternet}"; Filename: "{app}\MapleSyrup.exe"; Parameters: "--tunnel"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
+; MapleSyrup with everything: Claude, the voices, the phone over the internet
+; (without Claude when that wasn't chosen).
+Name: "{group}\MapleSyrup"; Filename: "{app}\MapleSyrup with Claude.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"; Tasks: claude
+Name: "{group}\MapleSyrup"; Filename: "{app}\MapleSyrup.exe"; Parameters: "--tunnel"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"; Tasks: not claude
+Name: "{group}\{cm:WithoutClaude}"; Filename: "{app}\MapleSyrup.exe"; Parameters: "--tunnel"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"; Tasks: claude
+Name: "{group}\{cm:SameWifi}"; Filename: "{app}\MapleSyrup.exe"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
 Name: "{group}\{cm:Recording}"; Filename: "{app}\MapleSyrup.exe"; Parameters: "--overlay-on-stream --record --record-mic"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
-Name: "{group}\{cm:WithClaude}"; Filename: "{app}\MapleSyrup with Claude.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
 Name: "{group}\{cm:AddToClaude}"; Filename: "{app}\Add MapleSyrup to Claude.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
 Name: "{group}\{cm:Sessions}"; Filename: "{userdocs}\MapleSyrup sessions"
 Name: "{group}\{cm:ReadMe}"; Filename: "{app}\README.txt"
 Name: "{group}\{cm:UninstallProgram,MapleSyrup}"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\MapleSyrup"; Filename: "{app}\MapleSyrup.exe"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"; Tasks: desktopicon
+Name: "{userdesktop}\MapleSyrup"; Filename: "{app}\MapleSyrup with Claude.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"; Tasks: desktopicon and claude
+Name: "{userdesktop}\MapleSyrup"; Filename: "{app}\MapleSyrup.exe"; Parameters: "--tunnel"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"; Tasks: desktopicon and not claude
+
+[InstallDelete]
+; 0.9.0's Start menu entries the ones above replace.
+Type: files; Name: "{group}\{cm:PhoneOverInternet}.lnk"
+Type: files; Name: "{group}\{cm:WithClaude}.lnk"
 
 [Run]
-Filename: "{app}\MapleSyrup.exe"; Description: "{cm:LaunchProgram,MapleSyrup}"; Flags: nowait postinstall skipifsilent
+; The Claude folder beside MapleSyrup (Start Claude.cmd, and what Claude Code
+; reads there); the newline piped in answers its "Press Enter to close".
+Filename: "{cmd}"; Parameters: "/c echo.| ""{app}\MapleSyrup.exe"" --setup-claude"; StatusMsg: "{cm:SettingUpClaude}"; Flags: runhidden
+; Claude Code, when this PC doesn't have it: Anthropic's own installer, for
+; this user, in a window of its own (Start Claude.cmd tries again if it
+; didn't go in).
+Filename: "{cmd}"; Parameters: "/c curl -fsSL https://claude.ai/install.cmd -o ""{tmp}\claude-install.cmd"" && ""{tmp}\claude-install.cmd"""; StatusMsg: "{cm:InstallingClaude}"; Tasks: claude; Check: ShouldInstallClaudeCode
+; The Claude desktop app, when it is on this PC: MapleSyrup among its tools
+; (nothing happens when it isn't).
+Filename: "{app}\MapleSyrup.exe"; Parameters: "--install-claude"; StatusMsg: "{cm:SettingUpClaude}"; Flags: runhidden; Tasks: claudeapp
+; At the end: everything (Claude, the voices, the phone over the internet), or
+; MapleSyrup alone.
+Filename: "{app}\MapleSyrup with Claude.cmd"; Description: "{cm:LaunchProgram,MapleSyrup}"; Flags: nowait postinstall skipifsilent shellexec; Tasks: claude
+Filename: "{app}\MapleSyrup.exe"; Parameters: "--tunnel"; Description: "{cm:LaunchProgram,MapleSyrup}"; Flags: nowait postinstall skipifsilent; Tasks: not claude
 
 [UninstallDelete]
 Type: files; Name: "{app}\sessions-folder.txt"
@@ -212,42 +228,102 @@ Type: dirifempty; Name: "{app}"
 var
   KeyPage: TInputQueryWizardPage;
 
-function KeyFile(): String;
+{ The keys, in the page's order: where MapleSyrup reads each (its settings
+  folder), what each starts with, and whose it is. }
+function KeyFile(Index: Integer): String;
 begin
-  Result := ExpandConstant('{userappdata}\MapleSyrup\openai-key.txt');
+  case Index of
+    0: Result := 'openai-key.txt';
+    1: Result := 'elevenlabs-key.txt';
+  else
+    Result := 'xai-key.txt';
+  end;
+  Result := ExpandConstant('{userappdata}\MapleSyrup\') + Result;
+end;
+
+function KeyPrefix(Index: Integer): String;
+begin
+  case Index of
+    0: Result := 'sk-';
+    1: Result := 'sk_';
+  else
+    Result := 'xai-';
+  end;
+end;
+
+function KeyService(Index: Integer): String;
+begin
+  case Index of
+    0: Result := 'OpenAI';
+    1: Result := 'ElevenLabs';
+  else
+    Result := 'xAI';
+  end;
+end;
+
+function KeyLooksRight(Index: Integer; Key: String): Boolean;
+begin
+  Result := (Pos(KeyPrefix(Index), Key) = 1) and (Length(Key) >= 20) and (Pos(' ', Key) = 0);
 end;
 
 procedure InitializeWizard();
+var
+  I: Integer;
 begin
   KeyPage := CreateInputQueryPage(wpSelectTasks,
-    CustomMessage('KeyTitle'), CustomMessage('KeyHeading'), CustomMessage('KeyText'));
-  KeyPage.Add(CustomMessage('KeyLabel'), True);
+    CustomMessage('KeysTitle'), CustomMessage('KeysHeading'), CustomMessage('KeysText'));
+  KeyPage.Add(CustomMessage('KeyOpenAI'), True);
+  KeyPage.Add(CustomMessage('KeyEleven'), True);
+  KeyPage.Add(CustomMessage('KeyXai'), True);
+  { A key this PC has already is kept when its field is left empty. }
+  for I := 0 to 2 do
+    if FileExists(KeyFile(I)) then
+      KeyPage.PromptLabels[I].Caption := KeyPage.PromptLabels[I].Caption + ' ' + CustomMessage('KeySaved');
 end;
 
-{ A key is already saved (an update): don't ask again. }
+{ The keys it needs are saved already (an update): nothing to ask. }
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
-  Result := (PageID = KeyPage.ID) and FileExists(KeyFile());
+  Result := (PageID = KeyPage.ID) and FileExists(KeyFile(0)) and FileExists(KeyFile(1));
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
+  I: Integer;
   Key: String;
 begin
   Result := True;
   if CurPageID = KeyPage.ID then
-  begin
-    Key := Trim(KeyPage.Values[0]);
-    if (Key <> '') and ((Pos('sk-', Key) <> 1) or (Length(Key) < 20) or (Pos(' ', Key) > 0)) then
+    for I := 0 to 2 do
     begin
-      MsgBox(CustomMessage('KeyWrong'), mbError, MB_OK);
-      Result := False;
+      Key := Trim(KeyPage.Values[I]);
+      if (Key <> '') and (not KeyLooksRight(I, Key)) then
+      begin
+        MsgBox(FmtMessage(CustomMessage('KeyWrong'), [KeyService(I), KeyPrefix(I)]), mbError, MB_OK);
+        Result := False;
+        Exit;
+      end;
     end;
-  end;
+end;
+
+{ Claude Code on this PC already: where Anthropic's installer puts it, or on
+  the PATH (npm, WinGet). }
+function ClaudeCodeInstalled(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{%USERPROFILE}\.local\bin\claude.exe'))
+    or (FileSearch('claude.exe', GetEnv('PATH')) <> '')
+    or (FileSearch('claude.cmd', GetEnv('PATH')) <> '');
+end;
+
+{ Installed in a window of its own: not in a silent install (CI's test). }
+function ShouldInstallClaudeCode(): Boolean;
+begin
+  Result := (not WizardSilent()) and (not ClaudeCodeInstalled());
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
+  I: Integer;
   Key: String;
   Lines: TArrayOfString;
 begin
@@ -258,13 +334,14 @@ begin
     Lines[0] := ExpandConstant('{userdocs}\MapleSyrup sessions');
     SaveStringsToUTF8File(ExpandConstant('{app}\sessions-folder.txt'), Lines, False);
     if not WizardSilent() then
-    begin
-      Key := Trim(KeyPage.Values[0]);
-      if Key <> '' then
+      for I := 0 to 2 do
       begin
-        ForceDirectories(ExpandConstant('{userappdata}\MapleSyrup'));
-        SaveStringToFile(KeyFile(), Key, False);
+        Key := Trim(KeyPage.Values[I]);
+        if Key <> '' then
+        begin
+          ForceDirectories(ExpandConstant('{userappdata}\MapleSyrup'));
+          SaveStringToFile(KeyFile(I), Key, False);
+        end;
       end;
-    end;
   end;
 end;

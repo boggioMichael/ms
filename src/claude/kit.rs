@@ -127,7 +127,9 @@ pub fn rule_path(path: &Path) -> String {
 /// nothing runs it); the folder set up again by the program (so it keeps up
 /// with it); MapleSyrup (one folder up) started for Claude only — it makes
 /// do with one already running with a window, and takes over from one the
-/// Claude app runs in the background — then Claude Code with the channel:
+/// Claude app runs in the background — with what the launcher itself was
+/// given (`--tunnel`: the phone over the internet, as the installer's
+/// shortcut starts it) — then Claude Code with the channel:
 /// Sonnet at low effort, quick enough to talk with (`/model` and `/effort`
 /// change it); auto mode, where Claude's own check of each action stands in
 /// for the prompts nobody would answer while he plays; and Remote Control
@@ -166,10 +168,11 @@ pub fn launcher() -> String {
         "pause",
         "exit /b 1",
         ":start",
-        "start \"MapleSyrup\" \"%~dp0..\\MapleSyrup.exe\" --claude-only",
+        "start \"MapleSyrup\" \"%~dp0..\\MapleSyrup.exe\" --claude-only %*",
         "echo.",
         "echo Claude is starting in this window. Answer its questions here: to \"development channel\" choose",
         "echo \"I am using this for local development\"; to auto mode, yes. Then talk to it from the phone.",
+        "echo The first time, Claude Code also asks you to log in to your Claude account: a browser opens.",
         "echo.",
         "\"%CLAUDE%\" --dangerously-load-development-channels server:maplesyrup --model sonnet --effort low --permission-mode auto --remote-control MapleSyrup",
         // (An error — an old Claude Code without auto mode, say — stays on
@@ -433,6 +436,9 @@ mod tests {
         let swap = launcher.find("MapleSyrup-new.exe").unwrap();
         let setup = launcher.find("--setup-claude").unwrap();
         let start = launcher.find("--claude-only").unwrap();
+        // What it is started with goes on to MapleSyrup: the installer's
+        // shortcut has the phone over the internet (--tunnel).
+        assert!(launcher.contains("--claude-only %*"));
         let claude = launcher.find("--dangerously-load").unwrap();
         assert!(swap < setup && setup < start && start < claude);
         // MapleSyrup itself sees who runs (a bridge of the Claude app's is
