@@ -52,6 +52,10 @@ use ms::util::stages::{StageRecorder, StageStats};
 use ms::vision::hud_geometry::detect_ui_markers;
 use ms::vision::{Detectors, PerceptionPipeline};
 
+/// While Claude listens, one frame in this many also goes through the
+/// scene's detectors (the companion's own `RICH_EVERY`).
+const RICH_EVERY: u64 = 3;
+
 /// How long the teacher waits between near-miss confirmations
 /// (`ai::teaching`): the most such calls an hour can hold.
 const NEAR_MISS_EVERY: Duration = Duration::from_secs(20);
@@ -67,6 +71,9 @@ struct Options {
     teach: bool,
     /// Every detector, as with the preview window open, rather than the HUD alone.
     all: bool,
+    /// The scene's detectors too on every third frame, as while Claude
+    /// listens (`RICH_EVERY` in the companion).
+    claude: bool,
     /// Time the capture itself, live, over this many frames.
     capture: Option<usize>,
     /// The window to capture, instead of the game.
@@ -83,7 +90,7 @@ fn usage() -> ! {
     eprintln!(
         "usage: vision_bench [--image PNG]... [--video MP4]... [--frames N] [--sizes WxH,...]
                     [--fps F] [--ffmpeg PATH] [--json FILE] [--no-teach] [--all]
-                    [--outputs DIR] [--learned DIR]
+                    [--claude] [--outputs DIR] [--learned DIR]
        vision_bench --capture N [--window TITLE] [--fps F] [--json FILE]
 
   --image PNG     a still frame (default: resources/maplestory.png, when it exists)
@@ -98,6 +105,8 @@ fn usage() -> ! {
   --no-teach      do not teach objects or learn the HUD bars
   --all           run every detector, as the companion does with --preview
                   (by default only the HUD, as it runs without)
+  --claude        as the companion runs while Claude listens: every third
+                  frame also looks for motion, dialogs and the panels
   --outputs DIR   write what every frame gave (the HUD's values, each taught
                   thing's reading, the near misses queued) to DIR, a file per
                   run, to compare two builds frame by frame
@@ -123,6 +132,7 @@ fn parse(args: &[String]) -> Options {
         json: None,
         teach: true,
         all: false,
+        claude: false,
         capture: None,
         window: None,
         outputs: None,
@@ -162,6 +172,7 @@ fn parse(args: &[String]) -> Options {
             "--json" => o.json = Some(PathBuf::from(value(&mut i))),
             "--no-teach" => o.teach = false,
             "--all" => o.all = true,
+            "--claude" => o.claude = true,
             "--capture" => o.capture = Some(value(&mut i).parse().unwrap_or_else(|_| usage())),
             "--window" => o.window = Some(value(&mut i)),
             "--outputs" => o.outputs = Some(PathBuf::from(value(&mut i))),
@@ -295,6 +306,9 @@ struct Run {
     frames: usize,
     /// Whether every detector ran, or the HUD alone.
     all_detectors: bool,
+    /// Whether every third frame also ran the scene's detectors, as while
+    /// Claude listens.
+    claude: bool,
     /// Simulated frames per second (the clock the sight paces by).
     fps: f64,
     hud_learned: bool,
@@ -529,7 +543,7 @@ fn run(
     frames: &[RgbaImage],
     fps: f64,
     teach: bool,
-    wanted: Detectors,
+    (wanted, claude): (Detectors, bool),
     recorder: &StageRecorder,
     outputs: Option<&Path>,
     learned: Option<&Path>,
@@ -547,16 +561,30 @@ fn run(
         // The sight paces its searches by the clock; a simulated one runs
         // them at the cadence of a real session rather than of this loop.
         let clock = start + period * i as u32;
+        // While Claude listens, the companion's every third frame goes
+        // through the scene's detectors too (its `RICH_EVERY`).
+        let frame_id = i as u64 + 1;
+        let rich = claude && frame_id.is_multiple_of(RICH_EVERY);
+        let this_frame = if rich {
+            Detectors {
+                motion: true,
+                dialog: true,
+                panels: true,
+                ..wanted
+            }
+        } else {
+            wanted
+        };
         let perceived = {
             let _frame_span = tracing::trace_span!("frame").entered();
             perceive(
                 &mut pipeline,
                 Some(&mut sight),
-                wanted,
+                this_frame,
                 &Look {
                     title: name,
                     frame,
-                    frame_id: i as u64 + 1,
+                    frame_id,
                     now: clock,
                     in_view: true,
                 },
@@ -568,7 +596,7 @@ fn run(
                 i,
                 &perceived,
                 &sight,
-                wanted == Detectors::ALL,
+                this_frame == Detectors::ALL || rich,
             ));
         }
         queued += sight.things.candidates.len();
@@ -609,6 +637,7 @@ fn run(
         height,
         frames: frames.len(),
         all_detectors: wanted == Detectors::ALL,
+        claude,
         fps,
         hud_learned,
         font_glyphs: sight.numbers.glyphs(),
@@ -757,10 +786,10 @@ fn print_run(run: &Run) {
         run.height,
         run.frames,
         run.fps,
-        if run.all_detectors {
-            "every detector"
-        } else {
-            "the HUD alone"
+        match (run.all_detectors, run.claude) {
+            (true, _) => "every detector",
+            (false, true) => "the HUD, and the scene every third frame (Claude listening)",
+            (false, false) => "the HUD alone",
         },
         if run.hud_learned { "yes" } else { "no" },
         run.font_glyphs,
@@ -858,7 +887,7 @@ fn main() {
                 &frames,
                 options.fps,
                 options.teach,
-                wanted,
+                (wanted, options.claude),
                 &recorder,
                 options.outputs.as_deref(),
                 options.learned.as_deref(),
@@ -884,7 +913,7 @@ fn main() {
                                     &frames,
                                     options.fps,
                                     options.teach,
-                                    wanted,
+                                    (wanted, options.claude),
                                     &recorder,
                                     options.outputs.as_deref(),
                                     options.learned.as_deref(),
