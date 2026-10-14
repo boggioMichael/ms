@@ -1,0 +1,52 @@
+vision_bench: ms 0.9.0 on windows x86_64 (4 cores)
+
+maplestory.png at 3840x2160: 40 frames, 10 fps simulated, every detector, HUD bars learned: yes, font glyphs: 0, taught objects: 3
+  stage                        runs      mean       p50       p95       max  share
+  frame                          40   73.99ms   71.02ms   91.32ms  109.21ms 100.0%
+  vision                         40   63.83ms   60.34ms   80.57ms   93.41ms  86.3%
+  observation                    40    0.00ms    0.00ms    0.00ms    0.01ms   0.0%
+  sight                          40   10.16ms   10.16ms   13.42ms   15.80ms  13.7%
+  vision.hud                     40   23.04ms   21.34ms   27.41ms   51.02ms  31.1%
+  vision.hud.geometry            40   22.26ms   21.32ms   26.46ms   32.02ms  30.1%
+  vision.dialog                  40   19.23ms   18.60ms   21.18ms   32.73ms  26.0%
+  sight.things.object           120    5.16ms    5.40ms    7.58ms    9.62ms  20.9%
+  sight.things.object.sweep     120    4.86ms    5.05ms    7.23ms    8.96ms  19.7%
+  vision.footholds               40    7.94ms    7.11ms   12.53ms   16.78ms  10.7%
+  sight.things                   40    6.64ms    6.76ms    9.29ms   11.66ms   9.0%
+  vision.minimap                 40    4.33ms    4.20ms    4.61ms    8.02ms   5.8%
+  vision.icon_row                40    3.40ms    3.16ms    4.57ms    7.74ms   4.6%
+  vision.motion                  40    3.22ms    2.88ms    6.24ms    7.96ms   4.3%
+  sight.numbers                  40    3.10ms    2.98ms    3.85ms    5.18ms   4.2%
+  vision.chat_log                40    2.65ms    2.49ms    3.40ms    5.02ms   3.6%
+  vision.hud.text                40    0.77ms    0.00ms    0.01ms   30.76ms   1.0%
+  sight.things.object.tracks    120    0.20ms    0.21ms    0.30ms    0.34ms   0.8%
+  sight.bars                     40    0.41ms    0.37ms    0.66ms    0.73ms   0.6%
+  vision.combat                  40    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  vision-model calls per hour of steady play: 0 to find the HUD, 0 HUD checks, 180 near-miss checks (55800 near misses queued) = 180
+
+chaos-zakum-solo-lvl230.mp4 at 3840x2160: 40 frames, 10 fps simulated, every detector, HUD bars learned: yes, font glyphs: 0, taught objects: 3
+  stage                        runs      mean       p50       p95       max  share
+  frame                          40   87.77ms   84.04ms  104.26ms  202.66ms 100.0%
+  vision                         40   78.79ms   74.83ms   93.22ms  193.85ms  89.8%
+  observation                    40    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  sight                          40    8.98ms    9.21ms   10.53ms   11.82ms  10.2%
+  vision.dialog                  40   22.68ms   17.96ms   40.22ms  151.26ms  25.8%
+  vision.hud                     40   21.97ms   21.90ms   29.04ms   34.26ms  25.0%
+  vision.hud.geometry            40   21.62ms   21.73ms   27.90ms   30.45ms  24.6%
+  vision.motion                  40   15.55ms   15.98ms   22.47ms   23.30ms  17.7%
+  sight.things.object           120    4.92ms    4.87ms    7.40ms    8.64ms  16.8%
+  sight.things.object.sweep     120    4.77ms    4.78ms    7.12ms    7.91ms  16.3%
+  vision.footholds               40    7.66ms    7.37ms   11.06ms   11.51ms   8.7%
+  sight.things                   40    6.52ms    6.79ms    7.96ms    9.00ms   7.4%
+  vision.minimap                 40    4.23ms    4.17ms    4.59ms    5.39ms   4.8%
+  vision.icon_row                40    4.01ms    3.98ms    4.53ms    7.10ms   4.6%
+  vision.chat_log                40    2.66ms    2.70ms    3.34ms    3.75ms   3.0%
+  sight.numbers                  40    2.21ms    2.16ms    2.57ms    2.96ms   2.5%
+  sight.things.object.tracks    120    0.14ms    0.00ms    0.79ms    0.96ms   0.5%
+  vision.hud.text                40    0.35ms    0.00ms    0.00ms   13.75ms   0.4%
+  sight.bars                     40    0.24ms    0.24ms    0.30ms    0.39ms   0.3%
+  sight.find                      4    0.04ms    0.04ms    0.05ms    0.05ms   0.0%
+  vision.combat                  40    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  vision-model calls per hour of steady play: 0 to find the HUD, 0 HUD checks, 180 near-miss checks (18000 near misses queued) = 180
+
+written: results/shipped-all4k-2.json

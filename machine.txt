@@ -1,0 +1,11 @@
+
+Name                      : AMD EPYC 9V45 96-Core Processor                
+NumberOfCores             : 2
+NumberOfLogicalProcessors : 4
+MaxClockSpeed             : 2596
+
+
+Caption : Microsoft Windows Server 2025 Datacenter
+Version : 10.0.26100
+
+

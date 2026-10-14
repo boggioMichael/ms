@@ -1,0 +1,15 @@
+input                                                 shipped ms   now ms  speedup   things: shipped, now   detectors: shipped, now
+chaos-zakum-solo-lvl230.mp4 1366x768                        3.36     0.59     5.7x      1.82   0.56         0.00   0.00
+maplestory.png 1366x768                                     5.02     0.47    10.7x      2.66   0.41         0.00   0.00
+chaos-zakum-solo-lvl230.mp4 1920x1080                       4.88     1.11     4.4x      3.21   0.88         0.00   0.00
+maplestory.png 1920x1080                                    6.10     0.58    10.5x      3.58   0.52         0.00   0.00
+chaos-zakum-solo-lvl230.mp4 3840x2160                      19.63     4.32     4.5x     17.44   4.19         0.00   0.00
+maplestory.png 3840x2160                                    9.12     1.55     5.9x      6.23   1.32         0.00   0.00
+chaos-zakum-solo-lvl230.mp4 1920x1080 (Claude listening)       13.09     2.44     5.4x      6.08   1.13         4.57   1.23
+maplestory.png 1920x1080 (Claude listening)                 9.34     1.22     7.7x      3.86   0.54         2.77   0.58
+chaos-zakum-solo-lvl230.mp4 3840x2160 (Claude listening)       34.96     8.26     4.2x     17.18   4.07        15.35   4.06
+maplestory.png 3840x2160 (Claude listening)                20.17     3.72     5.4x      6.22   1.23        10.81   2.30
+chaos-zakum-solo-lvl230.mp4 1920x1080 (every detector)       31.40     6.08     5.2x      3.21   0.83        21.67   5.14
+maplestory.png 1920x1080 (every detector)                  24.83     3.31     7.5x      4.03   0.61        17.77   2.63
+chaos-zakum-solo-lvl230.mp4 3840x2160 (every detector)       86.29    19.31     4.5x      6.44   1.12        77.46  18.08
+maplestory.png 3840x2160 (every detector)                  72.98    11.32     6.4x      6.39   1.25        63.37   9.92

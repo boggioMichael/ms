@@ -1,0 +1,44 @@
+vision_bench: ms 0.9.0 on windows x86_64 (4 cores)
+
+maplestory.png at 1920x1080: 150 frames, 10 fps simulated, the HUD, and the scene every third frame (Claude listening), HUD bars learned: yes, font glyphs: 0, taught objects: 3
+  stage                        runs      mean       p50       p95       max  share
+  frame                         150    9.34ms    6.94ms   15.88ms   18.65ms 100.0%
+  vision                        150    2.77ms    0.00ms    8.41ms    9.61ms  29.6%
+  observation                   150    0.00ms    0.00ms    0.00ms    0.01ms   0.0%
+  sight                         150    6.57ms    6.47ms    8.23ms   10.10ms  70.3%
+  sight.things.object           450    2.45ms    2.12ms    4.45ms    7.08ms  78.8%
+  sight.things.object.sweep     450    2.38ms    2.03ms    4.39ms    6.96ms  76.3%
+  sight.things                  150    3.96ms    3.91ms    4.85ms    7.29ms  42.4%
+  sight.numbers                 150    2.50ms    2.40ms    3.35ms    6.01ms  26.8%
+  vision.dialog                  50    4.95ms    4.94ms    5.07ms    5.44ms  17.7%
+  vision.minimap                 50    1.10ms    1.09ms    1.15ms    1.25ms   3.9%
+  vision.icon_row                50    0.86ms    0.83ms    1.13ms    1.25ms   3.1%
+  vision.chat_log                50    0.71ms    0.70ms    0.74ms    0.91ms   2.5%
+  vision.motion                  50    0.69ms    0.64ms    0.99ms    1.75ms   2.4%
+  sight.things.object.tracks    450    0.05ms    0.06ms    0.08ms    0.11ms   1.8%
+  sight.bars                    150    0.10ms    0.10ms    0.14ms    0.18ms   1.1%
+  vision.combat                  50    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  vision-model calls per hour of steady play: 0 to find the HUD, 0 HUD checks, 180 near-miss checks (57120 near misses queued) = 180
+
+chaos-zakum-solo-lvl230.mp4 at 1920x1080: 150 frames, 10 fps simulated, the HUD, and the scene every third frame (Claude listening), HUD bars learned: yes, font glyphs: 0, taught objects: 3
+  stage                        runs      mean       p50       p95       max  share
+  frame                         150   13.09ms    7.62ms   24.16ms  156.07ms 100.0%
+  vision                        150    4.57ms    0.00ms   15.62ms   31.21ms  34.9%
+  observation                   150    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  sight                         150    8.52ms    6.52ms    9.89ms  156.07ms  65.1%
+  sight.things.object           450    2.66ms    2.09ms    6.02ms    9.06ms  61.0%
+  sight.things                  150    6.08ms    4.52ms    7.49ms  154.36ms  46.5%
+  sight.things.object.sweep     450    1.42ms    1.40ms    2.25ms    3.46ms  32.6%
+  sight.things.object.tracks    450    1.19ms    0.29ms    4.72ms    7.39ms  27.4%
+  sight.numbers                 150    1.89ms    1.77ms    2.39ms    3.63ms  14.4%
+  vision.motion                  50    5.37ms    5.30ms    8.45ms   10.33ms  13.7%
+  vision.dialog                  50    5.14ms    4.73ms    6.33ms   22.71ms  13.1%
+  sight.bars                    150    0.54ms    0.07ms    0.11ms   70.77ms   4.2%
+  vision.icon_row                50    1.21ms    1.11ms    1.75ms    1.84ms   3.1%
+  vision.minimap                 50    1.14ms    1.08ms    1.30ms    2.93ms   2.9%
+  vision.chat_log                50    0.83ms    0.81ms    1.21ms    1.34ms   2.1%
+  sight.find                     15    0.02ms    0.02ms    0.02ms    0.03ms   0.0%
+  vision.combat                  50    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  vision-model calls per hour of steady play: 0 to find the HUD, 0 HUD checks, 180 near-miss checks (66720 near misses queued) = 180
+
+written: results/shipped-claude-2.json

@@ -1,0 +1,61 @@
+vision_bench: ms 0.9.0 on windows x86_64 (4 cores)
+
+maplestory.png at 1366x768: 300 frames, 10 fps simulated, the HUD alone, HUD bars learned: yes, font glyphs: 0, taught objects: 3
+  stage                        runs      mean       p50       p95       max  share
+  frame                         300    5.33ms    5.17ms    5.92ms   61.99ms 100.0%
+  vision                        300    0.00ms    0.00ms    0.00ms    0.01ms   0.0%
+  observation                   300    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  sight                         300    5.32ms    5.17ms    5.92ms   61.97ms  99.9%
+  sight.things.object           900    2.07ms    2.18ms    2.98ms    5.72ms 116.8%
+  sight.things.object.sweep     900    2.03ms    2.14ms    2.92ms    5.58ms 114.3%
+  sight.things                  300    2.69ms    2.84ms    3.27ms    5.88ms  50.5%
+  sight.numbers                 300    2.58ms    2.30ms    2.87ms   60.50ms  48.5%
+  sight.things.object.tracks    900    0.04ms    0.04ms    0.05ms    0.27ms   2.0%
+  sight.bars                    300    0.05ms    0.05ms    0.07ms    0.33ms   1.0%
+  vision-model calls per hour of steady play: 0 to find the HUD, 0 HUD checks, 180 near-miss checks (57000 near misses queued) = 180
+
+maplestory.png at 1920x1080: 300 frames, 10 fps simulated, the HUD alone, HUD bars learned: yes, font glyphs: 0, taught objects: 3
+  stage                        runs      mean       p50       p95       max  share
+  frame                         300    6.10ms    6.04ms    7.25ms    8.60ms 100.0%
+  vision                        300    0.00ms    0.00ms    0.00ms    0.01ms   0.0%
+  observation                   300    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  sight                         300    6.10ms    6.04ms    7.25ms    8.60ms  99.9%
+  sight.things.object           900    2.29ms    2.02ms    4.00ms    5.79ms 112.4%
+  sight.things.object.sweep     900    2.21ms    1.92ms    3.95ms    5.73ms 108.6%
+  sight.things                  300    3.61ms    3.61ms    4.46ms    5.99ms  59.2%
+  sight.numbers                 300    2.38ms    2.33ms    2.79ms    3.59ms  39.0%
+  sight.things.object.tracks    900    0.06ms    0.07ms    0.08ms    0.10ms   2.8%
+  sight.bars                    300    0.10ms    0.10ms    0.12ms    0.19ms   1.6%
+  vision-model calls per hour of steady play: 0 to find the HUD, 0 HUD checks, 180 near-miss checks (57000 near misses queued) = 180
+
+chaos-zakum-solo-lvl230.mp4 at 1366x768: 300 frames, 10 fps simulated, the HUD alone, HUD bars learned: yes, font glyphs: 0, taught objects: 3
+  stage                        runs      mean       p50       p95       max  share
+  frame                         300    3.16ms    3.02ms    4.81ms    6.13ms 100.0%
+  vision                        300    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  observation                   300    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  sight                         300    3.16ms    3.02ms    4.81ms    6.13ms  99.9%
+  sight.things.object           900    1.00ms    0.84ms    2.10ms    4.69ms  94.7%
+  sight.things.object.sweep     900    0.64ms    0.66ms    1.04ms    1.38ms  60.3%
+  sight.things                  300    1.71ms    1.56ms    3.32ms    4.72ms  53.9%
+  sight.numbers                 300    1.42ms    1.40ms    1.51ms    2.04ms  44.8%
+  sight.things.object.tracks    900    0.35ms    0.00ms    1.43ms    4.00ms  33.3%
+  sight.bars                    300    0.03ms    0.03ms    0.04ms    0.06ms   1.1%
+  sight.find                     30    0.01ms    0.01ms    0.02ms    0.02ms   0.0%
+  vision-model calls per hour of steady play: 0 to find the HUD, 0 HUD checks, 180 near-miss checks (56280 near misses queued) = 180
+
+chaos-zakum-solo-lvl230.mp4 at 1920x1080: 300 frames, 10 fps simulated, the HUD alone, HUD bars learned: yes, font glyphs: 0, taught objects: 3
+  stage                        runs      mean       p50       p95       max  share
+  frame                         300    4.84ms    4.54ms    7.23ms   11.25ms 100.0%
+  vision                        300    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  observation                   300    0.00ms    0.00ms    0.00ms    0.00ms   0.0%
+  sight                         300    4.84ms    4.54ms    7.23ms   11.25ms  99.9%
+  sight.things.object           900    1.94ms    1.62ms    4.26ms    9.69ms 120.1%
+  sight.things.object.sweep     900    1.18ms    1.19ms    1.92ms    3.10ms  73.3%
+  sight.things                  300    3.21ms    2.96ms    5.62ms    9.73ms  66.2%
+  sight.things.object.tracks    900    0.73ms    0.00ms    3.24ms    8.65ms  45.5%
+  sight.numbers                 300    1.55ms    1.50ms    1.74ms    3.27ms  32.0%
+  sight.bars                    300    0.08ms    0.06ms    0.07ms    4.86ms   1.6%
+  sight.find                     30    0.01ms    0.01ms    0.02ms    0.02ms   0.0%
+  vision-model calls per hour of steady play: 0 to find the HUD, 0 HUD checks, 180 near-miss checks (56040 near misses queued) = 180
+
+written: results/shipped-small-1.json
