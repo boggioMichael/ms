@@ -182,3 +182,95 @@ on the owner's PC and belong in the row below when they do.
 | | capture, GPU path (mean / p50 / p95) | capture, GDI path (mean / p50 / p95) |
 |---|--:|--:|
 | owner's PC, 1366×768 | — | — |
+
+
+## Speed: the same answers, several times faster (syrup's speed branch)
+
+Every per-frame stage above was made faster without changing a single
+output: the template matching, the HUD's and the preview's colour scans,
+motion, the glyph reader and the OCR lookup now run on the CPU's widest
+instructions (AVX-512 VNNI, AVX-VNNI, AVX2, SSE2 or plain loops, chosen at
+run time), from tables, samples and bit masks — each change computing the
+same integers (or the same floats in the same order) as the code it
+replaced (syrup's `CHANGELOG.md`, "Speed").
+
+How it was checked: `vision_bench --outputs` writes what every frame gave —
+the HUD's values, each taught thing's reading, the near misses queued and,
+with `--all` or `--claude`, every detector's result (value, confidence,
+reliability, failure) — and the build MapleSyrup shipped with (ms 8a14965,
+syrup 54dad1e, with today's `vision_bench.rs`) and this branch were
+compared file by file: on the still and the Zakum recording at 1366×768,
+1920×1080, 2560×1440 and 3840×2160, the HUD alone, with every detector and
+as while Claude listens, under every instruction set (`SYRUP_SIMD=avx2`,
+`avx-vnni`, `sse2`), on a 4K video of an owner's taught things, on two of
+the owner's own 4K frames with his learned folder, and on Windows runners.
+The same, byte for byte, every time. syrup's public vision functions were
+also run on thousands of random small and odd inputs (every size around the
+vector widths, regions past the edges, text in a pixel font, bars, motion)
+by the shipped syrup and this one, in every instruction set and with
+overflow checks on: the same outputs, no panic.
+
+Milliseconds per frame (mean), on the owner's two 4K frames with his
+learned folder, on his PC (Zen 5, 9800X3D, one worker of a Linux VM):
+
+| | shipped | now | |
+|---|--:|--:|--:|
+| the HUD being looked for (frame a) | 46.4 | 4.2 | 11× |
+| the HUD in view (frame b) | 25.5 | 3.4 | 7.5× |
+| every detector (the preview), frame a / b | 83 | 10.8 / 11.4 | 7.3–7.7× |
+| the HUD alone, AVX2 only (`SYRUP_SIMD=avx2`), frame a / b | 46.4 / 25.5 | 10.0 / 8.7 | 2.9–4.6× |
+
+`--claude` is the companion as it runs while Claude listens: every third
+frame also looks for motion, dialogs and the panels (`RICH_EVERY`).
+
+On Windows runners (`.github/workflows/speed-bench.yml` on a `bench/`
+branch: both builds made the same way and run in turns on one machine).
+An AMD EPYC 9V45 (Zen 5, as the owner's PC):
+
+| input, size | shipped | now | |
+|---|--:|--:|--:|
+| still, 1366×768 | 5.02 | 0.47 | 10.7× |
+| still, 1920×1080 | 6.10 | 0.58 | 10.5× |
+| still, 3840×2160 | 9.12 | 1.55 | 5.9× |
+| recording, 1366×768 | 3.36 | 0.59 | 5.7× |
+| recording, 1920×1080 | 4.88 | 1.11 | 4.4× |
+| recording, 3840×2160 | 19.63 | 4.32 | 4.5× |
+| still, 1920×1080, Claude listening | 9.34 | 1.22 | 7.7× |
+| recording, 1920×1080, Claude listening | 13.09 | 2.44 | 5.4× |
+| still, 3840×2160, Claude listening | 20.17 | 3.72 | 5.4× |
+| recording, 3840×2160, Claude listening | 34.96 | 8.26 | 4.2× |
+| still, 1920×1080, every detector | 24.83 | 3.31 | 7.5× |
+| recording, 1920×1080, every detector | 31.40 | 6.08 | 5.2× |
+| still, 3840×2160, every detector | 72.98 | 11.32 | 6.4× |
+| recording, 3840×2160, every detector | 86.29 | 19.31 | 4.5× |
+
+An AMD EPYC 7763 (Zen 3: AVX2, no AVX-512 and no dot-product
+instructions), an earlier run of the branch:
+
+| input, size | shipped | now | |
+|---|--:|--:|--:|
+| still, 1366×768 | 8.86 | 1.86 | 4.8× |
+| still, 1920×1080 | 10.35 | 2.64 | 3.9× |
+| still, 3840×2160 | 16.10 | 4.75 | 3.4× |
+| recording, 1366×768 | 6.11 | 1.63 | 3.7× |
+| recording, 1920×1080 | 8.21 | 2.77 | 3.0× |
+| recording, 3840×2160 | 28.00 | 11.29 | 2.5× |
+| still, 1920×1080, every detector | 34.94 | 6.46 | 5.4× |
+| still, 3840×2160, every detector | 106.11 | 19.65 | 5.4× |
+| recording, 1920×1080, every detector | 38.91 | 11.42 | 3.4× |
+| recording, 3840×2160, every detector | 132.68 | 35.58 | 3.7× |
+
+How much faster depends most on the CPU's dot-product instructions:
+AVX-512 VNNI (Zen 4 and 5, recent Xeons) the most, AVX-VNNI (Intel's 12th
+generation on) next, plain AVX2 the least. A frame now and then takes the
+OCR engine's time (a dialog's text), the same in both builds.
+
+At ten frames a second the companion's vision took, on the owner's 4K
+frames, a quarter to almost half of one core (25–46 ms of every 100); it
+now takes three to four hundredths of it (3–4 ms), which go back to the
+game.
+
+Tried and dropped: a bound on each position's correlation from block sums
+(Cauchy–Schwarz over 4×4 blocks) to skip the products of positions that
+cannot reach the floor — exact, but slower than computing every product on
+the dot-product instructions; and the GPU (above).
