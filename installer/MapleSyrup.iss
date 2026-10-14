@@ -2,9 +2,10 @@
 ;
 ; Installs for the current user only (no administrator needed), under
 ; %LOCALAPPDATA%\Programs\MapleSyrup; Start menu entries (MapleSyrup, over the
-; internet, for recording and streaming, the sessions folder, read me,
-; uninstall) and a desktop icon; asks for an OpenAI API key (optional, kept
-; in %APPDATA%\MapleSyrup); keeps sessions in Documents\MapleSyrup sessions.
+; internet, for recording and streaming, with Claude, added to the Claude
+; app, the sessions folder, read me, uninstall) and a desktop icon; asks for
+; an OpenAI API key (optional, kept in %APPDATA%\MapleSyrup); keeps sessions
+; in Documents\MapleSyrup sessions.
 ; Installing again over it updates it (a running MapleSyrup is closed first).
 ; Uninstalling leaves the user's settings, key, what it learned and the
 ; sessions in place.
@@ -88,6 +89,8 @@ PhoneOverInternet=MapleSyrup (phone over the internet)
 Recording=MapleSyrup (recording and streaming)
 Sessions=MapleSyrup sessions
 ReadMe=Read me
+WithClaude=MapleSyrup with Claude
+AddToClaude=Add MapleSyrup to the Claude app
 #if FileExists(AddBackslash(CompilerPath) + "Languages\Hebrew.isl")
 hebrew.KeyTitle=מפתח OpenAI API
 hebrew.KeyHeading=לא חובה: כך MapleSyrup ידבר כמו ChatGPT, בקול טבעי, ויראה את המסך שלך
@@ -97,6 +100,8 @@ hebrew.KeyWrong=זה לא נראה כמו מפתח OpenAI (הם מתחילים �
 hebrew.PhoneOverInternet=MapleSyrup (טלפון דרך האינטרנט)
 hebrew.Recording=MapleSyrup (להקלטה ולסטרים)
 hebrew.ReadMe=קרא אותי
+hebrew.WithClaude=MapleSyrup עם Claude
+hebrew.AddToClaude=הוספת MapleSyrup לאפליקציית Claude
 #endif
 #if FileExists(AddBackslash(CompilerPath) + "Languages\Spanish.isl")
 spanish.KeyTitle=Clave de API de OpenAI
@@ -176,6 +181,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Source: "{#SourceDir}\MapleSyrup.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\vision_debug.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\README.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\MapleSyrup with Claude.cmd"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\Add MapleSyrup to Claude.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\maplesyrup.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
@@ -185,6 +192,8 @@ Name: "{userdocs}\MapleSyrup sessions"; Flags: uninsneveruninstall
 Name: "{group}\MapleSyrup"; Filename: "{app}\MapleSyrup.exe"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
 Name: "{group}\{cm:PhoneOverInternet}"; Filename: "{app}\MapleSyrup.exe"; Parameters: "--tunnel"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
 Name: "{group}\{cm:Recording}"; Filename: "{app}\MapleSyrup.exe"; Parameters: "--overlay-on-stream --record --record-mic"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
+Name: "{group}\{cm:WithClaude}"; Filename: "{app}\MapleSyrup with Claude.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
+Name: "{group}\{cm:AddToClaude}"; Filename: "{app}\Add MapleSyrup to Claude.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\maplesyrup.ico"
 Name: "{group}\{cm:Sessions}"; Filename: "{userdocs}\MapleSyrup sessions"
 Name: "{group}\{cm:ReadMe}"; Filename: "{app}\README.txt"
 Name: "{group}\{cm:UninstallProgram,MapleSyrup}"; Filename: "{uninstallexe}"
@@ -195,6 +204,8 @@ Filename: "{app}\MapleSyrup.exe"; Description: "{cm:LaunchProgram,MapleSyrup}"; 
 
 [UninstallDelete]
 Type: files; Name: "{app}\sessions-folder.txt"
+; The Claude folder MapleSyrup writes beside itself (--setup-claude).
+Type: filesandordirs; Name: "{app}\Claude"
 Type: dirifempty; Name: "{app}"
 
 [Code]

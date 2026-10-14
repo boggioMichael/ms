@@ -257,7 +257,8 @@ Claude, live (talk with Claude while it sees the game)
   dialog and its text, the things you taught it), a look at the screen,
   its own MapleStory wiki (Claude adds the facts it checked), and what it
   knows about you (your about-me.txt, which Claude can add to).
-  Once: double-click "Add MapleSyrup to Claude.cmd" (or run
+  Once: "Add MapleSyrup to the Claude app" in the Start menu (from the zip,
+  double-click "Add MapleSyrup to Claude.cmd"; or run
   MapleSyrup.exe --install-claude), then quit the Claude app completely (its
   icon by the clock -> Quit) and open it again. From then on, in any chat,
   Claude uses the MapleSyrup that runs, or starts one in the background
@@ -267,8 +268,12 @@ Claude, live (talk with Claude while it sees the game)
   desktop app on this PC.
   Claude Code too, with the game pushed to it as it happens (a death, a
   level-up, a new map, HP in danger) and MapleSyrup's voice to talk through
-  from the phone: run MapleSyrup.exe --setup-claude once, then "Start
-  Claude.cmd" in the Claude folder it writes beside MapleSyrup.exe. That
+  from the phone: "MapleSyrup with Claude" in the Start menu (from the zip,
+  double-click "MapleSyrup with Claude.cmd"). It writes the Claude folder
+  beside MapleSyrup.exe and starts Claude there; the first time it installs
+  Claude Code from claude.ai (about a minute), and Claude Code asks you to
+  log in with your Claude account. (By hand: MapleSyrup.exe --setup-claude,
+  then "Start Claude.cmd" in the Claude folder.) That
   session is Claude for anything, as in the Claude app - talk about
   anything, search the web, read and open your files (Desktop, Documents,
   Downloads, Pictures...), build projects (in Documents\Claude projects) -

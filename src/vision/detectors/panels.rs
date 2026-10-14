@@ -137,10 +137,13 @@ impl IconRowDetector {
             h: height / 6,
         };
 
-        let is_icon_pixel = |pixel: &image::Rgba<u8>| {
-            let (_, s, v) = syrup::color::hsv_from_rgb(pixel[0], pixel[1], pixel[2]);
-            pixel[3] > 200 && s >= self.min_saturation && v >= self.min_value
-        };
+        // The hue plays no part, so it is not computed: the saturation and
+        // value are `hsv_from_rgb`'s, tested from a table of the colours
+        // that pass (`SaturationValueTest`: the same answers without the
+        // divisions), and the opacity is tested first.
+        let test = syrup::color::SaturationValueTest::get(self.min_saturation, self.min_value);
+        let is_icon_pixel =
+            |pixel: &image::Rgba<u8>| pixel[3] > 200 && test.passes(pixel[0], pixel[1], pixel[2]);
 
         let mut rows = Vec::new();
         for y in region.y..region.y.saturating_add(region.h).min(height) {
