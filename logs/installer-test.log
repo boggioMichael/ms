@@ -1,0 +1,42 @@
+/c/Users/runneradmin/AppData/Local/Programs/MapleSyrup:
+total 20986
+-rw-r--r-- 1 runneradmin 197121      260 Oct 24 09:35 Add MapleSyrup to Claude.cmd
+drwxr-xr-x 1 runneradmin 197121        0 Oct 24 09:35 Claude
+-rw-r--r-- 1 runneradmin 197121      625 Oct 24 09:35 MapleSyrup with Claude.cmd
+-rwxr-xr-x 1 runneradmin 197121 12301312 Oct 24 09:35 MapleSyrup.exe
+-rw-r--r-- 1 runneradmin 197121    23524 Oct 24 09:35 README.txt
+-rw-r--r-- 1 runneradmin 197121   130816 Oct 24 09:28 maplesyrup.ico
+-rw-r--r-- 1 runneradmin 197121       55 Oct 24 09:35 sessions-folder.txt
+-rw-r--r-- 1 runneradmin 197121    17933 Oct 24 09:35 unins000.dat
+-rwxr-xr-x 1 runneradmin 197121  4495106 Oct 24 09:35 unins000.exe
+-rwxr-xr-x 1 runneradmin 197121  4500992 Oct 24 09:35 vision_debug.exe
+
+/c/Users/runneradmin/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/MapleSyrup:
+total 32
+-rwxr-xr-x 1 runneradmin 197121 2321 Oct 24 09:35 Add MapleSyrup to the Claude app.lnk
+-rwxr-xr-x 1 runneradmin 197121 2251 Oct 24 09:35 MapleSyrup (phone on the same Wi-Fi).lnk
+-rwxr-xr-x 1 runneradmin 197121 2335 Oct 24 09:35 MapleSyrup (recording and streaming).lnk
+-rwxr-xr-x 1 runneradmin 197121  687 Oct 24 09:35 MapleSyrup sessions.lnk
+-rwxr-xr-x 1 runneradmin 197121 2269 Oct 24 09:35 MapleSyrup without Claude.lnk
+-rwxr-xr-x 1 runneradmin 197121 2311 Oct 24 09:35 MapleSyrup.lnk
+-rwxr-xr-x 1 runneradmin 197121 1301 Oct 24 09:35 Read me.lnk
+-rwxr-xr-x 1 runneradmin 197121 1313 Oct 24 09:35 Uninstall MapleSyrup.lnk
+INSTALLED: /c/Users/runneradmin/AppData/Local/Programs/MapleSyrup
+sessions folder: ﻿C:\Users\runneradmin\Documents\MapleSyrup sessions
+SHORTCUT: MapleSyrup.lnk
+CLAUDE FOLDER: written
+CLAUDE FOLDER: .mcp.json
+MapleSyrup self-test (v0.9.1)
+  ok    console: escape codes off (output is not a console), DPI aware true
+  ok    vision: HP 100%, MP 95%, EXP 38% found on the screenshot in 21 ms (0 of 3 backed by a number)
+  ok    companion: "syrup status" → I can see the game, but not your HP, MP or EXP bars.
+  ok    text reading: the OCR engine built into Windows (Tesseract is not installed)
+  note  OpenAI: no key: simple answers and the Windows voice
+  ok    phone link: HTTPS on port 48443 with a certificate made here; "syrup help" from the phone → "Just talk to me. Ask how you're doing, about your HP, MP, EXP or level, or how long until you level. Say mark to save a moment, or mute to quiet me."
+  ok    network: the phone would open https://10.1.0.39:8443
+  ok    QR code: 17 lines tall
+  ok    voice: the Windows voice started (a line was spoken)
+  ok    capture: 3 windows listed, no MapleStory among them
+All checks passed.
+INSTALLED COPY: self-test passed
+UNINSTALLED
