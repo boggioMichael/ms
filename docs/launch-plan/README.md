@@ -18,6 +18,7 @@
 - [**המשימות הפתוחות שלי**](https://github.com/boggioMichael/ms/issues?q=is%3Aissue%20is%3Aopen%20label%3Alaunch-plan%20involves%3A%40me): קישור אחד ששווה לשמור. הוא מראה כל Issue שמשויך אליך או מזכיר אותך.
 - **התראות:** GitHub שולח מייל כשמשייכים אותך למשימה או מזכירים אותך (@). אפליקציית GitHub בטלפון שולחת גם התראה. כדאי לוודא שבהגדרות, ב-Notifications, המייל פעיל ל-Participating.
 - **בלי Slack:** כל מה שצריך בשביל המשימות נמצא כאן וב-Issues.
+- **מנהל המוצר:** [המשימות של השבוע](../pm/README.md), אחרי פגישה 1. המעקב ב-[#38](https://github.com/boggioMichael/ms/issues/38).
 
 ### איך מעדכנים
 
