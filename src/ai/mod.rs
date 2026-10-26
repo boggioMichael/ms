@@ -459,9 +459,15 @@ pub enum Done {
 impl Job {
     /// Whether no call-off stops it: a warning's own line, or news (a
     /// death, a level-up) — what is still true after the player's words
-    /// ([`Kind::kept`]).
+    /// ([`Kind::kept`]) — and what was heard of a reply cut short, which
+    /// the player's next words call everything off right after: the
+    /// conversation must still keep only what he heard.
     fn kept(&self) -> bool {
-        matches!(self, Job::Speak { kind, .. } if kind.kept())
+        match self {
+            Job::Speak { kind, .. } => kind.kept(),
+            Job::Cut { .. } => true,
+            _ => false,
+        }
     }
 }
 

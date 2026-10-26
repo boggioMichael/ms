@@ -106,8 +106,9 @@ How it talks
   listens ("wait", "די", "shut up", or just ask something else); a warning,
   or news such as a death, still plays out on the PC. It always answers what
   you said last: say something new and whatever it was still saying or
-  making for what you said before is dropped. Pause mid-sentence and go on,
-  and it waits for the rest instead of answering half of it. The phone keeps
+  making for what you said before is dropped (a quick "ok" or "כן" isn't
+  new: it goes on). Pause mid-sentence and go on, and it waits for the rest
+  instead of answering half of it. The phone keeps
   listening while it talks on the PC and tells your voice from its own;
   while it talks on the phone, the phone doesn't listen (it would hear
   itself), so a word over its voice pauses it, and the PC writes down what

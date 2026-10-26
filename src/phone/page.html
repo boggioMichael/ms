@@ -2255,12 +2255,15 @@
   // written down on the PC), or in what they go on to say (status.cut). If
   // there are none, the clip goes on from where it was (status.go_on, or
   // after PAUSE_MS), and that loudness no longer counts for it.
-  let floorDb = -60, loudRun = [], clipFloor = -100, clipAt = 0, measured = null, pausedFor = 0, loudDb = -100;
+  let floorDb = -60, loudRun = [], clipFloor = -100, clipAt = 0, measured = null, pausedFor = 0, loudDb = -100, resuming = false;
   const MEASURE_MS = 300, PAUSE_MS = 2600, LOUD_OF = 5, LOUD_NEEDED = 3;
   player.addEventListener("playing", () => {
-    if (measured !== playingClip) { measured = playingClip; clipFloor = -100; }
-    clipAt = Date.now();
+    if (measured !== playingClip) { measured = playingClip; clipFloor = -100; resuming = false; }
     loudRun = [];
+    // Going on after a pause is no new start: what the microphone hears
+    // now is not the clip's floor — the player may well still be talking.
+    if (resuming) { resuming = false; return; }
+    clipAt = Date.now();
   });
   function talkingOver(db) {
     if (pausedFor) return;
@@ -2293,7 +2296,8 @@
     // still is. (Ten dB over it, one laugh that paused the clip left the
     // rest of it all but deaf to the player.)
     clipFloor = Math.max(clipFloor, loudDb - 6);
-    player.play().catch(() => {});
+    resuming = true;
+    player.play().catch(() => { resuming = false; });
   }
 
   function startRecognition() {

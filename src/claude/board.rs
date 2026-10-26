@@ -17,8 +17,10 @@
 //!   voice; `answers`, the number of the player's words it answers (their
 //!   `heard` event's). He comes first: a line for words he has followed
 //!   with newer ones, or written before Claude could read his newest, or
-//!   coming while he talked over Claude's voice, is not said (409, and
-//!   why: Claude answers the newest instead).
+//!   coming while he talked over Claude's voice, or right after he told it
+//!   to stop, is not said (409, and why: Claude answers the newest
+//!   instead). A nod of his ("ok", "כן") is posted as an aside: newer, but
+//!   not words to answer, so what Claude is saying still is.
 //! - `GET /local/look?region=…` — the screen (or part of it) as a JPEG,
 //!   while the game is the window in front.
 //! - `GET /local/wiki?q=…` / `POST /local/wiki` `{"about", "answer",
@@ -62,9 +64,10 @@ const SAY_GRACE: Duration = Duration::from_millis(1000);
 /// How long after he talked over Claude's voice Claude's lines wait for
 /// what he says (it comes as `heard`), when nothing comes.
 const TALKED_OVER_WAIT: Duration = Duration::from_secs(6);
-/// How long his newest words wait for Claude's answer, at most: after
-/// that, no answer is on its way ([`Board::awaiting_answer`]).
-const AWAITED_FOR: Duration = Duration::from_secs(20);
+/// How long after he told Claude to stop a line naming none of his words
+/// is not said (unless he says something new): "OK, stopping" is not
+/// wanted, and what happens in the game later is.
+const STOP_HOLDS: Duration = Duration::from_secs(15);
 /// A picture's longest side by default: what Claude takes in whole.
 const LOOK_SIZE: u32 = 1568;
 
@@ -98,6 +101,8 @@ struct Inner {
     /// When he last talked over Claude's voice and stopped it, until his
     /// words come.
     talked_over: Option<Instant>,
+    /// His words that only told Claude to stop (their event), and when.
+    stopped: Option<(u64, Instant)>,
     /// Lines of Claude's that were not said (he had moved on), for the
     /// log.
     refused: Vec<String>,
@@ -109,8 +114,6 @@ struct Newest {
     headline: String,
     posted: Instant,
     taken: Option<Instant>,
-    /// A line of Claude's was said since that answers them.
-    answered: bool,
 }
 
 pub struct Board {
@@ -148,6 +151,7 @@ impl Board {
                 frame: None,
                 newest: None,
                 talked_over: None,
+                stopped: None,
                 refused: Vec::new(),
             }),
             changed: Condvar::new(),
@@ -165,6 +169,18 @@ impl Board {
     /// Post an event: `headline` is what happened, `text` the whole of it
     /// (the headline and the reading). Returns its number.
     pub fn post(&self, kind: &str, headline: &str, text: String) -> u64 {
+        self.post_as(kind, headline, text, true)
+    }
+
+    /// Post his words that only nod or fill a pause ("ok", "כן", "um"):
+    /// for Claude to know, but not newer words to answer — a line answering
+    /// what he asked before is still said. (What he says after talking
+    /// over Claude's voice has come all the same.)
+    pub fn post_aside(&self, kind: &str, headline: &str, text: String) -> u64 {
+        self.post_as(kind, headline, text, false)
+    }
+
+    fn post_as(&self, kind: &str, headline: &str, text: String, newest: bool) -> u64 {
         let t = self.started.elapsed().as_secs_f64();
         let mut inner = self.lock();
         let seq = inner.next;
@@ -172,13 +188,14 @@ impl Board {
         // His words: the newest Claude is to answer, and what he says after
         // talking over Claude's voice has come.
         if kind == "heard" {
-            inner.newest = Some(Newest {
-                seq,
-                headline: headline.to_string(),
-                posted: Instant::now(),
-                taken: None,
-                answered: false,
-            });
+            if newest {
+                inner.newest = Some(Newest {
+                    seq,
+                    headline: headline.to_string(),
+                    posted: Instant::now(),
+                    taken: None,
+                });
+            }
             inner.talked_over = None;
         }
         inner.events.push_back(Posted {
@@ -263,18 +280,18 @@ impl Board {
         self.lock().talked_over = Some(Instant::now());
     }
 
-    /// Whether Claude's answer to his newest words is still on its way:
-    /// posted less than [`AWAITED_FOR`] ago, and no line of Claude's said
-    /// since that answers them. ("ok" meanwhile asks nothing.)
-    pub fn awaiting_answer(&self) -> bool {
-        self.lock().newest.as_ref().is_some_and(|newest| {
-            !newest.answered && newest.taken.unwrap_or(newest.posted).elapsed() < AWAITED_FOR
-        })
+    /// His words number `seq` only told Claude to stop ("די" over its
+    /// voice): there is nothing in them to answer, and for a while
+    /// ([`STOP_HOLDS`]) no line naming none of his words is said either —
+    /// until he says something new.
+    pub fn told_to_stop(&self, seq: u64) {
+        self.lock().stopped = Some((seq, Instant::now()));
     }
 
     /// Why a line of Claude's that answers his words number `answers` (or
     /// names none) is not to be said now: he talked over Claude's voice
-    /// and has not said what he wants yet; or he has said something newer
+    /// and has not said what he wants yet; or it answers his telling it to
+    /// stop, or names nothing right after; or he has said something newer
     /// than what it answers; or it names nothing and came too soon after
     /// his newest words to be about them ([`SAY_GRACE`]). None: it is said.
     fn refusal(inner: &Inner, answers: Option<u64>, now: Instant) -> Option<String> {
@@ -289,6 +306,16 @@ impl Board {
             );
         }
         let newest = inner.newest.as_ref()?;
+        if let Some((stop, at)) = inner.stopped {
+            let holds = newest.seq == stop && now.saturating_duration_since(at) < STOP_HOLDS;
+            if answers == Some(stop) || (answers.is_none() && holds) {
+                return Some(
+                    "he told you to stop: say nothing until he asks something (or something new \
+happens in the game)"
+                        .into(),
+                );
+            }
+        }
         let older = match answers {
             Some(answers) => answers < newest.seq,
             None => {
@@ -351,13 +378,6 @@ or say nothing",
                 if let Some(why) = Self::refusal(&inner, answers, Instant::now()) {
                     inner.refused.push(text);
                     return Response::json(409, &json!({"error": why}));
-                }
-                // (A line naming no words, said now, is as good as the
-                // answer: Claude has read his newest.)
-                if let Some(newest) = inner.newest.as_mut()
-                    && answers.is_none_or(|n| n == newest.seq)
-                {
-                    newest.answered = true;
                 }
                 inner.says.push(text);
                 Response::json(200, &json!({"ok": true}))
@@ -927,11 +947,49 @@ mod tests {
                 .contains("talked over")
         );
         // …which comes, and is answered.
-        let stop = board.post("heard", "He said: \"די\"", "…".into());
+        let what = board.post("heard", "He said: \"what was that\"", "…".into());
         take(hp);
-        assert!(board.awaiting_answer(), "his words wait for Claude");
-        assert_eq!(say(json!({"text": "שותק.", "answers": stop})).status, 200);
-        assert!(!board.awaiting_answer(), "answered");
+        assert_eq!(
+            say(json!({"text": "A slime.", "answers": what})).status,
+            200
+        );
+        // He talks over it to say only "די": that was the stop. Nothing
+        // answers it, and for a while nothing naming no words is said.
+        board.talked_over();
+        let stop = board.post("heard", "He said: \"די\"", "…".into());
+        board.told_to_stop(stop);
+        take(what);
+        let ok = say(json!({"text": "OK, I'll stop.", "answers": stop}));
+        assert_eq!(ok.status, 409);
+        assert!(json_of(&ok)["error"].as_str().unwrap().contains("stop"));
+        board.lock().newest.as_mut().unwrap().taken = Instant::now().checked_sub(SAY_GRACE);
+        assert_eq!(say(json!({"text": "Sorry!"})).status, 409);
+        board.lock().stopped.as_mut().unwrap().1 = Instant::now().checked_sub(STOP_HOLDS).unwrap();
+        assert_eq!(
+            say(json!({"text": "You died, by the way."})).status,
+            200,
+            "what happens in the game later is said"
+        );
+        // A nod is an aside: what he asked before is still answered — after
+        // he talked over it too (his words came).
+        let boat = board.post("heard", "He said: \"how do I get to Ellinia\"", "…".into());
+        take(stop);
+        board.talked_over();
+        let nod = board.post_aside("heard", "He said: \"ok\"", "…".into());
+        assert!(nod > boat);
+        assert_eq!(
+            say(json!({"text": "Take the boat.", "answers": boat})).status,
+            200
+        );
+        // Not so his telling it to stop, even once he asked more.
+        assert_eq!(
+            say(json!({"text": "Stopping.", "answers": stop})).status,
+            409
+        );
+        assert_eq!(
+            board.take_says(),
+            vec!["A slime.", "You died, by the way.", "Take the boat."]
+        );
     }
 
     #[test]

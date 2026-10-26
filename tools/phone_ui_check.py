@@ -599,14 +599,28 @@ def loudness_checks(p):
     page.close()
     browser.close()
 
+def syllables(seconds, rate, amplitude):
+    """A voice's worth of loudness: a fifth of a second loud, a moment
+    quiet, over and over (a steady tone is soon taken for noise)."""
+    out, left = b"", seconds
+    while left > 0:
+        out += pcm(min(0.2, left), rate, amplitude) + pcm(min(0.07, max(left - 0.2, 0)), rate)
+        left -= 0.27
+    return out
+
 def talkover_checks(p):
     """The microphone fed from a file: a short word over the phone's voice
-    ("די!", a quarter of a second), twice. (The bug of 25 October, a joke
-    that could not be silenced: a word that short never paused the clip —
-    it took half a second of loudness in a row.)"""
+    ("די!", a quarter of a second), then a louder voice through the pause
+    and on, then another short word. (The bug of 25 October, a joke that
+    could not be silenced: a word that short never paused the clip — it
+    took half a second of loudness in a row.)"""
     mic = os.path.join(SHOTS, "mic-short-words.wav")
+    # (The microphone's gain control lifts a quiet word a long way and holds
+    # a loud voice down: the first word is quiet, for the louder voice to
+    # stand out from it.)
     with open(mic, "wb") as f:
-        f.write(wav(48000, pcm(5, 48000) + pcm(0.25, 48000, 24000) + pcm(6.75, 48000) + pcm(0.25, 48000, 24000) + pcm(20, 48000)))
+        f.write(wav(48000, pcm(5, 48000) + pcm(0.25, 48000, 1000) + pcm(0.35, 48000) + syllables(1.6, 48000, 24000)
+                    + pcm(5.8, 48000) + pcm(0.25, 48000, 24000) + pcm(20, 48000)))
     browser = p.chromium.launch(args=browser_args(mic))
     page, mic_started = listening_page(browser)
     def at(seconds):
@@ -623,15 +637,24 @@ def talkover_checks(p):
     wait_for(lambda: interrupts(t0), 8, "a short word over the clip never paused it")
     paused_at = time.time()
     assert page.evaluate("window.msVoice.paused"), "the clip pauses while the PC listens"
+    # (The PC takes a moment to write it down: meanwhile he says more.)
+    at(6.0)
     with LOCK: STATE["go_on"] = 1
     wait_for(lambda: page.evaluate("!window.msVoice.paused"), 2, "the PC's go_on did not let the clip go on")
     assert time.time() - paused_at < 2.0, "it went on only after the page's own wait"
-    assert interrupts(t0) == 1
+    # He was still talking, louder, as it went on: that pauses it again.
+    # (Going on was taken for the clip's start, and what the microphone
+    # heard in its first moments for the clip's own floor: his voice. It
+    # was deaf to him for the rest of the clip.)
+    wait_for(lambda: interrupts(t0) == 2, 3, "a louder voice as the clip went on did not pause it again")
+    with LOCK: STATE["go_on"] = 2
+    wait_for(lambda: page.evaluate("!window.msVoice.paused"), 2, "the second go_on did not let the clip go on")
     wait_for(lambda: page.evaluate("window.msVoice.ended"), 12, "the clip did not play to its end")
+    assert interrupts(t0) == 2
     # The next one: this time the PC found his "די" in it and cuts. It
     # stays stopped.
     t1 = time.time()
-    at(11)
+    at(12)
     with LOCK: STATE["clip"] = 2
     wait_for(lambda: page.evaluate("!window.msVoice.paused"), 4, "the second clip did not start")
     wait_for(lambda: interrupts(t1), 8, "the second short word never paused it")

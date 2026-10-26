@@ -516,6 +516,10 @@ pub struct Companion {
     /// Lines spoken lately (when, and normalised), to tell the phone hearing
     /// MapleSyrup's own voice from the player.
     spoken: std::collections::VecDeque<(f64, String)>,
+    /// The same lines as the voice was given them, where that differs
+    /// ("Henesys" said as "הֶנֶסִיס" in a Hebrew line): a transcriber writes
+    /// what it hears ([`Companion::talked_over`]).
+    voiced: std::collections::VecDeque<(f64, String)>,
     /// Counts small-talk answers, to vary them.
     turn: u32,
     /// Whether the HP and MP bars are being read or guessed at.
@@ -1053,6 +1057,17 @@ const DENIALS: &[&str] = &[
 const FILLERS: &[&str] = &[
     "uh", "um", "uhm", "umm", "hmm", "mm", "mmm", "ah", "oh", "eh", "er", "אה", "אמ", "הממ", "אממ",
 ];
+
+/// `text` without Hebrew's points (niqqud, and cantillation): the voice is
+/// given "הֶנֶסִיס", a transcriber writes "הנסיס".
+fn without_points(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            !('\u{0591}'..='\u{05C7}').contains(c)
+                || matches!(c, '\u{05BE}' | '\u{05C0}' | '\u{05C3}' | '\u{05C6}')
+        })
+        .collect()
+}
 
 /// Words that go with a stop and add nothing to it ("stop it", "די כבר",
 /// "wait please").
@@ -2740,6 +2755,7 @@ impl Companion {
             marks: 0,
             now: 0.0,
             spoken: std::collections::VecDeque::new(),
+            voiced: std::collections::VecDeque::new(),
             turn: 0,
             hp_steady: Steadiness::new(),
             mp_steady: Steadiness::new(),
@@ -2834,6 +2850,20 @@ impl Companion {
         self.spoken.push_back((now, commands::normalize(text)));
         while self.spoken.front().is_some_and(|(t, _)| now - t > 45.0) {
             self.spoken.pop_front();
+        }
+    }
+
+    /// Note how the voice was given the line just spoken (`voiced`: its
+    /// words respelled for the voice), when that differs from how it is
+    /// written: what a transcriber hears of its own voice is spelled so.
+    pub fn remember_voiced(&mut self, now: f64, voiced: &str) {
+        let voiced = commands::normalize(&without_points(voiced));
+        if self.spoken.back().is_some_and(|(_, said)| *said == voiced) {
+            return;
+        }
+        self.voiced.push_back((now, voiced));
+        while self.voiced.front().is_some_and(|(t, _)| now - t > 45.0) {
+            self.voiced.pop_front();
         }
     }
 
@@ -2989,11 +3019,17 @@ impl Companion {
     /// when it was only its own voice, or a sound with no words of theirs
     /// (a laugh, the game).
     pub fn talked_over(&self, now: f64, written: &str) -> Option<String> {
-        let said = self.said_lately(now);
+        let mut said = self.said_lately(now);
+        said.extend(
+            self.voiced
+                .iter()
+                .filter(|(at, _)| (-1.0..=ECHO_WINDOW).contains(&(now - at)))
+                .flat_map(|(_, line)| line.split(' ').filter(|w| !w.is_empty())),
+        );
         let theirs: Vec<&str> = written
             .split_whitespace()
             .filter(|token| {
-                let normal = commands::normalize(token);
+                let normal = commands::normalize(&without_points(token));
                 let mut words = normal.split(' ').filter(|w| !w.is_empty()).peekable();
                 words.peek().is_some()
                     && !words.all(|w| said_or_near(w, &said) || FILLERS.contains(&w))
@@ -5653,6 +5689,16 @@ mod tests {
         assert_eq!(c.talked_over(12.0, ""), None);
         assert_eq!(c.talked_over(12.0, "um"), None);
         assert_eq!(c.talked_over(12.0, "חחח"), None);
+        // A name in a Hebrew line, as the voice said it: the transcriber
+        // writes it in Hebrew, and it is still its own voice.
+        let mut he = Companion::seeded(Settings::default(), SEED);
+        he.remember_spoken(10.0, "תלך ל-Henesys, משם ל-Ellinia.");
+        he.remember_voiced(10.0, "תלך לְהֶנֶסִיס, משם לְאֶלִינְיָה.");
+        assert_eq!(he.talked_over(12.0, "תלך להנסיס משם לאלינייה"), None);
+        assert_eq!(
+            he.talked_over(12.0, "להנסיס עצור"),
+            Some("עצור".to_string())
+        );
     }
 
     #[test]
