@@ -396,6 +396,11 @@ pub enum Done {
     },
     /// The model judged the sentence was not for it.
     Silent { id: u64, heard: String },
+    /// Job `id` is over, its voice too: every piece of its speech was
+    /// handed over (`Audio`, before this), and no more will come — said,
+    /// failed, called off, or nothing to say. (A job called off before it
+    /// began says nothing at all.)
+    Voiced { id: u64 },
     /// Speech, a piece at a time as it is made: 24 kHz mono samples. A
     /// reply is spoken in a few lines (the first sentence alone, so it
     /// starts soon; then what was written meanwhile, together, so it
@@ -807,6 +812,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             let asked = Instant::now();
                             let text = brain::for_speech(&text);
                             if text.is_empty() {
+                                let _ = tx.send(Done::Voiced { id });
                                 continue;
                             }
                             if let Some(heard) = &heard {
@@ -958,6 +964,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             }
                         }
                     }
+                    let _ = tx.send(Done::Voiced { id });
                 }
                 busy_flag.store(false, Ordering::Relaxed);
             }

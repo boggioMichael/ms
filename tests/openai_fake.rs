@@ -470,6 +470,64 @@ fn a_streamed_reply_arrives_in_pieces_after_the_same_fallbacks() {
 }
 
 #[test]
+fn a_reply_is_over_once_its_voice_is_all_handed_over() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    let worker = ms::ai::spawn(ai, Brain::new());
+    let id = worker.send(Job::Converse {
+        heard: "can you see my game".into(),
+        snapshot: "HP is about 80%.".into(),
+        facts: Default::default(),
+        speak: true,
+        eyes: None,
+        language: None,
+    });
+    // Its words, then its voice line by line — and only then is it over:
+    // the main loop knows nothing more of it is coming.
+    let (mut replied, mut ends) = (false, 0);
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Reply { id: of, .. }) if of == id => replied = true,
+            Ok(Done::Audio { id: of, end, .. }) if of == id => ends += usize::from(end),
+            Ok(Done::Voiced { id: of }) if of == id => break,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(replied);
+    assert_eq!(ends, 2, "both lines' voices came before it was over");
+    // Nothing of it comes after.
+    while let Ok(done) = worker.done.recv_timeout(Duration::from_millis(300)) {
+        match done {
+            Done::Audio { id: of, .. } | Done::Reply { id: of, .. } => assert_ne!(of, id),
+            _ => {}
+        }
+    }
+    // A line it is handed to say is over once said, like a reply.
+    let line = worker.send(Job::Say {
+        heard: None,
+        text: "Go left.".into(),
+    });
+    let mut said = false;
+    loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Audio {
+                id: of, end: true, ..
+            }) if of == line => said = true,
+            Ok(Done::Voiced { id: of }) if of == line => break,
+            Ok(Done::Failed { error, .. }) => panic!("{error}"),
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    }
+    assert!(said);
+}
+
+#[test]
 fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
     if !have_curl() {
         return;
@@ -489,7 +547,7 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
     // Each line: its words, whether it was the first, its samples, closed.
     let mut lines: Vec<(String, bool, usize, bool)> = Vec::new();
     while reply.is_none() || lines.len() < 2 || !lines.iter().all(|l| l.3) {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id: of, text, .. }) => {
                 assert_eq!(of, id);
                 reply = Some(text)
@@ -522,6 +580,7 @@ fn the_worker_speaks_a_reply_line_by_line_as_the_voice_is_made() {
             Ok(Done::LookUp { question, .. }) => panic!("look-up: {question}"),
             Ok(Done::Coached { label, .. }) => panic!("coached: {label}"),
             Ok(Done::Rewrite { instruction }) => panic!("rewrite: {instruction}"),
+            Ok(Done::Voiced { .. }) => {}
             Err(e) => panic!("{e}: {reply:?} {lines:?}"),
         }
     }
@@ -707,7 +766,7 @@ fn a_reply_talked_over_stops_and_the_next_is_answered() {
     });
     assert!(!worker.cancelled(next));
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(10)) {
+        match next_done(&worker, Duration::from_secs(10)) {
             Ok(Done::Reply { id, text, .. }) => {
                 assert_eq!(id, next, "the call-off reply came back: {text}");
                 assert!(text.ends_with("you said: how am I doing."), "{text}");
@@ -747,7 +806,7 @@ fn what_a_reply_talked_over_never_said_is_said_when_asked_again() {
     // sentence, which is made slowly; the player talks over it there.
     let first = ask("where am I");
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Audio {
                 id,
                 kind,
@@ -774,7 +833,7 @@ fn what_a_reply_talked_over_never_said_is_said_when_asked_again() {
     // said: not silence, and not the sentence that was said.
     let second = ask("where am I");
     let text = loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id, text, .. }) if id == second => break text,
             Ok(Done::Silent { id, heard }) if id == second => panic!("silent: {heard}"),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -807,7 +866,7 @@ fn the_same_question_twice_gets_a_word_not_silence() {
     // waits for the voice to finish.)
     let first = ask("where am I");
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id, text, .. }) => {
                 assert_eq!(id, first);
                 assert_eq!(
@@ -828,7 +887,7 @@ The quest marker is four maps to the left. Go!"
     let second = ask("where am I");
     let (mut reply, mut spoken) = (None, None);
     while reply.is_none() || spoken.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id, text, .. }) if id == second => reply = Some(text),
             Ok(Done::Audio {
                 id,
@@ -867,7 +926,7 @@ fn outcome(worker: &ms::ai::Worker, id: u64) -> (Option<String>, Vec<String>, Ve
     loop {
         // (After the reply, a moment for the rest of its voice.)
         let wait = Duration::from_secs(if done { 1 } else { 30 });
-        match worker.done.recv_timeout(wait) {
+        match next_done(worker, wait) {
             Ok(Done::Reply {
                 id: of, text: t, ..
             }) if of == id => {
@@ -1042,7 +1101,7 @@ fn a_warning_waits_two_seconds_for_its_translation_then_is_said_in_english() {
         show: true,
         speak: false,
     });
-    match worker.done.recv_timeout(Duration::from_secs(8)) {
+    match next_done(&worker, Duration::from_secs(8)) {
         Ok(Done::Shown { text, kind }) => {
             assert_eq!(kind, ms::companion::Kind::Warning);
             assert_eq!(text, line);
@@ -1072,7 +1131,7 @@ fn a_line_that_comes_back_with_another_number_is_translated_once() {
             show: true,
             speak: false,
         });
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, .. }) => text,
             other => panic!("{}", describe(other)),
         }
@@ -1169,7 +1228,7 @@ fn its_own_lines_are_translated_shown_and_spoken() {
     let mut shown = None;
     let mut spoken = None;
     while shown.is_none() || spoken.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, kind }) => {
                 assert_eq!(kind, ms::companion::Kind::Alert);
                 shown = Some(text);
@@ -1221,7 +1280,7 @@ fn its_own_lines_are_translated_shown_and_spoken() {
     loop {
         if let Ok(Done::Audio {
             text, start: true, ..
-        }) = worker.done.recv_timeout(Duration::from_secs(30))
+        }) = next_done(&worker, Duration::from_secs(30))
         {
             assert_eq!(text, "Level up! Nice.");
             break;
@@ -1274,7 +1333,7 @@ fn an_alerts_line_is_not_called_off_with_the_rest() {
     assert!(!worker.cancelled(alert));
     let (mut shown, mut spoken) = (None, None);
     while shown.is_none() || spoken.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, kind }) => {
                 assert_eq!(kind, ms::companion::Kind::Warning);
                 shown = Some(text);
@@ -1298,7 +1357,7 @@ fn an_alerts_line_is_not_called_off_with_the_rest() {
     );
     assert_eq!(spoken, shown);
     // The other line of its own went with the call-off: nothing of it comes.
-    while let Ok(done) = worker.done.recv_timeout(Duration::from_millis(500)) {
+    while let Ok(done) = next_done(&worker, Duration::from_millis(500)) {
         match done {
             Done::Audio { id, .. } => assert_eq!(id, alert),
             Done::Failed { id, .. } => assert_eq!(id, slow),
@@ -1324,7 +1383,7 @@ fn what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees() {
         speak: true,
     });
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Audio {
                 id,
                 kind,
@@ -1349,7 +1408,7 @@ fn what_it_said_on_its_own_is_in_the_conversation_the_next_reply_sees() {
         language: None,
     });
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id, .. }) if id == reply => break,
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
@@ -1414,7 +1473,7 @@ fn a_warning_never_waits_for_a_look() {
     });
     let (mut order, mut alert_after) = (Vec::new(), None);
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Audio {
                 id, start: true, ..
             }) => {
@@ -1458,7 +1517,7 @@ fn a_line_of_its_own_called_off_before_a_sound_was_not_said() {
         text: "Hello there, my friend! This takes forever.".into(),
     });
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, .. }) => {
                 assert_eq!(text, "Hello there, my friend! This takes forever.");
                 break;
@@ -1483,7 +1542,7 @@ fn a_line_of_its_own_called_off_before_a_sound_was_not_said() {
     });
     let (mut text, mut notes) = (None, Vec::new());
     while text.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id, text: t, .. }) if id == reply => text = Some(t),
             Ok(Done::Noted { line }) => notes.push(line),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -1522,7 +1581,7 @@ fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
     // (the look is called off) before a sound of it was made.
     let first = look(true);
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, .. }) => {
                 assert_eq!(text, "Rebuff, you're naked, this takes forever.");
                 break;
@@ -1535,7 +1594,7 @@ fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
     std::thread::sleep(Duration::from_millis(300));
     worker.cancel(first);
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Coached { id, .. }) if id == first => break,
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
@@ -1547,7 +1606,7 @@ fn a_coach_line_called_off_before_a_sound_can_be_said_at_the_next_look() {
     let second = look(false);
     let (mut said, mut notes) = (None, Vec::new());
     while said.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Coached { id, text, .. }) if id == second => said = Some(text),
             Ok(Done::Noted { line }) => notes.push(line),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -1591,7 +1650,7 @@ fn a_look_called_off_says_so_and_is_not_nothing_to_say() {
     worker.cancel_all();
     let mut came_back = Vec::new();
     while came_back.len() < 2 {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Coached {
                 id,
                 text,
@@ -1610,7 +1669,7 @@ fn a_look_called_off_says_so_and_is_not_nothing_to_say() {
     );
     // A look that came back with nothing is nothing to say, not called off.
     let quiet = look("Nothing in particular happened (nothing is happening).");
-    match worker.done.recv_timeout(Duration::from_secs(30)) {
+    match next_done(&worker, Duration::from_secs(30)) {
         Ok(Done::Coached {
             id,
             text,
@@ -1647,7 +1706,7 @@ fn two_lines_pieces_are_never_shuffled_together() {
     let mut pieces: Vec<(u64, bool, bool)> = Vec::new();
     let mut ended = 0;
     while ended < 2 {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Audio { id, start, end, .. }) => {
                 pieces.push((id, start, end));
                 if end {
@@ -1693,7 +1752,7 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
         language: None,
         speak: true,
     });
-    match worker.done.recv_timeout(Duration::from_secs(30)) {
+    match next_done(&worker, Duration::from_secs(30)) {
         Ok(Done::Coached {
             id,
             text,
@@ -1720,7 +1779,7 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
     });
     let (mut shown, mut spoken, mut coached) = (None, None, None);
     while shown.is_none() || spoken.is_none() || coached.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, kind }) => {
                 assert_eq!(kind, ms::companion::Kind::Alert);
                 shown = Some(text);
@@ -1788,7 +1847,7 @@ fn the_coach_speaks_only_when_there_is_something_to_say() {
         language: None,
     });
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { .. }) => break,
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
@@ -1822,7 +1881,26 @@ fn describe(done: Result<Done, std::sync::mpsc::RecvTimeoutError>) -> String {
         Ok(Done::LookUp { question, .. }) => format!("look-up: {question}"),
         Ok(Done::Coached { label, text, .. }) => format!("coached: {label}: {text:?}"),
         Ok(Done::Rewrite { instruction }) => format!("rewrite: {instruction}"),
+        Ok(Done::Voiced { id }) => format!("voiced: {id}"),
         Err(e) => e.to_string(),
+    }
+}
+
+/// The worker's next word, past its "this job is over" (`Done::Voiced`),
+/// which the checks here look for only where they say so.
+fn next_done(
+    worker: &ms::ai::Worker,
+    wait: Duration,
+) -> Result<Done, std::sync::mpsc::RecvTimeoutError> {
+    let until = Instant::now() + wait;
+    loop {
+        match worker
+            .done
+            .recv_timeout(until.saturating_duration_since(Instant::now()))
+        {
+            Ok(Done::Voiced { .. }) => {}
+            other => return other,
+        }
     }
 }
 
@@ -1856,7 +1934,7 @@ fn a_warning_is_spoken_with_urgency_and_a_reply_at_the_usual_pace() {
         let from = seen.lock().unwrap().len();
         worker.send(job);
         loop {
-            match worker.done.recv_timeout(Duration::from_secs(30)) {
+            match next_done(&worker, Duration::from_secs(30)) {
                 Ok(Done::Audio { end: true, .. }) => break,
                 Ok(Done::Failed { error, .. }) => panic!("{error}"),
                 Ok(_) => {}
@@ -2088,7 +2166,7 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
         language: None,
     });
     loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id: of, .. }) => {
                 assert_eq!(of, id);
                 break;
@@ -2183,7 +2261,7 @@ fn a_look_up_never_holds_the_answer_up_and_corrects_it_later() {
     });
     let (mut reply, mut look_up) = (None, None);
     while reply.is_none() || look_up.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { id: of, text, .. }) => {
                 assert_eq!(of, id);
                 reply = Some(text);
@@ -2316,7 +2394,7 @@ fn grok_answers_and_openai_steps_in_when_it_fails() {
         language: None,
     });
     let text = loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { text, .. }) => break text,
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
@@ -2356,7 +2434,7 @@ fn grok_answers_and_openai_steps_in_when_it_fails() {
     });
     let (mut text, mut noted) = (None, None);
     while text.is_none() || noted.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { text: t, .. }) => text = Some(t),
             Ok(Done::Noted { line }) => noted = Some(line),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -2401,7 +2479,7 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
     ask("where to");
     let (mut reply, mut notes) = (None, Vec::new());
     while reply.is_none() || notes.len() < 2 {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { text, .. }) => reply = Some(text),
             Ok(Done::Noted { line }) => notes.push(line),
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -2428,7 +2506,7 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
     // The next question goes to OpenAI while Grok rests.
     ask("and now");
     let text = loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Reply { text, .. }) => break text,
             Ok(Done::Failed { error, .. }) => panic!("{error}"),
             Ok(_) => {}
@@ -2466,7 +2544,7 @@ fn a_brain_going_round_in_circles_is_cut_to_what_is_new_and_rested() {
             language: None,
         });
         loop {
-            match worker.done.recv_timeout(Duration::from_secs(30)) {
+            match next_done(worker, Duration::from_secs(30)) {
                 Ok(Done::Reply { text, .. }) => break text,
                 Ok(Done::Silent { heard, .. }) => panic!("silent: {heard}"),
                 Ok(Done::Failed { error, .. }) => panic!("{error}"),
@@ -2527,7 +2605,7 @@ fn the_hello_picks_up_from_last_time_when_it_knows_the_player() {
     let worker = ms::ai::spawn(ai, Brain::new());
     worker.send(Job::Greet { language: None });
     let shown = loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, kind }) => {
                 assert_eq!(kind, ms::companion::Kind::Reply);
                 break text;
@@ -2557,7 +2635,7 @@ fn the_hello_picks_up_from_last_time_when_it_knows_the_player() {
     });
     let (mut shown, mut spoken) = (None, None);
     while shown.is_none() || spoken.is_none() {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Shown { text, .. }) => shown = Some(text),
             Ok(Done::Audio {
                 text, start: true, ..
@@ -3072,7 +3150,7 @@ fn a_look_up_never_speaks_a_second_answer_it_shows_it() {
     let mut shown = None;
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
-        match worker.done.recv_timeout(Duration::from_millis(200)) {
+        match next_done(&worker, Duration::from_millis(200)) {
             Ok(Done::Shown { kind, text }) => shown = Some((kind, text)),
             Ok(Done::Audio { id: of, .. }) if of == id => panic!("a look-up's finding was said"),
             Ok(Done::Reply { .. }) => panic!("a look-up's finding became a reply"),
@@ -3086,7 +3164,7 @@ fn a_look_up_never_speaks_a_second_answer_it_shows_it() {
         text: "The workshop is done: restart to get it.".into(),
     });
     let said = loop {
-        match worker.done.recv_timeout(Duration::from_secs(30)) {
+        match next_done(&worker, Duration::from_secs(30)) {
             Ok(Done::Audio {
                 id: of,
                 start: true,
@@ -3123,7 +3201,7 @@ fn settings_change_only_when_his_own_words_plainly_ask() {
         });
         let mut got = Vec::new();
         loop {
-            match worker.done.recv_timeout(Duration::from_secs(30)) {
+            match next_done(&worker, Duration::from_secs(30)) {
                 Ok(Done::Reply { id: of, .. }) | Ok(Done::Silent { id: of, .. }) if of == id => {
                     break;
                 }

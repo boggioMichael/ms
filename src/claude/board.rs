@@ -65,8 +65,8 @@ const SAY_GRACE: Duration = Duration::from_millis(1000);
 /// what he says (it comes as `heard`), when nothing comes.
 const TALKED_OVER_WAIT: Duration = Duration::from_secs(6);
 /// How long after he told Claude to stop a line naming none of his words
-/// is not said (unless he says something new): "OK, stopping" is not
-/// wanted, and what happens in the game later is.
+/// is not said (unless he says something new, or something happens in the
+/// game): "OK, stopping" is not wanted, and a word on what happens next is.
 const STOP_HOLDS: Duration = Duration::from_secs(15);
 /// A picture's longest side by default: what Claude takes in whole.
 const LOOK_SIZE: u32 = 1568;
@@ -101,11 +101,19 @@ struct Inner {
     /// When he last talked over Claude's voice and stopped it, until his
     /// words come.
     talked_over: Option<Instant>,
-    /// His words that only told Claude to stop (their event), and when.
-    stopped: Option<(u64, Instant)>,
+    /// His words that only told Claude to stop.
+    stopped: Option<Stopped>,
     /// Lines of Claude's that were not said (he had moved on), for the
     /// log.
     refused: Vec<String>,
+}
+
+/// He told Claude to stop: his words' event, when, and whether anything
+/// happened in the game since (an event other than his words).
+struct Stopped {
+    seq: u64,
+    at: Instant,
+    news: bool,
 }
 
 /// The player's newest words posted for Claude.
@@ -197,6 +205,8 @@ impl Board {
                 });
             }
             inner.talked_over = None;
+        } else if let Some(stopped) = inner.stopped.as_mut() {
+            stopped.news = true;
         }
         inner.events.push_back(Posted {
             seq,
@@ -283,9 +293,13 @@ impl Board {
     /// His words number `seq` only told Claude to stop ("די" over its
     /// voice): there is nothing in them to answer, and for a while
     /// ([`STOP_HOLDS`]) no line naming none of his words is said either —
-    /// until he says something new.
+    /// until he says something new, or something happens in the game.
     pub fn told_to_stop(&self, seq: u64) {
-        self.lock().stopped = Some((seq, Instant::now()));
+        self.lock().stopped = Some(Stopped {
+            seq,
+            at: Instant::now(),
+            news: false,
+        });
     }
 
     /// Why a line of Claude's that answers his words number `answers` (or
@@ -306,9 +320,11 @@ impl Board {
             );
         }
         let newest = inner.newest.as_ref()?;
-        if let Some((stop, at)) = inner.stopped {
-            let holds = newest.seq == stop && now.saturating_duration_since(at) < STOP_HOLDS;
-            if answers == Some(stop) || (answers.is_none() && holds) {
+        if let Some(stopped) = &inner.stopped {
+            let holds = newest.seq == stopped.seq
+                && !stopped.news
+                && now.saturating_duration_since(stopped.at) < STOP_HOLDS;
+            if answers == Some(stopped.seq) || (answers.is_none() && holds) {
                 return Some(
                     "he told you to stop: say nothing until he asks something (or something new \
 happens in the game)"
@@ -964,11 +980,21 @@ mod tests {
         assert!(json_of(&ok)["error"].as_str().unwrap().contains("stop"));
         board.lock().newest.as_mut().unwrap().taken = Instant::now().checked_sub(SAY_GRACE);
         assert_eq!(say(json!({"text": "Sorry!"})).status, 409);
-        board.lock().stopped.as_mut().unwrap().1 = Instant::now().checked_sub(STOP_HOLDS).unwrap();
+        // What happens in the game next is wanted: a line on it is said
+        // (and, a while after, any).
+        board.post("hp", "HP 12%", "…".into());
+        assert_eq!(
+            say(json!({"text": "HP 12%! Pot now!"})).status,
+            200,
+            "a warning on what happened since is said"
+        );
+        board.lock().stopped.as_mut().unwrap().news = false;
+        assert_eq!(say(json!({"text": "Sorry!"})).status, 409);
+        board.lock().stopped.as_mut().unwrap().at = Instant::now().checked_sub(STOP_HOLDS).unwrap();
         assert_eq!(
             say(json!({"text": "You died, by the way."})).status,
             200,
-            "what happens in the game later is said"
+            "a while after, it is said"
         );
         // A nod is an aside: what he asked before is still answered — after
         // he talked over it too (his words came).
@@ -988,7 +1014,12 @@ mod tests {
         );
         assert_eq!(
             board.take_says(),
-            vec!["A slime.", "You died, by the way.", "Take the boat."]
+            vec![
+                "A slime.",
+                "HP 12%! Pot now!",
+                "You died, by the way.",
+                "Take the boat."
+            ]
         );
     }
 
