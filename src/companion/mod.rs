@@ -1089,6 +1089,48 @@ pub fn only_stops(text: &str) -> bool {
         })
 }
 
+/// Words that only acknowledge, or say "go on".
+const ACKNOWLEDGEMENTS: &[&str] = &[
+    "ok",
+    "okay",
+    "k",
+    "yes",
+    "yeah",
+    "yep",
+    "sure",
+    "fine",
+    "cool",
+    "nice",
+    "great",
+    "thanks",
+    "thank",
+    "you",
+    "alright",
+    "כן",
+    "אוקיי",
+    "אוקי",
+    "בסדר",
+    "טוב",
+    "סבבה",
+    "אחלה",
+    "יאללה",
+    "תודה",
+    "יופי",
+    "נו",
+];
+
+/// Whether `text` only acknowledges or fills a pause — "ok", "כן כן", "um",
+/// "ok thanks", "נו": three words at most, nothing asked or told. Said while
+/// its answer is still on its way, the answer is still what they wait for.
+pub fn only_acknowledges(text: &str) -> bool {
+    let normal = commands::normalize(text);
+    let words: Vec<&str> = normal.split(' ').filter(|w| !w.is_empty()).collect();
+    (1..=3).contains(&words.len())
+        && words
+            .iter()
+            .all(|w| ACKNOWLEDGEMENTS.contains(w) || FILLERS.contains(w))
+}
+
 /// How numbers sound: the phone may write "sixty percent" for MapleSyrup's
 /// "60%".
 const NUMBER_WORDS: &[&str] = &[
@@ -5566,6 +5608,20 @@ mod tests {
         }
         for not in ["ok", "wait what's my HP", "רגע, כמה HP יש לי?", "", "לא"] {
             assert!(!only_stops(not), "{not}");
+        }
+        // An "ok" asks nothing; a question, a "no" or a word more does.
+        for ack in ["ok", "כן כן", "um", "OK, thanks!", "נו?", "thank you"] {
+            assert!(only_acknowledges(ack), "{ack}");
+        }
+        for not in [
+            "",
+            "לא",
+            "ok where now",
+            "כן, לאן?",
+            "ok ok ok ok",
+            "Henesys",
+        ] {
+            assert!(!only_acknowledges(not), "{not}");
         }
     }
 

@@ -1238,6 +1238,8 @@ struct Asked {
     spoke: bool,
     /// Its text is complete (its voice may still be playing).
     done: bool,
+    /// It was called off (the player talked over it, or said more).
+    called_off: bool,
     /// Its lines, and when each starts to be heard.
     lines: Vec<(Instant, String)>,
 }
@@ -1471,6 +1473,7 @@ impl Turns {
                 });
             }
             reply.done = true;
+            reply.called_off = true;
         }
     }
 
@@ -1549,12 +1552,33 @@ impl Turns {
     /// only their newest words are answered. (It stopped only while the
     /// voice played or the words were being written, and a reply done but
     /// not yet heard was said after the next question.)
-    fn heard(&mut self, out: &mut Outputs, text: String) -> String {
+    ///
+    /// But "ok", "כן", "um" while their answer is on its way
+    /// ([`Turns::awaited`]) ask nothing: the answer still answers them, and
+    /// nothing is called off or answered anew (None).
+    fn heard(&mut self, out: &mut Outputs, text: String) -> Option<String> {
+        if self.awaited() && ms::companion::only_acknowledges(&text) {
+            out.session
+                .line("turn", &format!("waits for the answer: {text}"));
+            return None;
+        }
         self.interrupt(out);
-        match self.held.take() {
+        Some(match self.held.take() {
             Some(held) => fold(&held.words, text),
             None => text,
-        }
+        })
+    }
+
+    /// Whether the answer the player waits for is still on its way: asked
+    /// for and not called off, with none of it heard yet — its words being
+    /// written, its voice being made, or waiting for the phone.
+    fn awaited(&self) -> bool {
+        let now = Instant::now();
+        self.reply.as_ref().is_some_and(|r| {
+            !r.called_off
+                && (!r.done || !r.lines.is_empty())
+                && r.lines.iter().all(|(at, _)| *at > now)
+        })
     }
 
     /// What the phone's microphone heard of the loud moment `at` over its
@@ -1630,6 +1654,7 @@ impl Turns {
             heard: heard.to_string(),
             spoke: false,
             done: false,
+            called_off: false,
             lines: Vec::new(),
         });
     }
@@ -4172,11 +4197,22 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             && let Some(board) = &claude_board
                         {
                             out.show(Kind::Heard, &text);
+                            // "ok", "כן", "um" while Claude's answer to what
+                            // he asked is on its way ask nothing: the answer
+                            // still answers him.
+                            let acknowledges = ms::companion::only_acknowledges(&text);
+                            if acknowledges && board.awaiting_answer() {
+                                out.session
+                                    .line("turn", &format!("waits for the answer: {text}"));
+                                continue;
+                            }
                             // He comes first: what its voice was saying or
                             // making stops, and Claude's lines still to come
                             // — written before he said this — are called off
-                            // (Claude answers this now).
-                            turns.interrupt(&mut out);
+                            // (Claude answers this now). An "ok" stops nothing.
+                            if !acknowledges {
+                                turns.interrupt(&mut out);
+                            }
                             // Quiet, or talking again, is MapleSyrup's own
                             // voice: done here at once (Claude has no way to
                             // stop it), and Claude is told.
@@ -4305,7 +4341,9 @@ shown on his phone, not said aloud, until he asks it to talk again.)"
                             } else if companion.settings.always_listen
                                 || !matches!(commands::interpret(&text, false), Heard::NotForUs)
                             {
-                                let text = turns.heard(&mut out, text);
+                                let Some(text) = turns.heard(&mut out, text) else {
+                                    continue;
+                                };
                                 // "Say X like Y": kept, and used by the
                                 // voice from now on.
                                 if let Some(answer) = ai::pronounce::heard(&settings_dir, &text) {
@@ -5724,8 +5762,10 @@ mod tests {
         turns.asked(job(&out), "No take a look");
         turns.hearing(&mut out, &companion, 3.0, "at yourself");
         assert_eq!(
-            turns.heard(&mut out, "at yourself where am I".into()),
-            "No take a look at yourself where am I"
+            turns
+                .heard(&mut out, "at yourself where am I".into())
+                .as_deref(),
+            Some("No take a look at yourself where am I")
         );
         assert!(turns.overdue().is_none());
     }
@@ -5865,11 +5905,47 @@ mod tests {
         turns.finished(id);
         assert!(!out.mouth.speaking() && !turns.busy());
         assert_eq!(
-            turns.heard(&mut out, "how much HP do I have".into()),
-            "how much HP do I have"
+            turns
+                .heard(&mut out, "how much HP do I have".into())
+                .as_deref(),
+            Some("how much HP do I have")
         );
         assert!(cancelled(&out, id), "the rest of the joke is not said");
         assert_eq!(cuts(&out), 1);
+    }
+
+    #[test]
+    fn an_ok_while_its_answer_is_on_its_way_waits_for_it() {
+        // "ok", "um" while the answer is being written or its voice made:
+        // it asks nothing, and the answer still answers them.
+        let mut out = outputs();
+        let mut turns = Turns::default();
+        let id = job(&out);
+        turns.asked(id, "where should I go");
+        assert_eq!(turns.heard(&mut out, "ok".into()), None);
+        turns.finished(id);
+        turns.spoke(
+            id,
+            Instant::now() + Duration::from_secs(1),
+            "Ellinia, the tree dungeon.",
+        );
+        assert_eq!(turns.heard(&mut out, "כן כן".into()), None);
+        assert!(!cancelled(&out, id));
+        assert_eq!(cuts(&out), 0);
+        // Anything else is newer: the answer gives way.
+        assert_eq!(
+            turns
+                .heard(&mut out, "actually what's my HP".into())
+                .as_deref(),
+            Some("actually what's my HP")
+        );
+        assert!(cancelled(&out, id));
+        // Once it is heard, or called off, an "ok" is a sentence like any.
+        let next = job(&out);
+        turns.asked(next, "tell me a joke");
+        turns.spoke(next, Instant::now(), "Why did the slime cross the road?");
+        turns.finished(next);
+        assert_eq!(turns.heard(&mut out, "ok".into()).as_deref(), Some("ok"));
     }
 
     #[test]

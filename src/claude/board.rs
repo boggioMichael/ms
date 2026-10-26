@@ -62,6 +62,9 @@ const SAY_GRACE: Duration = Duration::from_millis(1000);
 /// How long after he talked over Claude's voice Claude's lines wait for
 /// what he says (it comes as `heard`), when nothing comes.
 const TALKED_OVER_WAIT: Duration = Duration::from_secs(6);
+/// How long his newest words wait for Claude's answer, at most: after
+/// that, no answer is on its way ([`Board::awaiting_answer`]).
+const AWAITED_FOR: Duration = Duration::from_secs(20);
 /// A picture's longest side by default: what Claude takes in whole.
 const LOOK_SIZE: u32 = 1568;
 
@@ -106,6 +109,8 @@ struct Newest {
     headline: String,
     posted: Instant,
     taken: Option<Instant>,
+    /// A line of Claude's was said since that answers them.
+    answered: bool,
 }
 
 pub struct Board {
@@ -172,6 +177,7 @@ impl Board {
                 headline: headline.to_string(),
                 posted: Instant::now(),
                 taken: None,
+                answered: false,
             });
             inner.talked_over = None;
         }
@@ -257,6 +263,15 @@ impl Board {
         self.lock().talked_over = Some(Instant::now());
     }
 
+    /// Whether Claude's answer to his newest words is still on its way:
+    /// posted less than [`AWAITED_FOR`] ago, and no line of Claude's said
+    /// since that answers them. ("ok" meanwhile asks nothing.)
+    pub fn awaiting_answer(&self) -> bool {
+        self.lock().newest.as_ref().is_some_and(|newest| {
+            !newest.answered && newest.taken.unwrap_or(newest.posted).elapsed() < AWAITED_FOR
+        })
+    }
+
     /// Why a line of Claude's that answers his words number `answers` (or
     /// names none) is not to be said now: he talked over Claude's voice
     /// and has not said what he wants yet; or he has said something newer
@@ -336,6 +351,13 @@ or say nothing",
                 if let Some(why) = Self::refusal(&inner, answers, Instant::now()) {
                     inner.refused.push(text);
                     return Response::json(409, &json!({"error": why}));
+                }
+                // (A line naming no words, said now, is as good as the
+                // answer: Claude has read his newest.)
+                if let Some(newest) = inner.newest.as_mut()
+                    && answers.is_none_or(|n| n == newest.seq)
+                {
+                    newest.answered = true;
                 }
                 inner.says.push(text);
                 Response::json(200, &json!({"ok": true}))
@@ -907,7 +929,9 @@ mod tests {
         // …which comes, and is answered.
         let stop = board.post("heard", "He said: \"די\"", "…".into());
         take(hp);
+        assert!(board.awaiting_answer(), "his words wait for Claude");
         assert_eq!(say(json!({"text": "שותק.", "answers": stop})).status, 200);
+        assert!(!board.awaiting_answer(), "answered");
     }
 
     #[test]
