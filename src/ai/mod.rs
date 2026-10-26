@@ -15,9 +15,12 @@
 //!
 //! The first words are heard while the rest is still being written, and
 //! the voice plays while it is still being made. Every job has a number;
-//! the player talking over MapleSyrup calls its work off (`Worker::cancel`):
-//! the request in flight is stopped at once, and only what was already
-//! said stays in the conversation.
+//! the player talking over MapleSyrup — or saying anything new — calls its
+//! work off (`Worker::cancel`): the request in flight is stopped at once,
+//! what waits is skipped, and only what was already said stays in the
+//! conversation. What the player said over its voice on the phone, where
+//! the phone does not listen, is written down from its microphone
+//! ([`talkover`]).
 //!
 //! The worker is two lanes. The thinking lane owns the conversation and
 //! does what needs it: replies, the coach's looks, the hello. The mouth
@@ -41,6 +44,7 @@ pub mod memory;
 pub mod openai;
 pub mod pronounce;
 pub mod style;
+pub mod talkover;
 pub mod teaching;
 pub mod tools;
 

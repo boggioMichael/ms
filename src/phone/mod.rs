@@ -12,10 +12,12 @@
 //! ```
 //!
 //! `/api/state` can wait (`wait=` milliseconds) until there is something
-//! new — a line, a spoken clip, a reply cut short — so the phone hears of
-//! it at once instead of at its next look. It lists the clips the phone can
-//! still fetch with what each is (`kind`) and how old (`age_ms`): a phone
-//! that could play none before a tap plays no stale news at the tap.
+//! new — a line, a spoken clip, a reply cut short, a clip paused for a loud
+//! sound told to go on (`go_on`: there were no words of the player's in
+//! it) — so the phone hears of it at once instead of at its next look. It
+//! lists the clips the phone can still fetch with what each is (`kind`)
+//! and how old (`age_ms`): a phone that could play none before a tap plays
+//! no stale news at the tap.
 //!
 //! On a live call (`crate::ai::live`) the phone talks to OpenAI itself and
 //! asks the PC for a short-lived key (`/api/live`), the screen
@@ -125,6 +127,10 @@ pub enum Inbound {
     /// The player talked over MapleSyrup's voice on the phone (heard by the
     /// phone itself): stop talking.
     Interrupt,
+    /// What the player said over MapleSyrup's voice on the phone, written
+    /// down on the PC from the phone's own microphone (the phone's speech
+    /// recognition is off while it speaks): a sentence like `Heard`.
+    Overheard(String),
     /// A button: a command's word.
     Command(String),
     /// The page opened, from this browser (`agent`), with its live-call
@@ -310,6 +316,9 @@ struct State {
     last_clip: u64,
     /// How many times a reply was cut short: the phone stops its clips.
     cut: u64,
+    /// How many times a clip paused for a loud sound over it was told to go
+    /// on: the sound had no words of the player's in it.
+    go_on: u64,
     /// What a live call's model can see.
     sight: Sight,
     /// Pictures of the things it was taught: by id, with a tag that changes
@@ -391,6 +400,7 @@ impl Hub {
                 mouths: VecDeque::new(),
                 last_clip: 0,
                 cut: 0,
+                go_on: 0,
                 sight: Sight::default(),
                 thumbs: std::collections::HashMap::new(),
             }),
@@ -577,6 +587,20 @@ impl Hub {
         self.changed.notify_all();
     }
 
+    /// The clip the phone paused for a loud sound over it goes on now: the
+    /// sound had no words of the player's in it (its own echo, the game, a
+    /// laugh).
+    pub fn go_on(&self) {
+        self.lock().go_on += 1;
+        self.changed.notify_all();
+    }
+
+    /// What the phone's microphone heard from `from` to `to`, as far as it
+    /// has come in, with its rate (None: nothing of that time).
+    pub fn mic_between(&self, from: Instant, to: Instant) -> Option<(Vec<i16>, u32)> {
+        self.lock().mic.between(from, to)
+    }
+
     /// The picture of a thing it was taught, for the phone's list.
     pub fn set_thumb(&self, id: &str, tag: &str, png: Vec<u8>) {
         self.lock()
@@ -684,9 +708,19 @@ impl Hub {
                 // Wait for something new, up to `wait` milliseconds.
                 let wait = Duration::from_millis(number("wait").min(1500));
                 if !wait.is_zero() {
-                    let (clip, cut) = (number("clip"), number("cut"));
+                    let (clip, cut, go) = (number("clip"), number("cut"), number("go"));
                     let deadline = Instant::now() + wait;
-                    while state.next_id - 1 <= since && state.last_clip <= clip && state.cut <= cut
+                    // (A page from before `go` asks for none: it waits only
+                    // for the rest.)
+                    let go = if request.param("go").is_some() {
+                        go
+                    } else {
+                        u64::MAX
+                    };
+                    while state.next_id - 1 <= since
+                        && state.last_clip <= clip
+                        && state.cut <= cut
+                        && state.go_on <= go
                     {
                         let left = deadline.saturating_duration_since(Instant::now());
                         if left.is_zero() {
@@ -734,6 +768,7 @@ impl Hub {
                         "clip": state.last_clip,
                         "clips": clips,
                         "cut": state.cut,
+                        "go_on": state.go_on,
                     }),
                 )
             }
@@ -872,7 +907,17 @@ impl Hub {
                     }
                     _ => (samples, None),
                 };
-                self.lock().mic.ingest(&mic, rate, Instant::now());
+                // (Its last sample was heard `age` ago: kept by when it was
+                // heard, to be written down if it was said over its voice.)
+                let now = Instant::now();
+                let heard = now
+                    .checked_sub(Duration::from_secs_f64(age_of(request)))
+                    .unwrap_or(now);
+                {
+                    let mut state = self.lock();
+                    state.mic.ingest(&mic, rate, now);
+                    state.mic.keep(&mic, rate, heard);
+                }
                 if let Some(recording) = self.recording() {
                     recording.phone(rate, &mic, played.as_deref(), age_of(request));
                 }
@@ -1960,6 +2005,65 @@ mod tests {
         let mut bad = request("POST", "/api/audio?k=k1&rate=5", "");
         bad.body = vec![0, 0];
         assert_eq!(hub.handle(&bad).status, 400);
+    }
+
+    #[test]
+    fn what_the_microphone_heard_lately_is_there_by_when_it_was_heard() {
+        let hub = hub();
+        // A quarter second at 16 kHz, its last sample heard 100 ms ago.
+        let mut req = request("POST", "/api/audio?k=k1&rate=16000&age=100", "");
+        req.body = (0..4000).flat_map(|_| 1000i16.to_le_bytes()).collect();
+        assert_eq!(hub.handle(&req).status, 204);
+        let now = Instant::now();
+        let (samples, rate) = hub
+            .mic_between(now - Duration::from_millis(600), now)
+            .unwrap();
+        assert_eq!(rate, 16_000);
+        assert!(
+            (3990..=4000).contains(&samples.len()),
+            "all of it: {}",
+            samples.len()
+        );
+        assert!(samples.iter().all(|&s| s == 1000));
+        // Its last sample was heard 100 ms ago: nothing from after that.
+        assert!(
+            hub.mic_between(now - Duration::from_millis(90), now)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_clip_paused_for_a_sound_is_told_to_go_on_at_once() {
+        let hub = hub();
+        let state = || body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        assert_eq!(state()["go_on"], 0);
+        // A page waiting for news hears of it at once.
+        let waiter = {
+            let hub = Arc::clone(&hub);
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let got = body(&hub.handle(&request(
+                    "GET",
+                    "/api/state?k=k1&since=0&wait=1500&clip=0&cut=0&go=0",
+                    "",
+                )));
+                (started.elapsed(), got)
+            })
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        hub.go_on();
+        let (took, got) = waiter.join().unwrap();
+        assert_eq!(got["go_on"], 1);
+        assert!(took < Duration::from_millis(1200), "{took:?}");
+        // A page from before it does not wait for it, nor is woken by it.
+        let started = Instant::now();
+        let got = body(&hub.handle(&request(
+            "GET",
+            "/api/state?k=k1&since=0&wait=300&clip=0&cut=0",
+            "",
+        )));
+        assert_eq!(got["go_on"], 1);
+        assert!(started.elapsed() >= Duration::from_millis(250));
     }
 
     /// A stand-in recording: what it was handed.

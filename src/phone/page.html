@@ -1494,12 +1494,12 @@
   // ---- polling ---------------------------------------------------------------
   // The PC answers at once when there is something new (a line, a clip, a
   // reply cut short), else after a moment with the latest figures.
-  let since = 0, first = true, failures = 0, lastCut = null, uptimeAt = { uptime: 0, at: Date.now() }, boot = null;
+  let since = 0, first = true, failures = 0, lastCut = null, lastGoOn = null, uptimeAt = { uptime: 0, at: Date.now() }, boot = null;
   async function poll() {
     if (!KEY) return;
     try {
       const r = await api("/api/state?since=" + since + "&wait=" + (first ? 0 : 450) +
-        "&clip=" + (lastClip || 0) + "&cut=" + (lastCut || 0));
+        "&clip=" + (lastClip || 0) + "&cut=" + (lastCut || 0) + "&go=" + (lastGoOn || 0));
       if (r.status === 403) {
         banner(t("link_old"));
         setPc(false, t("old_link"));
@@ -1526,6 +1526,11 @@
       const cut = state.cut || 0;
       if (lastCut !== null && cut > lastCut) stopClips();
       lastCut = cut;
+      // A clip paused for a loud sound over it goes on at once when the PC
+      // found none of the player's words in that sound.
+      const goOn = state.go_on || 0;
+      if (lastGoOn !== null && goOn > lastGoOn && pausedFor) resumeClip();
+      lastGoOn = goOn;
       noteClips(state.clips);
       maybePlayClip(state.clip || 0);
       first = false;
@@ -1545,7 +1550,7 @@
   // just opened does.
   function startOver(state) {
     since = 0; first = true;
-    lastClip = null; nextClip = null; lastCut = null;
+    lastClip = null; nextClip = null; lastCut = null; lastGoOn = null;
     clipInfo.clear();
     // (Its language requests are numbered from one again too.)
     langTaken = null;
@@ -2239,27 +2244,35 @@
     try { recStarted = Date.now(); rec.start(); }
     catch (e) { if (tries < 8) setTimeout(() => restartRecognition(tries + 1), 250); }
   }
-  // The player's voice over the phone's own: loud for almost half a second,
-  // well over what the microphone hears in the first moments of the clip
-  // (what is left of the phone's own voice, the game). The clip pauses and
-  // the PC is told; it cuts the reply only once the player's words follow
-  // (status.cut). Otherwise, after a moment, the clip goes on from where it
-  // was, and that loudness no longer counts for it.
-  let floorDb = -60, loudFor = 0, clipFloor = -100, clipAt = 0, measured = null, pausedFor = 0, loudDb = -100;
-  const MEASURE_MS = 300, PAUSE_MS = 1500;
+  // The player's voice over the phone's own: loud in 3 of the last 5
+  // pieces of sound (about a quarter of a second within half of one: a
+  // short "די!" or "stop!" is enough, and the gaps between words do not
+  // start it over), well over what the microphone hears in the first
+  // moments of the clip (what is left of the phone's own voice, the game).
+  // The clip pauses and the PC is told; it cuts the reply once the player's
+  // words are found — in what its microphone heard of that moment (the
+  // phone does not listen while it speaks, so the word that paused it is
+  // written down on the PC), or in what they go on to say (status.cut). If
+  // there are none, the clip goes on from where it was (status.go_on, or
+  // after PAUSE_MS), and that loudness no longer counts for it.
+  let floorDb = -60, loudRun = [], clipFloor = -100, clipAt = 0, measured = null, pausedFor = 0, loudDb = -100;
+  const MEASURE_MS = 300, PAUSE_MS = 2600, LOUD_OF = 5, LOUD_NEEDED = 3;
   player.addEventListener("playing", () => {
     if (measured !== playingClip) { measured = playingClip; clipFloor = -100; }
     clipAt = Date.now();
-    loudFor = 0;
+    loudRun = [];
   });
   function talkingOver(db) {
     if (pausedFor) return;
-    if (!speakingNow()) { floorDb = 0.95 * floorDb + 0.05 * db; loudFor = 0; return; }
-    if (Date.now() - clipAt < MEASURE_MS) { clipFloor = Math.max(clipFloor, db); loudFor = 0; return; }
-    loudFor = db > Math.max(-27, floorDb + 14, clipFloor + 10) ? loudFor + 1 : 0;
-    if (loudFor >= 5) {
-      loudFor = 0;
-      loudDb = db;
+    if (!speakingNow()) { floorDb = 0.95 * floorDb + 0.05 * db; loudRun = []; return; }
+    if (Date.now() - clipAt < MEASURE_MS) { clipFloor = Math.max(clipFloor, db); loudRun = []; return; }
+    const loud = db > Math.max(-27, floorDb + 14, clipFloor + 10);
+    loudRun.push(loud ? db : null);
+    if (loudRun.length > LOUD_OF) loudRun.shift();
+    const loudOnes = loudRun.filter((d) => d !== null);
+    if (loudOnes.length >= LOUD_NEEDED) {
+      loudRun = [];
+      loudDb = Math.max(...loudOnes);
       pauseClip();
     }
   }
@@ -2273,9 +2286,13 @@
     pausedFor = setTimeout(resumeClip, PAUSE_MS);
   }
   function resumeClip() {
+    clearTimeout(pausedFor);
     pausedFor = 0;
     if (!player.getAttribute("src") || !player.paused) return;
-    clipFloor = Math.max(clipFloor, loudDb);
+    // That sound again is no talk-over; a voice a little louder than it
+    // still is. (Ten dB over it, one laugh that paused the clip left the
+    // rest of it all but deaf to the player.)
+    clipFloor = Math.max(clipFloor, loudDb - 6);
     player.play().catch(() => {});
   }
 

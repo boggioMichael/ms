@@ -361,6 +361,37 @@ The quest marker is four maps to the left. Go!"
                                 }
                                 Response::new(200, "application/octet-stream", pcm)
                             }
+                            // Written down: a form with the model, the
+                            // language and a WAV file in it.
+                            "/v1/audio/transcriptions" => {
+                                let form = String::from_utf8_lossy(&req.body).to_string();
+                                let field = |name: &str| {
+                                    form.split(&format!("name=\"{name}\"\r\n\r\n"))
+                                        .nth(1)
+                                        .and_then(|rest| rest.split("\r\n").next())
+                                        .unwrap_or_default()
+                                        .to_string()
+                                };
+                                let wav = form.contains("filename=\"said.wav\"")
+                                    && form.contains("Content-Type: audio/wav")
+                                    && form.contains("RIFF")
+                                    && form.contains("WAVE");
+                                if !req
+                                    .header("content-type")
+                                    .unwrap_or_default()
+                                    .starts_with("multipart/form-data")
+                                    || !wav
+                                {
+                                    Response::json(
+                                        400,
+                                        &json!({"error": {"message": "no audio file"}}),
+                                    )
+                                } else {
+                                    let text =
+                                        format!("די ({} in {})", field("model"), field("language"));
+                                    Response::json(200, &json!({"text": format!(" {text} ")}))
+                                }
+                            }
                             _ => {
                                 Response::json(404, &json!({"error": {"message": "no such path"}}))
                             }
@@ -594,6 +625,54 @@ fn a_request_is_called_off_at_once() {
     assert_eq!(
         ai.speech_stream("hello", "warm", Some(&stop), &mut |_| {}),
         Err(AiError::Cancelled)
+    );
+}
+
+#[test]
+fn what_was_said_over_its_voice_is_written_down_from_the_microphone() {
+    if !have_curl() {
+        return;
+    }
+    let (base, seen) = fake();
+    let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
+    // A second of the phone's microphone, as a WAV, in a form.
+    let wav = ms::ai::wav_bytes(&[300i16; 24_000], 24_000);
+    let text = ai
+        .transcribe(
+            ms::ai::live::TRANSCRIBE_MODEL,
+            &wav,
+            Some("he-IL"),
+            Duration::from_secs(10),
+        )
+        .unwrap();
+    assert_eq!(text, "די (gpt-4o-mini-transcribe in he)");
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|r| r["path"] == "/v1/audio/transcriptions")
+    );
+    // A refused key is said so.
+    let refused = OpenAi::new("sk-not-the-key-0123456789abcdef", &base, "cedar", None);
+    assert!(matches!(
+        refused.transcribe(
+            "gpt-4o-mini-transcribe",
+            &wav,
+            None,
+            Duration::from_secs(10)
+        ),
+        Err(AiError::Http(401, _))
+    ));
+    // In the background, for the main loop: the moment it was about, and
+    // the words.
+    let (listener, written) = ms::ai::talkover::Listener::new(Arc::new(ai));
+    let at = Instant::now();
+    listener.listen(at, vec![300i16; 12_000], 24_000, Some("he".into()));
+    let got = written.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(got.at, at);
+    assert_eq!(
+        got.words,
+        Ok("די (gpt-4o-mini-transcribe in he)".to_string())
     );
 }
 
