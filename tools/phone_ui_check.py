@@ -636,6 +636,9 @@ def talkover_checks(p):
     wait_for(lambda: page.evaluate("!window.msVoice.paused"), 4, "the clip did not start")
     wait_for(lambda: interrupts(t0), 8, "a short word over the clip never paused it")
     paused_at = time.time()
+    # (The word, not the longer voice after it: that begins 5.6 s in.)
+    first = requests_since(t0, "/api/interrupt")[0]["t"] - mic_started
+    assert first < 5.7, f"a short word over the clip never paused it (the voice after it did, {first:.2f} s in)"
     assert page.evaluate("window.msVoice.paused"), "the clip pauses while the PC listens"
     # (The PC takes a moment to write it down: meanwhile he says more.)
     at(6.0)
