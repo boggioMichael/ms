@@ -362,7 +362,9 @@ The quest marker is four maps to the left. Go!"
                                 Response::new(200, "application/octet-stream", pcm)
                             }
                             // Written down: a form with the model, the
-                            // language and a WAV file in it.
+                            // language and a WAV file in it. How sure it was
+                            // comes when asked for (whisper-1 can't say);
+                            // at a silent WAV it guesses, unsure.
                             "/v1/audio/transcriptions" => {
                                 let form = String::from_utf8_lossy(&req.body).to_string();
                                 let field = |name: &str| {
@@ -386,10 +388,29 @@ The quest marker is four maps to the left. Go!"
                                         400,
                                         &json!({"error": {"message": "no audio file"}}),
                                     )
+                                } else if field("include[]") == "logprobs"
+                                    && field("model") == "whisper-1"
+                                {
+                                    Response::json(
+                                        400,
+                                        &json!({"error": {"message": "logprobs is not supported"}}),
+                                    )
                                 } else {
-                                    let text =
-                                        format!("די ({} in {})", field("model"), field("language"));
-                                    Response::json(200, &json!({"text": format!(" {text} ")}))
+                                    let silent = silent_wav(&req.body);
+                                    let text = if silent {
+                                        "a guess".to_string()
+                                    } else {
+                                        format!("די ({} in {})", field("model"), field("language"))
+                                    };
+                                    let mut answer = json!({"text": format!(" {text} ")});
+                                    if field("include[]") == "logprobs" {
+                                        let logprob = if silent { -2.0 } else { -0.05 };
+                                        answer["logprobs"] = json!([
+                                            {"token": "a", "logprob": logprob, "bytes": [97]},
+                                            {"token": "b", "logprob": logprob, "bytes": [98]}
+                                        ]);
+                                    }
+                                    Response::json(200, &answer)
                                 }
                             }
                             _ => {
@@ -694,9 +715,10 @@ fn what_was_said_over_its_voice_is_written_down_from_the_microphone() {
     }
     let (base, seen) = fake();
     let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);
-    // A second of the phone's microphone, as a WAV, in a form.
+    // A second of the phone's microphone, as a WAV, in a form: what was
+    // said, and how sure the transcriber was of it.
     let wav = ms::ai::wav_bytes(&[300i16; 24_000], 24_000);
-    let text = ai
+    let written = ai
         .transcribe(
             ms::ai::live::TRANSCRIBE_MODEL,
             &wav,
@@ -704,7 +726,17 @@ fn what_was_said_over_its_voice_is_written_down_from_the_microphone() {
             Duration::from_secs(10),
         )
         .unwrap();
-    assert_eq!(text, "די (gpt-4o-mini-transcribe in he)");
+    assert_eq!(written.text, "די (gpt-4o-mini-transcribe in he)");
+    assert!(
+        written.logprob.is_some_and(|p| (p + 0.05).abs() < 1e-9),
+        "{written:?}"
+    );
+    // A model that can't say how sure it was is asked again without.
+    let plain = ai
+        .transcribe("whisper-1", &wav, Some("he-IL"), Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(plain.text, "די (whisper-1 in he)");
+    assert_eq!(plain.logprob, None);
     assert!(
         seen.lock()
             .unwrap()
@@ -733,6 +765,12 @@ fn what_was_said_over_its_voice_is_written_down_from_the_microphone() {
         got.words,
         Ok("די (gpt-4o-mini-transcribe in he)".to_string())
     );
+    assert_eq!(got.guessed, None);
+    // A sound with no words: what the transcriber guessed is nothing said.
+    listener.listen(at, vec![0i16; 12_000], 24_000, Some("he".into()));
+    let got = written.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert_eq!(got.words, Ok(String::new()));
+    assert_eq!(got.guessed.as_deref(), Some("a guess"));
 }
 
 #[test]
@@ -1884,6 +1922,21 @@ fn describe(done: Result<Done, std::sync::mpsc::RecvTimeoutError>) -> String {
         Ok(Done::Voiced { id }) => format!("voiced: {id}"),
         Err(e) => e.to_string(),
     }
+}
+
+/// Whether the WAV in a form's body holds nothing but silence.
+fn silent_wav(body: &[u8]) -> bool {
+    let find = |hay: &[u8], needle: &[u8]| hay.windows(needle.len()).position(|w| w == needle);
+    let Some(wave) = find(body, b"WAVE") else {
+        return false;
+    };
+    let Some(data) = find(&body[wave..], b"data").map(|at| wave + at) else {
+        return false;
+    };
+    let size = u32::from_le_bytes(body[data + 4..data + 8].try_into().unwrap()) as usize;
+    body[data + 8..(data + 8 + size).min(body.len())]
+        .iter()
+        .all(|b| *b == 0)
 }
 
 /// The worker's next word, past its "this job is over" (`Done::Voiced`),

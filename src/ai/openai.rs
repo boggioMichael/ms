@@ -185,6 +185,15 @@ struct Via<'a> {
     form: Option<&'a Form<'a>>,
 }
 
+/// What a transcriber wrote, and how sure it was of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transcript {
+    /// What was said ("" for nothing).
+    pub text: String,
+    /// The mean log-probability of the tokens it wrote (None: not given).
+    pub logprob: Option<f64>,
+}
+
 /// A form with one file (`multipart/form-data`): its fields, and the file,
 /// which goes in on curl's stdin — no file on disk, whose path curl might
 /// not read in a Hebrew user folder.
@@ -577,14 +586,14 @@ impl OpenAi {
 
     /// What is said in `wav` (a WAV file), written down by OpenAI's
     /// transcriber `model` (`/audio/transcriptions`) — in `language` (a
-    /// locale such as `he-IL`) when given. Empty when nothing was said.
+    /// locale such as `he-IL`) when given — with how sure it was.
     pub fn transcribe(
         &self,
         model: &str,
         wav: &[u8],
         language: Option<&str>,
         timeout: Duration,
-    ) -> Result<String, AiError> {
+    ) -> Result<Transcript, AiError> {
         // ISO 639-1: "he" of "he-IL".
         let language = language
             .and_then(|l| l.split(['-', '_']).next())
@@ -598,8 +607,25 @@ impl OpenAi {
         if let Some(language) = &language {
             fields.push(("language", language.as_str()));
         }
+        // How sure it was of each token (a model that can't say is asked
+        // again without).
+        let mut sure = fields.clone();
+        sure.push(("include[]", "logprobs"));
+        match self.transcribe_form(&sure, wav, timeout) {
+            Err(AiError::Http(400, _)) => self.transcribe_form(&fields, wav, timeout),
+            done => done,
+        }
+    }
+
+    /// [`OpenAi::transcribe`]'s request, with these form `fields`.
+    fn transcribe_form(
+        &self,
+        fields: &[(&str, &str)],
+        wav: &[u8],
+        timeout: Duration,
+    ) -> Result<Transcript, AiError> {
         let form = Form {
-            fields: &fields,
+            fields,
             file: ("file", "said.wav", "audio/wav"),
             bytes: wav,
         };
@@ -621,11 +647,21 @@ impl OpenAi {
         }
         let answer: Value =
             serde_json::from_slice(&raw).map_err(|e| AiError::Parse(e.to_string()))?;
-        Ok(answer["text"]
-            .as_str()
-            .unwrap_or_default()
-            .trim()
-            .to_string())
+        let logprobs: Vec<f64> = answer["logprobs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|token| token["logprob"].as_f64())
+            .collect();
+        Ok(Transcript {
+            text: answer["text"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            logprob: (!logprobs.is_empty())
+                .then(|| logprobs.iter().sum::<f64>() / logprobs.len() as f64),
+        })
     }
 
     /// The models this key may use, with when each was made.

@@ -1000,9 +1000,7 @@ const STOP_WORDS: &[&str] = &[
     "hold",
     "shush",
     "shh",
-    "shut",
     "quiet",
-    "silence",
     "enough",
     "cancel",
     "nevermind",
@@ -1013,14 +1011,6 @@ const STOP_WORDS: &[&str] = &[
     "שקט",
     "חכה",
     "סטופ",
-    // Asking for quiet in a word stops it too (the bug of 25 October: a
-    // joke that could not be silenced).
-    "תשתוק",
-    "שתוק",
-    "סתום",
-    "מספיק",
-    "עזוב",
-    "חלאס",
     "para",
     "espera",
     "basta",
@@ -1058,92 +1048,50 @@ const FILLERS: &[&str] = &[
     "uh", "um", "uhm", "umm", "hmm", "mm", "mmm", "ah", "oh", "eh", "er", "אה", "אמ", "הממ", "אממ",
 ];
 
-/// `text` without Hebrew's points (niqqud, and cantillation): the voice is
-/// given "הֶנֶסִיס", a transcriber writes "הנסיס".
-fn without_points(text: &str) -> String {
+/// `text` without the marks written on its letters (niqqud, harakat, an
+/// accent written apart): characters that can only go on a word, never
+/// start one, and are no digits. The voice is given "הֶנֶסִיס", a
+/// transcriber writes "הנסיס".
+fn without_marks(text: &str) -> String {
     text.chars()
-        .filter(|c| {
-            !('\u{0591}'..='\u{05C7}').contains(c)
-                || matches!(c, '\u{05BE}' | '\u{05C0}' | '\u{05C3}' | '\u{05C6}')
+        .filter(|&c| {
+            c.is_numeric() || unicode_ident::is_xid_start(c) || !unicode_ident::is_xid_continue(c)
         })
         .collect()
 }
 
-/// Words that go with a stop and add nothing to it ("stop it", "די כבר",
-/// "wait please").
-const WITH_A_STOP: &[&str] = &[
-    "it",
-    "up",
-    "please",
-    "now",
-    "already",
-    "just",
-    "ok",
-    "okay",
-    "בבקשה",
-    "כבר",
-    "עכשיו",
-    "רק",
-    "אוקיי",
-    "יאללה",
-];
-
-/// Whether `text` says nothing but stop — "די", "די כבר", "wait wait",
-/// "no no, stop it": a word that stops MapleSyrup, and nothing asked or
-/// told. Said as the player talks over it, it was said to stop it, and
-/// there is nothing in it to answer.
-pub fn only_stops(text: &str) -> bool {
-    let normal = commands::normalize(text);
-    let words: Vec<&str> = normal.split(' ').filter(|w| !w.is_empty()).collect();
-    words.iter().any(|w| STOP_WORDS.contains(w))
-        && words.iter().all(|w| {
-            STOP_WORDS.contains(w)
-                || DENIALS.contains(w)
-                || FILLERS.contains(w)
-                || WITH_A_STOP.contains(w)
-        })
+/// `text` without a transcriber's notes on what it heard — "(laughs)",
+/// "[music]": no words said.
+fn without_notes(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut open: Option<char> = None;
+    for c in text.chars() {
+        match (open, c) {
+            (None, '(') => open = Some(')'),
+            (None, '[') => open = Some(']'),
+            (None, '{') => open = Some('}'),
+            (Some(close), c) if c == close => {
+                open = None;
+                kept.push(' ');
+            }
+            (Some(_), _) => {}
+            (None, c) => kept.push(c),
+        }
+    }
+    kept
 }
 
-/// Words that only acknowledge, or say "go on".
-const ACKNOWLEDGEMENTS: &[&str] = &[
-    "ok",
-    "okay",
-    "k",
-    "yes",
-    "yeah",
-    "yep",
-    "sure",
-    "fine",
-    "cool",
-    "nice",
-    "great",
-    "thanks",
-    "thank",
-    "you",
-    "alright",
-    "כן",
-    "אוקיי",
-    "אוקי",
-    "בסדר",
-    "טוב",
-    "סבבה",
-    "אחלה",
-    "יאללה",
-    "תודה",
-    "יופי",
-    "נו",
-];
-
-/// Whether `text` only acknowledges or fills a pause — "ok", "כן כן", "um",
-/// "ok thanks", "נו": three words at most, nothing asked or told. Said while
-/// its answer is still on its way, the answer is still what they wait for.
-pub fn only_acknowledges(text: &str) -> bool {
-    let normal = commands::normalize(text);
-    let words: Vec<&str> = normal.split(' ').filter(|w| !w.is_empty()).collect();
-    (1..=3).contains(&words.len())
-        && words
-            .iter()
-            .all(|w| ACKNOWLEDGEMENTS.contains(w) || FILLERS.contains(w))
+/// Whether `word` is a sound, not a word: one short unit (a letter or two)
+/// said over and over — a laugh ("חחח", "hahaha"), a hum ("mmm").
+fn a_sound(word: &str) -> bool {
+    let letters: Vec<char> = word.chars().collect();
+    (1..=2).any(|unit| {
+        letters.len() >= unit + 2
+            && letters
+                .iter()
+                .enumerate()
+                .all(|(i, c)| *c == letters[i % unit])
+    })
 }
 
 /// How numbers sound: the phone may write "sixty percent" for MapleSyrup's
@@ -2857,7 +2805,7 @@ impl Companion {
     /// words respelled for the voice), when that differs from how it is
     /// written: what a transcriber hears of its own voice is spelled so.
     pub fn remember_voiced(&mut self, now: f64, voiced: &str) {
-        let voiced = commands::normalize(&without_points(voiced));
+        let voiced = commands::normalize(&without_marks(voiced));
         if self.spoken.back().is_some_and(|(_, said)| *said == voiced) {
             return;
         }
@@ -3012,12 +2960,12 @@ impl Companion {
 
     /// The player's words in what the phone's microphone heard of a loud
     /// moment over MapleSyrup's voice on the phone, written down by a
-    /// transcriber (`written`): when there are enough to stop for, as
-    /// [`Companion::barge_in`] counts them, once its own voice is taken out
-    /// — the words of its lines said lately, or the transcriber's spelling
-    /// of them (the microphone cancels most of its voice, not all). `None`
+    /// transcriber (`written`), once its own voice is taken out — the words
+    /// of its lines said lately, or the transcriber's spelling of them (the
+    /// microphone cancels most of its voice, not all). Any word of theirs
+    /// is enough to stop for, in any language: they spoke over it. `None`
     /// when it was only its own voice, or a sound with no words of theirs
-    /// (a laugh, the game).
+    /// (a laugh, a hum, the transcriber's note on the game's noise).
     pub fn talked_over(&self, now: f64, written: &str) -> Option<String> {
         let mut said = self.said_lately(now);
         said.extend(
@@ -3026,19 +2974,17 @@ impl Companion {
                 .filter(|(at, _)| (-1.0..=ECHO_WINDOW).contains(&(now - at)))
                 .flat_map(|(_, line)| line.split(' ').filter(|w| !w.is_empty())),
         );
+        let written = without_notes(written);
         let theirs: Vec<&str> = written
             .split_whitespace()
             .filter(|token| {
-                let normal = commands::normalize(&without_points(token));
+                let normal = commands::normalize(&without_marks(token));
                 let mut words = normal.split(' ').filter(|w| !w.is_empty()).peekable();
                 words.peek().is_some()
-                    && !words.all(|w| said_or_near(w, &said) || FILLERS.contains(&w))
+                    && !words.all(|w| said_or_near(w, &said) || FILLERS.contains(&w) || a_sound(w))
             })
             .collect();
-        if theirs.is_empty() {
-            return None;
-        }
-        self.barge_in(now, &theirs.join(" "))
+        (!theirs.is_empty()).then(|| theirs.join(" "))
     }
 
     /// The player's words in `hearing` when there are at least `enough`
@@ -5613,55 +5559,6 @@ mod tests {
     }
 
     #[test]
-    fn asking_for_quiet_in_one_word_stops_it() {
-        // The bug of 25 October: a joke that could not be silenced. Each
-        // of these, alone over its voice, is a stop.
-        let mut c = Companion::seeded(Settings::default(), SEED);
-        c.remember_spoken(
-            10.0,
-            "Why did the mushroom go to the party? He was a fungi.",
-        );
-        for word in [
-            "תשתוק",
-            "שתוק",
-            "מספיק",
-            "עזוב",
-            "די",
-            "שקט",
-            "shut up",
-            "silence",
-            "stop",
-        ] {
-            assert!(c.barge_in(11.0, word).is_some(), "{word}");
-        }
-        // A word of its own line is its voice, not a stop.
-        let mut quiet_line = Companion::seeded(Settings::default(), SEED);
-        quiet_line.remember_spoken(10.0, "עזוב את המפה הזאת, תלך להנסיס.");
-        assert_eq!(quiet_line.barge_in(11.0, "עזוב את המפה"), None);
-        // Nothing but stop: no question in it to answer.
-        for stop in ["די", "די כבר", "wait wait", "no no, stop it", "רגע רגע"] {
-            assert!(only_stops(stop), "{stop}");
-        }
-        for not in ["ok", "wait what's my HP", "רגע, כמה HP יש לי?", "", "לא"] {
-            assert!(!only_stops(not), "{not}");
-        }
-        // An "ok" asks nothing; a question, a "no" or a word more does.
-        for ack in ["ok", "כן כן", "um", "OK, thanks!", "נו?", "thank you"] {
-            assert!(only_acknowledges(ack), "{ack}");
-        }
-        for not in [
-            "",
-            "לא",
-            "ok where now",
-            "כן, לאן?",
-            "ok ok ok ok",
-            "Henesys",
-        ] {
-            assert!(!only_acknowledges(not), "{not}");
-        }
-    }
-
-    #[test]
     fn what_the_microphone_heard_over_its_voice_is_told_from_its_own_words() {
         let mut c = Companion::seeded(Settings::default(), SEED);
         c.remember_spoken(
@@ -5669,12 +5566,17 @@ mod tests {
             "Why did the Orange Mushroom cross the road? To get to Henesys.",
         );
         // The stop that paused it, written down from the phone's
-        // microphone, its own voice faintly under it.
+        // microphone, its own voice faintly under it. Any word of his is
+        // enough, in any language (the bug of 25 October: a joke that could
+        // not be silenced).
         assert_eq!(c.talked_over(12.0, "די"), Some("די".to_string()));
         assert_eq!(
             c.talked_over(12.0, "the Orange Mushroom די תשתוק"),
             Some("די תשתוק".to_string())
         );
+        for word in ["תשתוק", "מספיק", "shut up", "basta", "그만", "хватит"] {
+            assert_eq!(c.talked_over(12.0, word).as_deref(), Some(word), "{word}");
+        }
         assert_eq!(
             c.talked_over(12.0, "רגע, כמה HP יש לי?"),
             Some("רגע, כמה HP יש לי?".to_string())
@@ -5685,10 +5587,25 @@ mod tests {
             None
         );
         assert_eq!(c.talked_over(12.0, "Mushroom"), None);
-        // A sound with no words of the player's: none.
-        assert_eq!(c.talked_over(12.0, ""), None);
-        assert_eq!(c.talked_over(12.0, "um"), None);
-        assert_eq!(c.talked_over(12.0, "חחח"), None);
+        // A sound with no words of the player's: none — a laugh in any
+        // writing, a hum, a transcriber's note.
+        for sound in [
+            "",
+            "um",
+            "חחח",
+            "Hahaha!",
+            "jajaja",
+            "ㅋㅋㅋ",
+            "Mmm.",
+            "(laughs)",
+            "[music] ...",
+        ] {
+            assert_eq!(c.talked_over(12.0, sound), None, "{sound}");
+        }
+        assert_eq!(
+            c.talked_over(12.0, "(laughs) wait"),
+            Some("wait".to_string())
+        );
         // A name in a Hebrew line, as the voice said it: the transcriber
         // writes it in Hebrew, and it is still its own voice.
         let mut he = Companion::seeded(Settings::default(), SEED);

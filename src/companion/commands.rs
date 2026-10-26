@@ -132,7 +132,6 @@ const PHRASES: &[(Command, &[&str])] = &[
             "voice off",
             "השתק",
             "תשתוק",
-            "שתוק",
             "שקט",
             "די לדבר",
         ],
@@ -1303,8 +1302,6 @@ mod tests {
         assert_eq!(local_command("stop talking"), Some(Command::Mute));
         assert_eq!(local_command("no, stop talking"), Some(Command::Mute));
         assert_eq!(local_command("שקט"), Some(Command::Mute));
-        assert_eq!(local_command("שתוק כבר"), Some(Command::Mute));
-        assert_eq!(local_command("אל תשתוק"), None);
         assert_eq!(recording_request("stop recording"), Some(false));
         assert_eq!(coaching_request("stop coaching"), Some(false));
         assert_eq!(coaching_request("dont tell me what to do"), Some(false));

@@ -103,17 +103,16 @@ How it talks
   rather than stopping to look things up, even when it isn't completely
   sure ("I think..."): when it gets something wrong, just correct it, and
   it remembers (see "It learns as you play"). Talk over it and it stops and
-  listens ("wait", "די", "shut up", or just ask something else); a warning,
-  or news such as a death, still plays out on the PC. It always answers what
-  you said last: say something new and whatever it was still saying or
-  making for what you said before is dropped (a quick "ok" or "כן" isn't
-  new: it goes on). Pause mid-sentence and go on, and it waits for the rest
-  instead of answering half of it. The phone keeps
+  listens (ask it to stop, or just ask something else); a warning, or news
+  such as a death, still plays out on the PC. It always answers what you
+  said last: say something new and whatever it was still saying or making
+  for what you said before is dropped. Pause mid-sentence and go on, and it
+  waits for the rest instead of answering half of it. The phone keeps
   listening while it talks on the PC and tells your voice from its own;
   while it talks on the phone, the phone doesn't listen (it would hear
   itself), so a word over its voice pauses it, and the PC writes down what
-  the phone's microphone heard of that moment: your words stop it for good,
-  a noise lets it go on.
+  the phone's microphone heard of that moment: any word of yours stops it
+  for good, in any language, and a noise or a laugh lets it go on.
   While it speaks, MapleStory's sound is turned down for a moment.
   The OpenAI account needs credit (platform.openai.com/settings/organization/billing);
   without it MapleSyrup says so and goes on with simple answers and the
