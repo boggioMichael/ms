@@ -4001,6 +4001,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // written down once it has come in; and what was written down that had
     // the player's words in it, to go through as a sentence of theirs.
     let mut talkover_due: Option<Instant> = None;
+    // Whether its voice was playing at the last look.
+    let mut was_speaking = false;
     let mut overheard_inbox: Vec<Inbound> = Vec::new();
     // Claude's lines handed to the voice, until each reaches him.
     let mut claude_lines = ClaudeLines::default();
@@ -5090,6 +5092,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         if let Some(hub) = &out.phone {
             hub.set_pc_voice(out.mouth.pc_voice_until());
         }
+        // Its voice beginning again (its next answer, after it stopped or
+        // went quiet): a voice heard over the one before is none over this.
+        let speaking = out.mouth.speaking();
+        if speaking && !was_speaking {
+            companion.voice_began(now);
+        }
+        was_speaking = speaking;
         recording.tick(&mut out, panel_window.as_mut());
         for (id, begins) in out.release_clips(player_quiet(player_heard, &turns)) {
             claude_lines.reached(id, begins);

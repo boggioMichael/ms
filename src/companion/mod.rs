@@ -2966,6 +2966,15 @@ impl Companion {
         self.voice_over = None;
     }
 
+    /// Its voice begins again at `now` (its next answer, after it stopped
+    /// or went quiet): a voice heard over the one before is none over this
+    /// one, whose echo is its own again.
+    pub fn voice_began(&mut self, now: f64) {
+        if self.voice_over.is_some_and(|at| at < now) {
+            self.voice_over = None;
+        }
+    }
+
     /// Whether a voice louder than its own was heard over it lately
     /// ([`VOICE_OVER_FOR`]).
     pub fn voice_heard_lately(&self, now: f64) -> bool {
@@ -5615,6 +5624,20 @@ mod tests {
             None,
             "its own words written another way are still its own"
         );
+        // Its next answer begins: that voice was over the voice before, and
+        // one word is no stop again; its next words written another way,
+        // as the line goes on, are its own.
+        c.voice_began(13.0);
+        c.remember_spoken(13.0, "OK, waiting. Twenty minutes is not long.");
+        assert_eq!(
+            c.barge_in(13.5, "OK waiting twenty minutes is not lung"),
+            None
+        );
+        assert_eq!(c.barge_in(13.5, "רגע"), None);
+        // (A voice heard over it after it began still counts.)
+        c.voice_heard_over(13.6);
+        c.voice_began(13.6);
+        assert_eq!(c.barge_in(13.7, "רגע"), Some("רגע".to_string()));
         // Nothing said lately: any two words are the player's.
         let quiet = Companion::seeded(Settings::default(), SEED);
         assert_eq!(
