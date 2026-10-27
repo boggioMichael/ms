@@ -15,9 +15,12 @@
 //!
 //! The first words are heard while the rest is still being written, and
 //! the voice plays while it is still being made. Every job has a number;
-//! the player talking over MapleSyrup calls its work off (`Worker::cancel`):
-//! the request in flight is stopped at once, and only what was already
-//! said stays in the conversation.
+//! the player talking over MapleSyrup — or saying anything new — calls its
+//! work off (`Worker::cancel`): the request in flight is stopped at once,
+//! what waits is skipped, and only what was already said stays in the
+//! conversation. What the player said over its voice on the phone, where
+//! the phone does not listen, is written down from its microphone
+//! ([`talkover`]).
 //!
 //! The worker is two lanes. The thinking lane owns the conversation and
 //! does what needs it: replies, the coach's looks, the hello. The mouth
@@ -41,6 +44,7 @@ pub mod memory;
 pub mod openai;
 pub mod pronounce;
 pub mod style;
+pub mod talkover;
 pub mod teaching;
 pub mod tools;
 
@@ -392,6 +396,11 @@ pub enum Done {
     },
     /// The model judged the sentence was not for it.
     Silent { id: u64, heard: String },
+    /// Job `id` is over, its voice too: every piece of its speech was
+    /// handed over (`Audio`, before this), and no more will come — said,
+    /// failed, called off, or nothing to say. (A job called off before it
+    /// began says nothing at all.)
+    Voiced { id: u64 },
     /// Speech, a piece at a time as it is made: 24 kHz mono samples. A
     /// reply is spoken in a few lines (the first sentence alone, so it
     /// starts soon; then what was written meanwhile, together, so it
@@ -455,9 +464,15 @@ pub enum Done {
 impl Job {
     /// Whether no call-off stops it: a warning's own line, or news (a
     /// death, a level-up) — what is still true after the player's words
-    /// ([`Kind::kept`]).
+    /// ([`Kind::kept`]) — and what was heard of a reply cut short, which
+    /// the player's next words call everything off right after: the
+    /// conversation must still keep only what he heard.
     fn kept(&self) -> bool {
-        matches!(self, Job::Speak { kind, .. } if kind.kept())
+        match self {
+            Job::Speak { kind, .. } => kind.kept(),
+            Job::Cut { .. } => true,
+            _ => false,
+        }
     }
 }
 
@@ -797,6 +812,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             let asked = Instant::now();
                             let text = brain::for_speech(&text);
                             if text.is_empty() {
+                                let _ = tx.send(Done::Voiced { id });
                                 continue;
                             }
                             if let Some(heard) = &heard {
@@ -948,6 +964,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             }
                         }
                     }
+                    let _ = tx.send(Done::Voiced { id });
                 }
                 busy_flag.store(false, Ordering::Relaxed);
             }

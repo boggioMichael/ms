@@ -9,6 +9,9 @@ use std::sync::mpsc::{Sender, channel};
 enum Line {
     Say(String),
     Hush,
+    /// Hold where it is (at the end of the word being said), and go on.
+    Pause,
+    Resume,
 }
 
 pub struct Voice {
@@ -38,6 +41,17 @@ impl Voice {
     /// Stop talking now.
     pub fn hush(&self) {
         let _ = self.lines.send(Line::Hush);
+    }
+
+    /// Hold the line being said where it is (a voice over it: it listens),
+    /// until `resume`; a new line or `hush` drops it.
+    pub fn pause(&self) {
+        let _ = self.lines.send(Line::Pause);
+    }
+
+    /// Go on from where it was held.
+    pub fn resume(&self) {
+        let _ = self.lines.send(Line::Resume);
     }
 }
 
@@ -69,10 +83,28 @@ fn speak_lines(rate: i32, rx: std::sync::mpsc::Receiver<Line>, ready: Sender<Res
     // The text being spoken is kept alive until the next line replaces it.
     let mut speaking: Vec<u16> = Vec::new();
     let mut warned = false;
+    // (Held, a new line or a hush drops what was held, and then the voice
+    // is let go: pauses are counted, and nothing would play behind one.)
+    let mut paused = false;
     for line in rx {
         let text = match line {
             Line::Say(text) => text,
             Line::Hush => String::new(),
+            Line::Pause => {
+                if !paused {
+                    paused = unsafe { voice.Pause() }.is_ok();
+                }
+                continue;
+            }
+            Line::Resume => {
+                if paused {
+                    paused = false;
+                    unsafe {
+                        let _ = voice.Resume();
+                    }
+                }
+                continue;
+            }
         };
         let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
         unsafe {
@@ -82,6 +114,11 @@ fn speak_lines(rate: i32, rx: std::sync::mpsc::Receiver<Line>, ready: Sender<Res
                 // A PC with no voice installed refuses every line the same way.
                 eprintln!("the Windows voice could not speak: {e}");
                 warned = true;
+            }
+            // (The held line is dropped by the new one: that one plays.)
+            if paused {
+                paused = false;
+                let _ = voice.Resume();
             }
         }
         speaking = wide;

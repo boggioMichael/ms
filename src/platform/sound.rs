@@ -6,7 +6,9 @@
 //! goes to Windows' wave output (`waveOut`) right behind the one before, so
 //! the pieces join without a gap; the start of a line is held back a moment
 //! so a voice that arrives in fits does not stutter. Stopping (the player
-//! talked over it) is immediate. The game is ducked through Windows'
+//! talked over it) is immediate, and so is holding it where it is (a voice
+//! louder than its own over it: it listens for the player's words) and
+//! going on from there. The game is ducked through Windows'
 //! per-application volume (WASAPI audio sessions): every session of the
 //! game's process is set to a fraction of its own volume and put back
 //! afterwards — also when MapleSyrup's window is closed, from the console's
@@ -38,6 +40,8 @@ pub struct Player {
     /// when each piece starts, and how loud it is every 40 ms.
     loudness: std::collections::VecDeque<(Instant, Vec<u8>)>,
     ducked: bool,
+    /// Since when it is held where it is ([`Player::pause`]).
+    paused: Option<Instant>,
 }
 
 impl Default for Player {
@@ -56,7 +60,59 @@ impl Player {
             ends: None,
             loudness: std::collections::VecDeque::new(),
             ducked: false,
+            paused: None,
         }
+    }
+
+    /// The time as the sound card sees it: held where it is while paused.
+    fn clock(&self) -> Instant {
+        self.paused.unwrap_or_else(Instant::now)
+    }
+
+    /// Hold the voice where it is, what was handed over and what comes
+    /// meanwhile kept for after (`resume`), or dropped (`stop`). Returns
+    /// whether there was something to hold.
+    pub fn pause(&mut self) -> bool {
+        if self.paused.is_some() || !self.busy() {
+            return false;
+        }
+        #[cfg(windows)]
+        if let Some(out) = self.out.as_mut() {
+            out.pause();
+        }
+        self.paused = Some(Instant::now());
+        true
+    }
+
+    /// Go on from where it was held. Returns when it was held, and for
+    /// how long (None: it was not).
+    pub fn resume(&mut self) -> Option<(Instant, Duration)> {
+        let at = self.paused.take()?;
+        let held_for = at.elapsed();
+        if let Some(ends) = self.ends.as_mut()
+            && *ends > at
+        {
+            *ends += held_for;
+        }
+        // (The piece it was held in goes on from where it was.)
+        for (start, _) in self.loudness.iter_mut() {
+            *start += held_for;
+        }
+        #[cfg(windows)]
+        if let Some(out) = self.out.as_mut() {
+            out.restart();
+        }
+        Some((at, held_for))
+    }
+
+    /// Whether it is held where it is.
+    pub fn paused(&self) -> bool {
+        self.paused.is_some()
+    }
+
+    /// Since when it is held where it is (None: it is not).
+    pub fn paused_since(&self) -> Option<Instant> {
+        self.paused
     }
 
     /// Speech to play right after what is playing (a line, a piece at a
@@ -114,7 +170,7 @@ impl Player {
     }
 
     fn playing(&self) -> bool {
-        self.ends.is_some_and(|ends| Instant::now() < ends)
+        self.ends.is_some_and(|ends| self.clock() < ends)
     }
 
     fn write(&mut self, samples: &[i16], duck_pid: Option<u32>) {
@@ -130,6 +186,12 @@ impl Player {
         {
             if self.out.is_none() {
                 self.out = wave::Output::open(self.rate);
+                // (Held, a sound card opened meanwhile waits too.)
+                if self.paused.is_some()
+                    && let Some(out) = self.out.as_mut()
+                {
+                    out.pause();
+                }
             }
             if let Some(out) = self.out.as_mut()
                 && !out.write(samples)
@@ -140,7 +202,8 @@ impl Player {
             }
         }
         let now = Instant::now();
-        let from = self.ends.filter(|ends| *ends > now).unwrap_or(now);
+        let clock = self.clock();
+        let from = self.ends.filter(|ends| *ends > clock).unwrap_or(clock);
         self.ends = Some(from + Duration::from_secs_f64(samples.len() as f64 / self.rate as f64));
         self.loudness
             .push_back((from, crate::app::dog::mouth_levels(samples, self.rate)));
@@ -149,12 +212,17 @@ impl Player {
         }
     }
 
-    /// Stop at once, dropping what was still to come; the game comes back up.
+    /// Stop at once, dropping what was still to come (held or not); the
+    /// game comes back up.
     pub fn stop(&mut self) {
         #[cfg(windows)]
         if let Some(out) = self.out.as_mut() {
             out.reset();
+            if self.paused.is_some() {
+                out.restart();
+            }
         }
+        self.paused = None;
         self.held.clear();
         self.ends = None;
         self.loudness.clear();
@@ -169,13 +237,34 @@ impl Player {
         !self.held.is_empty() || self.playing()
     }
 
-    /// Whether it is speaking, counting the moment after the last word.
+    /// Whether it is speaking, counting the moment after the last word
+    /// (and while it is held where it is).
     pub fn speaking(&self) -> bool {
-        !self.held.is_empty() || self.ends.is_some_and(|ends| Instant::now() < ends + TAIL)
+        !self.held.is_empty() || self.ends.is_some_and(|ends| self.clock() < ends + TAIL)
+    }
+
+    /// When it stops speaking, counting the moment after the last word, as
+    /// far as is known now: None when it is not speaking, or held.
+    pub fn speaking_until(&self) -> Option<Instant> {
+        if self.paused.is_some() || !self.speaking() {
+            return None;
+        }
+        let now = Instant::now();
+        let held = Duration::from_secs_f64(self.held.len() as f64 / self.rate as f64);
+        // (What is held back plays from now at the soonest.)
+        let from = match self.ends {
+            Some(ends) if self.held.is_empty() => ends,
+            Some(ends) => ends.max(now),
+            None => now,
+        };
+        Some(from + held + TAIL)
     }
 
     /// How loud the voice is right now (0..1), while it plays.
     pub fn loudness(&self) -> Option<f32> {
+        if self.paused.is_some() {
+            return Some(0.0);
+        }
         let now = Instant::now();
         let (start, levels) = self
             .loudness
@@ -187,11 +276,12 @@ impl Player {
         Some(levels.get(step as usize).map_or(0.0, |l| *l as f32 / 255.0))
     }
 
-    /// How long until what was handed over has been played.
+    /// How long until what was handed over has been played (held where it
+    /// is, as long as when it was held).
     pub fn remaining(&self) -> Duration {
         let held = Duration::from_secs_f64(self.held.len() as f64 / self.rate as f64);
         self.ends
-            .map(|ends| ends.saturating_duration_since(Instant::now()))
+            .map(|ends| ends.saturating_duration_since(self.clock()))
             .unwrap_or_default()
             + held
     }
@@ -227,8 +317,8 @@ mod wave {
 
     use windows::Win32::Media::Audio::{
         CALLBACK_NULL, HWAVEOUT, WAVE_FORMAT_PCM, WAVE_MAPPER, WAVEFORMATEX, WAVEHDR, WHDR_DONE,
-        waveOutClose, waveOutOpen, waveOutPrepareHeader, waveOutReset, waveOutUnprepareHeader,
-        waveOutWrite,
+        waveOutClose, waveOutOpen, waveOutPause, waveOutPrepareHeader, waveOutReset,
+        waveOutRestart, waveOutUnprepareHeader, waveOutWrite,
     };
     use windows::core::PSTR;
 
@@ -327,6 +417,21 @@ mod wave {
                 let _ = waveOutReset(self.handle);
             }
             self.reclaim();
+        }
+
+        /// Hold where it is: what is queued waits, and so does what is
+        /// queued meanwhile.
+        pub fn pause(&mut self) {
+            unsafe {
+                let _ = waveOutPause(self.handle);
+            }
+        }
+
+        /// Go on from where it was held.
+        pub fn restart(&mut self) {
+            unsafe {
+                let _ = waveOutRestart(self.handle);
+            }
         }
     }
 
@@ -500,6 +605,47 @@ mod tests {
         std::thread::sleep(Duration::from_millis(400));
         player.tick();
         assert!(!player.busy() && !player.speaking());
+    }
+
+    #[test]
+    fn held_it_waits_where_it_is_and_goes_on_from_there() {
+        let mut player = Player::new();
+        // Nothing playing: nothing to hold.
+        assert!(!player.pause());
+        player.play(&vec![0i16; 24_000], 24_000, None);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(player.pause());
+        let left = player.remaining();
+        std::thread::sleep(Duration::from_millis(300));
+        // Held: none of it plays meanwhile, and it is still speaking.
+        assert!(player.speaking() && player.paused());
+        assert_eq!(player.remaining(), left);
+        assert_eq!(player.loudness(), Some(0.0));
+        assert_eq!(player.speaking_until(), None);
+        // A piece made meanwhile goes after what was left.
+        player.push(&vec![0i16; 2_400], 24_000, None);
+        let with_it = left + Duration::from_millis(100);
+        assert!(player.remaining().abs_diff(with_it) < Duration::from_millis(5));
+        let (since, held_for) = player.resume().unwrap();
+        assert!(!player.paused());
+        assert!(
+            held_for >= Duration::from_millis(300)
+                && since < Instant::now() - held_for + Duration::from_millis(5)
+        );
+        assert!(player.remaining().abs_diff(with_it) < Duration::from_millis(20));
+        let until = player.speaking_until().unwrap();
+        assert!(
+            until
+                .duration_since(Instant::now())
+                .abs_diff(with_it + TAIL)
+                < Duration::from_millis(20)
+        );
+        // Stopped while held: nothing is left, and nothing is held.
+        assert!(player.pause());
+        player.stop();
+        assert!(!player.speaking() && !player.paused());
+        assert_eq!(player.resume(), None);
+        assert!(!player.speaking());
     }
 
     #[test]

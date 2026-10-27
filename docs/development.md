@@ -351,16 +351,21 @@ The phone page, against a stand-in PC in a headless Chromium (`pip install
 playwright && playwright install chromium`; from the repository root):
 
 ```sh
-python3 tools/phone_ui_check.py              # all five scenarios
+python3 tools/phone_ui_check.py              # all seven scenarios
 python3 tools/phone_ui_check.py live hello   # some of them
 ```
 
-`ui` (the main screen, Settings, the toggle's hello), `recognition` and
-`loudness` (turn-taking: a stand-in recognizer, a microphone fed from a
-file), `live` (a stand-in call: the relay, urgency and drops, a warning's
-colour and bark, the recogniser's Hebrew, the call off when the page is
-hidden) and `hello`, which runs under the browser's own autoplay policy
-(no clip before a tap, as on a phone; the other four allow autoplay).
+`ui` (the main screen, Settings, the toggle's hello), `recognition`,
+`loudness`, `talkover` and `pcvoice` (turn-taking: a stand-in recognizer, a
+microphone fed from a file — a short word over the phone's voice pauses it,
+the PC's `go_on` lets it go on at once, and a louder voice as it goes on
+pauses it again; a short word louder than its voice on the PC is told to the
+PC, not once more after a `go_on`, and at once when its voice begins again a
+moment later), `live` (a stand-in call: the relay,
+urgency and drops, a warning's colour and bark, the recogniser's Hebrew, the
+call off when the page is hidden) and `hello`, which runs under the
+browser's own autoplay policy (no clip before a tap, as on a phone; the
+other six allow autoplay).
 `PHONE_PAGE=<path>` runs them against another copy of the page, to see a
 check fail against the page as it was.
 

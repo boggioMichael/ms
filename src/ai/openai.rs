@@ -181,6 +181,27 @@ struct Via<'a> {
     /// The status line and headers come before the body (curl's `-i`), so a
     /// streamed body can be told from an error before it is used.
     headers: bool,
+    /// The body is a form with a file in it (curl's `-F`), not JSON.
+    form: Option<&'a Form<'a>>,
+}
+
+/// What a transcriber wrote, and how sure it was of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Transcript {
+    /// What was said ("" for nothing).
+    pub text: String,
+    /// The mean log-probability of the tokens it wrote (None: not given).
+    pub logprob: Option<f64>,
+}
+
+/// A form with one file (`multipart/form-data`): its fields, and the file,
+/// which goes in on curl's stdin — no file on disk, whose path curl might
+/// not read in a Hebrew user folder.
+struct Form<'a> {
+    fields: &'a [(&'a str, &'a str)],
+    /// The file's field, its name (its extension says what it is) and type.
+    file: (&'a str, &'a str, &'a str),
+    bytes: &'a [u8],
 }
 
 /// The status and headers in front of a body (curl's `-i`), skipping an
@@ -415,6 +436,18 @@ impl OpenAi {
                 "@-",
             ]);
         }
+        if let Some(form) = via.form {
+            // (Not "Expect: 100-continue": an older curl waits a second for
+            // it before it sends a body this size.)
+            command.args(["-H", "Expect:"]);
+            for (name, value) in form.fields {
+                command.arg("-F").arg(format!("{name}={value}"));
+            }
+            let (field, name, kind) = form.file;
+            command
+                .arg("-F")
+                .arg(format!("{field}=@-;filename={name};type={kind}"));
+        }
         command.arg(&url);
         command
             .stdin(Stdio::piped())
@@ -430,13 +463,17 @@ impl OpenAi {
             .spawn()
             .map_err(|e| AiError::NoCurl(e.to_string()))?;
         // The body goes in on stdin; closing it (the drop) ends the request.
-        if let Some(mut stdin) = child.stdin.take()
-            && let Some(body) = body
-        {
-            let bytes = serde_json::to_vec(body).map_err(|e| AiError::Parse(e.to_string()))?;
-            stdin
-                .write_all(&bytes)
-                .map_err(|e| AiError::Network(e.to_string()))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Some(body) = body {
+                let bytes = serde_json::to_vec(body).map_err(|e| AiError::Parse(e.to_string()))?;
+                stdin
+                    .write_all(&bytes)
+                    .map_err(|e| AiError::Network(e.to_string()))?;
+            } else if let Some(form) = via.form {
+                stdin
+                    .write_all(form.bytes)
+                    .map_err(|e| AiError::Network(e.to_string()))?;
+            }
         }
         // curl's errors and the status, read on the side so neither pipe can
         // fill up and stall it.
@@ -545,6 +582,86 @@ impl OpenAi {
             return Err(Self::error_of(status, &raw));
         }
         serde_json::from_slice(&raw).map_err(|e| AiError::Parse(e.to_string()))
+    }
+
+    /// What is said in `wav` (a WAV file), written down by OpenAI's
+    /// transcriber `model` (`/audio/transcriptions`) — in `language` (a
+    /// locale such as `he-IL`) when given — with how sure it was.
+    pub fn transcribe(
+        &self,
+        model: &str,
+        wav: &[u8],
+        language: Option<&str>,
+        timeout: Duration,
+    ) -> Result<Transcript, AiError> {
+        // ISO 639-1: "he" of "he-IL".
+        let language = language
+            .and_then(|l| l.split(['-', '_']).next())
+            .filter(|l| l.len() == 2 && l.chars().all(|c| c.is_ascii_alphabetic()))
+            .map(str::to_ascii_lowercase);
+        let mut fields = vec![
+            ("model", model),
+            ("response_format", "json"),
+            ("temperature", "0"),
+        ];
+        if let Some(language) = &language {
+            fields.push(("language", language.as_str()));
+        }
+        // How sure it was of each token (a model that can't say is asked
+        // again without).
+        let mut sure = fields.clone();
+        sure.push(("include[]", "logprobs"));
+        match self.transcribe_form(&sure, wav, timeout) {
+            Err(AiError::Http(400, _)) => self.transcribe_form(&fields, wav, timeout),
+            done => done,
+        }
+    }
+
+    /// [`OpenAi::transcribe`]'s request, with these form `fields`.
+    fn transcribe_form(
+        &self,
+        fields: &[(&str, &str)],
+        wav: &[u8],
+        timeout: Duration,
+    ) -> Result<Transcript, AiError> {
+        let form = Form {
+            fields,
+            file: ("file", "said.wav", "audio/wav"),
+            bytes: wav,
+        };
+        let via = Via {
+            form: Some(&form),
+            ..Via::default()
+        };
+        let mut raw = Vec::new();
+        let status = self.call_with(
+            "POST",
+            "/audio/transcriptions",
+            None,
+            timeout,
+            via,
+            &mut |chunk| raw.extend_from_slice(chunk),
+        )?;
+        if !(200..300).contains(&status) {
+            return Err(Self::error_of(status, &raw));
+        }
+        let answer: Value =
+            serde_json::from_slice(&raw).map_err(|e| AiError::Parse(e.to_string()))?;
+        let logprobs: Vec<f64> = answer["logprobs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|token| token["logprob"].as_f64())
+            .collect();
+        Ok(Transcript {
+            text: answer["text"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            logprob: (!logprobs.is_empty())
+                .then(|| logprobs.iter().sum::<f64>() / logprobs.len() as f64),
+        })
     }
 
     /// The models this key may use, with when each was made.
@@ -672,6 +789,7 @@ impl OpenAi {
                 let via = Via {
                     stop: ask.stop.as_ref(),
                     headers: false,
+                    form: None,
                 };
                 let status = match on_piece.as_mut() {
                     Some(on_piece) => {
@@ -858,6 +976,7 @@ impl OpenAi {
             Via {
                 stop,
                 headers: true,
+                form: None,
             },
             &mut |chunk| {
                 let bytes = head.feed(chunk);

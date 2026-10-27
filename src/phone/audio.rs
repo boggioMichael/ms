@@ -1,8 +1,11 @@
 //! The phone's microphone as it reaches the PC: 16-bit mono samples in
 //! small chunks. MapleSyrup measures how loud each chunk is, keeps a
 //! running estimate of the room's quiet, says whether the player is
-//! speaking, and, when asked to, keeps everything in a WAV file.
+//! speaking, keeps the last few seconds (what was said over its voice on
+//! the phone is written down from them), and, when asked to, keeps
+//! everything in a WAV file.
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -16,6 +19,12 @@ const SPEAKING_ABOVE_FLOOR_DB: f32 = 12.0;
 const SILENCE_DB: f32 = -55.0;
 /// Without a chunk for this long, the phone has stopped sending.
 const STALE: Duration = Duration::from_secs(3);
+/// How much of the microphone is kept, last first ([`Mic::between`]).
+const KEEP_RECENT: Duration = Duration::from_secs(6);
+/// A chunk that comes this much later than the end of the one before it
+/// (beyond its own length) is after a gap: the phone stopped sending a
+/// while, and what came before is not right before it.
+const GAP: Duration = Duration::from_millis(800);
 
 /// What the console and the phone page show about the microphone.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -40,6 +49,11 @@ pub struct Mic {
     last_chunk: Option<Instant>,
     wav: Option<WavWriter>,
     record_to: Option<PathBuf>,
+    /// The last [`KEEP_RECENT`] of it, at `recent_rate`, the last sample
+    /// heard at `recent_end` (None: none kept).
+    recent: VecDeque<i16>,
+    recent_rate: u32,
+    recent_end: Option<Instant>,
 }
 
 impl Mic {
@@ -54,7 +68,54 @@ impl Mic {
             last_chunk: None,
             wav: None,
             record_to,
+            recent: VecDeque::new(),
+            recent_rate: 0,
+            recent_end: None,
         }
+    }
+
+    /// Keep `samples` (at `rate` Hz), the last of them heard at `end`,
+    /// among the last few seconds of the microphone.
+    pub fn keep(&mut self, samples: &[i16], rate: u32, end: Instant) {
+        if samples.is_empty() || rate == 0 {
+            return;
+        }
+        let length = Duration::from_secs_f64(samples.len() as f64 / rate as f64);
+        let after_a_gap = self
+            .recent_end
+            .is_some_and(|last| end.saturating_duration_since(last) > length + GAP);
+        if rate != self.recent_rate || after_a_gap {
+            self.recent.clear();
+            self.recent_rate = rate;
+        }
+        self.recent.extend(samples.iter().copied());
+        let most = (KEEP_RECENT.as_secs_f64() * rate as f64) as usize;
+        if self.recent.len() > most {
+            let extra = self.recent.len() - most;
+            self.recent.drain(..extra);
+        }
+        self.recent_end = Some(end);
+    }
+
+    /// What the microphone heard from `from` to `to`, as far as it has
+    /// come in, with its rate; None when nothing kept is from that time.
+    pub fn between(&self, from: Instant, to: Instant) -> Option<(Vec<i16>, u32)> {
+        let end = self.recent_end?;
+        let rate = self.recent_rate as f64;
+        let kept = self.recent.len() as f64;
+        // The sample heard at `at`: the last one was heard at `end`.
+        let index = |at: Instant| -> f64 {
+            let back = end.saturating_duration_since(at).as_secs_f64();
+            let ahead = at.saturating_duration_since(end).as_secs_f64();
+            (kept + (ahead - back) * rate).clamp(0.0, kept)
+        };
+        let (first, last) = (index(from) as usize, index(to) as usize);
+        (last > first).then(|| {
+            (
+                self.recent.range(first..last).copied().collect(),
+                self.recent_rate,
+            )
+        })
     }
 
     /// One chunk of samples at `rate` Hz.
@@ -295,6 +356,61 @@ mod tests {
         assert!((summary.seconds - 2.25).abs() < 1e-9);
         // Nothing for a while: no longer live.
         assert!(!mic.summary(start + Duration::from_secs(10)).live);
+    }
+
+    #[test]
+    fn the_last_seconds_are_kept_by_when_they_were_heard() {
+        let mut mic = Mic::new(None);
+        let start = Instant::now();
+        // Ten quarter-second chunks at 16 kHz, each sample its chunk's number.
+        for i in 0..10u64 {
+            let chunk = [i as i16; 4000];
+            mic.keep(&chunk, 16_000, start + Duration::from_millis(250 * (i + 1)));
+        }
+        // Heard from 1 s to 1.5 s: chunks 4 and 5 (each 0.25 s, ending at
+        // 0.25 s, 0.5 s, …).
+        let (samples, rate) = mic
+            .between(
+                start + Duration::from_millis(1000),
+                start + Duration::from_millis(1500),
+            )
+            .unwrap();
+        assert_eq!(rate, 16_000);
+        assert_eq!(samples.len(), 8000);
+        assert!(
+            samples[..4000].iter().all(|&s| s == 4),
+            "{:?}",
+            &samples[..3]
+        );
+        assert!(samples[4000..].iter().all(|&s| s == 5));
+        // Asked for past what came in: what came.
+        let (samples, _) = mic
+            .between(
+                start + Duration::from_millis(2250),
+                start + Duration::from_secs(4),
+            )
+            .unwrap();
+        assert_eq!(samples.len(), 4000);
+        // Before anything kept, or all of it after: nothing.
+        assert!(mic.between(start, start).is_none());
+        assert!(
+            mic.between(
+                start + Duration::from_secs(3),
+                start + Duration::from_secs(4)
+            )
+            .is_none()
+        );
+        // Only the last few seconds stay; a gap starts it over.
+        for i in 0..40u64 {
+            mic.keep(
+                &[1; 4000],
+                16_000,
+                start + Duration::from_millis(2500 + 250 * (i + 1)),
+            );
+        }
+        assert_eq!(mic.recent.len(), 16_000 * 6);
+        mic.keep(&[2; 4000], 16_000, start + Duration::from_secs(30));
+        assert_eq!(mic.recent.len(), 4000);
     }
 
     #[test]
