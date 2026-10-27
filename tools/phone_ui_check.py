@@ -15,7 +15,8 @@ sent but nothing written while the clip plays or just after (its own
 voice), a loud sound over a clip pauses it until the PC's word — a short
 word too ("די!"), and the PC's go_on lets it go on at once — a short word
 louder than its voice on the PC's speakers is told to the PC (its first
-moments are how loud it is; not again after a go_on), a PC started
+moments are how loud it is, kept when it begins again a moment later; not
+again after a go_on), a PC started
 again is greeted again and its clips play, a page reloaded mid-visit is not
 greeted twice, and on a call MapleSyrup's own lines are said by the call,
 never by the phone's own voice: the call's hello says what it does to a
@@ -685,7 +686,8 @@ def pcvoice_checks(p):
     with open(mic, "wb") as f:
         f.write(wav(48000, pcm(3, 48000) + syllables(4, 48000, 1500) + word() + syllables(3.25, 48000, 1500) + word()
                     + syllables(2.75, 48000, 1500) + word() + syllables(1.25, 48000, 1500) + pcm(2, 48000) + word()
-                    + pcm(1.75, 48000) + syllables(3, 48000, 1500) + word() + syllables(1, 48000, 1500) + pcm(10, 48000)))
+                    + pcm(1.75, 48000) + syllables(3, 48000, 1500) + word() + syllables(0.75, 48000, 1500)
+                    + pcm(1.6, 48000) + syllables(0.6, 48000, 1500) + word() + syllables(1, 48000, 1500) + pcm(10, 48000)))
     browser = p.chromium.launch(args=browser_args(mic))
     page, mic_started = listening_page(browser)
     def at(seconds):
@@ -719,12 +721,19 @@ def pcvoice_checks(p):
     # talk over is told nothing.
     at(18.5)
     assert len(interrupts(t0)) == 2, "a loud word with its voice over was told"
-    # Its next voice (19 s in) is measured afresh: his word over it (22 s in)
-    # is told, as over the first.
+    # Its next voice (19 s in, four seconds after the last) is measured
+    # afresh: his word over it (22 s in) is told, as over the first.
     with LOCK: STATE["pc_voice"] = 2; STATE["pc_voice_until"] = time.time() + 4
     wait_for(lambda: len(interrupts(t0)) == 3, 5, "a word over its next voice on the PC was never told")
     assert 22.0 < heard_at(interrupts(t0)[2]) < 22.9
     assert no_clip()
+    # A voice that begins again a moment after (its next line, 24.6 s in) is
+    # the same voice: his word 0.6 s into it is told at once, not lost to a
+    # second of measuring.
+    at(24.6)
+    with LOCK: STATE["pc_voice"] = 3; STATE["pc_voice_until"] = time.time() + 2
+    wait_for(lambda: len(interrupts(t0)) == 4, 3, "a word just after its voice began again was not told")
+    assert 25.2 < heard_at(interrupts(t0)[3]) < 26.0
     # The page asks for the PC's voice with its poll, so the PC can wake it.
     assert any("pv" in r["query"] for r in requests_since(t0, "/api/state")), "the poll does not ask for the PC's voice"
     page.close()

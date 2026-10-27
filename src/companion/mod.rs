@@ -963,6 +963,13 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// "raccoon", "equivalent" for "equipment". (Not "tell" for "tall": short
 /// words are words.)
 fn said_or_near(word: &str, said: &[&str]) -> bool {
+    near(word, said, 2)
+}
+
+/// [`said_or_near`], with an ending counted only after `least` letters or
+/// more: in what is mostly the player's voice, a word of two letters is a
+/// word of his ("no" is no "not", "לא" no "לאט").
+fn near(word: &str, said: &[&str], least: usize) -> bool {
     let n = word.chars().count();
     said.iter().any(|s| {
         if *s == word {
@@ -971,7 +978,7 @@ fn said_or_near(word: &str, said: &[&str]) -> bool {
         let m = s.chars().count();
         let (short, long) = if m <= n { (*s, word) } else { (word, *s) };
         let stem = short.chars().count();
-        if stem >= 2
+        if stem >= least
             && long.strip_prefix(short).is_some_and(|ending| {
                 let letters = ending.chars().count();
                 letters == 1 || (letters == 2 && stem >= 4)
@@ -2952,9 +2959,12 @@ impl Companion {
         self.players_words(now, hearing, enough)
     }
 
-    /// The phone heard a voice over its own, louder than its own, at `now`
-    /// (it measures how loud): the player's. What is heard around then is
-    /// his ([`Companion::barge_in`], [`Companion::own_words`]).
+    /// The phone heard a voice over a clip of its own, louder than its own,
+    /// at `now` (it measures how loud), and paused the clip: the player's.
+    /// What the phone writes down then, listening afresh with its voice
+    /// paused, is his ([`Companion::barge_in`], [`Companion::own_words`]):
+    /// a word of his is enough. (Until it goes on, stops, or begins again:
+    /// [`Companion::no_voice_over`], [`Companion::voice_began`].)
     pub fn voice_heard_over(&mut self, now: f64) {
         self.voice_over = Some(now);
     }
@@ -3037,10 +3047,12 @@ impl Companion {
                 *slot |= misheard;
             }
         }
-        // A token is theirs when a word of it is.
+        // A token is theirs when a word of it is. (A short word of its own
+        // with an ending is a word of his here: what is written down is his
+        // voice, louder than its own.)
         let mut theirs = vec![false; tokens.len()];
         for ((word, token), own) in words.iter().zip(&own) {
-            if !own && !said_or_near(word, &said) && !a_sound(word) {
+            if !own && !near(word, &said, 3) && !a_sound(word) {
                 theirs[*token] = true;
             }
         }
@@ -5709,6 +5721,18 @@ mod tests {
             None
         );
         assert_eq!(c.talked_over(12.0, "Mushroom"), None);
+        // A short word of his is his, even when a word of its line begins
+        // with it ("No!" over "Not yet", "לא!" over "לאט").
+        let mut short = Companion::seeded(Settings::default(), SEED);
+        short.remember_spoken(10.0, "Not yet, he is still far. לאט לאט.");
+        for word in ["No!", "Hey!", "לא!"] {
+            assert_eq!(
+                short.talked_over(12.0, word).as_deref(),
+                Some(word),
+                "{word}"
+            );
+        }
+        assert_eq!(short.talked_over(12.0, "not yet"), None);
         // Over its voice on the PC, which nothing cancels, the transcriber
         // writes its line with his words: a word of its line written
         // another way in its place is its own; his are his.
