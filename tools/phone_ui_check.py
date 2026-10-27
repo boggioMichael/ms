@@ -13,7 +13,9 @@ recognizer, a stand-in call and a microphone fed from a file: the words so
 far never land after the sentence, a sentence cut off by a clip is still
 sent but nothing written while the clip plays or just after (its own
 voice), a loud sound over a clip pauses it until the PC's word — a short
-word too ("די!"), and the PC's go_on lets it go on at once — a PC started
+word too ("די!"), and the PC's go_on lets it go on at once — a short word
+louder than its voice on the PC's speakers is told to the PC (its first
+moments are how loud it is; not again after a go_on), a PC started
 again is greeted again and its clips play, a page reloaded mid-visit is not
 greeted twice, and on a call MapleSyrup's own lines are said by the call,
 never by the phone's own voice: the call's hello says what it does to a
@@ -34,7 +36,7 @@ clip made before the tap is kept for it, and the terms with it, but not a
 stale warning or stale news. Needs `pip install playwright &&
 playwright install chromium`; run from the repository root: `python3
 tools/phone_ui_check.py` (or with some of `ui`, `recognition`, `live`,
-`loudness`, `talkover`, `hello` to run those alone; PHONE_PAGE=path checks another
+`loudness`, `talkover`, `pcvoice`, `hello` to run those alone; PHONE_PAGE=path checks another
 copy of the page, to see a check fail against the page as it was).
 Screenshots land in `target/phone-ui/`."""
 import json, os, re, struct, sys, threading, time, http.server, socketserver
@@ -80,7 +82,8 @@ PAUSE_SLACK = 3200
 # request the page made. `clips`: what a clip is and when it was made, by
 # its number (a clip not in it is listed by nobody, as a PC from before
 # would).
-STATE = {"boot": "b1", "clip": 0, "cut": 0, "go_on": 0, "messages": [], "voice_on": "both", "clips": {}}
+STATE = {"boot": "b1", "clip": 0, "cut": 0, "go_on": 0, "messages": [], "voice_on": "both", "clips": {},
+         "pc_voice": 0, "pc_voice_until": 0}
 REQUESTS = []
 LOCK = threading.Lock()
 
@@ -150,7 +153,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 clips = [{"seq": seq, "kind": kind, "age_ms": int((time.time() - made) * 1000)} for seq, (kind, made) in sorted(STATE["clips"].items())]
                 body = {"status": STATUS, "mic": {"live": False, "level": 0, "speaking": False}, "voice_on": STATE["voice_on"],
                         "messages": messages, "last_id": len(STATE["messages"]), "uptime": 100.0, "boot": STATE["boot"], "clip": STATE["clip"],
-                        "clips": clips, "cut": STATE["cut"], "go_on": STATE["go_on"]}
+                        "clips": clips, "cut": STATE["cut"], "go_on": STATE["go_on"], "pc_voice": STATE["pc_voice"],
+                        "pc_voice_ms": max(0, int((STATE["pc_voice_until"] - time.time()) * 1000))}
             self._send(200, json.dumps(body).encode(), "application/json")
         elif path == "/api/clip":
             self._log()
@@ -260,7 +264,7 @@ def wait_for(check, seconds, what):
 
 def reset_pc():
     with LOCK:
-        STATE.update({"boot": "b1", "clip": 0, "cut": 0, "go_on": 0, "messages": [], "clips": {}})
+        STATE.update({"boot": "b1", "clip": 0, "cut": 0, "go_on": 0, "messages": [], "clips": {}, "pc_voice": 0, "pc_voice_until": 0})
         CLIP_SECONDS.clear(); CLIP_SECONDS["default"] = 8
         REQUESTS.clear()
 
@@ -670,6 +674,62 @@ def talkover_checks(p):
     page.close()
     browser.close()
 
+def pcvoice_checks(p):
+    """The microphone fed from a file: its voice on the PC's speakers (the
+    phone does not play it, so nothing cancels it here), and the player's
+    short words over it, louder. (The bug of 25 October with the voice on
+    the PC: a word over it was taken for its own voice, or needed a word
+    list to count.)"""
+    mic = os.path.join(SHOTS, "mic-over-pc.wav")
+    word = lambda: pcm(0.25, 48000, 24000)
+    with open(mic, "wb") as f:
+        f.write(wav(48000, pcm(3, 48000) + syllables(4, 48000, 1500) + word() + syllables(3.25, 48000, 1500) + word()
+                    + syllables(2.75, 48000, 1500) + word() + syllables(1.25, 48000, 1500) + pcm(2, 48000) + word()
+                    + pcm(1.75, 48000) + syllables(3, 48000, 1500) + word() + syllables(1, 48000, 1500) + pcm(10, 48000)))
+    browser = p.chromium.launch(args=browser_args(mic))
+    page, mic_started = listening_page(browser)
+    def at(seconds):
+        wait = mic_started + seconds - time.time()
+        if wait > 0: time.sleep(wait)
+    def interrupts(t): return requests_since(t, "/api/interrupt")
+    def heard_at(r): return r["t"] - mic_started
+    def no_clip(): return page.evaluate("window.msVoice.paused") and not requests_since(t0, "/api/clip")
+    # Its voice begins on the PC (3 s in, for 12 s): its first moments are
+    # how loud it is here, and on its own it is no talk-over.
+    t0 = time.time()
+    at(3.0)
+    with LOCK: STATE["pc_voice"] = 1; STATE["pc_voice_until"] = time.time() + 12
+    at(6.9)
+    assert not interrupts(t0), "its own voice on the PC was taken for his"
+    # A quarter of a second of his voice over it (7 s in): the PC is told at
+    # once, and nothing pauses (the PC plays its voice itself).
+    wait_for(lambda: interrupts(t0), 3, "a short word over its voice on the PC was never told")
+    first = heard_at(interrupts(t0)[0])
+    assert 7.0 < first < 7.9, f"told {first:.2f} s in, not for the word at 7 s"
+    assert no_clip()
+    # Another word 3.5 s later: told again.
+    wait_for(lambda: len(interrupts(t0)) == 2, 4, "the second word over its voice on the PC was never told")
+    assert 10.5 < heard_at(interrupts(t0)[1]) < 11.4
+    # The PC found none of his words in it (go_on): that loudness again is
+    # no voice of his — the third word, as loud, is not told.
+    with LOCK: STATE["go_on"] = 1
+    at(15.5)
+    assert len(interrupts(t0)) == 2, "the same sound was told again after the PC found no words in it"
+    # Its voice is over (15 s in): a loud word with no voice of its own to
+    # talk over is told nothing.
+    at(18.5)
+    assert len(interrupts(t0)) == 2, "a loud word with its voice over was told"
+    # Its next voice (19 s in) is measured afresh: his word over it (22 s in)
+    # is told, as over the first.
+    with LOCK: STATE["pc_voice"] = 2; STATE["pc_voice_until"] = time.time() + 4
+    wait_for(lambda: len(interrupts(t0)) == 3, 5, "a word over its next voice on the PC was never told")
+    assert 22.0 < heard_at(interrupts(t0)[2]) < 22.9
+    assert no_clip()
+    # The page asks for the PC's voice with its poll, so the PC can wake it.
+    assert any("pv" in r["query"] for r in requests_since(t0, "/api/state")), "the poll does not ask for the PC's voice"
+    page.close()
+    browser.close()
+
 # What the dog was told to react to, in order.
 DOG_SPY = """
 window.__reacts = [];
@@ -1075,7 +1135,7 @@ def browser_args(mic_file):
     return ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
             f"--use-file-for-fake-audio-capture={mic_file}", "--autoplay-policy=no-user-gesture-required"]
 
-chosen = set(sys.argv[1:]) or {"ui", "recognition", "live", "loudness", "talkover", "hello"}
+chosen = set(sys.argv[1:]) or {"ui", "recognition", "live", "loudness", "talkover", "pcvoice", "hello"}
 with sync_playwright() as p:
     quiet = os.path.join(SHOTS, "mic-quiet.wav")
     with open(quiet, "wb") as f:
@@ -1087,6 +1147,7 @@ with sync_playwright() as p:
     browser.close()
     if "loudness" in chosen: loudness_checks(p)
     if "talkover" in chosen: talkover_checks(p)
+    if "pcvoice" in chosen: pcvoice_checks(p)
     if "hello" in chosen: hello_checks(p)
 srv.shutdown()
 if errors:

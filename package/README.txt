@@ -108,11 +108,13 @@ How it talks
   said last: say something new and whatever it was still saying or making
   for what you said before is dropped. Pause mid-sentence and go on, and it
   waits for the rest instead of answering half of it. The phone keeps
-  listening while it talks on the PC and tells your voice from its own;
-  while it talks on the phone, the phone doesn't listen (it would hear
-  itself), so a word over its voice pauses it, and the PC writes down what
-  the phone's microphone heard of that moment: any word of yours stops it
-  for good, in any language, and a noise or a laugh lets it go on.
+  listening while it talks on the PC and tells your voice from its own:
+  you are nearer the phone, so a word of yours louder than its voice there
+  is enough to stop it. While it talks on the phone, the phone doesn't
+  listen (it would hear itself), so a word over its voice pauses it. Either
+  way the PC writes down what the phone's microphone heard of that moment:
+  any word of yours stops it for good, in any language, and a noise or a
+  laugh lets it go on. (Talking softer than its voice, say two words.)
   While it speaks, MapleStory's sound is turned down for a moment.
   The OpenAI account needs credit (platform.openai.com/settings/organization/billing);
   without it MapleSyrup says so and goes on with simple answers and the
@@ -337,9 +339,9 @@ Privacy
   Outside a live call, your phone's browser turns your speech into text with
   its own speech service (Google's on Chrome and Android, Apple's on
   Safari): your voice goes there, with or without any key. When you talk over
-  its voice on the phone (where the phone doesn't listen while it talks),
-  the few seconds of the phone's microphone around that moment go to OpenAI
-  to be written down, to tell your words from a noise. With "phone over
+  its voice louder than it, on the phone or on the PC, the few seconds of
+  the phone's microphone around that moment go to OpenAI to be written down,
+  to tell your words from a noise. With "phone over
   the internet", everything the phone and the PC exchange goes through
   Cloudflare.
   Updates: it asks datta-syrup.ai for a new version 45 s after it starts and

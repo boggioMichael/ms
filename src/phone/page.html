@@ -1499,7 +1499,8 @@
     if (!KEY) return;
     try {
       const r = await api("/api/state?since=" + since + "&wait=" + (first ? 0 : 450) +
-        "&clip=" + (lastClip || 0) + "&cut=" + (lastCut || 0) + "&go=" + (lastGoOn || 0));
+        "&clip=" + (lastClip || 0) + "&cut=" + (lastCut || 0) + "&go=" + (lastGoOn || 0) +
+        "&pv=" + (pcVoiceSeen || 0));
       if (r.status === 403) {
         banner(t("link_old"));
         setPc(false, t("old_link"));
@@ -1527,10 +1528,15 @@
       if (lastCut !== null && cut > lastCut) stopClips();
       lastCut = cut;
       // A clip paused for a loud sound over it goes on at once when the PC
-      // found none of the player's words in that sound.
+      // found none of the player's words in that sound (and over its voice
+      // on the PC, that sound again is no voice of his).
       const goOn = state.go_on || 0;
-      if (lastGoOn !== null && goOn > lastGoOn && pausedFor) resumeClip();
+      if (lastGoOn !== null && goOn > lastGoOn) {
+        if (pausedFor) resumeClip();
+        else if (Date.now() < pcVoiceUntil) pcFloor = Math.max(pcFloor, pcLoudDb - PC_OVER_DB + 2);
+      }
       lastGoOn = goOn;
+      pcVoice(state);
       noteClips(state.clips);
       maybePlayClip(state.clip || 0);
       first = false;
@@ -1550,7 +1556,7 @@
   // just opened does.
   function startOver(state) {
     since = 0; first = true;
-    lastClip = null; nextClip = null; lastCut = null; lastGoOn = null;
+    lastClip = null; nextClip = null; lastCut = null; lastGoOn = null; pcVoiceSeen = null;
     clipInfo.clear();
     // (Its language requests are numbered from one again too.)
     langTaken = null;
@@ -2267,7 +2273,13 @@
   });
   function talkingOver(db) {
     if (pausedFor) return;
-    if (!speakingNow()) { floorDb = 0.95 * floorDb + 0.05 * db; loudRun = []; return; }
+    if (!speakingNow()) {
+      loudRun = [];
+      // (Its voice on the PC's speakers is no room to learn.)
+      if (Date.now() < pcVoiceUntil) overPcVoice(db);
+      else { floorDb = 0.95 * floorDb + 0.05 * db; pcRun = []; }
+      return;
+    }
     if (Date.now() - clipAt < MEASURE_MS) { clipFloor = Math.max(clipFloor, db); loudRun = []; return; }
     const loud = db > Math.max(-27, floorDb + 14, clipFloor + 10);
     loudRun.push(loud ? db : null);
@@ -2298,6 +2310,45 @@
     clipFloor = Math.max(clipFloor, loudDb - 6);
     resuming = true;
     player.play().catch(() => { resuming = false; });
+  }
+
+  // The player's voice over its voice on the PC's speakers. This phone
+  // does not play that voice, so its echo cancelling leaves it in (and its
+  // recognition writes it down, with his words: the PC sorts out whose
+  // they are), but he is nearer: louder here than it. How loud its voice
+  // is here is learnt from the loudest of its first moments
+  // (PC_MEASURE_MS, from when the PC says it began: state.pc_voice); a
+  // voice over that by PC_OVER_DB in 2 of the last 5 pieces of sound is
+  // told to the PC (/api/interrupt, nothing paused: the PC plays its own
+  // voice). A word of his then stops it, in any language, and the PC
+  // writes down what this microphone heard of that moment; if none of his
+  // words were in it (state.go_on), that sound again is no voice of his.
+  // (No more than once in PC_TELL_EVERY_MS: one voice, one moment. Less
+  // than over a clip, which the echo cancelling takes out: the
+  // microphone's gain control lifts its voice here and holds a loud one
+  // down, ten dB apart at most, and in a piece that a short word only
+  // begins or ends, its voice under it is most of the sound.)
+  let pcVoiceSeen = null, pcVoiceAt = 0, pcVoiceUntil = 0, pcFloor = -100, pcRun = [], pcToldAt = 0, pcLoudDb = -100;
+  const PC_MEASURE_MS = 1000, PC_OVER_DB = 6, PC_LOUD_NEEDED = 2, PC_TELL_EVERY_MS = 2600;
+  function pcVoice(state) {
+    const n = state.pc_voice || 0, left = state.pc_voice_ms || 0;
+    // (A voice already playing as this page came counts as begun now.)
+    if (pcVoiceSeen === null ? left > 0 : n > pcVoiceSeen) { pcVoiceAt = Date.now(); pcFloor = -100; pcRun = []; }
+    pcVoiceSeen = n;
+    pcVoiceUntil = left > 0 ? Date.now() + left : 0;
+  }
+  function overPcVoice(db) {
+    const now = Date.now();
+    if (now - pcVoiceAt < PC_MEASURE_MS) { pcFloor = Math.max(pcFloor, db); pcRun = []; return; }
+    const loud = db > Math.max(-27, floorDb + 14, pcFloor + PC_OVER_DB);
+    pcRun.push(loud ? db : null);
+    if (pcRun.length > LOUD_OF) pcRun.shift();
+    const loudOnes = pcRun.filter((d) => d !== null);
+    if (loudOnes.length < PC_LOUD_NEEDED || now - pcToldAt < PC_TELL_EVERY_MS) return;
+    pcRun = [];
+    pcToldAt = now;
+    pcLoudDb = Math.max(...loudOnes);
+    postJson("/api/interrupt", {}).catch(() => {});
   }
 
   function startRecognition() {
