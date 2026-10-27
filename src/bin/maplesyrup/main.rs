@@ -1116,7 +1116,15 @@ impl Mouth {
 
     /// Its voice on the PC's speakers is held where it is.
     fn pc_held(&self) -> bool {
-        self.player.paused() || self.sapi_held.is_some()
+        self.pc_held_since().is_some()
+    }
+
+    /// Since when its voice on the PC's speakers is held (None: it is not).
+    fn pc_held_since(&self) -> Option<Instant> {
+        match (self.player.paused_since(), self.sapi_held) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Until when its voice plays on the PC's speakers, as far as is known
@@ -1148,15 +1156,19 @@ impl Mouth {
         held
     }
 
-    /// Its voice on the PC goes on from where it was held.
-    fn resume_pc(&mut self) {
-        self.player.resume();
-        if let Some(at) = self.sapi_held.take() {
-            self.sapi_until += at.elapsed();
+    /// Its voice on the PC goes on from where it was held. Returns when
+    /// it was held, and for how long (None: it was not).
+    fn resume_pc(&mut self) -> Option<(Instant, Duration)> {
+        let player = self.player.resume();
+        let sapi = self.sapi_held.take().map(|at| {
+            let held_for = at.elapsed();
+            self.sapi_until += held_for;
             if let Some(voice) = &self.sapi {
                 voice.resume();
             }
-        }
+            (at, held_for)
+        });
+        player.or(sapi)
     }
 
     /// Its own voice on the PC's speakers is in the room, for the phone's
@@ -1280,6 +1292,12 @@ struct Turns {
     overheard: Option<(Instant, String)>,
     /// When its voice was last stopped and its work called off.
     cut_at: Option<Instant>,
+    /// When its voice on the PC was held during the reply under way, and
+    /// for how long: not heard meanwhile.
+    holds: Vec<(Instant, Duration)>,
+    /// The last hold its voice on the PC went on from, for what else keeps
+    /// when lines reach him (Claude's: [`Turns::take_resumed`]).
+    resumed: Option<(Instant, Duration)>,
 }
 
 /// Which of its voices a loud moment came over ([`Turns::loud`]).
@@ -1515,12 +1533,21 @@ impl Turns {
     /// Stop talking and call off what is being made (the player talked over
     /// it, or kept talking).
     fn interrupt(&mut self, out: &mut Outputs) {
-        // (Paused for a loud sound just now, the phone said no more after.)
+        let until = self.heard_until(out);
+        self.interrupt_from(out, until);
+    }
+
+    /// Up to when its voice was heard, were it stopped now: until a loud
+    /// sound just now (the phone paused its clip then, and said no more
+    /// after), or the hold of its voice on the PC, else now.
+    fn heard_until(&self, out: &Outputs) -> Instant {
         let until = self
             .loud
             .filter(|at| at.elapsed() < CORROBORATE_FOR)
             .unwrap_or_else(Instant::now);
-        self.interrupt_from(out, until);
+        out.mouth
+            .pc_held_since()
+            .map_or(until, |held| until.min(held))
     }
 
     /// [`Turns::interrupt`], with what was heard of the reply measured up
@@ -1528,6 +1555,11 @@ impl Turns {
     fn interrupt_from(&mut self, out: &mut Outputs, until: Instant) {
         self.loud = None;
         self.cut_at = Some(Instant::now());
+        // (Held on the PC, nothing of it was heard after the hold began.)
+        let until = out
+            .mouth
+            .pc_held_since()
+            .map_or(until, |held| until.min(held));
         let talking = out.mouth.speaking();
         out.cut();
         let Some(worker) = &out.mouth.ai else {
@@ -1556,7 +1588,7 @@ impl Turns {
                     .iter()
                     .filter_map(|(at, line)| {
                         at.filter(|at| *at <= until)
-                            .map(|at| heard_of(line, until.duration_since(at)))
+                            .map(|at| heard_of(line, played(at, until, &self.holds)))
                     })
                     .collect();
                 worker.send(Job::Cut {
@@ -1606,15 +1638,51 @@ impl Turns {
     }
 
     /// Its voice on the PC, held for a loud moment over it, goes on: no
-    /// words of his came within [`CORROBORATE_FOR`] (as a clip the phone
-    /// paused goes on after its own wait). Returns whether it did.
+    /// words of his came within [`CORROBORATE_FOR`] of the hold (as a clip
+    /// the phone paused goes on after its own wait), and the phone is told
+    /// (`go_on`: that sound again is no voice of his). Returns whether it
+    /// did.
     fn held_too_long(&mut self, out: &mut Outputs) -> bool {
-        if self.over != Over::Pc || !out.mouth.pc_held() || self.loud_lately() {
+        if !out
+            .mouth
+            .pc_held_since()
+            .is_some_and(|at| at.elapsed() >= CORROBORATE_FOR)
+        {
             return false;
         }
-        self.loud = None;
-        out.mouth.resume_pc();
+        if self.over == Over::Pc {
+            self.loud = None;
+        }
+        let hold = out.mouth.resume_pc();
+        self.resumed(hold);
+        if let Some(hub) = &out.phone {
+            hub.go_on();
+        }
         true
+    }
+
+    /// Its voice on the PC went on after `hold` (when it was held, for how
+    /// long): the reply's lines still to come are heard that much later.
+    fn resumed(&mut self, hold: Option<(Instant, Duration)>) {
+        let Some((from, held_for)) = hold else {
+            return;
+        };
+        self.holds.push((from, held_for));
+        if let Some(reply) = self.reply.as_mut() {
+            for (at, _) in reply.lines.iter_mut() {
+                if let Some(at) = at.as_mut()
+                    && *at > from
+                {
+                    *at += held_for;
+                }
+            }
+        }
+        self.resumed = Some((from, held_for));
+    }
+
+    /// The last hold its voice on the PC went on from, once.
+    fn take_resumed(&mut self) -> Option<(Instant, Duration)> {
+        self.resumed.take()
     }
 
     /// A loud sound the phone heard lately, still waiting for words.
@@ -1754,7 +1822,10 @@ impl Turns {
                             *end = end.checked_sub(unused).unwrap_or(*end);
                         }
                     }
-                    Over::Pc => out.mouth.resume_pc(),
+                    Over::Pc => {
+                        let hold = out.mouth.resume_pc();
+                        self.resumed(hold);
+                    }
                 }
                 // (The phone's clip goes on; over its voice on the PC, the
                 // phone takes that sound again for no voice of his.)
@@ -1803,6 +1874,7 @@ impl Turns {
     }
 
     fn asked(&mut self, id: u64, heard: &str) {
+        self.holds.clear();
         self.reply = Some(Asked {
             id,
             heard: heard.to_string(),
@@ -1917,6 +1989,18 @@ fn within(sentence: &str, part: &str) -> bool {
     let part = commands::normalize(part);
     !part.is_empty()
         && format!(" {} ", commands::normalize(sentence)).contains(&format!(" {part} "))
+}
+
+/// How long a line begun at `at` played up to `until`, its voice held on
+/// the PC meanwhile at `holds` (when, for how long): a hold is no time it
+/// was heard.
+fn played(at: Instant, until: Instant, holds: &[(Instant, Duration)]) -> Duration {
+    let held: Duration = holds
+        .iter()
+        .filter(|(from, _)| *from >= at && *from < until)
+        .map(|(_, held_for)| *held_for)
+        .sum();
+    until.saturating_duration_since(at).saturating_sub(held)
 }
 
 /// How much of `line` was heard after it had played for `played`: speech
@@ -2071,16 +2155,39 @@ impl ClaudeLines {
         }
     }
 
-    /// Its voice was stopped and its work called off just now: the lines
-    /// that had not reached him (their words) — not made yet, or waiting
-    /// behind another. The rest are done with too.
-    fn called_off(&mut self) -> Vec<String> {
-        let now = Instant::now();
+    /// Its voice was stopped and its work called off just now, heard up
+    /// to `by`: the lines that had not reached him by then (their words) —
+    /// not made yet, waiting behind another, or due after `by`. The rest
+    /// are done with too.
+    fn called_off(&mut self, by: Instant) -> Vec<String> {
+        self.stopped(by);
         std::mem::take(&mut self.lines)
             .into_iter()
-            .filter(|(_, _, at)| at.is_none_or(|at| at > now))
+            .filter(|(_, _, at)| at.is_none())
             .map(|(_, text, _)| text)
             .collect()
+    }
+
+    /// Its voice stopped, heard up to `by`: the lines due to reach him
+    /// after that never did (for when his words come: `called_off`).
+    fn stopped(&mut self, by: Instant) {
+        for (_, _, at) in self.lines.iter_mut() {
+            if at.is_some_and(|at| at > by) {
+                *at = None;
+            }
+        }
+    }
+
+    /// Its voice on the PC was held from `from` for `held_for`: the lines
+    /// still to reach him then reach him that much later.
+    fn held(&mut self, from: Instant, held_for: Duration) {
+        for (_, _, at) in self.lines.iter_mut() {
+            if let Some(at) = at.as_mut()
+                && *at > from
+            {
+                *at += held_for;
+            }
+        }
     }
 }
 
@@ -3329,6 +3436,9 @@ impl Outputs {
         self.mouth.phone_until = Instant::now();
         self.mouth.phone_end = Instant::now();
         if let Some(hub) = &self.phone {
+            // (The page wakes for the cut: it hears with it whether its
+            // voice still plays on the PC.)
+            hub.set_pc_voice(self.mouth.pc_voice_until());
             hub.cut();
         }
     }
@@ -4466,6 +4576,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         {
                             out.show(Kind::Heard, &text);
                             let over_its_voice = turns.take_talked_over() || overheard;
+                            // (Up to when its voice was heard: nothing after
+                            // that reached him.)
+                            let heard_until = turns.heard_until(&out);
                             // He comes first: what its voice was saying or
                             // making stops, and Claude's lines still to come
                             // — written before he said this — are called off
@@ -4476,7 +4589,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             // (Claude answers it: none of its words wait for
                             // MapleSyrup's own model.)
                             turns.held = None;
-                            let mut unheard = claude_lines.called_off();
+                            let mut unheard = claude_lines.called_off(heard_until);
                             // Lines Claude asked for just before, not handed
                             // to the voice yet: not said either.
                             for line in board.take_says() {
@@ -4651,6 +4764,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         // Listening for its name only, words for it — or said
                         // over its voice by a voice louder than it (the
                         // phone measured: `Inbound::Interrupt`).
+                        let heard_until = turns.heard_until(&out);
                         if (out.mouth.ai.is_some() || out.mouth.sapi.is_some())
                             && (companion.settings.always_listen
                                 || !matches!(commands::interpret(&text, false), Heard::NotForUs)
@@ -4659,8 +4773,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         {
                             if what.starts_with(TALKED_OVER) {
                                 sentence.talked_over();
-                                // (It stopped: the voice over it did its part.)
+                                // (It stopped: the voice over it did its part,
+                                // and Claude's lines due after never reached
+                                // him.)
                                 companion.no_voice_over();
+                                claude_lines.stopped(heard_until);
                                 // Claude's lines wait for what he says.
                                 if out.claude
                                     && let Some(board) = &claude_board
@@ -4702,7 +4819,16 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         // PC, its recognition has its voice in it up to the
                         // hold: his one word is found in what the
                         // microphone heard, not there.)
-                        if over == Over::Clip {
+                        // With nothing to write it down (no key, or none of
+                        // the phone's microphone), the phone's recognition is
+                        // all there is: its voice held, a word of his there
+                        // is enough too.
+                        let written = talkovers.is_some()
+                            && out.phone.as_ref().is_some_and(|hub| {
+                                let at = Instant::now();
+                                hub.mic_between(at - Duration::from_secs(1), at).is_some()
+                            });
+                        if over == Over::Clip || !written {
                             companion.voice_heard_over(now);
                         }
                         out.session.line(
@@ -5188,16 +5314,24 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             }
             match written.words {
                 Ok(words) => {
+                    // (Stopped for these words, it was heard up to their
+                    // moment, or to the hold.)
+                    let heard_until = out
+                        .mouth
+                        .pc_held_since()
+                        .map_or(written.at, |held| written.at.min(held));
                     if let Some((what, theirs)) =
                         turns.overheard(&mut out, &mut companion, now, written.at, &words)
                     {
                         out.session.line("turn", &what);
                         if let Some(theirs) = theirs {
                             // (The sentence the phone is writing was said
-                            // over its voice by him, not by its voice; and
-                            // the voice over it did its part.)
+                            // over its voice by him, not by its voice; the
+                            // voice over it did its part; and Claude's lines
+                            // due after that moment never reached him.)
                             sentence.talked_over();
                             companion.no_voice_over();
+                            claude_lines.stopped(heard_until);
                             // Claude's lines wait for what he says, which
                             // comes now: his words, as any sentence.
                             if out.claude
@@ -5224,6 +5358,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 "turn",
                 "loud over its voice on the PC: no words of his, it goes on",
             );
+        }
+        // (Claude's lines still to come reach him that much later.)
+        if let Some((from, held_for)) = turns.take_resumed() {
+            claude_lines.held(from, held_for);
         }
         // Its voice on the PC's speakers, for the phone: it hears the player
         // over it by how loud he is there.
@@ -5596,7 +5734,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         // The panel and the dog, about twelve times a second.
         if last_panel.is_none_or(|at| at.elapsed() >= Duration::from_millis(80)) {
             last_panel = Some(Instant::now());
-            let speaking = out.mouth.speaking();
+            // (Held for a voice over it, its mouth is still.)
+            let speaking = out.mouth.speaking() && !out.mouth.pc_held();
             if let Some(window) = panel_window.as_mut() {
                 match game_area {
                     Some(area) if area.foreground && area.width > 200 && area.height > 150 => {
@@ -5914,6 +6053,21 @@ mod tests {
         );
         assert_eq!(heard_of(line, Duration::from_secs(10)), line);
         assert_eq!(heard_of(line, Duration::ZERO), "");
+        // A hold of its voice while the line played is no time it was
+        // heard; one before it began or after the cut is none of its time.
+        let begun = earlier(Duration::from_secs(4));
+        let holds = [
+            (earlier(Duration::from_secs(6)), Duration::from_secs(1)),
+            (earlier(Duration::from_secs(3)), Duration::from_secs(2)),
+        ];
+        let now = Instant::now();
+        assert!(
+            played(begun, now, &holds).abs_diff(Duration::from_secs(2)) < Duration::from_millis(5)
+        );
+        assert_eq!(
+            played(begun, now, &[(now, Duration::from_secs(1))]),
+            now - begun
+        );
     }
 
     /// An instant `d` ago. (`Instant - Duration` panics when the monotonic
@@ -6337,14 +6491,36 @@ mod tests {
         assert!(out.mouth.player.remaining().abs_diff(left) < Duration::from_millis(30));
         assert_eq!(cuts(&out), 0);
         assert_eq!(go_ons(&out), 1);
-        // With no words written down in time, it goes on by itself.
+        // Held again: not yet too long.
         assert_eq!(turns.loud(&mut out), Over::Pc);
         assert!(!turns.held_too_long(&mut out));
         assert!(out.mouth.pc_held());
-        turns.loud = Some(earlier(CORROBORATE_FOR));
+    }
+
+    #[test]
+    fn a_hold_with_no_words_in_time_goes_on_by_itself_and_the_phone_hears_of_it() {
+        let mut out = outputs();
+        let mut turns = Turns::default();
+        // The Windows voice, held a while ago for a loud moment; no words
+        // of his came.
+        out.mouth.sapi_until = Instant::now() + Duration::from_secs(3);
+        out.mouth.sapi_held = Some(earlier(CORROBORATE_FOR));
+        let until = out.mouth.sapi_until;
         assert!(turns.held_too_long(&mut out));
-        assert!(!out.mouth.pc_held() && out.mouth.pc_speaking());
+        assert!(!out.mouth.pc_held());
+        assert!(out.mouth.sapi_until >= until + CORROBORATE_FOR);
+        // (That sound again is no voice of his: the phone is told.)
+        assert_eq!(go_ons(&out), 1);
         assert!(!turns.held_too_long(&mut out));
+        // Held, and then a loud moment over a clip on the phone too (its
+        // voice on both): the hold still runs out, and the clip's moment
+        // still waits for its words.
+        out.mouth.sapi_held = Some(earlier(CORROBORATE_FOR));
+        out.mouth.phone_until = Instant::now() + Duration::from_secs(5);
+        assert_eq!(turns.loud(&mut out), Over::Clip);
+        assert!(turns.held_too_long(&mut out));
+        assert!(!out.mouth.pc_held());
+        assert!(turns.loud.is_some());
     }
 
     #[test]
@@ -6510,19 +6686,53 @@ mod tests {
         lines.reached(8, Instant::now());
         lines.reached(9, Instant::now() + Duration::from_secs(2));
         assert_eq!(
-            lines.called_off(),
+            lines.called_off(Instant::now()),
             vec![
                 "Want another?".to_string(),
                 "I've got a hundred.".to_string()
             ]
         );
         // Called off, they are done with: the next time, none.
-        assert!(lines.called_off().is_empty());
+        assert!(lines.called_off(Instant::now()).is_empty());
         // Only the last few are remembered.
         for id in 0..20 {
             lines.handed(id, format!("line {id}"));
         }
-        assert_eq!(lines.called_off().len(), ClaudeLines::KEPT);
+        assert_eq!(lines.called_off(Instant::now()).len(), ClaudeLines::KEPT);
+    }
+
+    #[test]
+    fn claudes_lines_due_after_its_voice_stopped_or_held_never_reached_him() {
+        let mut lines = ClaudeLines::default();
+        lines.handed(1, "Heard before the hold.".into());
+        lines.handed(2, "Due while it was held.".into());
+        lines.handed(3, "Due after it went on.".into());
+        let held = earlier(Duration::from_secs(2));
+        lines.reached(1, earlier(Duration::from_secs(3)));
+        lines.reached(2, earlier(Duration::from_secs(1)));
+        // Held two seconds and gone on: the line due after the hold
+        // began reaches him that much later.
+        lines.reached(3, Instant::now() + Duration::from_millis(500));
+        lines.held(held, Duration::from_secs(2));
+        // His words come; it was heard up to the hold, then stopped.
+        assert_eq!(
+            lines.called_off(held),
+            vec![
+                "Due while it was held.".to_string(),
+                "Due after it went on.".to_string()
+            ]
+        );
+        // Stopped by words found in what the microphone heard, before his
+        // sentence comes: what was due after that never reached him, even
+        // once its time has passed.
+        lines.handed(4, "Due a moment after the stop.".into());
+        lines.reached(4, Instant::now() + Duration::from_millis(20));
+        lines.stopped(Instant::now());
+        std::thread::sleep(Duration::from_millis(40));
+        assert_eq!(
+            lines.called_off(Instant::now()),
+            vec!["Due a moment after the stop.".to_string()]
+        );
     }
 
     #[test]

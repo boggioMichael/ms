@@ -2277,9 +2277,14 @@
     if (pausedFor) return;
     if (!speakingNow()) {
       loudRun = [];
-      // (Its voice on the PC's speakers is no room to learn.)
-      if (Date.now() < pcVoiceUntil) overPcVoice(db);
-      else { floorDb = 0.95 * floorDb + 0.05 * db; pcRun = []; }
+      const now = Date.now();
+      // (Its voice on the PC's speakers is no room to learn, nor is the
+      // sound it holds that voice for, until the PC's word on it.)
+      if (now < pcVoiceUntil) overPcVoice(db);
+      else {
+        pcRun = [];
+        if (!pcAwaiting || now - pcToldAt > PC_AWAIT_MS) floorDb = 0.95 * floorDb + 0.05 * db;
+      }
       return;
     }
     if (Date.now() - clipAt < MEASURE_MS) { clipFloor = Math.max(clipFloor, db); loudRun = []; return; }
@@ -2321,7 +2326,7 @@
   // is here is learnt from the loudest of its first moments
   // (PC_MEASURE_MS, from when the PC says it began: state.pc_voice; a
   // voice that begins again within PC_KEEP_MS — its next line, or going on
-  // after it was held — is the same voice); a voice over that by
+  // after it was held, up to 2.5 s — is the same voice); a voice over that by
   // PC_OVER_DB in 2 of the last 5 pieces of sound is told to the PC
   // (/api/interrupt). The PC holds its voice and writes down what this
   // microphone heard of that moment: a word of his stops it, in any
@@ -2334,7 +2339,7 @@
   // most of the sound. The PC's word on how long its voice plays counts
   // for PC_GRACE_MS more: it is told again at the next look.)
   let pcVoiceSeen = null, pcVoiceAt = 0, pcVoiceUntil = 0, pcVoiceLast = 0, pcFloor = -100, pcRun = [], pcToldAt = 0, pcLoudDb = -100, pcAwaiting = false;
-  const PC_MEASURE_MS = 1000, PC_KEEP_MS = 3000, PC_GRACE_MS = 500, PC_OVER_DB = 6, PC_LOUD_NEEDED = 2, PC_TELL_EVERY_MS = 2600;
+  const PC_MEASURE_MS = 1000, PC_KEEP_MS = 4000, PC_GRACE_MS = 500, PC_OVER_DB = 6, PC_LOUD_NEEDED = 2, PC_TELL_EVERY_MS = 2600, PC_AWAIT_MS = 4000;
   function pcVoice(state) {
     const n = state.pc_voice || 0, left = state.pc_voice_ms || 0, now = Date.now();
     // (A voice already playing as this page came counts as begun now.)

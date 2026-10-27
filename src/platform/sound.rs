@@ -84,11 +84,10 @@ impl Player {
         true
     }
 
-    /// Go on from where it was held.
-    pub fn resume(&mut self) {
-        let Some(at) = self.paused.take() else {
-            return;
-        };
+    /// Go on from where it was held. Returns when it was held, and for
+    /// how long (None: it was not).
+    pub fn resume(&mut self) -> Option<(Instant, Duration)> {
+        let at = self.paused.take()?;
         let held_for = at.elapsed();
         if let Some(ends) = self.ends.as_mut()
             && *ends > at
@@ -103,11 +102,17 @@ impl Player {
         if let Some(out) = self.out.as_mut() {
             out.restart();
         }
+        Some((at, held_for))
     }
 
     /// Whether it is held where it is.
     pub fn paused(&self) -> bool {
         self.paused.is_some()
+    }
+
+    /// Since when it is held where it is (None: it is not).
+    pub fn paused_since(&self) -> Option<Instant> {
+        self.paused
     }
 
     /// Speech to play right after what is playing (a line, a piece at a
@@ -621,8 +626,12 @@ mod tests {
         player.push(&vec![0i16; 2_400], 24_000, None);
         let with_it = left + Duration::from_millis(100);
         assert!(player.remaining().abs_diff(with_it) < Duration::from_millis(5));
-        player.resume();
+        let (since, held_for) = player.resume().unwrap();
         assert!(!player.paused());
+        assert!(
+            held_for >= Duration::from_millis(300)
+                && since < Instant::now() - held_for + Duration::from_millis(5)
+        );
         assert!(player.remaining().abs_diff(with_it) < Duration::from_millis(20));
         let until = player.speaking_until().unwrap();
         assert!(
@@ -635,7 +644,7 @@ mod tests {
         assert!(player.pause());
         player.stop();
         assert!(!player.speaking() && !player.paused());
-        player.resume();
+        assert_eq!(player.resume(), None);
         assert!(!player.speaking());
     }
 

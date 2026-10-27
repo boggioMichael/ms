@@ -721,9 +721,10 @@ def pcvoice_checks(p):
     # talk over is told nothing.
     at(18.5)
     assert len(interrupts(t0)) == 2, "a loud word with its voice over was told"
-    # Its next voice (19 s in, four seconds after the last) is measured
-    # afresh: his word over it (22 s in) is told, as over the first.
-    with LOCK: STATE["pc_voice"] = 2; STATE["pc_voice_until"] = time.time() + 4
+    # Its next voice (19.6 s in, more than four seconds after the last) is
+    # measured afresh: his word over it (22 s in) is told, as over the first.
+    at(19.6)
+    with LOCK: STATE["pc_voice"] = 2; STATE["pc_voice_until"] = time.time() + 3.4
     wait_for(lambda: len(interrupts(t0)) == 3, 5, "a word over its next voice on the PC was never told")
     assert 22.0 < heard_at(interrupts(t0)[2]) < 22.9
     assert no_clip()

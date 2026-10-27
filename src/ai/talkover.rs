@@ -81,10 +81,12 @@ pub fn his_part(samples: &[i16], rate: u32, at: usize) -> std::ops::Range<usize>
     let mut its_voice: Vec<f32> = (0..before).map(level).collect();
     its_voice.sort_by(f32::total_cmp);
     let loudest = its_voice[its_voice.len() * 9 / 10];
-    let frames = samples.len().div_ceil(frame);
+    // (It was loud before the phone told of it: a louder part only after
+    // that is no start of his voice.)
+    let told = at.div_ceil(frame).min(samples.len().div_ceil(frame));
     let lead = (LEAD.as_secs_f64() * rate as f64) as usize;
-    match (before..frames).find(|&i| level(i) > loudest + OVER_ITS_VOICE_DB) {
-        Some(i) => (i * frame).saturating_sub(lead).min(at)..samples.len(),
+    match (before..told).find(|&i| level(i) > loudest + OVER_ITS_VOICE_DB) {
+        Some(i) => (i * frame).saturating_sub(lead)..samples.len(),
         None => fallback,
     }
 }
@@ -181,6 +183,12 @@ mod tests {
         assert_eq!(his_part(&flat, 16_000, at), at - 16_000..flat.len());
         // Too little of its voice before him to go by: the same.
         assert_eq!(his_part(&samples[..20_000], 16_000, 19_000), 3_000..20_000);
+        // His voice no louder than its own until after the phone told (it
+        // told of something else), louder only from 1.95 s: from a second
+        // before the moment, not from where it grew loud later.
+        let mut later = voice(1.95, 2_000);
+        later.extend(voice(0.6, 12_000));
+        assert_eq!(his_part(&later, 16_000, at), at - 16_000..later.len());
         // Echo cancelled (a clip on the phone): silence, then his voice.
         let mut clean = vec![0i16; (1.6 * 16_000.0) as usize];
         clean.extend(voice(0.5, 3_000));
