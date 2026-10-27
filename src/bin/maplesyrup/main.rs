@@ -3317,7 +3317,10 @@ impl Outputs {
     /// sounding when a warning starts behind it is let play out with it.)
     fn cut(&mut self) {
         let line_kept = self.mouth.line.is_some_and(|(_, kind)| kind.kept());
-        if !line_kept {
+        if line_kept {
+            // (Held for a voice over it, it plays out from where it was.)
+            self.mouth.resume_pc();
+        } else {
             self.mouth.hush();
             self.mouth.phone_line.clear();
             self.mouth.hushed = self.mouth.line.map(|(id, _)| id);
@@ -4640,8 +4643,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     Inbound::Hearing(text) => {
                         player_heard = Some(Instant::now());
                         // (Whether its own voice is playing as the
-                        // sentence begins.)
-                        sentence.hearing(out.mouth.pc_speaking());
+                        // sentence begins: held for a voice over it, it is
+                        // not.)
+                        sentence.hearing(out.mouth.pc_speaking() && !out.mouth.pc_held());
                         // Words as they are said: talked over, or still
                         // talking. (The natural voice, or the Windows one.)
                         // Listening for its name only, words for it — or said
@@ -6339,6 +6343,28 @@ mod tests {
         assert!(out.mouth.pc_held());
         turns.loud = Some(earlier(CORROBORATE_FOR));
         assert!(turns.held_too_long(&mut out));
+        assert!(!out.mouth.pc_held() && out.mouth.pc_speaking());
+        assert!(!turns.held_too_long(&mut out));
+    }
+
+    #[test]
+    fn a_warning_held_for_a_voice_over_it_plays_out_after_he_talked_over_it() {
+        // A warning on the PC, held for a loud moment over it; his word
+        // stops what is to come, but a warning is still true: it plays out
+        // from where it was, not held for good.
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let mut turns = Turns::default();
+        let id = job(&out);
+        out.mouth.line = Some((id, Kind::Warning));
+        out.mouth.player.play(&vec![0i16; 48_000], 24_000, None);
+        assert_eq!(turns.loud(&mut out), Over::Pc);
+        let at = turns.loud.unwrap();
+        assert!(out.mouth.pc_held());
+        let (what, _) = turns
+            .overheard(&mut out, &mut companion, 2.0, at, "wait")
+            .unwrap();
+        assert!(what.starts_with(TALKED_OVER), "{what}");
         assert!(!out.mouth.pc_held() && out.mouth.pc_speaking());
         assert!(!turns.held_too_long(&mut out));
     }
