@@ -2997,30 +2997,58 @@ impl Companion {
     }
 
     /// The player's words in what the phone's microphone heard of a loud
-    /// moment over MapleSyrup's voice on the phone, written down by a
-    /// transcriber (`written`), once its own voice is taken out — the words
-    /// of its lines said lately, or the transcriber's spelling of them (the
+    /// moment over MapleSyrup's voice, written down by a transcriber
+    /// (`written`), once its own voice is taken out — the words of its
+    /// lines said lately, or the transcriber's spelling of them, and its
+    /// line written another way in the place of some of its words
+    /// ([`misheard`]: over its voice on the PC, which nothing cancels, the
+    /// transcriber writes its lines with his words; on the phone, the
     /// microphone cancels most of its voice, not all). Any word of theirs
     /// is enough to stop for, in any language: they spoke over it. `None`
     /// when it was only its own voice, or a sound with no words of theirs
     /// (a laugh or a hum, the same sound over and over, or the
     /// transcriber's note on the game's noise).
     pub fn talked_over(&self, now: f64, written: &str) -> Option<String> {
-        let mut said = self.said_lately(now);
-        said.extend(
+        let mut lines = self.lines_said_lately(now);
+        lines.extend(
             self.voiced
                 .iter()
                 .filter(|(at, _)| (-1.0..=ECHO_WINDOW).contains(&(now - at)))
-                .flat_map(|(_, line)| line.split(' ').filter(|w| !w.is_empty())),
+                .map(|(_, line)| line.split(' ').filter(|w| !w.is_empty()).collect()),
         );
+        let said: Vec<&str> = lines.iter().flatten().copied().collect();
         let written = without_notes(written);
-        let theirs: Vec<&str> = written
-            .split_whitespace()
-            .filter(|token| {
-                let normal = commands::normalize(&without_marks(token));
-                let mut words = normal.split(' ').filter(|w| !w.is_empty()).peekable();
-                words.peek().is_some() && !words.all(|w| said_or_near(w, &said) || a_sound(w))
+        let tokens: Vec<&str> = written.split_whitespace().collect();
+        let words: Vec<(String, usize)> = tokens
+            .iter()
+            .enumerate()
+            .flat_map(|(i, token)| {
+                commands::normalize(&without_marks(token))
+                    .split(' ')
+                    .filter(|w| !w.is_empty())
+                    .map(|w| (w.to_string(), i))
+                    .collect::<Vec<_>>()
             })
+            .collect();
+        let plain: Vec<&str> = words.iter().map(|(w, _)| w.as_str()).collect();
+        let mut own = vec![false; words.len()];
+        for line in &lines {
+            for (slot, misheard) in own.iter_mut().zip(misheard(&plain, line, false)) {
+                *slot |= misheard;
+            }
+        }
+        // A token is theirs when a word of it is.
+        let mut theirs = vec![false; tokens.len()];
+        for ((word, token), own) in words.iter().zip(&own) {
+            if !own && !said_or_near(word, &said) && !a_sound(word) {
+                theirs[*token] = true;
+            }
+        }
+        let theirs: Vec<&str> = tokens
+            .iter()
+            .zip(&theirs)
+            .filter(|(_, theirs)| **theirs)
+            .map(|(token, _)| *token)
             .collect();
         (!theirs.is_empty()).then(|| theirs.join(" "))
     }
@@ -5681,6 +5709,17 @@ mod tests {
             None
         );
         assert_eq!(c.talked_over(12.0, "Mushroom"), None);
+        // Over its voice on the PC, which nothing cancels, the transcriber
+        // writes its line with his words: a word of its line written
+        // another way in its place is its own; his are his.
+        assert_eq!(
+            c.talked_over(12.0, "Why did the Orange Mushroom cruise the road?"),
+            None
+        );
+        assert_eq!(
+            c.talked_over(12.0, "Why did the Orange Mushroom cruise the road? Stop."),
+            Some("Stop.".to_string())
+        );
         // A sound with no words of the player's: none — a laugh in any
         // writing, a hum, a transcriber's note.
         for sound in [
