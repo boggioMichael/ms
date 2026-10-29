@@ -209,7 +209,19 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     for it (`playNextClip`, `blocked`); at the tap the hello and the terms
     play, and a clip no longer news is dropped — `/api/state`'s `clips`
     carry kind and age; a warning past `SAY_STALE_MS`, news past
-    `NEWS_STALE_MS`. `hearingLanguage` turns the clip-mode recogniser to
+    `NEWS_STALE_MS` (`tooOld`). A message is as old as the PC made it
+    (`lineAge`: its `t` against the PC's `uptime`), not as its arrival:
+    after a stalled link a warning made before it is shown, not said, by
+    the call or the device's own voice. The recogniser's `network` error
+    (the browser's speech service did not answer) is retried in silence;
+    `NETWORK_ERRORS_TOLD` in a row with nothing heard between them is a
+    note, worded for any device (`rec_offline` when `navigator.onLine` is
+    false, else `rec_unreachable`), gone once words are heard or the
+    device is back online. On the PC a warning carries the bar it is about
+    (`companion::About`); a potion on that bar before its voice is heard
+    drops it — its voice being made (`Outputs::answered`), its clip held
+    for the player's turn (`drop_answered_clips`), parked for the call's
+    gap (`hand`). `hearingLanguage` turns the clip-mode recogniser to
     Hebrew after two Hebrew sentences on the call (or one long one) and
     back after two English ones, shown beside the language picker (`#lang`,
     on the main screen) with an × to undo; `/api/state` carries a boot id,

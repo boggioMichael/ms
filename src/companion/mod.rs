@@ -102,6 +102,22 @@ pub struct Say {
     pub text: String,
     /// Whether it should be spoken aloud (when not muted), or only shown.
     pub speak: bool,
+    /// A warning about a bar (a beating, a low bar): which bar, and when it
+    /// was dealt — it stands only until a potion answers it
+    /// ([`Companion::stands`]).
+    #[serde(skip)]
+    pub about: Option<About>,
+}
+
+/// What a warning is about while it is on its way to the player: a bar,
+/// and when the warning was dealt (the companion's clock, seconds). A
+/// potion seen on that bar since answers it: "Pot, you're at 12" heard
+/// after the potion that took them back to 100 is no longer true, and is
+/// not said (it was, by a voice still being made, or waiting its turn).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct About {
+    pub bar: Bar,
+    pub at: f64,
 }
 
 impl Say {
@@ -110,6 +126,7 @@ impl Say {
             kind: Kind::Warning,
             text: text.into(),
             speak: true,
+            about: None,
         }
     }
     fn alert(text: impl Into<String>) -> Self {
@@ -117,6 +134,7 @@ impl Say {
             kind: Kind::Alert,
             text: text.into(),
             speak: true,
+            about: None,
         }
     }
     fn reply(text: impl Into<String>) -> Self {
@@ -124,6 +142,7 @@ impl Say {
             kind: Kind::Reply,
             text: text.into(),
             speak: true,
+            about: None,
         }
     }
     fn info(text: impl Into<String>, speak: bool) -> Self {
@@ -131,7 +150,12 @@ impl Say {
             kind: Kind::Info,
             text: text.into(),
             speak,
+            about: None,
         }
+    }
+    /// The same line, about `about`.
+    fn about(self, about: Option<About>) -> Self {
+        Self { about, ..self }
     }
 }
 
@@ -573,6 +597,10 @@ pub struct Companion {
     /// next, held (`jumped`): a potion seen, not regen — what "There you
     /// go." may be said for.
     potion_at: f64,
+    /// The same, bar by bar: what answers a warning about that bar
+    /// ([`Companion::stands`]) — an MP potion does not answer low HP.
+    hp_potion_at: f64,
+    mp_potion_at: f64,
     /// When the first frame came, since when the game has been in view
     /// (the last time it was found, or found again), and whether "still
     /// there?" was asked this session.
@@ -2439,6 +2467,15 @@ impl Alert {
     fn is_news(&self) -> bool {
         matches!(self, Alert::Death { .. } | Alert::LevelUp(_))
     }
+
+    /// The bar a warning is about: a potion on it answers the warning.
+    fn bar(&self) -> Option<Bar> {
+        match self {
+            Alert::Beating(_) | Alert::HpLow { .. } => Some(Bar::Hp),
+            Alert::MpLow { .. } => Some(Bar::Mp),
+            Alert::Death { .. } | Alert::LevelUp(_) => None,
+        }
+    }
 }
 
 impl Tally {
@@ -2547,7 +2584,7 @@ impl Decks {
 
 /// A bar, as its own lines name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Bar {
+pub enum Bar {
     Hp,
     Mp,
 }
@@ -2683,6 +2720,8 @@ impl Companion {
             hp_before: None,
             hp_jump: None,
             potion_at: f64::NEG_INFINITY,
+            hp_potion_at: f64::NEG_INFINITY,
+            mp_potion_at: f64::NEG_INFINITY,
             started_at: None,
             view_since: f64::NEG_INFINITY,
             asked_still_there: false,
@@ -3079,6 +3118,19 @@ impl Companion {
         self.dead
     }
 
+    /// Whether a warning about `about.bar`, dealt at `about.at`, still
+    /// stands: no potion seen on that bar since. One answered while its
+    /// voice was being made or waited its turn is said to nobody's good
+    /// ("drink, you're at 12" to a player who potted back to 100): it is
+    /// dropped on its way, wherever it is.
+    pub fn stands(&self, about: About) -> bool {
+        let potted = match about.bar {
+            Bar::Hp => self.hp_potion_at,
+            Bar::Mp => self.mp_potion_at,
+        };
+        potted <= about.at
+    }
+
     /// The most recent frame's observation.
     pub fn last(&self) -> Option<&Observation> {
         self.last.as_ref()
@@ -3197,6 +3249,12 @@ impl Companion {
             hp_potted = jumped(self.hp_before, &mut self.hp_jump, hp);
             self.hp_before = Some(hp);
         }
+        if hp_potted {
+            self.hp_potion_at = now;
+        }
+        if mp_potted {
+            self.mp_potion_at = now;
+        }
         if hp_potted || mp_potted {
             self.potion_at = now;
         }
@@ -3305,11 +3363,12 @@ impl Companion {
         for alert in self.pace(now, &obs, alerts, &mut out) {
             self.warned.count(&alert);
             let news = alert.is_news();
+            let about = alert.bar().map(|bar| About { bar, at: now });
             let line = self.line(alert);
             out.push(Action::Say(if news {
                 Say::alert(line)
             } else {
-                Say::warning(line)
+                Say::warning(line).about(about)
             }));
         }
         if obs.game.is_seen() {
@@ -4100,6 +4159,7 @@ impl Companion {
             kind: Kind::Heard,
             text: sentence.to_string(),
             speak: false,
+            about: None,
         })];
         let Some(sentence) = self.strip_echo(now, sentence) else {
             return out;
@@ -10041,5 +10101,67 @@ mod tests {
                 "{lost:?}: {changed:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_warning_stands_until_a_potion_on_its_own_bar_answers_it() {
+        // Worn down to a low bar: the warning says which bar it is about
+        // and when it was dealt, and stands while nothing answers it.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.observe(0.0, frame(90.0, 40.0, 10.0));
+        c.observe(5.0, frame(70.0, 40.0, 10.0));
+        c.observe(10.0, frame(50.0, 40.0, 10.0));
+        c.observe(15.0, frame(35.0, 40.0, 10.0));
+        let mut t = 21.0;
+        let mut warning = None;
+        while warning.is_none() && t < 26.0 {
+            warning = c
+                .observe(t, frame(12.0, 40.0, 10.0))
+                .into_iter()
+                .find_map(|a| match a {
+                    Action::Say(s) if s.kind == Kind::Warning => Some(s),
+                    _ => None,
+                });
+            t += 0.1;
+        }
+        let warning = warning.expect("no warning for HP at 12");
+        let about = warning.about.expect("a warning about HP says so");
+        assert_eq!(about.bar, Bar::Hp, "{warning:?}");
+        assert!((21.0..t).contains(&about.at), "{about:?}");
+        assert!(c.stands(about));
+        // An MP potion meanwhile does not answer low HP…
+        for i in 0..5 {
+            c.observe(t + 0.1 * i as f64, frame(12.0, 90.0, 10.0));
+        }
+        assert!(c.stands(about), "an MP potion answered a warning about HP");
+        // …a potion on HP does: whatever of the warning is still on its
+        // way ("pot, you're at 12" to a player back at 100) is not true.
+        let t = t + 1.0;
+        for i in 0..5 {
+            c.observe(t + 0.1 * i as f64, frame(100.0, 90.0, 10.0));
+        }
+        assert!(!c.stands(about), "a potion on HP left the warning standing");
+        // A warning dealt after that potion stands again.
+        assert!(c.stands(About {
+            bar: Bar::Hp,
+            at: t + 1.0
+        }));
+        // Its other lines are about no bar.
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        let others: Vec<Say> = [
+            c.observe(0.0, frame(90.0, 90.0, 10.0)),
+            c.observe(0.1, Observation::unseen(GameView::NotFound)),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|a| match a {
+            Action::Say(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+        assert!(
+            !others.is_empty() && others.iter().all(|s| s.about.is_none()),
+            "{others:?}"
+        );
     }
 }
