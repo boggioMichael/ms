@@ -20,6 +20,9 @@
 //!   "source"}` — the local MapleStory wiki: what MapleSyrup knows about the
 //!   game (looked up, or the player's corrections; `knowledge.json`), and a
 //!   fact added to it.
+//! - `POST /local/tone` `{"tone"}` — the bar of how it talks to him moved
+//!   to a level (a level's name in `spectrum.json`), as on his phone: he
+//!   asked Claude to talk another way ([`Board::take_tone`]).
 //! - `GET /local/player` / `POST /local/player` `{"fact"}` — what MapleSyrup
 //!   knows about the player and his game (his own file, `about-me.txt`, and
 //!   its notebook), and a fact added to his file.
@@ -76,6 +79,9 @@ struct Inner {
     quit: bool,
     says: Vec<String>,
     frame: Option<Arc<RgbaImage>>,
+    /// Where Claude moved the bar of how it talks to him, for the main
+    /// loop to take.
+    tone: Option<String>,
 }
 
 pub struct Board {
@@ -111,6 +117,7 @@ impl Board {
                 quit: false,
                 says: Vec::new(),
                 frame: None,
+                tone: None,
             }),
             changed: Condvar::new(),
         })
@@ -196,6 +203,12 @@ impl Board {
         self.lock().quit
     }
 
+    /// Where Claude moved the bar of how it talks to him, once (the main
+    /// loop sets it as the phone's bar would).
+    pub fn take_tone(&self) -> Option<String> {
+        self.lock().tone.take()
+    }
+
     /// What Claude asked to have said since the last call.
     pub fn take_says(&self) -> Vec<String> {
         std::mem::take(&mut self.lock().says)
@@ -259,6 +272,24 @@ impl Board {
             ("POST", "/local/player") => {
                 let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
                 self.remember(body["fact"].as_str().unwrap_or_default())
+            }
+            ("POST", "/local/tone") => {
+                let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
+                let spectrum = crate::companion::spectrum::Spectrum::get();
+                match body["tone"]
+                    .as_str()
+                    .and_then(|id| spectrum.index(id))
+                    .map(|at| spectrum.level(at).id.clone())
+                {
+                    Some(id) => {
+                        self.lock().tone = Some(id.clone());
+                        Response::json(200, &json!({"ok": true, "tone": id}))
+                    }
+                    None => Response::json(
+                        400,
+                        &json!({"error": format!("the levels are {}", spectrum.ids().join(", "))}),
+                    ),
+                }
             }
             _ => Response::json(404, &json!({"error": "not found"})),
         }
@@ -738,6 +769,34 @@ mod tests {
             1,
             "what he said is not news"
         );
+    }
+
+    #[test]
+    fn claude_moves_the_bar_to_a_level_it_has_for_the_main_loop_to_take() {
+        let board = Board::new(KEY.into());
+        let tone = |tone: &str| {
+            board.handle(&request(
+                "POST",
+                &format!("/local/tone?k={KEY}"),
+                json!({"tone": tone}).to_string().as_bytes(),
+                &[],
+            ))
+        };
+        let moved = tone(" Unhinged ");
+        assert_eq!(moved.status, 200);
+        assert_eq!(json_of(&moved)["tone"], "unhinged");
+        assert_eq!(board.take_tone().as_deref(), Some("unhinged"));
+        assert_eq!(board.take_tone(), None);
+        // A level it doesn't have: refused, with the ones it has.
+        let refused = tone("wild");
+        assert_eq!(refused.status, 400);
+        assert!(
+            json_of(&refused)["error"]
+                .as_str()
+                .unwrap()
+                .contains("kids, friendly, blunt, savage, unhinged")
+        );
+        assert_eq!(board.take_tone(), None);
     }
 
     #[test]
