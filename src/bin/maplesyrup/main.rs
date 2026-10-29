@@ -1871,6 +1871,27 @@ fn claude_absent(
     claude_says(out, claude_absent_line(language, said).to_string());
 }
 
+/// The bar of how it talks to him moved to the level named `id` (on his
+/// phone, or asked of Claude): kept, the level it talks at follows (the
+/// age question may hold it), and so does the voice of its own lines.
+fn set_tone(id: &str, learning: &ai::Learning, companion: &mut Companion, out: &mut Outputs) {
+    let level = {
+        let mut memory = learning.memory();
+        memory.tone = Some(id.to_string());
+        memory.retune();
+        memory.save();
+        companion.settings.attitude = memory.attitude;
+        memory.level()
+    };
+    let line = if level.id == id {
+        format!("tone: {id}")
+    } else {
+        format!("tone: {id}, held at {} (not known to be of age)", level.id)
+    };
+    out.session.line("info", &line);
+    out.push(Kind::Info, line);
+}
+
 /// The HUD's bars as last seen, and when: the reading for Claude says a
 /// number with its age rather than nothing when a frame could not read it.
 #[derive(Default)]
@@ -4122,6 +4143,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 out.session.line("claude", &format!("says: {text}"));
                 claude_says(&mut out, text);
             }
+            // He asked Claude to talk to him another way: the bar moves, as
+            // on his phone (the phone's bar follows, and Claude hears the
+            // level it talks at as when the phone's bar moves).
+            if let Some(id) = board.take_tone() {
+                out.session.line("claude", &format!("moved the bar: {id}"));
+                set_tone(&id, &learning, &mut companion, &mut out);
+                memory_checked = None;
+            }
         }
 
         // What the phone sent.
@@ -4523,22 +4552,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     // The bar moved, or the age question was answered: the
                     // level it talks at follows (the gate may hold it).
                     Inbound::Tone(id) => {
-                        let level = {
-                            let mut memory = learning.memory();
-                            memory.tone = Some(id.clone());
-                            memory.retune();
-                            memory.save();
-                            companion.settings.attitude = memory.attitude;
-                            memory.level()
-                        };
+                        set_tone(&id, &learning, &mut companion, &mut out);
                         memory_checked = None;
-                        let line = if level.id == id {
-                            format!("tone: {id}")
-                        } else {
-                            format!("tone: {id}, held at {} (not known to be of age)", level.id)
-                        };
-                        out.session.line("info", &line);
-                        out.push(Kind::Info, line);
                     }
                     Inbound::Age(answer) => {
                         let level = {
