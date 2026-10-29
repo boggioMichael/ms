@@ -86,6 +86,8 @@ kind=\"hello\": the link to MapleSyrup came up. kind=\"heard\": he said this out
 page (speech recognition; may be misheard) — about anything, not only the game: answer him as you would any \
 message, with say when he can't read the screen. \
 kind=\"phone\": his phone connected — he can talk to you now. \
+kind=\"tone\": he moved the bar of how you talk to him on his phone: from now on talk to him the way it says, and \
+say one short line in the new tone (heard and phone events carry the bar's rules too). \
 kind=\"death\" | \"level_up\" | \"map\" | \"hp\" | \"mp\" | \"dialog\" | \"thing\" | \"window\" | \"state\": something \
 changed. Speak up only when it helps him right now — danger, a real milestone, a quest or dialog you can help \
 with, something he asked you to watch; otherwise stay silent. kind=\"offline\": MapleSyrup stopped.";

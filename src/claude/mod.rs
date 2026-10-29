@@ -37,3 +37,36 @@ pub mod channel;
 pub mod feed;
 pub mod kit;
 pub mod link;
+
+use crate::companion::spectrum::Level;
+
+/// What comes before the rules of the level Claude is to talk at.
+pub const TONE: &str = "How you talk to him now: the bar of how you talk to him on his phone, which he sets (its \
+wild end only once he said he is an adult where he is), is at this level. Talk to him this way, out loud and when \
+you write to him, until it changes. It is his choice: don't soften it, apologise for it or ask whether he is sure.";
+
+/// What a `tone` event asks of Claude besides the new rules.
+pub const TONE_MOVED: &str = "Say one short line in the new tone now, so he hears it took.";
+
+/// The rules of `level` for Claude. The bar moves while Claude runs, so
+/// they are not in its files (`kit`): they come with what he says, when
+/// his phone connects, in his profile, and in a `tone` event when the
+/// level it talks at changes.
+pub fn tone(level: &Level) -> String {
+    format!("{TONE}\n{}", level.instructions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::companion::spectrum::Spectrum;
+
+    #[test]
+    fn claude_is_told_the_rules_of_the_level_the_bar_is_at() {
+        for level in Spectrum::get().levels() {
+            let text = tone(level);
+            assert!(text.starts_with(TONE), "{}", level.id);
+            assert!(text.ends_with(&level.instructions), "{}", level.id);
+        }
+    }
+}

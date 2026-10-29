@@ -139,7 +139,14 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     voice. The phone posts `/api/tone` and `/api/age`, and reads `tone` and
     `age` off the status: the question is asked once the bar is set past
     the levels open to all (savage and unhinged; blunt's mild swearing is
-    open, like the game's own teen rating).
+    open, like the game's own teen rating). The bar is on the main screen,
+    right under Start listening. When the level it talks at changes (not
+    at start, not for a new place), `ToneHeard` waits for it to settle and
+    says the level's own `said_when_set` line; while Claude talks, Claude
+    gets a `tone` event instead and says one itself. Claude has the
+    level's rules (`claude::tone`) with every `heard` and `phone` event
+    and in `player_profile`, and the brief (`kit/CLAUDE.md`) tells it to
+    follow them.
 - **`coach/`**: when MapleSyrup speaks up on its own beyond that. `Coach`
   is fed every frame and returns a `Reason` when a model should look:
   `CloseCall` and `Streak` (reactions: they wait only for the talking to

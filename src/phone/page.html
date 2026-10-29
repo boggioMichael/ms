@@ -107,8 +107,13 @@
      the middle, a sickly sludge green that oozes, bubbles and draws flies at
      the other. The range input itself is invisible over the drawn bar: it
      takes the touches and the keys, the drawing follows its value. */
-  .tone-card { border-color: var(--tone-edge, var(--line)); box-shadow: 0 0 26px var(--tone-haze, transparent);
+  .tone-card { margin-top: 12px; padding: 10px 12px 8px; text-align: start; border-radius: 14px; background: var(--card2);
+    border: 1px solid var(--tone-edge, var(--line)); box-shadow: 0 0 22px var(--tone-haze, transparent);
     transition: border-color .4s ease, box-shadow .4s ease; }
+  .tone-card h2 { margin: 0 0 2px; }
+  .tone-now, .tone-lock { margin: 4px 0 0; }
+  .age-card { margin-top: 10px; padding: 12px; text-align: start; border-radius: 14px; background: var(--card2);
+    border: 1px solid var(--syrup-dark); }
   .tone { position: relative; direction: ltr; margin: 4px 0 2px; }
   .tone-track { position: relative; height: 46px; }
   .tone-rail, .tone-fill, .tone-locked { position: absolute; top: 50%; height: 16px; margin-top: -8px; border-radius: 999px; }
@@ -297,16 +302,6 @@
   </div>
 </section>
 
-<section class="card" id="ageCard" hidden>
-  <div class="age-q" id="ageQ"></div>
-  <div class="sub" id="ageIn"></div>
-  <div class="sub" data-t="age_hint">The wild end of “How it talks to you” swears hard, so it's for adults. Until you answer, it swears only a little.</div>
-  <div class="buttons two" style="margin-top:10px">
-    <button id="ageYes" data-t="age_yes">Yes</button>
-    <button id="ageNo" data-t="age_no">No</button>
-  </div>
-</section>
-
 <div class="buddy">
   <canvas id="dogBox" aria-label="MapleSyrup's dog"></canvas>
   <div class="bubble" id="bubble">
@@ -317,6 +312,32 @@
 
 <section class="card mic">
   <button id="listen">🎙️ Start listening</button>
+  <!-- How it talks: right by the button, and the question its wild end asks. -->
+  <div class="tone-card" id="toneCard">
+    <h2 id="toneTitle" data-t="attitude">How it talks to you</h2>
+    <div class="tone">
+      <input type="range" id="toneBar" min="0" max="0" step="1" value="0" aria-labelledby="toneTitle">
+      <div class="tone-track" aria-hidden="true">
+        <div class="tone-rail"></div>
+        <div class="tone-fill"></div>
+        <div class="tone-locked" id="toneLockZone" hidden></div>
+        <div class="tone-knob" id="toneKnob"><span id="toneFace"></span></div>
+        <div class="tone-fx" id="toneFx"></div>
+      </div>
+      <div class="ends"><span data-t="tone_low">For kids</span><span data-t="tone_high">Wildest</span></div>
+    </div>
+    <div class="sub tone-now"><b id="toneName"></b> <span id="toneHint"></span></div>
+    <div class="sub tone-lock" id="toneLock" hidden><span id="toneLockText"></span> <button class="link" id="toneAge" data-t="age_change">Change my answer</button></div>
+  </div>
+  <div class="age-card" id="ageCard" hidden>
+    <div class="age-q" id="ageQ"></div>
+    <div class="sub" id="ageIn"></div>
+    <div class="sub" data-t="age_hint">The wild end of “How it talks to you” swears hard, so it's for adults. Until you answer, it swears only a little.</div>
+    <div class="buttons two" style="margin-top:10px">
+      <button id="ageYes" data-t="age_yes">Yes</button>
+      <button id="ageNo" data-t="age_no">No</button>
+    </div>
+  </div>
   <div class="meter"><i id="meter"></i></div>
   <div id="micStatus" data-t="mic_idle">Tap, allow the microphone, and talk to me like you would to a friend.</div>
   <div id="heard"></div>
@@ -365,21 +386,8 @@
       </div>
     </section>
 
-    <section class="card tone-card" id="toneCard">
-      <h2 id="toneTitle" data-t="attitude">How it talks to you</h2>
-      <div class="tone">
-        <input type="range" id="toneBar" min="0" max="0" step="1" value="0" aria-labelledby="toneTitle">
-        <div class="tone-track" aria-hidden="true">
-          <div class="tone-rail"></div>
-          <div class="tone-fill"></div>
-          <div class="tone-locked" id="toneLockZone" hidden></div>
-          <div class="tone-knob" id="toneKnob"><span id="toneFace"></span></div>
-          <div class="tone-fx" id="toneFx"></div>
-        </div>
-        <div class="ends"><span data-t="tone_low">For kids</span><span data-t="tone_high">Wildest</span></div>
-      </div>
-      <div class="sub tone-now" style="margin:6px 0 0"><b id="toneName"></b> <span id="toneHint"></span></div>
-      <div class="sub" id="toneLock" style="margin:6px 0 0" hidden><span id="toneLockText"></span> <button class="link" id="toneAge" data-t="age_change">Change my answer</button></div>
+    <section class="card">
+      <h2 data-t="h_conversation">Conversation</h2>
       <label class="opt"><span data-t="coach">Speaks up on its own while you play</span> <input type="checkbox" id="coachBox" checked></label>
       <div class="sub" style="margin:4px 0 0" data-t="coach_hint"></div>
       <label class="opt"><span data-t="answer_all">Answer everything I say</span> <input type="checkbox" id="always" checked></label>
@@ -2076,7 +2084,8 @@
   // sight, or for a player who asked for less motion).
   function toneFx() {
     const fx = $("toneFx");
-    if (calm.matches || document.hidden || !$("toneCard").offsetParent || fx.childElementCount >= TONE_LOOK.most) return;
+    if (calm.matches || document.hidden || !$("toneCard").offsetParent || !$("sheet").hidden
+      || fx.childElementCount >= TONE_LOOK.most) return;
     const at = toneAt(), sweet = sweetness(at), gross = grossness(at);
     if (!sweet && !gross) return;
     const pick = (list) => list[Math.floor(Math.random() * list.length)];
@@ -2186,9 +2195,8 @@
   $("toneAge").addEventListener("click", () => {
     askAgain = true;
     ageHeldUntil = 0;
-    $("sheet").hidden = true;
     renderTone();
-    window.scrollTo(0, 0);
+    $("ageCard").scrollIntoView({ block: "nearest", behavior: "smooth" });
   });
   $("always").addEventListener("change", () => postJson("/api/listen", { always: $("always").checked }).catch(() => {}));
   const lang = $("lang");

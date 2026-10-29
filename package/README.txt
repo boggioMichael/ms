@@ -53,8 +53,9 @@ Start
 How it talks
   Like a gamer friend on voice chat, not an assistant: one short sentence,
   the point first, no "let me check", and it tells you what to do. Pick how
-  it talks to you on the phone (Settings -> "How it talks to you"), a bar
-  from the gentlest to the wildest:
+  it talks to you on the phone, on the bar right under "Start listening",
+  from the gentlest to the wildest (it answers in the new tone as soon as
+  you let go; with Claude talking, Claude follows the bar too):
     For kids  for young children: gentle, encouraging, simple words, nothing
               rude or scary
     Friendly  warm and fun, no swearing

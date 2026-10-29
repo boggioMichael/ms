@@ -27,6 +27,23 @@ pub struct Level {
     pub adults_only: bool,
     /// How it talks at this level, for the models.
     pub instructions: String,
+    /// What it says when the bar lands on this level, in this level's own
+    /// words (one, the next each time): the player hears that it took.
+    #[serde(default)]
+    pub said_when_set: Vec<String>,
+}
+
+impl Level {
+    /// The `n`th of its lines for when the bar lands on it (they come round
+    /// in turn), if it has any.
+    pub fn set_line(&self, n: usize) -> Option<&str> {
+        let lines = &self.said_when_set;
+        if lines.is_empty() {
+            None
+        } else {
+            Some(lines[n % lines.len()].as_str())
+        }
+    }
 }
 
 /// The bar: its levels, gentlest first.
@@ -201,5 +218,31 @@ mod tests {
         let phone = bar.for_phone();
         assert_eq!(phone.as_array().unwrap().len(), bar.levels().len());
         assert_eq!(phone[0]["adults_only"], false);
+    }
+
+    #[test]
+    fn each_level_says_it_took_in_its_own_words_and_they_come_round() {
+        for level in Spectrum::get().levels() {
+            let n = level.said_when_set.len();
+            assert!(n > 0, "{} says nothing when the bar lands on it", level.id);
+            assert!(
+                level.said_when_set.iter().all(|l| !l.trim().is_empty()),
+                "{}",
+                level.id
+            );
+            assert_eq!(level.set_line(0), level.set_line(n), "{}", level.id);
+            assert_eq!(
+                level.set_line(n - 1),
+                Some(level.said_when_set[n - 1].as_str())
+            );
+        }
+        let none = Level {
+            id: "x".into(),
+            voice: Attitude::Blunt,
+            adults_only: false,
+            instructions: String::new(),
+            said_when_set: Vec::new(),
+        };
+        assert_eq!(none.set_line(3), None);
     }
 }

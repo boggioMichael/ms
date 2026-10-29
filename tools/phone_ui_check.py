@@ -1,6 +1,6 @@
 """The phone page against a stand-in PC, in a headless browser: no console
 errors, the main screen shows only the essentials (the language picker
-among them), the gear opens Settings, the voice search narrows the list,
+and, right under Start listening, the bar of how it talks among them), the gear opens Settings, the voice search narrows the list,
 the live-call toggle flipped before Listen says hello again, sharing play
 stats starts off (on posts it, the view is JSON with no name in it,
 "Delete it" posts the delete and says "Deleted" only on the PC's ok — a
@@ -302,6 +302,9 @@ def ui_checks(browser):
     # The language is on the main screen (the recogniser's language: a
     # Hebrew speaker on an en-US phone must see where to say so).
     assert page.is_visible("#lang"), "the language picker belongs on the main screen"
+    # How it talks is on the main screen, right under "Start listening".
+    listen, knob = page.locator("#listen").bounding_box(), page.locator("#toneKnob").bounding_box()
+    assert page.is_visible("#toneKnob") and 0 < knob["y"] - (listen["y"] + listen["height"]) < 90, (listen, knob)
     strip = page.inner_text("#stripText")
     assert "Lv 152" in strip and "HP 100%" in strip and "EXP 19%" in strip, strip
     page.screenshot(path=os.path.join(SHOTS, "phone-main.png"), full_page=True)
@@ -516,8 +519,6 @@ def tone_checks(browser):
           bar.dispatchEvent(new Event("input")); bar.dispatchEvent(new Event("change")); }""", ids.index(level_id))
     # Of age: no question, no lock; the bar where it is set, its words below.
     assert page.is_hidden("#ageCard")
-    page.click("#gear")
-    page.wait_for_timeout(200)
     assert page.get_attribute("#toneBar", "max") == str(len(LEVELS) - 1)
     assert page.input_value("#toneBar") == str(ids.index(wild_id))
     assert (page.inner_text("#toneName"), page.inner_text("#toneHint")) == ("Savage", "Swears and roasts you, personally."), page.inner_text(".tone-now")
@@ -552,7 +553,6 @@ def tone_checks(browser):
     wait_for(lambda: any((r["body"] or {}).get("tone") == wildest for r in requests_since(t0, "/api/tone")), 3, "moving the bar did not post the level")
     wait_for(lambda: page.inner_text("#toneName") == "Unhinged", 3, ("the bar moved, its words did not", page.inner_text("#toneName")))
     assert page.is_hidden("#ageCard"), "a player of age was asked"
-    page.click("#sheetDone")
     # Never answered, the bar set past the open levels (savage, from before
     # the bar): the PC holds it at the last open level and asks — once where
     # they are is known, on the main screen, with the country by name.
@@ -580,7 +580,6 @@ def tone_checks(browser):
     STATUS["tone"] = tone(wild_id, open_id)
     page.wait_for_timeout(1200)
     assert page.is_hidden("#ageCard")
-    page.click("#gear")
     wait_for(lambda: page.inner_text("#toneName") == "Blunt", 3, ("not shown where it really talks", page.inner_text("#toneName")))
     assert page.input_value("#toneBar") == str(ids.index(open_id)), page.input_value("#toneBar")
     assert page.is_visible("#toneLock")
@@ -591,12 +590,9 @@ def tone_checks(browser):
     t2 = time.time()
     move_to(wildest)
     wait_for(lambda: any((r["body"] or {}).get("tone") == wildest for r in requests_since(t2, "/api/tone")), 3, "moving past the lock did not post the level")
-    page.click("#sheetDone")
     page.wait_for_timeout(800)
     assert page.is_hidden("#ageCard"), "someone who said no was asked again for moving the bar"
-    # "Change my answer" asks again.
-    page.click("#gear")
-    page.wait_for_timeout(200)
+    # "Change my answer" asks again, right there.
     page.click("#toneAge")
     wait_for(lambda: page.is_visible("#ageCard") and page.is_hidden("#sheet"), 3, "changing the answer did not ask again")
     t3 = time.time()
@@ -612,13 +608,14 @@ def tone_checks(browser):
     STATUS["tone"] = tone(open_id)
     page.wait_for_timeout(1200)
     assert page.is_hidden("#ageCard"), "asked with the bar at a level open to all"
-    page.click("#gear")
     wait_for(lambda: page.inner_text("#toneAge") == "Are you 18 or older?", 3, ("the lock's link is not the question", page.inner_text("#toneAge")))
     t4 = time.time()
     move_to(wild_id)
     wait_for(lambda: any((r["body"] or {}).get("tone") == wild_id for r in requests_since(t4, "/api/tone")), 3, "moving past the lock did not post the level")
-    page.click("#sheetDone")
     wait_for(lambda: page.is_visible("#ageCard"), 3, "moving the bar past the lock did not ask someone never asked")
+    # Asked right under the bar, where the finger is.
+    bar, card = page.locator("#toneCard").bounding_box(), page.locator("#ageCard").bounding_box()
+    assert 0 <= card["y"] - (bar["y"] + bar["height"]) < 40, (bar, card)
     page.click("#ageYes")
     wait_for(lambda: STATUS["age"]["adult"], 3, "yes did not reach the PC")
     # Hebrew: the question and the lock in the page's Hebrew, right to left.
@@ -631,10 +628,10 @@ def tone_checks(browser):
     assert page.inner_text("#ageIn") == "ישראל: בגירות מגיל 18.", page.inner_text("#ageIn")
     page.screenshot(path=os.path.join(SHOTS, "phone-age-he.png"), full_page=True)
     STATUS["age"] = of_age(adult=False)
-    page.click("#gear")
     wait_for(lambda: page.inner_text("#toneName") == "ישיר", 3, ("the level's name not in Hebrew", page.inner_text("#toneName")))
+    # (Answered now: the lock's link changes the answer, once the status says so.)
+    wait_for(lambda: page.inner_text("#toneAge") == "לשנות את התשובה", 3, ("the lock's link", page.inner_text("#toneAge")))
     assert page.inner_text("#toneLockText") == "🔒 מעבר ל„ישיר” זה למבוגרים בלבד (18+).", page.inner_text("#toneLockText")
-    assert page.inner_text("#toneAge") == "לשנות את התשובה", page.inner_text("#toneAge")
     # The bar runs the same way as in every language, on a right-to-left
     # page too: the gentlest on the left, the wildest on the right.
     assert page.evaluate("getComputedStyle(document.querySelector('#toneBar')).direction") == "ltr"

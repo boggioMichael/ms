@@ -37,7 +37,7 @@ use ms::app::session::{self, Session};
 use ms::capture::{Captured, GameCapture};
 use ms::companion::age::{Ages, Gate};
 use ms::companion::commands::{self, Heard};
-use ms::companion::spectrum::Spectrum;
+use ms::companion::spectrum::{Level, Spectrum};
 use ms::companion::{Action, Command, Companion, GameView, Kind, Observation, Settings};
 use ms::observe::frame_result::{FrameTimings, VisionFrameResult};
 use ms::observe::preview::Preview;
@@ -1693,6 +1693,63 @@ fn age_status(learning: &ai::Learning, place_settled: bool) -> serde_json::Value
     })
 }
 
+/// The level it talks at, out loud: when it changes (the bar moved, the age
+/// question answered) it says a line of the new level's own once the bar
+/// has settled, so that the player hears it took — a bar dragged across
+/// several levels hears where it stopped, once. Nothing is said for where
+/// it starts, for a new place, or for a change that came with a line of its
+/// own (a tone complaint's).
+struct ToneHeard {
+    /// The level last said (or taken as said).
+    said: String,
+    /// The level seen at the last look, and since when.
+    seen: String,
+    since: Instant,
+    /// Lines said so far, to deal each level's in turn.
+    count: usize,
+}
+
+impl ToneHeard {
+    /// How long the level must hold before it is said.
+    const SETTLE: Duration = Duration::from_millis(900);
+
+    fn new(level: &Level) -> ToneHeard {
+        ToneHeard {
+            said: level.id.clone(),
+            seen: level.id.clone(),
+            since: Instant::now(),
+            count: 0,
+        }
+    }
+
+    /// `level` taken as said.
+    fn heard(&mut self, level: &Level) {
+        self.said = level.id.clone();
+        self.seen = level.id.clone();
+    }
+
+    /// Whether `level`, the one it talks at now, is to be said now: it is
+    /// not the one last said, and it has held for [`ToneHeard::SETTLE`].
+    fn due(&mut self, level: &Level) -> bool {
+        if level.id != self.seen {
+            self.seen = level.id.clone();
+            self.since = Instant::now();
+        }
+        if level.id == self.said || self.since.elapsed() < Self::SETTLE {
+            return false;
+        }
+        self.said = level.id.clone();
+        true
+    }
+
+    /// The level's next line for it.
+    fn line(&mut self, level: &Level) -> Option<String> {
+        let line = level.set_line(self.count).map(str::to_string);
+        self.count += 1;
+        line
+    }
+}
+
 /// The player asked not to be spoken to that way: the bar goes down to the
 /// friendly voice's own level (no swearing) if it was past it, for good
 /// (until they move it on the phone), and they are told so in one line.
@@ -3197,6 +3254,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             let _ = place_tx.send(Ages::get().locate());
         });
     let mut place_settled = false;
+    // The level it talks at, said when it changes (not where it starts).
+    let mut tone_heard = ToneHeard::new(learning.memory().level());
     // New versions: looked for in the background and staged for the next
     // start, unless asked not to (here, or on the phone, for good).
     let (update_tx, update_rx) = mpsc::channel::<ms::update::Event>();
@@ -3843,6 +3902,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 ),
             }
             companion.settings.attitude = memory.attitude;
+            // (A new place is not announced: the phone shows its question.)
+            tone_heard.heard(memory.level());
             memory_checked = None;
         }
         // What the updater did; and this version, once it has run long
@@ -4134,10 +4195,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         {
                             out.show(Kind::Heard, &text);
                             let headline = format!("He said: \"{text}\"");
+                            // With how he set it to talk to him (the bar).
+                            let tone = ms::claude::tone(learning.memory().level());
                             board.post(
                                 "heard",
                                 &headline,
-                                format!("{headline}\n\n{claude_reading}"),
+                                format!("{headline}\n\n{tone}\n\n{claude_reading}"),
                             );
                             // Started for Claude only, with no Claude there:
                             // nobody answers, so he hears why.
@@ -4187,6 +4250,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         if commands::tone_complaint(&text) {
                             out.show(Kind::Heard, &text);
                             drop_the_attitude(&mut companion, &learning, &mut out);
+                            tone_heard.heard(learning.memory().level());
                             continue;
                         }
                         // "Talk to me in Hebrew": from now on, the phone's
@@ -4342,6 +4406,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 set_coaching(&mut coach, &learning, &mut out, on);
                             } else if commands::tone_complaint(&text) {
                                 drop_the_attitude(&mut companion, &learning, &mut out);
+                                tone_heard.heard(learning.memory().level());
                             } else if let Some(locale) =
                                 out.language_asked(&text, player_language.as_deref())
                             {
@@ -4570,10 +4635,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             if board.connected() {
                                 let headline =
                                     "His phone connected: he can talk to you through it now.";
+                                let tone = ms::claude::tone(learning.memory().level());
                                 board.post(
                                     "phone",
                                     headline,
-                                    format!("{headline}\n\n{claude_reading}"),
+                                    format!("{headline}\n\n{tone}\n\n{claude_reading}"),
                                 );
                             } else {
                                 claude_absent(
@@ -4749,6 +4815,38 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             }
         }
 
+        // The level it talks at, once it changed and settled: said in a line
+        // of the new level's own, so the player hears it took — or, while
+        // Claude does the talking, told to Claude, which says one in the new
+        // tone.
+        {
+            let level = learning.memory().level();
+            if tone_heard.due(level) {
+                match &claude_board {
+                    Some(board) if out.claude => {
+                        let headline = format!(
+                            "He moved the bar of how you talk to him: now \"{}\".",
+                            level.id
+                        );
+                        out.session.line("claude", &format!("event: {headline}"));
+                        board.post(
+                            "tone",
+                            &headline,
+                            format!(
+                                "{headline}\n\n{}\n{}\n\n{claude_reading}",
+                                ms::claude::tone(level),
+                                ms::claude::TONE_MOVED
+                            ),
+                        );
+                    }
+                    _ => {
+                        if let Some(line) = tone_heard.line(level) {
+                            out.tell(Kind::Reply, &line, true, &mut companion);
+                        }
+                    }
+                }
+            }
+        }
         recording.tick(&mut out, panel_window.as_mut());
         out.release_clips(player_quiet(player_heard, &turns));
         // On a call, the watcher's lines that waited for their turn.
