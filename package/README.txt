@@ -69,8 +69,9 @@ How it talks
   country (and state or province, where it differs), found from your
   internet connection's address; 18 in most places, 19, 20 or 21 in some,
   and never under 18 - and until you say you are, it talks no wilder than
-  Blunt, wherever the bar is. "Change my answer" under the bar asks again. The levels, the ages
-  by country and where it looks the country up are data
+  Blunt, wherever the bar is. "Change my answer" under the bar asks again.
+  The levels, the ages by country (with the law each comes from, checked in
+  October 2026) and where it looks the country up are data
   (companion/spectrum.json, companion/age.json).
   Your own numbers are answered at once, without asking a model: "how much HP
   do I have", "what level am I", "how long to level" (English or Hebrew).

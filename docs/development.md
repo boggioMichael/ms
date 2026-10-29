@@ -133,8 +133,9 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     set it is `Memory::tone`; it talks at `Memory::level` — held at the
     last level open to all while the age gate does not know them to be of
     age (`companion::age`, `age.json`: the age of majority by country and
-    region, never under 18; the country from their public IP, the first
-    lookup that answers). `Memory::retune` keeps `attitude` the level's
+    region, never under 18, each with the law it comes from and where it
+    was read (a test holds every entry to it); the country from their
+    public IP, the first lookup that answers). `Memory::retune` keeps `attitude` the level's
     voice. The phone posts `/api/tone` and `/api/age`, and reads `tone` and
     `age` off the status: the question is asked once the bar is set past
     the levels open to all (savage and unhinged; blunt's mild swearing is

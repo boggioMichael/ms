@@ -293,6 +293,25 @@ mod tests {
     }
 
     #[test]
+    fn every_age_in_the_table_says_where_it_comes_from() {
+        let data: Value = serde_json::from_str(DATA).unwrap();
+        let ages = Ages::get();
+        let sources = data["sources"].as_object().expect("sources");
+        for code in ages.countries.keys().chain(ages.regions.keys()) {
+            let source = sources
+                .get(code)
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            assert!(source.contains("https://"), "{code}: {source:?}");
+        }
+        // A place checked and found to be 18 now stays out of the table.
+        let checked = data["checked_18"].as_object().expect("checked_18");
+        for code in checked.keys() {
+            assert!(!ages.countries.contains_key(code), "{code}");
+        }
+    }
+
+    #[test]
     fn an_answer_holds_for_the_age_it_answered_and_what_follows_from_it() {
         let yes = |age| Some(Answer { age, adult: true });
         let no = |age| Some(Answer { age, adult: false });
