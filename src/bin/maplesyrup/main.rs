@@ -35,7 +35,9 @@ use ms::app::panel;
 use ms::app::screen::{self, LogLine};
 use ms::app::session::{self, Session};
 use ms::capture::{Captured, GameCapture};
+use ms::companion::age::{Ages, Gate};
 use ms::companion::commands::{self, Heard};
+use ms::companion::spectrum::Spectrum;
 use ms::companion::{Action, Command, Companion, GameView, Kind, Observation, Settings};
 use ms::observe::frame_result::{FrameTimings, VisionFrameResult};
 use ms::observe::preview::Preview;
@@ -81,8 +83,10 @@ OPTIONS
                         speakers), both, off (default phone with an OpenAI
                         key, else pc)
   --no-live             no live call on the phone: replies on the PC instead
-  --attitude HOW        how it talks to you: friendly, blunt or savage (default:
-                        what you picked on the phone, else blunt)
+  --attitude NAME       how it talks to you: a level of the bar on the phone, by
+                        its name (a wrong name lists them; default: where you
+                        set the bar). The wilder levels still need the age
+                        question answered on the phone
   --no-grok             don't use Grok even with an xAI key (xai-key.txt)
   --grok-model NAME     the Grok model (default grok-4.3, without reasoning)
   --wake-word           answer only sentences that say \"syrup\" (for streams)
@@ -175,8 +179,9 @@ struct Options {
     repo: Option<PathBuf>,
     self_test: bool,
     record_test: bool,
-    /// How it talks (None: what the player picked on the phone).
-    attitude: Option<ms::companion::Attitude>,
+    /// Where the bar of how it talks is set (a level's name; None: where
+    /// the player set it on the phone).
+    tone: Option<String>,
     /// Grok answers the conversation when there is an xAI key.
     grok: bool,
     grok_model: Option<String>,
@@ -232,7 +237,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         repo: None,
         self_test: false,
         record_test: false,
-        attitude: None,
+        tone: None,
         grok: true,
         grok_model: None,
         claude: true,
@@ -297,9 +302,14 @@ fn parse(args: &[String]) -> Result<Options, String> {
             "--record-test" => o.record_test = true,
             "--attitude" => {
                 let text = value("--attitude")?;
-                o.attitude = Some(ms::companion::Attitude::parse(&text).ok_or(format!(
-                    "--attitude is friendly, blunt or savage, not {text:?}"
-                ))?)
+                let spectrum = Spectrum::get();
+                let at = spectrum.index(&text).ok_or_else(|| {
+                    format!(
+                        "--attitude is one of {}, not {text:?}",
+                        spectrum.ids().join(", ")
+                    )
+                })?;
+                o.tone = Some(spectrum.level(at).id.clone());
             }
             "--no-grok" => o.grok = false,
             "--grok-model" => o.grok_model = Some(value("--grok-model")?),
@@ -1146,21 +1156,22 @@ struct LiveService {
 }
 
 impl LiveService {
-    /// The call's instructions as of now, and the attitude they carry.
+    /// The call's instructions as of now, and the level of the bar they
+    /// talk at.
     fn instructions_with(
         &self,
         recent: &[String],
         language: Option<&str>,
-    ) -> (String, ms::companion::Attitude) {
-        let attitude = self.learning.memory().attitude;
-        let text = ai::live::instructions(&self.learning.prompt(), recent, language, attitude);
-        (text, attitude)
+    ) -> (String, &'static ms::companion::spectrum::Level) {
+        let level = self.learning.memory().level();
+        let text = ai::live::instructions(&self.learning.prompt(), recent, language, level);
+        (text, level)
     }
 }
 
 impl phone::Service for LiveService {
     fn live(&self, recent: &[String], language: Option<&str>) -> Result<serde_json::Value, String> {
-        let (instructions, attitude) = self.instructions_with(recent, language);
+        let (instructions, level) = self.instructions_with(recent, language);
         let tools = ai::live::tools(self.toolbox.definitions());
         // How it adapted to the player: how soon to answer, their words.
         let tuning = {
@@ -1175,15 +1186,15 @@ impl phone::Service for LiveService {
             .live
             .session(&instructions, &tools, &tuning)
             .map_err(|e| e.to_string())?;
-        // The page watches for the attitude to change from this one.
-        call["attitude"] = json!(attitude);
+        // The page watches for the level to change from this one.
+        call["tone"] = json!(level.id);
         Ok(call)
     }
 
     fn instructions(&self, language: Option<&str>) -> serde_json::Value {
         // (No "conversation so far": the call has it.)
-        let (instructions, attitude) = self.instructions_with(&[], language);
-        json!({"instructions": instructions, "attitude": attitude})
+        let (instructions, level) = self.instructions_with(&[], language);
+        json!({"instructions": instructions, "tone": level.id})
     }
 
     fn tool(
@@ -1650,24 +1661,69 @@ fn set_coaching(
     );
 }
 
-/// The player asked not to be spoken to that way: the attitude goes to
-/// friendly, for good (until they pick another on the phone), and they
-/// are told so in one line. The learner notes the correction too, but the
-/// warnings are MapleSyrup's own lines, which only the setting changes.
+/// The bar of how it talks, for the phone: its levels (with which are for
+/// adults only), where the player set it, and the level it talks at now.
+fn tone_status(learning: &ai::Learning) -> serde_json::Value {
+    let spectrum = Spectrum::get();
+    let memory = learning.memory();
+    json!({
+        "levels": spectrum.for_phone(),
+        "set": spectrum.level(memory.tone_set()).id,
+        "now": memory.level().id,
+    })
+}
+
+/// The age question, for the phone: the age of an adult where the player
+/// is, the country it was found for, whether where they are is known yet
+/// (looked up this start; until then nothing is asked), whether to ask
+/// (only once the bar is set past the levels open to all, and only while
+/// their answer does not cover that age), whether they answered at all,
+/// and whether they are of age.
+fn age_status(learning: &ai::Learning, place_settled: bool) -> serde_json::Value {
+    let memory = learning.memory();
+    let gate = memory.gate();
+    let past_open = memory.tone_set() > Spectrum::get().open();
+    json!({
+        "age": memory.age_required(),
+        "country": memory.place.as_ref().map(|p| p.country.clone()),
+        "known": place_settled,
+        "ask": place_settled && past_open && gate == Gate::Ask,
+        "answered": memory.age.is_some(),
+        "adult": gate == Gate::Adult,
+    })
+}
+
+/// The player asked not to be spoken to that way: the bar goes down to the
+/// friendly voice's own level (no swearing) if it was past it, for good
+/// (until they move it on the phone), and they are told so in one line.
+/// The learner notes the correction too, but the warnings are MapleSyrup's
+/// own lines, which only the setting changes.
 fn drop_the_attitude(companion: &mut Companion, learning: &ai::Learning, out: &mut Outputs) {
-    use ms::companion::Attitude;
-    let was = companion.settings.attitude;
-    if was != Attitude::Friendly {
-        companion.settings.attitude = Attitude::Friendly;
+    let spectrum = Spectrum::get();
+    let respectful = spectrum.voice_index(ms::companion::Attitude::Friendly);
+    let (was, now) = {
         let mut memory = learning.memory();
-        memory.attitude = Attitude::Friendly;
-        memory.save();
+        let was = memory.tone_set();
+        let now = was.min(respectful);
+        if now != was {
+            memory.tone = Some(spectrum.level(now).id.clone());
+            memory.retune();
+            memory.save();
+        }
+        companion.settings.attitude = memory.attitude;
+        (was, now)
+    };
+    if now != was {
         out.session.line(
             "info",
-            &format!("attitude: friendly (was {}; the player asked)", was.word()),
+            &format!(
+                "tone: {} (was {}; the player asked)",
+                spectrum.level(now).id,
+                spectrum.level(was).id
+            ),
         );
     }
-    let line = if was == Attitude::Friendly {
+    let line = if now == was {
         "Okay. I'll keep it respectful."
     } else {
         "Okay, I'll keep it respectful from now on. You can pick another tone on the phone."
@@ -3123,10 +3179,24 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // corrections, what it looked up, how they like to talk (all on this PC).
     let learning = ai::Learning::load(&settings_dir);
     let (learned_tx, learned_rx) = mpsc::channel::<String>();
-    // How it talks: as asked on the command line, else as picked before.
-    if let Some(attitude) = options.attitude {
-        learning.memory().attitude = attitude;
+    // How it talks: as asked on the command line, else as set before (the
+    // age gate holds it either way).
+    if let Some(tone) = options.tone.clone() {
+        let mut memory = learning.memory();
+        memory.tone = Some(tone);
+        memory.retune();
     }
+    // Where the player is (their public IP's country), for the age the wild
+    // end of the bar asks about: looked up once a start, in the background.
+    // Until it answers the place last found stands, and the phone does not
+    // ask yet (`place_settled`).
+    let (place_tx, place_rx) = mpsc::channel::<Option<ms::companion::age::Place>>();
+    let _ = std::thread::Builder::new()
+        .name("place".into())
+        .spawn(move || {
+            let _ = place_tx.send(Ages::get().locate());
+        });
+    let mut place_settled = false;
     // New versions: looked for in the background and staged for the next
     // start, unless asked not to (here, or on the phone, for good).
     let (update_tx, update_rx) = mpsc::channel::<ms::update::Event>();
@@ -3748,6 +3818,33 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             }
         }
         let now = start.elapsed().as_secs_f64();
+        // Where the player is, once looked up: the age to ask about and the
+        // level it talks at follow it (a lookup that found nothing leaves
+        // the place last found).
+        if let Ok(found) = place_rx.try_recv() {
+            place_settled = true;
+            let mut memory = learning.memory();
+            match found {
+                Some(place) => {
+                    let region = place.region.as_deref().map(|r| format!("-{r}"));
+                    out.session.line(
+                        "info",
+                        &format!("place: {}{}", place.country, region.unwrap_or_default()),
+                    );
+                    if memory.place.as_ref() != Some(&place) {
+                        memory.place = Some(place);
+                        memory.retune();
+                        memory.save();
+                    }
+                }
+                None => out.session.line(
+                    "info",
+                    "place: no lookup answered; the last place found stands",
+                ),
+            }
+            companion.settings.attitude = memory.attitude;
+            memory_checked = None;
+        }
         // What the updater did; and this version, once it has run long
         // enough, is kept for good (the previous one let go).
         while let Ok(event) = update_rx.try_recv() {
@@ -4358,17 +4455,44 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             }
                         }
                     }
-                    Inbound::Attitude(attitude) => {
-                        {
+                    // The bar moved, or the age question was answered: the
+                    // level it talks at follows (the gate may hold it).
+                    Inbound::Tone(id) => {
+                        let level = {
                             let mut memory = learning.memory();
-                            memory.attitude = attitude;
+                            memory.tone = Some(id.clone());
+                            memory.retune();
                             memory.save();
-                        }
-                        companion.settings.attitude = attitude;
+                            companion.settings.attitude = memory.attitude;
+                            memory.level()
+                        };
                         memory_checked = None;
-                        out.session
-                            .line("info", &format!("attitude: {}", attitude.word()));
-                        out.push(Kind::Info, format!("attitude: {}", attitude.word()));
+                        let line = if level.id == id {
+                            format!("tone: {id}")
+                        } else {
+                            format!("tone: {id}, held at {} (not known to be of age)", level.id)
+                        };
+                        out.session.line("info", &line);
+                        out.push(Kind::Info, line);
+                    }
+                    Inbound::Age(answer) => {
+                        let level = {
+                            let mut memory = learning.memory();
+                            memory.age = Some(answer);
+                            memory.retune();
+                            memory.save();
+                            companion.settings.attitude = memory.attitude;
+                            memory.level()
+                        };
+                        memory_checked = None;
+                        let line = format!(
+                            "age: {} {}; tone: {}",
+                            if answer.adult { "at least" } else { "under" },
+                            answer.age,
+                            level.id
+                        );
+                        out.session.line("info", &line);
+                        out.push(Kind::Info, line);
                     }
                     Inbound::Record(true) => recording.start(&mut out),
                     Inbound::Record(false) => recording.stop(&mut out, panel_window.as_mut()),
@@ -5062,6 +5186,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     "recording": recording.status(),
                     // How it talks, and who answers.
                     "attitude": companion.settings.attitude,
+                    // The bar of how it talks, and the age question.
+                    "tone": tone_status(&learning),
+                    "age": age_status(&learning, place_settled),
                     // The voices to pick from (ElevenLabs), and the one picked.
                     "voices": *voices.lock().unwrap_or_else(|e| e.into_inner()),
                     "voice": learning.memory().voice.clone().unwrap_or_else(|| "openai".into()),

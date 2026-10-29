@@ -1,8 +1,10 @@
-//! How MapleSyrup talks: its rules for a real-time game, and the attitude
-//! the player picked. Every brain gets them: the conversation model (OpenAI
-//! or Grok), a live call, the local model.
+//! How MapleSyrup talks: its rules for a real-time game, and how it talks
+//! at the level of the bar the player set (`companion/spectrum.json`).
+//! Every brain gets them: the conversation model (OpenAI or Grok), a live
+//! call, the local model.
 
 pub use crate::companion::Attitude;
+use crate::companion::spectrum::Level;
 
 /// MapleSyrup's rules. It's a real-time game: a second of talk is a second
 /// the player isn't listening to the game.
@@ -30,49 +32,33 @@ portal.\"), not a summary of the screen or a status line.
 anything, never \"let me know\", and never close with a question offering more (\"Want me to…?\"). A friend \
 doesn't check whether you need anything; they say the thing and shut up.";
 
-/// How the attitude the player picked sounds, for the model.
-pub fn attitude_rules(attitude: Attitude) -> &'static str {
-    match attitude {
-        Attitude::Friendly => {
-            "Your attitude: friendly. Warm, fun and upbeat; tease gently, cheer their wins, no swearing, never mean. \
-Still short, still bossy when it matters."
-        }
-        Attitude::Blunt => {
-            "Your attitude: blunt. Direct, cocky and bossy. Tease them and roast their bad plays; mild swearing is fine \
-(damn, hell, crap and the like, in their language). Get properly rude when they earn it: ignoring your warnings, \
-dying stupidly, asking the same thing twice."
-        }
-        Attitude::Savage => {
-            "Your attitude: savage, no filter. The player picked this and finds it funny: swear freely, trash-talk and \
-roast them personally (their skills, their choices, their questions, their luck), aggressive and loud, like a toxic \
-best friend who still wants them to win. Insult them, not who they are: no slurs, nothing about race, religion, \
-ethnicity, nationality, gender, sexuality or disability, no real-world threats, nothing sexual, and never tell \
-them to hurt themselves. The insult rides along with the answer, it doesn't replace it, and it's still one short \
-sentence."
-        }
-    }
-}
-
-/// The rules and the attitude together, for a model's instructions.
-pub fn rules(attitude: Attitude) -> String {
-    format!("{RULES}\n\n{}", attitude_rules(attitude))
+/// The rules and how it talks at `level`, for a model's instructions.
+pub fn rules(level: &Level) -> String {
+    format!("{RULES}\n\n{}", level.instructions)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::companion::spectrum::Spectrum;
 
     #[test]
-    fn every_attitude_gets_the_rules_and_its_own_voice() {
+    fn every_level_gets_the_rules_and_its_own_voice() {
+        let spectrum = Spectrum::get();
+        for level in spectrum.levels() {
+            let text = rules(level);
+            assert!(text.starts_with("MapleSyrup's rules"), "{}", level.id);
+            assert!(text.contains("Never say you're checking"), "{}", level.id);
+            assert!(text.ends_with(&level.instructions), "{}", level.id);
+        }
         for a in Attitude::ALL {
-            let text = rules(a);
-            assert!(text.starts_with("MapleSyrup's rules"));
-            assert!(text.contains("Never say you're checking"));
+            let text = rules(spectrum.of_voice(a));
             assert!(text.contains(&format!("Your attitude: {}", a.word())));
         }
-        assert!(rules(Attitude::Savage).contains("roast them personally"));
-        assert!(rules(Attitude::Savage).contains("no slurs"));
-        assert!(!rules(Attitude::Friendly).contains("swear freely"));
+        let rules_of = |a: Attitude| rules(spectrum.of_voice(a));
+        assert!(rules_of(Attitude::Savage).contains("roast them personally"));
+        assert!(rules_of(Attitude::Savage).contains("no slurs"));
+        assert!(!rules_of(Attitude::Friendly).contains("swear freely"));
     }
 
     #[test]
