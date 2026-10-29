@@ -525,6 +525,27 @@ def tone_checks(browser):
     assert page.inner_text(".tone .ends").split("\n") == ["For kids", "Wildest"], page.inner_text(".tone .ends")
     page.locator("#toneBar").scroll_into_view_if_needed()
     page.screenshot(path=os.path.join(SHOTS, "phone-tone.png"), full_page=True)
+    # Dragged by a finger that stays on it: the bar stays where the finger
+    # is, however long, though the PC's status still says where it was (and
+    # the drawn knob goes with it); let go, and the level is posted.
+    box = page.locator("#toneBar").bounding_box()
+    knob = page.locator("#toneKnob").bounding_box()["width"]
+    y = box["y"] + box["height"] / 2
+    def x_of(i): return box["x"] + knob / 2 + i / (len(ids) - 1) * (box["width"] - knob)
+    here = ids.index(wild_id)
+    t_hold = time.time()
+    page.mouse.move(x_of(here), y)
+    page.mouse.down()
+    for step in range(1, 11):
+        page.mouse.move(x_of(here) + (x_of(len(ids) - 1) - x_of(here)) * step / 10, y)
+    page.wait_for_timeout(3000)
+    assert page.input_value("#toneBar") == str(len(ids) - 1), ("the bar moved under the finger holding it", page.input_value("#toneBar"))
+    assert page.inner_text("#toneName") == "Unhinged", page.inner_text("#toneName")
+    drawn = page.locator("#toneKnob").bounding_box()
+    assert abs(drawn["x"] + drawn["width"] / 2 - x_of(len(ids) - 1)) < 3, ("the drawn knob is not under the finger", drawn)
+    assert not any(r["path"] == "/api/tone" for r in requests_since(t_hold)), "a level was posted before the finger let go"
+    page.mouse.up()
+    wait_for(lambda: any((r["body"] or {}).get("tone") == wildest for r in requests_since(t_hold, "/api/tone")), 3, "letting go did not post the level")
     # Moved to the wildest: the level posted, by name.
     t0 = time.time()
     move_to(wildest)

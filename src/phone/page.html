@@ -99,12 +99,81 @@
   .seg.three { grid-template-columns: repeat(3, 1fr); }
   .seg button { border: 1px solid var(--line); background: var(--card2); color: var(--dim); border-radius: 10px; padding: 9px 4px; font-size: 14px; }
   .seg button.sel { background: var(--syrup); color: #1a1209; border-color: var(--syrup); font-weight: 700; }
-  /* The bar runs the same way in every language, right-to-left pages too:
-     the gentlest on the left, the wildest on the right. */
-  .tone input[type=range] { width: 100%; accent-color: var(--syrup); margin: 6px 0 2px; direction: ltr; }
-  .tone .ends { display: flex; justify-content: space-between; color: var(--faint); font-size: 12px; direction: ltr; }
+  /* How it talks: a bar from the gentlest level to the wildest. It runs the
+     same way in every language, right-to-left pages too: the gentlest on
+     the left, the wildest on the right. Its look follows where its knob is
+     (TONE_LOOK in the script sets the --tone-* colours, --at, --sweet and
+     --gross): a sweet pink with sparkles and hearts at one end, the syrup in
+     the middle, a sickly sludge green that oozes, bubbles and draws flies at
+     the other. The range input itself is invisible over the drawn bar: it
+     takes the touches and the keys, the drawing follows its value. */
+  .tone-card { border-color: var(--tone-edge, var(--line)); box-shadow: 0 0 26px var(--tone-haze, transparent);
+    transition: border-color .4s ease, box-shadow .4s ease; }
+  .tone { position: relative; direction: ltr; margin: 4px 0 2px; }
+  .tone-track { position: relative; height: 46px; }
+  .tone-rail, .tone-fill, .tone-locked { position: absolute; top: 50%; height: 16px; margin-top: -8px; border-radius: 999px; }
+  .tone-rail { left: 0; right: 0; background: linear-gradient(90deg, var(--tone-ramp, var(--line), var(--line)));
+    opacity: .22; box-shadow: inset 0 1px 3px #000c; }
+  .tone-fill { left: 0; width: calc(var(--at, .5) * (100% - 38px) + 19px); overflow: hidden;
+    background: linear-gradient(90deg, var(--tone-b), var(--tone-a) 35%, var(--tone-c) 50%, var(--tone-a) 65%, var(--tone-b));
+    background-size: 220% 100%; animation: tone-flow 2.6s linear infinite;
+    box-shadow: 0 0 16px var(--tone-glow), inset 0 1px 0 #ffffff59; transition: width .3s cubic-bezier(.3, 1.45, .5, 1); }
+  .tone-fill::before, .tone-fill::after { content: ""; position: absolute; inset: 0; pointer-events: none; }
+  /* Sparkles towards the sweet end, sludge towards the wild one. */
+  .tone-fill::before { opacity: var(--sweet, 0); animation: tone-sparkle 1.4s linear infinite;
+    background: radial-gradient(circle, #fff 0 1.3px, transparent 2px) 0 0 / 15px 10px,
+      radial-gradient(circle, #ffffffb3 0 1px, transparent 1.7px) 7px 5px / 15px 10px; }
+  .tone-fill::after { opacity: var(--gross, 0); animation: tone-ooze 3.2s linear infinite;
+    background: radial-gradient(circle at 30% 65%, #3b2c09d9 0 3.5px, transparent 4.5px) 0 0 / 23px 16px,
+      radial-gradient(circle at 72% 30%, #c3cf45 0 2px, transparent 3px) 11px 0 / 23px 16px,
+      radial-gradient(circle at 50% 100%, #4a3b0c 0 4px, transparent 5px) 5px 0 / 17px 16px; }
+  /* Past the levels open to all, for a player not known to be of age. */
+  .tone-locked { right: 0; left: calc(var(--lock, 1) * (100% - 38px) + 19px); border-radius: 0 999px 999px 0;
+    background: repeating-linear-gradient(135deg, #000000b3 0 5px, #00000052 5px 10px); }
+  .tone-locked::before { content: "🔒"; position: absolute; left: -9px; top: -22px; font-size: 13px; }
+  .tone-knob { position: absolute; top: 50%; left: calc(var(--at, .5) * (100% - 38px)); width: 38px; height: 38px; margin-top: -19px;
+    border-radius: 50%; display: grid; place-items: center; font-size: 20px; line-height: 1;
+    background: radial-gradient(circle at 34% 28%, #ffffffb8, transparent 48%), var(--tone-a, var(--syrup));
+    border: 2px solid #ffffff73; box-shadow: 0 0 0 5px var(--tone-ring, transparent), 0 4px 18px var(--tone-glow, transparent);
+    transition: left .3s cubic-bezier(.3, 1.45, .5, 1), background-color .3s ease; }
+  .tone-knob.sweet { animation: tone-beat 1.15s ease-in-out infinite; }
+  .tone-knob.gross { animation: tone-wobble 2.3s ease-in-out infinite; }
+  .tone-knob.pop { animation: tone-pop .4s ease-out; }
+  #toneBar { position: absolute; left: 0; top: 0; width: 100%; height: 46px; margin: 0; z-index: 2; opacity: 0; cursor: pointer;
+    -webkit-appearance: none; appearance: none; background: none; direction: ltr; }
+  #toneBar::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 38px; height: 38px; }
+  #toneBar::-moz-range-thumb { width: 38px; height: 38px; border: 0; }
+  #toneBar:focus-visible + .tone-track .tone-knob { outline: 2px solid var(--text); outline-offset: 3px; }
+  .tone-fx { position: absolute; left: 0; right: 0; bottom: 23px; height: 0; pointer-events: none; z-index: 3; }
+  .fx { position: absolute; bottom: 0; font-style: normal; line-height: 1; will-change: transform, opacity; }
+  .fx-sweet { animation: fx-float 1.9s ease-out forwards; }
+  .fx-fly { animation: fx-buzz 2.3s ease-in-out forwards; }
+  .fx-poo { animation: fx-float 2.4s ease-out forwards; }
+  .fx-goo { width: var(--s, 9px); height: var(--s, 9px); border-radius: 50%; animation: fx-bubble 1.8s ease-in forwards;
+    background: radial-gradient(circle at 35% 30%, #eef59a, #8f9b22 45%, #574711); box-shadow: 0 0 6px #7f8f1f99; }
+  .tone .ends { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; direction: ltr; }
   .tone .ends span { unicode-bidi: plaintext; }
-  .tone-now b { color: var(--text); }
+  .tone .ends span:first-child { color: var(--tone-low, var(--faint)); }
+  .tone .ends span:last-child { color: var(--tone-high, var(--faint)); }
+  .tone-now b { color: var(--tone-c, var(--text)); text-shadow: 0 0 12px var(--tone-glow, transparent); font-size: 16px; transition: color .3s ease; }
+  @keyframes tone-flow { to { background-position: -220% 0; } }
+  @keyframes tone-sparkle { to { background-position: 15px -10px, 22px -5px; } }
+  @keyframes tone-ooze { to { background-position: -23px 0, -12px 0, -12px 0; } }
+  @keyframes tone-beat { 0%, 100% { transform: scale(1); } 14% { transform: scale(1.15); } 28% { transform: scale(1); } 42% { transform: scale(1.09); } }
+  @keyframes tone-wobble { 0%, 100% { transform: rotate(0) scale(1); } 25% { transform: rotate(-9deg) scale(1.05, .93); }
+    50% { transform: rotate(6deg) scale(.95, 1.06); } 75% { transform: rotate(-4deg); } }
+  @keyframes tone-pop { 0% { transform: scale(1); } 40% { transform: scale(1.38); } 100% { transform: scale(1); } }
+  @keyframes fx-float { 0% { transform: translate(0, 0) scale(.6); opacity: 0; } 15% { opacity: 1; }
+    100% { transform: translate(var(--dx, 0), -66px) scale(1.15) rotate(var(--r, 0deg)); opacity: 0; } }
+  @keyframes fx-bubble { 0% { transform: translate(0, 0) scale(.4); opacity: 0; } 20% { opacity: 1; }
+    85% { transform: translate(var(--dx, 0), -40px) scale(1); opacity: 1; } 100% { transform: translate(var(--dx, 0), -44px) scale(1.8); opacity: 0; } }
+  @keyframes fx-buzz { 0% { transform: translate(0, 0); opacity: 0; } 10% { opacity: 1; } 25% { transform: translate(15px, -18px) rotate(20deg); }
+    45% { transform: translate(-13px, -30px) rotate(-25deg); } 65% { transform: translate(17px, -40px) rotate(15deg); }
+    85% { transform: translate(-9px, -52px) rotate(-10deg); opacity: 1; } 100% { transform: translate(var(--dx, 0), -64px); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .tone-fill, .tone-fill::before, .tone-fill::after, .tone-knob.sweet, .tone-knob.gross, .tone-knob.pop { animation: none; }
+    .tone-fx { display: none; }
+  }
   button.link { background: none; border: 0; padding: 0; color: var(--syrup); font: inherit; text-decoration: underline; }
   .age-q { font-weight: 700; font-size: 17px; margin-bottom: 4px; }
   label.opt { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; color: var(--dim); font-size: 14px; }
@@ -296,10 +365,17 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card tone-card" id="toneCard">
       <h2 id="toneTitle" data-t="attitude">How it talks to you</h2>
       <div class="tone">
         <input type="range" id="toneBar" min="0" max="0" step="1" value="0" aria-labelledby="toneTitle">
+        <div class="tone-track" aria-hidden="true">
+          <div class="tone-rail"></div>
+          <div class="tone-fill"></div>
+          <div class="tone-locked" id="toneLockZone" hidden></div>
+          <div class="tone-knob" id="toneKnob"><span id="toneFace"></span></div>
+          <div class="tone-fx" id="toneFx"></div>
+        </div>
         <div class="ends"><span data-t="tone_low">For kids</span><span data-t="tone_high">Wildest</span></div>
       </div>
       <div class="sub tone-now" style="margin:6px 0 0"><b id="toneName"></b> <span id="toneHint"></span></div>
@@ -1929,6 +2005,108 @@
     $("toneName").textContent = levelName(id);
     $("toneHint").textContent = wordsFor("ah_", id);
   }
+  // How the bar looks along its length, from its gentlest end (0) to its
+  // wildest (1): the colours it runs through (a sweet pink, the syrup in the
+  // middle, a sickly sludge green), the face on its knob, and what floats up
+  // from the knob, the more the nearer it is to an end (hearts and sparkles
+  // at the sweet end; bubbles of sludge, flies and the odd turd at the wild
+  // one). Only the knob's place counts, so any number of levels looks right.
+  const TONE_LOOK = {
+    colors: [[0, [255, 79, 168]], [0.25, [255, 140, 190]], [0.5, [242, 163, 58]], [0.75, [178, 160, 32]], [1, [112, 128, 22]]],
+    faces: ["🥰", "😊", "😏", "😈", "🤢"],
+    sweet: ["💖", "💕", "💗", "💞", "✨"],
+    flies: ["🪰"],
+    turds: ["💩"],
+    // What floats up at most at once, and how often it may.
+    most: 14, every: 240,
+  };
+  const calm = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+  function mix(a, b, f) { return a.map((v, i) => Math.round(v + (b[i] - v) * f)); }
+  function rgb(c, alpha) { return alpha === undefined ? `rgb(${c.join(",")})` : `rgba(${c.join(",")},${alpha})`; }
+  function toneColor(at) {
+    const stops = TONE_LOOK.colors;
+    for (let i = 1; i < stops.length; i++) {
+      const [p0, c0] = stops[i - 1], [p1, c1] = stops[i];
+      if (at <= p1) return mix(c0, c1, p1 > p0 ? Math.max(0, (at - p0) / (p1 - p0)) : 0);
+    }
+    return stops[stops.length - 1][1];
+  }
+  // Where the knob is along the bar (0 to 1), and how near an end.
+  function toneAt() {
+    const max = Number($("toneBar").max) || 0;
+    return max > 0 ? Number($("toneBar").value) / max : 0.5;
+  }
+  function sweetness(at) { return Math.max(0, 1 - 2 * at); }
+  function grossness(at) { return Math.max(0, 2 * at - 1); }
+  (function lookBar() {
+    const stops = TONE_LOOK.colors, card = $("toneCard").style;
+    card.setProperty("--tone-ramp", stops.map(([at, c]) => `${rgb(c)} ${at * 100}%`).join(", "));
+    card.setProperty("--tone-low", rgb(mix(stops[0][1], [255, 255, 255], 0.2)));
+    card.setProperty("--tone-high", rgb(mix(stops[stops.length - 1][1], [255, 255, 255], 0.2)));
+  })();
+  let toneShownAt = -1;
+  function lookTone() {
+    const at = toneAt(), c = toneColor(at), card = $("toneCard").style, knob = $("toneKnob");
+    const sweet = sweetness(at), gross = grossness(at);
+    card.setProperty("--at", String(at));
+    card.setProperty("--tone-a", rgb(c));
+    card.setProperty("--tone-b", rgb(mix(c, [0, 0, 0], 0.3)));
+    card.setProperty("--tone-c", rgb(mix(c, [255, 255, 255], 0.35)));
+    card.setProperty("--tone-glow", rgb(c, 0.55));
+    card.setProperty("--tone-ring", rgb(c, 0.22));
+    card.setProperty("--tone-edge", rgb(c, 0.45));
+    card.setProperty("--tone-haze", rgb(c, 0.12));
+    card.setProperty("--sweet", sweet.toFixed(2));
+    card.setProperty("--gross", gross.toFixed(2));
+    const faces = TONE_LOOK.faces;
+    $("toneFace").textContent = faces[Math.round(at * (faces.length - 1))];
+    knob.classList.toggle("sweet", sweet >= 0.5);
+    knob.classList.toggle("gross", gross >= 0.5);
+    // Moved: the knob pops, and a handful floats up at once.
+    if (toneShownAt >= 0 && at !== toneShownAt) {
+      knob.classList.remove("pop");
+      void knob.offsetWidth;
+      knob.classList.add("pop");
+      for (let i = 0; i < 4; i++) toneFx();
+    }
+    toneShownAt = at;
+  }
+  $("toneKnob").addEventListener("animationend", (e) => { if (e.animationName === "tone-pop") $("toneKnob").classList.remove("pop"); });
+  // One thing floating up from the knob (none while the bar is out of
+  // sight, or for a player who asked for less motion).
+  function toneFx() {
+    const fx = $("toneFx");
+    if (calm.matches || document.hidden || !$("toneCard").offsetParent || fx.childElementCount >= TONE_LOOK.most) return;
+    const at = toneAt(), sweet = sweetness(at), gross = grossness(at);
+    if (!sweet && !gross) return;
+    const pick = (list) => list[Math.floor(Math.random() * list.length)];
+    const el = document.createElement("i");
+    if (sweet) {
+      el.className = "fx fx-sweet";
+      el.textContent = pick(TONE_LOOK.sweet);
+    } else {
+      const roll = Math.random();
+      if (roll < 0.5) {
+        el.className = "fx fx-goo";
+        el.style.setProperty("--s", `${6 + Math.random() * 8 * gross}px`);
+      } else {
+        el.className = roll < 0.85 ? "fx fx-fly" : "fx fx-poo";
+        el.textContent = pick(roll < 0.85 ? TONE_LOOK.flies : TONE_LOOK.turds);
+      }
+    }
+    const knob = $("toneKnob").offsetWidth;
+    el.style.left = `${at * (fx.clientWidth - knob) + knob / 2 - 8 + (Math.random() - 0.5) * 30}px`;
+    el.style.setProperty("--dx", `${(Math.random() - 0.5) * 50}px`);
+    el.style.setProperty("--r", `${(Math.random() - 0.5) * 40}deg`);
+    if (el.textContent) el.style.fontSize = `${11 + Math.random() * 8 * Math.max(sweet, gross)}px`;
+    el.addEventListener("animationend", () => el.remove());
+    fx.append(el);
+  }
+  setInterval(() => {
+    const at = toneAt();
+    if (Math.random() < 0.8 * Math.max(sweetness(at), grossness(at))) toneFx();
+  }, TONE_LOOK.every);
+  lookTone();
   function countryName(code) {
     try { return new Intl.DisplayNames([locale], { type: "region" }).of(code) || code; } catch (e) { return code; }
   }
@@ -1947,10 +2125,15 @@
     const known = !!age.known && typeof age.age === "number";
     const locked = known && first > 0 && !age.adult;
     $("toneLock").hidden = !locked;
+    $("toneLockZone").hidden = !locked;
     if (locked) {
       $("toneLockText").textContent = t("tone_locked", age.age).replace("{lvl}", levelName(levels[first - 1].id));
       $("toneAge").textContent = age.answered ? t("age_change") : t("age_q", age.age);
+      // The bar is shaded from between the last open level and the first
+      // one for adults.
+      $("toneCard").style.setProperty("--lock", String((first - 0.5) / Math.max(1, levels.length - 1)));
     }
+    lookTone();
     // The question: the PC asks it once where they are is known, and the
     // player may ask for it again (to change their answer).
     const ask = known && !age.adult && (!!age.ask || askAgain) && Date.now() > ageHeldUntil;
@@ -1960,12 +2143,25 @@
       $("ageIn").textContent = age.country ? t("age_in", age.age).replace("{c}", countryName(age.country)) : "";
     }
   }
-  $("toneBar").addEventListener("input", () => {
+  // While a finger (or the mouse) is on the bar, the bar is the player's:
+  // the PC's status does not move it under them, however long they hold it.
+  let toneTouched = false;
+  $("toneBar").addEventListener("pointerdown", () => { toneTouched = true; toneHeldUntil = Infinity; });
+  function toneReleased() {
+    if (!toneTouched) return;
+    toneTouched = false;
     toneHeldUntil = Date.now() + 2000;
+  }
+  window.addEventListener("pointerup", toneReleased);
+  window.addEventListener("pointercancel", toneReleased);
+  $("toneBar").addEventListener("input", () => {
+    if (!toneTouched) toneHeldUntil = Date.now() + 2000;
     const level = toneLevels()[Number($("toneBar").value)];
     if (level) showLevel(level.id);
+    lookTone();
   });
   $("toneBar").addEventListener("change", () => {
+    toneTouched = false;
     toneHeldUntil = Date.now() + 2000;
     const level = toneLevels()[Number($("toneBar").value)];
     if (!level) return;
