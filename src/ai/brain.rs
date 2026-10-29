@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use super::memory::Learning;
 use super::openai::{Delivery, Turn};
 use super::style::{self, Attitude};
+use crate::companion::spectrum::{Level, Spectrum};
 use crate::companion::{Deck, GameView, Gauge, Kind, Observation, Progress, SoFar};
 
 /// Turns of conversation kept (a turn is one sentence each way).
@@ -359,6 +360,15 @@ fn attitude_of(learning: Option<&Learning>, fallback: Attitude) -> Attitude {
     learning.map(|l| l.memory().attitude).unwrap_or(fallback)
 }
 
+/// The level of the bar it talks at ([`super::memory::Memory::level`]), or
+/// `fallback`'s own level when nothing keeps it.
+fn level_of(learning: Option<&Learning>, fallback: Attitude) -> &'static Level {
+    match learning {
+        Some(learning) => learning.memory().level(),
+        None => Spectrum::get().of_voice(fallback),
+    }
+}
+
 /// The ElevenLabs voice the player picked, if they did.
 fn voice_of(learning: Option<&Learning>) -> Option<String> {
     learning
@@ -649,7 +659,7 @@ impl Brain {
     pub fn persona(&self) -> String {
         let mut text = format!(
             "{PERSONA}\n\n{}\n\n{MORE}\n{}",
-            style::rules(self.attitude()),
+            style::rules(self.level()),
             who_he_is(self.player_name().as_deref())
         );
         if self.learning.is_none() && !self.about_player.trim().is_empty() {
@@ -697,6 +707,12 @@ impl Brain {
     /// How it talks now (the player picks it on the phone).
     pub fn attitude(&self) -> Attitude {
         attitude_of(self.learning.as_ref(), self.attitude)
+    }
+
+    /// The level of the bar it talks at now (the player sets the bar on the
+    /// phone; the age gate may hold it).
+    pub fn level(&self) -> &'static Level {
+        level_of(self.learning.as_ref(), self.attitude)
     }
 
     /// The ElevenLabs voice the player picked, if they did.

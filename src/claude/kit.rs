@@ -544,6 +544,10 @@ mod tests {
     fn the_brief_tells_claude_to_talk_through_say_and_keeps_the_players_own() {
         assert!(BRIEF.contains("`say`"));
         assert!(BRIEF.contains("Classic World"));
+        // How it talks to him is the bar's: its rules come as it moves.
+        assert!(BRIEF.contains("## How you talk to him"));
+        assert!(BRIEF.contains("`tone` event"));
+        assert!(crate::claude::channel::CHANNEL_INSTRUCTIONS.contains("kind=\"tone\""));
         assert!(
             BRIEF.contains("It can be about\n  anything, not only the game"),
             "what he says isn't only about the game"
