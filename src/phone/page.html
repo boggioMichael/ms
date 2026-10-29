@@ -99,8 +99,11 @@
   .seg.three { grid-template-columns: repeat(3, 1fr); }
   .seg button { border: 1px solid var(--line); background: var(--card2); color: var(--dim); border-radius: 10px; padding: 9px 4px; font-size: 14px; }
   .seg button.sel { background: var(--syrup); color: #1a1209; border-color: var(--syrup); font-weight: 700; }
-  .tone input[type=range] { width: 100%; accent-color: var(--syrup); margin: 6px 0 2px; }
-  .tone .ends { display: flex; justify-content: space-between; color: var(--faint); font-size: 12px; }
+  /* The bar runs the same way in every language, right-to-left pages too:
+     the gentlest on the left, the wildest on the right. */
+  .tone input[type=range] { width: 100%; accent-color: var(--syrup); margin: 6px 0 2px; direction: ltr; }
+  .tone .ends { display: flex; justify-content: space-between; color: var(--faint); font-size: 12px; direction: ltr; }
+  .tone .ends span { unicode-bidi: plaintext; }
   .tone-now b { color: var(--text); }
   button.link { background: none; border: 0; padding: 0; color: var(--syrup); font: inherit; text-decoration: underline; }
   .age-q { font-weight: 700; font-size: 17px; margin-bottom: 4px; }

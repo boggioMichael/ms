@@ -614,6 +614,12 @@ def tone_checks(browser):
     wait_for(lambda: page.inner_text("#toneName") == "ישיר", 3, ("the level's name not in Hebrew", page.inner_text("#toneName")))
     assert page.inner_text("#toneLockText") == "🔒 מעבר ל„ישיר” זה למבוגרים בלבד (18+).", page.inner_text("#toneLockText")
     assert page.inner_text("#toneAge") == "לשנות את התשובה", page.inner_text("#toneAge")
+    # The bar runs the same way as in every language, on a right-to-left
+    # page too: the gentlest on the left, the wildest on the right.
+    assert page.evaluate("getComputedStyle(document.querySelector('#toneBar')).direction") == "ltr"
+    low, high = page.locator(".tone .ends span").all()
+    assert (low.inner_text(), high.inner_text()) == ("לילדים", "הכי פרוע"), (low.inner_text(), high.inner_text())
+    assert low.bounding_box()["x"] < high.bounding_box()["x"], "the gentlest end of the bar is not on the left"
     page.locator("#toneLock").scroll_into_view_if_needed()
     page.screenshot(path=os.path.join(SHOTS, "phone-tone-locked-he.png"), full_page=True)
     STATUS["tone"] = tone(wild_id)
