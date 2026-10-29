@@ -14,7 +14,12 @@ far never land after the sentence, a sentence cut off by a clip is still
 sent but nothing written while the clip plays or just after (its own
 voice), a loud sound over a clip pauses it until the PC's word, a PC started
 again is greeted again and its clips play, a page reloaded mid-visit is not
-greeted twice, and on a call MapleSyrup's own lines are said by the call,
+greeted twice, a "network" error from the recognizer is retried in silence
+(a note, for any device — offline, or the service out of reach — only
+after three in a row, gone once words are heard or the device is back
+online), a line is as old as the PC made it, not as its arrival (a warning
+made before the link stalled is not said, by the device's own voice or the
+call), and on a call MapleSyrup's own lines are said by the call,
 never by the phone's own voice: the call's hello says what it does to a
 player the PC does not know, lines are handed over with the reading behind
 them and the game as read now, never while the call is answering (one turn
@@ -536,6 +541,41 @@ def recognition_checks(browser):
     page.evaluate('window.__rec.result(0, "what level am I", true)')
     wait_for(lambda: any(r["body"].get("text") == "what level am I" for r in requests_since(t_back, "/api/heard")), 3,
              "the player's sentence after the clip was not sent")
+    # Speech recognition's "network" error (the browser's speech service did
+    # not answer this time) is retried in silence: one is no note; three in
+    # a row with nothing heard between them say what it is, on any device
+    # (the note blamed "the phone" on a computer that was online and being
+    # answered). Words heard again take the note away. Offline, it says so
+    # at once, and the note goes when the device is back online.
+    def shown_note(): return page.evaluate("(() => { const n = document.querySelector('#note'); return n.style.display === 'none' ? '' : n.textContent; })()")
+    network = 'window.__rec.onerror({ error: "network" })'
+    page.evaluate(network)
+    page.wait_for_timeout(100)
+    assert shown_note() == "", ("one network error was a note", shown_note())
+    page.evaluate(network); page.evaluate(network)
+    assert shown_note() == "Speech recognition can't reach its service right now. Still trying…", shown_note()
+    page.evaluate('window.__rec.result(0, "testing", false)')
+    assert shown_note() == "", ("the note stayed after words were heard", shown_note())
+    page.context.set_offline(True)
+    page.evaluate(network)
+    assert shown_note() == "This device is offline, and speech recognition needs the internet.", shown_note()
+    t_online = time.time()
+    page.context.set_offline(False)
+    wait_for(lambda: shown_note() == "", 3, "the offline note stayed once the device was back online")
+    wait_for(lambda: requests_since(t_online, "/api/state"), 8, "the page did not reach the PC again after being offline")
+    # This device's own voice says the PC's lines as they come, but a line
+    # is as old as the PC says (its `t` against the PC's uptime, 100 here),
+    # not as old as its arrival: a warning the PC made ten seconds before it
+    # got here — the link stalled meanwhile — is shown, not said ("drink,
+    # you're at 12" to a player who potted back to 100).
+    with LOCK:
+        n = len(STATE["messages"])
+        STATE["messages"].append({"id": n + 1, "t": 99.5, "kind": "warning", "text": "Pot, HP's at 30%.", "speak": True})
+        STATE["messages"].append({"id": n + 2, "t": 90.0, "kind": "warning", "text": "Drink, HP's at 12%.", "speak": True})
+    wait_for(lambda: "Pot, HP's at 30%." in page.evaluate("window.__spoken"), 4, "a fresh warning was not said by the device's own voice")
+    wait_for(lambda: any(li == "Drink, HP's at 12%." for li in page.evaluate("[...document.querySelectorAll('#log li.warning')].map((li) => li.firstChild.textContent)")), 3,
+             "the late warning was not shown")
+    assert "Drink, HP's at 12%." not in page.evaluate("window.__spoken"), ("a warning made before the link stalled was said as new", page.evaluate("window.__spoken"))
     # The PC is started again (a new boot): the page says hello again and
     # takes its clips from the start.
     page.wait_for_timeout(300)
@@ -629,8 +669,8 @@ def live_checks(browser):
     def sent(kind): return [e for e in page.evaluate("window.__dcSent") if e["type"] == kind]
     def items_with(text): return [e for e in sent("conversation.item.create") if text in json.dumps(e)]
     def event(ev): page.evaluate("(ev) => window.__dc.onmessage({ data: JSON.stringify(ev) })", ev)
-    def line(id, kind, text, fact=None, urgent=False):
-        m = {"id": id, "t": 100.0 + id, "kind": kind, "text": text, "speak": True}
+    def line(id, kind, text, fact=None, urgent=False, t=None):
+        m = {"id": id, "t": 100.0 + id if t is None else t, "kind": kind, "text": text, "speak": True}
         if fact: m["fact"] = fact
         if urgent: m["urgent"] = True
         with LOCK: STATE["messages"].append(m)
@@ -702,6 +742,18 @@ def live_checks(browser):
     assert r > g > b and g - b > 30, ("news's text must be amber", rows)
     wait_for(lambda: any(r["body"] == {"what": "dropped", "text": "Move, you're melting."} for r in requests_since(t_late, "/api/turn")), 2, "the PC was not told of the line that was not said")
     assert not any((r["body"] or {}).get("text") == "Level 153! Nice." for r in requests_since(t_late, "/api/turn")), "the level-up was reported as not said"
+    event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
+    # A line is as old as the PC says (its `t` against the PC's uptime, 100
+    # here), not as old as its arrival: a warning the PC made ten seconds
+    # before it got here — the link stalled meanwhile — is not handed to
+    # the call, and the PC is told; a fresh one that follows still is.
+    t_stalled = time.time()
+    line(6, "warning", "Drink, HP's at 12%.", "HP 12% (read 0 s ago)", t=90.0)
+    line(7, "warning", "Pot, HP's at 25%.", "HP 25% (read 0 s ago)", t=100.0)
+    wait_for(lambda: items_with("HP's at 25%") or items_with("HP's at 12%"), 4, "neither warning was handed to the call")
+    assert not items_with("HP's at 12%"), "a warning made before the link stalled was handed to the call as new"
+    wait_for(lambda: items_with("HP's at 25%"), 2, "the fresh warning was not handed to the call")
+    wait_for(lambda: any(r["body"] == {"what": "dropped", "text": "Drink, HP's at 12%."} for r in requests_since(t_stalled, "/api/turn")), 2, "the PC was not told of the late line")
     event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
     # The attitude changed on the PC (the picker here, or the player
     # objecting to the tone): the call gets its instructions again and goes

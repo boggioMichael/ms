@@ -36,7 +36,7 @@ use ms::app::screen::{self, LogLine};
 use ms::app::session::{self, Session};
 use ms::capture::{Captured, GameCapture};
 use ms::companion::commands::{self, Heard};
-use ms::companion::{Action, Command, Companion, GameView, Kind, Observation, Settings};
+use ms::companion::{About, Action, Command, Companion, GameView, Kind, Observation, Settings};
 use ms::observe::frame_result::{FrameTimings, VisionFrameResult};
 use ms::observe::preview::Preview;
 use ms::perceive::{Look, Perceived, perceive};
@@ -1078,15 +1078,29 @@ struct Mouth {
     phone_ducked: bool,
     /// The game's process, turned down while the PC speaks.
     game_pid: Option<u32>,
+    /// The warnings handed to the voice, by job, with the bar each is
+    /// about (the last [`WARNINGS_KEPT`]: a warning's voice is made within
+    /// seconds): one a potion answers before it is heard is not heard
+    /// ([`Outputs::answered`]).
+    warnings: Vec<(u64, About)>,
+    /// The jobs of warnings a potion answered on their way: the rest of
+    /// their voice goes the same way.
+    answered: Vec<u64>,
 }
 
+/// How many warnings' jobs the mouth keeps in mind, for a potion that
+/// answers one on its way.
+const WARNINGS_KEPT: usize = 16;
+
 /// A line of its own as a WAV, waiting for room on the phone: what kind of
-/// line it is, how long it plays, and since when it waits.
+/// line it is, how long it plays, since when it waits, and the bar a
+/// warning is about (a potion on it meanwhile, and it is not handed over).
 struct HeldClip {
     since: Instant,
     kind: Kind,
     wav: Vec<u8>,
     length: Duration,
+    about: Option<About>,
 }
 
 /// A piece of a line's voice, as the worker hands it over: which line
@@ -1133,6 +1147,22 @@ impl Mouth {
     /// Roughly how long the Windows voice takes to say `text`.
     fn estimate(text: &str) -> Duration {
         Duration::from_secs_f64(0.6 + text.chars().count() as f64 / 14.0)
+    }
+
+    /// A warning about `about` was handed to the voice as job `id`.
+    fn handed(&mut self, id: u64, about: About) {
+        self.warnings.push((id, about));
+        if self.warnings.len() > WARNINGS_KEPT {
+            self.warnings.remove(0);
+        }
+    }
+
+    /// What job `id` is a warning about, when it is one.
+    fn about(&self, id: u64) -> Option<About> {
+        self.warnings
+            .iter()
+            .find(|(job, _)| *job == id)
+            .map(|(_, about)| *about)
     }
 }
 
@@ -2092,7 +2122,18 @@ struct Relay {
     sent: Option<Instant>,
     /// The lines waiting for the gap: the newest of each kind (a later
     /// alert is the state of things now; a correction keeps its place).
-    waiting: Vec<(Kind, String)>,
+    /// None of them urgent: an urgent line never waits.
+    waiting: Vec<ToCall>,
+}
+
+/// A line for the call: its kind and words, whether it is said however
+/// late it comes (urgent), and the bar a warning is about — a potion on it
+/// before the line is handed over, and it is not.
+struct ToCall {
+    kind: Kind,
+    text: String,
+    urgent: bool,
+    about: Option<About>,
 }
 
 /// How long the call keeps the watcher to itself after passing a line on.
@@ -2106,37 +2147,28 @@ impl Relay {
     }
 
     /// A line for the call: the lines to hand over now (this one with
-    /// those that waited, each with whether it is said however late it
-    /// comes: only an urgent one is), or none while it waits for the gap.
-    /// Parked or going, it takes the place of the line of its kind that
-    /// waited: the newest is the state of things.
-    fn offer(&mut self, kind: Kind, text: &str, urgent: bool) -> Vec<(Kind, String, bool)> {
-        self.waiting.retain(|(k, _)| *k != kind);
-        if !urgent && !self.open() {
-            self.waiting.push((kind, text.to_string()));
+    /// those that waited), or none while it waits for the gap. Parked or
+    /// going, it takes the place of the line of its kind that waited: the
+    /// newest is the state of things.
+    fn offer(&mut self, line: ToCall) -> Vec<ToCall> {
+        self.waiting.retain(|waited| waited.kind != line.kind);
+        if !line.urgent && !self.open() {
+            self.waiting.push(line);
             return Vec::new();
         }
         self.sent = Some(Instant::now());
-        let mut lines = self.take_waiting();
-        lines.push((kind, text.to_string(), urgent));
+        let mut lines = std::mem::take(&mut self.waiting);
+        lines.push(line);
         lines
     }
 
     /// What waited, once the gap is up.
-    fn due(&mut self) -> Vec<(Kind, String, bool)> {
+    fn due(&mut self) -> Vec<ToCall> {
         if self.waiting.is_empty() || !self.open() {
             return Vec::new();
         }
         self.sent = Some(Instant::now());
-        self.take_waiting()
-    }
-
-    /// The lines that waited (none of them urgent: an urgent line never waits).
-    fn take_waiting(&mut self) -> Vec<(Kind, String, bool)> {
         std::mem::take(&mut self.waiting)
-            .into_iter()
-            .map(|(kind, text)| (kind, text, false))
-            .collect()
     }
 }
 
@@ -2493,6 +2525,21 @@ impl Outputs {
     /// warning neither waits for its translation nor goes with it when
     /// that is called off).
     fn tell(&mut self, kind: Kind, text: &str, speak: bool, companion: &mut Companion) {
+        self.tell_about(kind, text, speak, None, companion);
+    }
+
+    /// [`tell`](Outputs::tell) a line that may be a warning about a bar
+    /// (`about`): wherever it waits on its way to being heard — its voice
+    /// being made, a clip held for the player's turn, the call's gap — a
+    /// potion on that bar meanwhile drops it ([`Companion::stands`]).
+    fn tell_about(
+        &mut self,
+        kind: Kind,
+        text: &str,
+        speak: bool,
+        about: Option<About>,
+        companion: &mut Companion,
+    ) {
         // Claude does the talking: shown, not said (Claude has the reading
         // behind it, and decides what is worth saying).
         if self.claude {
@@ -2511,13 +2558,16 @@ impl Outputs {
                 // The answer to something they did (a button): theirs at once.
                 hub.post(kind, text, true);
             } else {
-                self.relay(kind, text, companion);
+                self.relay_about(kind, text, about, companion);
             }
             return;
         }
         self.show(kind, text);
-        if speak {
-            self.speak(kind, text, companion);
+        if speak
+            && let Some(job) = self.speak(kind, text, companion)
+            && let Some(about) = about
+        {
+            self.mouth.handed(job, about);
         }
     }
 
@@ -2528,6 +2578,11 @@ impl Outputs {
     /// correction or "Marked." meanwhile is not urgent for it; a level-up
     /// is the one announced from the frame being acted on.)
     fn relay(&mut self, kind: Kind, text: &str, companion: &Companion) {
+        self.relay_about(kind, text, None, companion);
+    }
+
+    /// [`relay`](Outputs::relay) a line that may be a warning about a bar.
+    fn relay_about(&mut self, kind: Kind, text: &str, about: Option<About>, companion: &Companion) {
         let dead = companion.dead();
         let urgent = (dead && kind == Kind::Alert)
             || companion.last_level_up() >= companion.progress().seconds;
@@ -2536,12 +2591,19 @@ impl Outputs {
         // every warning that waited (about a bar that no longer matters)
         // and every piece of news (about a fight that is over).
         let superseded = |k: Kind| k == kind || (dead && matches!(k, Kind::Warning | Kind::Alert));
-        for (_, old) in self.relay.waiting.iter().filter(|(k, _)| superseded(*k)) {
-            self.session
-                .line("live", &format!("not said, a newer line came: {old}"));
+        for old in self.relay.waiting.iter().filter(|l| superseded(l.kind)) {
+            self.session.line(
+                "live",
+                &format!("not said, a newer line came: {}", old.text),
+            );
         }
-        self.relay.waiting.retain(|(k, _)| !superseded(*k));
-        let lines = self.relay.offer(kind, text, urgent);
+        self.relay.waiting.retain(|l| !superseded(l.kind));
+        let lines = self.relay.offer(ToCall {
+            kind,
+            text: text.to_string(),
+            urgent,
+            about,
+        });
         if lines.is_empty() {
             self.session
                 .line("live", "waits: the call said a line of mine lately");
@@ -2561,13 +2623,26 @@ impl Outputs {
     /// correction, the coach's "Rebuff." are not about HP); each with
     /// whether it is said however late it comes (the page drops a line
     /// that waited too long behind the call's own voice, and says so; an
-    /// urgent one it says when the voice stops).
-    fn hand(&mut self, lines: Vec<(Kind, String, bool)>, companion: &Companion) {
+    /// urgent one it says when the voice stops). A warning a potion
+    /// answered while it waited for the gap goes no further: the call
+    /// would say "drink, you're at 12" with the reading at 100 beside it.
+    fn hand(&mut self, lines: Vec<ToCall>, companion: &Companion) {
         let Some(hub) = &self.phone else {
             return;
         };
         let reading = self.fact(companion);
-        for (kind, text, urgent) in lines {
+        for ToCall {
+            kind,
+            text,
+            urgent,
+            about,
+        } in lines
+        {
+            if about.is_some_and(|about| !companion.stands(about)) {
+                self.session
+                    .line("live", &format!("not said, a potion answered it: {text}"));
+                continue;
+            }
             let fact = reading.as_deref().filter(|_| kind == Kind::Warning);
             self.session.line(
                 "live",
@@ -2685,11 +2760,13 @@ impl Outputs {
                 let length = Duration::from_secs_f64(line.len() as f64 / rate as f64);
                 let wav = ai::wav_bytes(&line, rate);
                 if hold {
+                    let about = self.mouth.about(id);
                     self.mouth.phone_held.push(HeldClip {
                         since: Instant::now(),
                         kind,
                         wav,
                         length,
+                        about,
                     });
                 } else {
                     self.hand_clip(kind, wav, length);
@@ -2713,6 +2790,48 @@ impl Outputs {
             .max(Instant::now() + Duration::from_millis(300));
         self.mouth.phone_end = begins + length;
         self.mouth.phone_until = self.mouth.phone_end + Duration::from_millis(600);
+    }
+
+    /// Whether this piece of the voice is not to be heard: it belongs to a
+    /// warning a potion answered while its voice was being made (decided
+    /// at the line's first piece, `text` being the line then; the rest of
+    /// it goes the same way).
+    fn answered(&mut self, id: u64, start: bool, text: &str, companion: &Companion) -> bool {
+        if self.mouth.answered.contains(&id) {
+            return true;
+        }
+        let Some(about) = self.mouth.about(id) else {
+            return false;
+        };
+        if !start || companion.stands(about) {
+            return false;
+        }
+        self.mouth.answered.push(id);
+        if self.mouth.answered.len() > WARNINGS_KEPT {
+            self.mouth.answered.remove(0);
+        }
+        self.session
+            .line("info", &format!("not said, a potion answered it: {text}"));
+        true
+    }
+
+    /// The clips held for the player's turn that a potion answered
+    /// meanwhile (a warning about its bar): dropped, not handed over.
+    fn drop_answered_clips(&mut self, companion: &Companion) {
+        if self.mouth.phone_held.is_empty() {
+            return;
+        }
+        let (stand, answered): (Vec<HeldClip>, Vec<HeldClip>) =
+            std::mem::take(&mut self.mouth.phone_held)
+                .into_iter()
+                .partition(|clip| clip.about.is_none_or(|about| companion.stands(about)));
+        self.mouth.phone_held = stand;
+        for _ in answered {
+            self.session.line(
+                "info",
+                "not said, a potion answered it: a warning held for the player's turn",
+            );
+        }
     }
 
     /// The clips held back while the player was talking: handed over now
@@ -2780,11 +2899,17 @@ impl Outputs {
         let waiting = std::mem::take(&mut self.relay).waiting;
         self.session.line("info", "live call ended");
         self.phone_talking(false);
-        for (kind, text) in waiting {
-            if kind.kept() {
+        for ToCall {
+            kind, text, about, ..
+        } in waiting
+        {
+            if about.is_some_and(|about| !companion.stands(about)) {
+                self.session
+                    .line("live", &format!("not said, a potion answered it: {text}"));
+            } else if kind.kept() {
                 self.session
                     .line("live", &format!("the call ended before saying it: {text}"));
-                self.tell(kind, &text, true, companion);
+                self.tell_about(kind, &text, true, about, companion);
             } else {
                 self.session
                     .line("live", &format!("not said, the call ended: {text}"));
@@ -2981,7 +3106,9 @@ impl Outputs {
         for action in actions {
             match action {
                 Action::Say(say) if say.kind == Kind::Heard => self.show(say.kind, &say.text),
-                Action::Say(say) => self.tell(say.kind, &say.text, say.speak, companion),
+                Action::Say(say) => {
+                    self.tell_about(say.kind, &say.text, say.speak, say.about, companion)
+                }
                 Action::Mark => {
                     let elapsed = self.start.elapsed().as_secs_f64();
                     match self.session.mark(elapsed, companion.last(), frame.clone()) {
@@ -3637,6 +3764,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             last_pc_voice: None,
             phone_ducked: false,
             game_pid: None,
+            warnings: Vec::new(),
+            answered: Vec::new(),
         },
         phone: phone.as_ref().map(|p| Arc::clone(&p.hub)),
         session,
@@ -4626,6 +4755,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         }
 
         recording.tick(&mut out, panel_window.as_mut());
+        out.drop_answered_clips(&companion);
         out.release_clips(player_quiet(player_heard, &turns));
         // On a call, the watcher's lines that waited for their turn.
         if out.live {
@@ -4798,6 +4928,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 } => {
                     // A reply that was talked over: its last pieces are dropped.
                     if out.mouth.ai.as_ref().is_some_and(|w| w.cancelled(id)) {
+                        continue;
+                    }
+                    // So is a warning a potion answered while its voice was
+                    // being made: "drink, you're at 12" to a player at 100.
+                    if out.answered(id, start, &text, &companion) {
                         continue;
                     }
                     if start {
@@ -5356,6 +5491,8 @@ mod tests {
                 last_pc_voice: None,
                 phone_ducked: false,
                 game_pid: None,
+                warnings: Vec::new(),
+                answered: Vec::new(),
             },
             phone: Some(hub),
             session: Session::open(session_dir),
@@ -7222,5 +7359,96 @@ mod tests {
         // The phone's clips are the phone's to keep out.
         out.mouth.phone_until = Instant::now() + Duration::from_secs(2);
         assert!(!out.mouth.pc_voice_heard());
+    }
+
+    #[test]
+    fn a_warning_a_potion_answered_on_its_way_is_not_said() {
+        use ms::companion::Bar;
+        let mut out = outputs();
+        let mut companion = Companion::new(Settings::default());
+        let hp = |percent: f32| frame(percent, true, 165);
+        // A warning about HP, or MP, dealt at `at`.
+        let on_hp = |at: f64| About { bar: Bar::Hp, at };
+        let on_mp = |at: f64| About { bar: Bar::Mp, at };
+        companion.observe(1.0, hp(12.0));
+        // A warning about HP whose voice comes while nothing answered it:
+        // heard, all of it.
+        out.mouth.handed(7, on_hp(2.0));
+        assert!(!out.answered(7, true, "Pot, HP's at 12.", &companion));
+        assert!(!out.answered(7, false, "", &companion));
+        // The next one's voice is still being made when the player pots
+        // back to 100: not heard, its first piece nor the rest ("drink,
+        // you're at 12" to a player at 100). A line about no bar is.
+        out.mouth.handed(8, on_hp(3.0));
+        for i in 0..4 {
+            companion.observe(3.5 + 0.1 * i as f64, hp(100.0));
+        }
+        assert!(out.answered(8, true, "Drink, HP's at 12.", &companion));
+        assert!(out.answered(8, false, "", &companion));
+        assert!(!out.answered(9, true, "Level 166!", &companion));
+        // (The one already being heard plays out.)
+        assert!(!out.answered(7, false, "", &companion));
+        // A warning dealt after the potion stands.
+        out.mouth.handed(10, on_hp(5.0));
+        assert!(!out.answered(10, true, "Pot, HP's at 20.", &companion));
+        // Held for the player's turn, the same: a clip a potion answered
+        // meanwhile is not handed over; one about no bar, or still
+        // standing, is.
+        let clip = |about: Option<About>| HeldClip {
+            since: Instant::now(),
+            kind: Kind::Warning,
+            wav: Vec::new(),
+            length: Duration::from_millis(500),
+            about,
+        };
+        out.mouth.phone_held = vec![clip(Some(on_hp(3.0))), clip(Some(on_mp(3.0))), clip(None)];
+        out.drop_answered_clips(&companion);
+        assert_eq!(out.mouth.phone_held.len(), 2);
+        assert!(
+            out.mouth
+                .phone_held
+                .iter()
+                .all(|c| c.about.is_none_or(|a| a.bar == Bar::Mp))
+        );
+        // On a call, a warning waiting for the call's gap that a potion
+        // answers meanwhile is not handed to the call when the gap is up;
+        // one still standing is.
+        out.live = true;
+        out.relay.sent = Some(Instant::now());
+        out.tell_about(
+            Kind::Warning,
+            "Back off, HP's at 12.",
+            true,
+            Some(on_hp(3.0)),
+            &mut companion,
+        );
+        assert_eq!(out.relay.waiting.len(), 1);
+        out.relay.sent = Some(earlier(RELAY_GAP));
+        out.relay_due(&companion);
+        assert!(out.relay.waiting.is_empty());
+        assert!(
+            !said(&out)
+                .iter()
+                .any(|(text, _)| text == "Back off, HP's at 12."),
+            "{:?}",
+            said(&out)
+        );
+        out.relay.sent = Some(Instant::now());
+        out.tell_about(
+            Kind::Warning,
+            "Back off, HP's at 20.",
+            true,
+            Some(on_hp(6.0)),
+            &mut companion,
+        );
+        out.relay.sent = Some(earlier(RELAY_GAP));
+        out.relay_due(&companion);
+        assert!(
+            said(&out)
+                .iter()
+                .any(|(text, _)| text == "Back off, HP's at 20."),
+            "{:?}",
+            said(&out)
+        );
     }
 }
