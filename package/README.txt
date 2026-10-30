@@ -140,7 +140,12 @@ How it talks
   potion nor a fall, and a bar it can only guess at is not warned from. A
   bar that reads low for minutes while your EXP keeps coming is a bar it is
   reading wrong: it says so once ("I'm reading your HP wrong") and holds
-  that bar's warnings until it reads above the warning level again.
+  that bar's warnings until it reads above the warning level again. A
+  warning you answered with a potion before it was heard (its voice still
+  being made, waiting for you to finish talking, or for the live call's
+  turn) is dropped, not said: no "drink, you're at 12" after you potted
+  back to 100. On the phone a line is as old as the PC made it, not as its
+  arrival: one that waited out a stalled link is shown, not said.
   "Don't talk to me this way" makes it friendly.
   On the phone you can choose where replies are spoken (PC, phone, both, off)
   and switch to "only after 'syrup'" for streaming.
