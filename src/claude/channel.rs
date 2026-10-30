@@ -15,6 +15,8 @@
 //! - `player_profile` / `player_remember` — what MapleSyrup knows about the
 //!   player and his game (`about-me.txt`, its notebook), and a lasting fact
 //!   about him;
+//! - `set_tone` — the bar of how it talks to him (as on his phone) moved to
+//!   another level, when he asks Claude to talk another way;
 //! - `say` (Claude Code only) — MapleSyrup's voice says it.
 //!
 //! In a Claude Code session it is also a channel: it declares Claude Code's
@@ -128,6 +130,9 @@ pub trait Api: Send + Sync {
     fn player(&self) -> Result<Value, String>;
     /// Whether it was new.
     fn remember(&self, fact: &str) -> Result<bool, String>;
+    /// The bar of how it talks to him moved to the level named `tone`:
+    /// that level's name as taken.
+    fn tone(&self, tone: &str) -> Result<String, String>;
 }
 
 /// The companion on this PC, found through its link file each time (it
@@ -411,6 +416,17 @@ impl Api for Local {
             Duration::from_secs(10),
         )
         .map(|v| v["new"].as_bool().unwrap_or(true))
+    }
+
+    fn tone(&self, tone: &str) -> Result<String, String> {
+        let body = json!({ "tone": tone }).to_string();
+        self.call(
+            "POST",
+            "/local/tone",
+            body.as_bytes(),
+            Duration::from_secs(10),
+        )
+        .map(|v| v["tone"].as_str().unwrap_or(tone).to_string())
     }
 }
 
@@ -722,6 +738,19 @@ impl<A: Api + 'static> Bridge<A> {
                 Ok(player) => said(player["text"].as_str().unwrap_or_default()),
                 Err(why) => failed(&format!("Nothing to read: {why}.")),
             },
+            "set_tone" => {
+                let tone = text("tone");
+                if tone.is_empty() {
+                    return failed("Give the level to talk at.");
+                }
+                match self.api.tone(&tone) {
+                    Ok(tone) => said(&format!(
+                        "The bar is at {tone} now. A player not known to be of age is held at the last \
+level open to all; a `tone` event brings the rules of the level you talk at."
+                    )),
+                    Err(why) => failed(&format!("Not moved: {why}.")),
+                }
+            }
             "player_remember" => {
                 let fact = text("fact");
                 if fact.is_empty() {
@@ -909,6 +938,25 @@ fn tools(channel: bool) -> Value {
             },
             "annotations": keeps("Remember about him"),
         }),
+        json!({
+            "name": "set_tone",
+            "title": "How it talks to him",
+            "description": "Move the bar of how you and MapleSyrup talk to him — the one on his phone, gentlest \
+        first — to another level, when he asks you to talk to him another way, in any words (to swear or not, to be \
+        gentler, to roast him, no filter). A player not known to be of age where he is stays at the last level open to \
+        all (the phone asks him); a `tone` event then brings the rules of the level you talk at.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"tone": {
+                    "type": "string",
+                    "enum": crate::companion::spectrum::Spectrum::get().ids(),
+                    "description": "The level, gentlest first.",
+                }},
+                "required": ["tone"],
+                "additionalProperties": false,
+            },
+            "annotations": keeps("How it talks to him"),
+        }),
     ];
     if channel {
         tools.push(json!({
@@ -1044,6 +1092,7 @@ mod tests {
         said: Mutex<Vec<String>>,
         wiki: Mutex<Vec<(String, String, String)>>,
         facts: Mutex<Vec<String>>,
+        tones: Mutex<Vec<String>>,
         /// Whether the last poll said Claude takes the events.
         listening: AtomicBool,
         /// How many polls there were.
@@ -1161,6 +1210,15 @@ mod tests {
             }
             facts.push(fact.into());
             Ok(true)
+        }
+        fn tone(&self, tone: &str) -> Result<String, String> {
+            let spectrum = crate::companion::spectrum::Spectrum::get();
+            let at = spectrum
+                .index(tone)
+                .ok_or_else(|| format!("the levels are {}", spectrum.ids().join(", ")))?;
+            let id = spectrum.level(at).id.clone();
+            self.tones.lock().unwrap().push(id.clone());
+            Ok(id)
         }
     }
 
@@ -1290,6 +1348,7 @@ mod tests {
                 "maple_wiki_save",
                 "player_profile",
                 "player_remember",
+                "set_tone",
                 "say"
             ]
         );
@@ -1308,7 +1367,7 @@ mod tests {
         desktop.on_line(r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#);
         let names = tool_names(&sink.lines(), 3);
         assert!(!names.contains(&"say".to_string()), "{names:?}");
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 8);
         desktop.stop();
     }
 
@@ -1461,6 +1520,25 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("Wants level 30 this week.")
+        );
+        // He asks to be talked to another way: the bar moves, to a level it
+        // has.
+        let moved = call(&mut bridge, 41, "set_tone", json!({"tone": "unhinged"}));
+        assert!(
+            moved["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("The bar is at unhinged now."),
+            "{moved}"
+        );
+        assert_eq!(*fake.tones.lock().unwrap(), vec!["unhinged".to_string()]);
+        let none = call(&mut bridge, 42, "set_tone", json!({"tone": "wild"}));
+        assert_eq!(none["isError"], true);
+        assert!(
+            none["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("kids, friendly, blunt, savage, unhinged")
         );
         bridge.stop();
     }

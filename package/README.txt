@@ -71,6 +71,8 @@ How it talks
   internet connection's address; 18 in most places, 19, 20 or 21 in some,
   and never under 18 - and until you say you are, it talks no wilder than
   Blunt, wherever the bar is. "Change my answer" under the bar asks again.
+  With Claude talking, you can also just ask it out loud to talk another
+  way: it moves the bar (the age question still holds it).
   The levels, the ages by country (with the law each comes from, checked in
   October 2026) and where it looks the country up are data
   (companion/spectrum.json, companion/age.json).
