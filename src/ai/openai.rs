@@ -183,7 +183,18 @@ struct Via<'a> {
     headers: bool,
     /// The body is a form with a file in it (curl's `-F`), not JSON.
     form: Option<&'a Form<'a>>,
+    /// Given up on when nothing comes for this long (curl's low-speed
+    /// limit), however long the request may take in all: a stalled request
+    /// fails at once and the caller's fallback takes over.
+    stall: Option<Duration>,
 }
+
+/// How long a voice's stream may send nothing before it is given up on and
+/// the other voice says the line. The first sound of a line comes within a
+/// second or so; on 25.10 one stalled request held MapleSyrup's voice for
+/// 37 s (the request's limit was 40), and the player asked "what are you
+/// saying?" into the silence.
+pub const VOICE_STALL: Duration = Duration::from_secs(5);
 
 /// What a transcriber wrote, and how sure it was of it.
 #[derive(Debug, Clone, PartialEq)]
@@ -416,7 +427,14 @@ impl OpenAi {
                 "--max-time",
             ])
             .arg(timeout.as_secs().max(1).to_string())
-            .args(["-X", method])
+            .args(["-X", method]);
+        if let Some(stall) = via.stall {
+            // Under a byte a second for this long: given up on.
+            command
+                .args(["--speed-limit", "1", "--speed-time"])
+                .arg(stall.as_secs().max(1).to_string());
+        }
+        command
             .args([
                 "-H",
                 &match &self.key_header {
@@ -788,8 +806,7 @@ impl OpenAi {
                 let mut events = EventStream::default();
                 let via = Via {
                     stop: ask.stop.as_ref(),
-                    headers: false,
-                    form: None,
+                    ..Via::default()
                 };
                 let status = match on_piece.as_mut() {
                     Some(on_piece) => {
@@ -977,6 +994,7 @@ impl OpenAi {
                 stop,
                 headers: true,
                 form: None,
+                stall: Some(VOICE_STALL),
             },
             &mut |chunk| {
                 let bytes = head.feed(chunk);

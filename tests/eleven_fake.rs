@@ -4,6 +4,7 @@
 //! on, voice settings a model won't take dropped, Hebrew only to the model
 //! that speaks it, OpenAI's voice standing in (said once) whenever
 //! ElevenLabs can't, with ElevenLabs resting a while when it keeps failing,
+//! a stalled stream given up on in seconds (OpenAI's voice says the line),
 //! and the delivery: a warning asked for faster and sharper than a reply.
 
 use std::io::Write;
@@ -26,8 +27,8 @@ const OPENAI_SAMPLE: i16 = 3;
 
 /// A fake ElevenLabs (and OpenAI's speech, to stand in). The voice says how
 /// it behaves: `v-ok` speaks with every model, `v-nov4` has no Eleven v4,
-/// `v-plain` won't take voice settings, `v-down` always fails. Every request
-/// is recorded.
+/// `v-plain` won't take voice settings, `v-down` always fails, `v-stall`
+/// takes the request and never answers. Every request is recorded.
 fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -84,6 +85,13 @@ fn fake() -> (String, Arc<Mutex<Vec<Value>>>) {
                         }
                         (_, Some("v-down")) => {
                             Response::json(500, &json!({"detail": "Internal Server Error"}))
+                        }
+                        // Takes the request and sends nothing back (a
+                        // stalled connection), for far longer than any
+                        // line may wait.
+                        (_, Some("v-stall")) => {
+                            std::thread::sleep(Duration::from_secs(60));
+                            return;
                         }
                         (_, Some(_)) => {
                             // Sent as it is made, in odd-sized pieces (a
@@ -458,6 +466,49 @@ so keep hitting the arms until they drop.",
     assert!(
         number(&savage, "stability") < number(&reply, "stability"),
         "{savage} {reply}"
+    );
+    let _ = std::fs::remove_dir_all(settings);
+}
+
+#[test]
+fn a_stalled_stream_is_given_up_on_in_seconds_and_openai_says_the_line() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    // On its own: it fails soon after the stall limit, not at the request's
+    // limit of 40 s (on 25.10 a stalled request held the voice for 37 s).
+    let eleven = Eleven::new(KEY, &base);
+    let began = std::time::Instant::now();
+    let result = say(&eleven, "Pot now!", "v-stall");
+    let took = began.elapsed();
+    assert!(result.is_err(), "a stream that sends nothing is no line");
+    assert!(
+        took >= ms::ai::openai::VOICE_STALL && took < ms::ai::openai::VOICE_STALL * 3,
+        "given up on after {took:?}"
+    );
+    // In the worker: OpenAI's voice says the line, as soon.
+    let (settings, learning) = picked("stall", "v-stall");
+    let mut brain = Brain::new();
+    brain.learning = Some(learning.clone());
+    let worker = ms::ai::spawn_brains(
+        Brains {
+            openai: OpenAi::new(OPENAI_KEY, &base, "cedar", None),
+            fast: None,
+            eleven: Some(Eleven::new(KEY, &base)),
+        },
+        brain,
+        None,
+    );
+    let began = std::time::Instant::now();
+    let (samples, noted) = worker_says(&worker, "Pot now!");
+    assert!(began.elapsed() < ms::ai::openai::VOICE_STALL * 3);
+    assert!(!samples.is_empty() && samples.iter().all(|&s| s == OPENAI_SAMPLE));
+    assert_eq!(noted.len(), 1, "{noted:?}");
+    assert!(
+        noted[0].starts_with("ElevenLabs didn't speak"),
+        "{}",
+        noted[0]
     );
     let _ = std::fs::remove_dir_all(settings);
 }
