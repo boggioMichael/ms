@@ -660,14 +660,20 @@ impl<A: Api + 'static> Bridge<A> {
         match params["name"].as_str().unwrap_or_default() {
             "say" => {
                 let line = text("text");
-                if line.is_empty() {
-                    return failed("Nothing to say: give the text.");
-                }
                 // (A number, or a number in a string: as Claude wrote it.)
                 let answers = arguments["answers"]
                     .as_u64()
                     .or_else(|| text("answers").parse().ok());
+                // Nothing to say on purpose, about words of his: quiet.
+                if line.is_empty() && answers.is_none() {
+                    return failed(
+                        "Nothing to say: give the text (or his heard_id, to stay quiet on purpose).",
+                    );
+                }
                 match self.api.say(&line, answers) {
+                    Ok(()) if line.is_empty() => {
+                        said("Quiet: nothing said, and MapleSyrup won't answer them either.")
+                    }
                     Ok(()) => said("Said."),
                     Err(why) => failed(&format!("Not said: {why}.")),
                 }
@@ -970,7 +976,7 @@ the answer says what he said instead. {}", crate::companion::fresh::guide()),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "text": {"type": "string", "description": "What to say, exactly as it should be spoken."},
+                    "text": {"type": "string", "description": "What to say, exactly as it should be spoken. Empty, with answers, to stay quiet on purpose about those words of his (he told you to be quiet, or he was talking to someone else): nothing is said, and MapleSyrup won't answer them for you."},
                     "answers": {"type": "integer", "description": "The heard_id of his words this answers (on their <channel kind=\"heard\"> tag). Leave it out when you speak up on your own."},
                 },
                 "required": ["text"],

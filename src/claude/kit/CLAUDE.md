@@ -89,5 +89,7 @@ taught MapleSyrup, and the session (EXP per hour, time to the next level, deaths
 
 - When he spoke, call `say` first. If the answer needs a search or a file, say so in a few words first, then
   answer. When nothing of yours is said within 6 seconds of his words reaching you, MapleSyrup answers him
-  itself, and a `say` for those words is refused.
+  itself, and a `say` for those words is refused. To stay quiet on purpose (he asked for quiet, or he was talking
+  to someone else in the room), call `say` with an empty text and his heard_id: nothing is said, and MapleSyrup
+  doesn't answer for you.
 - The game's events need no written commentary here: between his messages, write little.

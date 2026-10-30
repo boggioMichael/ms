@@ -439,14 +439,26 @@ or say nothing",
             ("POST", "/local/say") => {
                 let body = serde_json::from_slice::<Value>(&request.body).unwrap_or(Value::Null);
                 let text = body["text"].as_str().map(str::trim).unwrap_or_default();
-                if text.is_empty() {
-                    return Response::json(400, &json!({"error": "nothing to say"}));
-                }
-                let text: String = text.chars().take(MAX_SAY).collect();
                 // (A number, or a number in a string: as Claude wrote it.)
                 let answers = body["answers"]
                     .as_u64()
                     .or_else(|| body["answers"].as_str().and_then(|s| s.trim().parse().ok()));
+                if text.is_empty() {
+                    // Quiet on purpose about his words (he asked for quiet,
+                    // or he talked to someone else): they are answered, and
+                    // MapleSyrup does not answer them either.
+                    let mut inner = self.lock();
+                    inner.bridge_seen = Some(Instant::now());
+                    return match (answers, inner.newest.as_mut()) {
+                        (Some(answers), Some(newest)) if answers == newest.seq => {
+                            newest.answered = true;
+                            Response::json(200, &json!({"ok": true, "quiet": true}))
+                        }
+                        (Some(_), _) => Response::json(200, &json!({"ok": true, "quiet": true})),
+                        (None, _) => Response::json(400, &json!({"error": "nothing to say"})),
+                    };
+                }
+                let text: String = text.chars().take(MAX_SAY).collect();
                 let mut inner = self.lock();
                 inner.bridge_seen = Some(Instant::now());
                 if let Some(why) = Self::refusal(&inner, answers, Instant::now()) {
@@ -1081,6 +1093,12 @@ mod tests {
             200
         );
         assert_eq!(board.waiting_since(first), None);
+        // Quiet on purpose ("shut up", or words for someone else): answered,
+        // and nothing to say; without his words named, nothing to do.
+        let hush = board.post("heard", "He said: \"shut up\"", "…".into());
+        assert_eq!(say(json!({"text": "", "answers": hush})).status, 200);
+        assert_eq!(board.waiting_since(hush), None);
+        assert_eq!(say(json!({"text": "  "})).status, 400);
         // Newer words take the place of older ones.
         let second = board.post("heard", "He said: \"how much HP\"", "…".into());
         let third = board.post("heard", "He said: \"how much HP do I have\"", "…".into());
