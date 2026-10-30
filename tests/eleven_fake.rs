@@ -512,3 +512,48 @@ fn a_stalled_stream_is_given_up_on_in_seconds_and_openai_says_the_line() {
     );
     let _ = std::fs::remove_dir_all(settings);
 }
+
+#[test]
+fn a_line_with_slots_is_said_with_the_values_of_the_moment() {
+    if !have_curl() {
+        return;
+    }
+    let (base, _) = fake();
+    let (settings, learning) = picked("slots", "v-ok");
+    let fresh = std::sync::Arc::new(ms::companion::fresh::Fresh::new());
+    let mut brain = Brain::new();
+    brain.learning = Some(learning.clone());
+    brain.fresh = Some(std::sync::Arc::clone(&fresh));
+    let worker = ms::ai::spawn_brains(
+        Brains {
+            openai: OpenAi::new(OPENAI_KEY, &base, "cedar", None),
+            fast: None,
+            eleven: Some(Eleven::new(KEY, &base)),
+        },
+        brain,
+        None,
+    );
+    // Written while HP read 34%; by the time it is said, 64%.
+    let mut obs =
+        ms::companion::Observation::unseen(ms::companion::GameView::Seen("MapleStory".into()));
+    obs.hp = Some(ms::companion::Gauge {
+        percent: 64.0,
+        current: Some(73),
+        max: Some(114),
+        read: true,
+    });
+    fresh.observe(&obs);
+    worker.send(Job::Say {
+        heard: None,
+        text: "HP {hp}, {hp_now} of {hp_max}.".into(),
+    });
+    let shown = loop {
+        match worker.done.recv_timeout(Duration::from_secs(30)) {
+            Ok(Done::Shown { text, .. }) => break text,
+            Ok(_) => {}
+            Err(e) => panic!("{e}"),
+        }
+    };
+    assert_eq!(shown, "HP 64%, 73 of 114.");
+    let _ = std::fs::remove_dir_all(settings);
+}

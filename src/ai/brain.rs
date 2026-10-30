@@ -399,6 +399,10 @@ pub struct Brain {
     /// The language he asked to be answered in ("talk to me in English"),
     /// until he asks for another.
     asked_language: Option<&'static str>,
+    /// The game's values as they are now, which the slots of its lines
+    /// (`{hp}`…) are filled with when they are said (None: no slots, as in
+    /// the tests).
+    pub fresh: Option<std::sync::Arc<crate::companion::fresh::Fresh>>,
 }
 
 /// Who the player is, for the rules: his name as his own file says it (or
@@ -531,7 +535,24 @@ impl Brain {
             here_en: Deck::seeded(session_seed()),
             here_he: Deck::seeded(session_seed()),
             asked_language: None,
+            fresh: None,
         }
+    }
+
+    /// `text` with its slots (`{hp}`…) filled with the game's values as
+    /// they are now (unchanged without [`Brain::fresh`]).
+    pub fn fill(&self, text: &str) -> String {
+        match &self.fresh {
+            Some(fresh) => fresh.fill(text).text,
+            None => text.to_string(),
+        }
+    }
+
+    /// What the model is told about the slots, when there are any.
+    pub fn slots_guide(&self) -> Option<String> {
+        self.fresh
+            .as_ref()
+            .map(|_| crate::companion::fresh::guide())
     }
 
     /// The next "same as before" line, in its attitude: a card of the deck

@@ -962,11 +962,11 @@ fn tools(channel: bool) -> Value {
         tools.push(json!({
             "name": "say",
             "title": "Say it out loud",
-            "description": "Say this out loud to the player in MapleSyrup's voice (his speakers or his phone), for \
+            "description": format!("Say this out loud to the player in MapleSyrup's voice (his speakers or his phone), for \
 when he can't read the screen — he is playing, or he spoke to you through MapleSyrup. Spoken style: one or two \
 short sentences, no lists or markdown, in his language (in Hebrew, address him in the masculine). He comes first: \
 a line for words he has since followed with newer ones, or sent while he talks over your voice, is not said, and \
-the answer says what he said instead.",
+the answer says what he said instead. {}", crate::companion::fresh::guide()),
             "inputSchema": {
                 "type": "object",
                 "properties": {

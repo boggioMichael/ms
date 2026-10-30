@@ -334,9 +334,17 @@ pub fn installer_cmd() -> String {
 /// character) at its end.
 pub fn brief(about: Option<&str>) -> String {
     let about = about.map(str::trim).filter(|a| !a.is_empty());
+    // (How his numbers are said: the slots MapleSyrup fills when the line is
+    // said, from the one list of them.)
+    let numbers = format!(
+        "{BRIEF}\n## His numbers out loud\n\n{}\n",
+        crate::companion::fresh::guide()
+    );
     match about {
-        Some(about) => format!("{BRIEF}\n## About him (MapleSyrup's file about him)\n\n{about}\n"),
-        None => BRIEF.to_string(),
+        Some(about) => {
+            format!("{numbers}\n## About him (MapleSyrup's file about him)\n\n{about}\n")
+        }
+        None => numbers,
     }
 }
 
@@ -564,7 +572,11 @@ mod tests {
         let with = brief(Some(about));
         assert!(with.starts_with(BRIEF));
         assert!(with.ends_with(&format!("{about}\n")));
-        assert_eq!(brief(Some("  \n")), BRIEF);
+        // With nothing about him, the brief and how his numbers are said.
+        let plain = brief(Some("  \n"));
+        assert!(plain.starts_with(BRIEF));
+        assert!(plain.contains(&crate::companion::fresh::guide()));
+        assert!(!plain.contains("## About him"));
         let dir = std::env::temp_dir().join(format!(
             "ms-claude-kit-{}",
             crate::phone::tls::random_hex(4)

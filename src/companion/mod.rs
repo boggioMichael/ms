@@ -16,6 +16,7 @@ pub mod attitude;
 pub mod chat;
 pub mod commands;
 pub mod exp;
+pub mod fresh;
 pub mod instant;
 pub mod observation;
 pub mod spectrum;

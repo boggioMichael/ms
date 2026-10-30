@@ -111,6 +111,50 @@ struct Inner {
     /// Where Claude moved the bar of how it talks to him, for the main
     /// loop to take.
     tone: Option<String>,
+    /// The game as it was when the last event went to Claude: a line of
+    /// its own written about it is not said once that has changed
+    /// ([`Basis`]).
+    last_event: Option<Basis>,
+}
+
+/// What a line about a game event takes as still so when it is said: the
+/// character alive or dead, and the map. (On 25.10 "you died, click Revive"
+/// came after the tester was up and playing again.)
+#[derive(Debug, Clone, PartialEq)]
+struct Basis {
+    dead: Option<bool>,
+    map: Option<String>,
+}
+
+impl Basis {
+    /// The game as the reading `status` (the scene) has it.
+    fn of(status: &Value) -> Basis {
+        Basis {
+            dead: status["dead"].as_bool(),
+            map: status["map"].as_str().map(str::to_string),
+        }
+    }
+
+    /// What changed from `self` to `now`, in words for Claude (None:
+    /// nothing a line could have been about). An unknown side is no
+    /// change.
+    fn changed(&self, now: &Basis) -> Option<String> {
+        if let (Some(then), Some(dead)) = (self.dead, now.dead)
+            && then != dead
+        {
+            return Some(if dead {
+                "he died since".into()
+            } else {
+                "he is alive again since".into()
+            });
+        }
+        if let (Some(then), Some(map)) = (&self.map, &now.map)
+            && then != map
+        {
+            return Some(format!("he is on another map since ({map})"));
+        }
+        None
+    }
 }
 
 /// The player's newest words posted for Claude.
@@ -160,6 +204,7 @@ impl Board {
                 quit: false,
                 says: Vec::new(),
                 frame: None,
+                last_event: None,
                 newest: None,
                 talked_over: None,
                 refused: Vec::new(),
@@ -186,6 +231,9 @@ impl Board {
         inner.next += 1;
         // His words: the newest Claude is to answer, and what he says after
         // talking over Claude's voice has come.
+        if kind != "heard" {
+            inner.last_event = Some(Basis::of(&inner.status));
+        }
         if kind == "heard" {
             inner.newest = Some(Newest {
                 seq,
@@ -320,6 +368,19 @@ impl Board {
 (it comes as heard) and answer that"
                     .into(),
             );
+        }
+        // A line of its own (about the last event) written before the game
+        // changed: what it says is no longer so.
+        if answers.is_none()
+            && let Some(changed) = inner
+                .last_event
+                .as_ref()
+                .and_then(|then| then.changed(&Basis::of(&inner.status)))
+        {
+            return Some(format!(
+                "the game changed after the event you're speaking of — {changed}: what you wrote is no longer so; \
+say nothing about it"
+            ));
         }
         let newest = inner.newest.as_ref()?;
         if newest.ours && answers == Some(newest.seq) {
@@ -1040,6 +1101,47 @@ mod tests {
         board.lock().newest.as_mut().unwrap().taken = Instant::now().checked_sub(SAY_GRACE);
         assert_eq!(say(json!({"text": "Nice level!"})).status, 200);
         assert_eq!(board.take_says(), vec!["Ant Tunnel.", "Nice level!"]);
+    }
+
+    #[test]
+    fn a_line_of_its_own_about_an_event_is_not_said_once_the_game_changed() {
+        let board = Board::new(KEY.into());
+        let say = |body: Value| {
+            board.handle(&request(
+                "POST",
+                &format!("/local/say?k={KEY}"),
+                body.to_string().as_bytes(),
+                &[],
+            ))
+        };
+        board.set_status(
+            json!({"dead": true, "map": "Snail Hunting Ground I"}),
+            "…".into(),
+        );
+        board.post("death", "The character died.", "…".into());
+        // Still dead: said.
+        assert_eq!(say(json!({"text": "Ouch. Revive in town."})).status, 200);
+        // Up again before the line came: not said, and Claude is told why.
+        board.set_status(
+            json!({"dead": false, "map": "Snail Hunting Ground I"}),
+            "…".into(),
+        );
+        let late = say(json!({"text": "You died, click Revive in Town."}));
+        assert_eq!(late.status, 409);
+        assert!(
+            json_of(&late)["error"]
+                .as_str()
+                .unwrap()
+                .contains("alive again")
+        );
+        // A new map since the event, the same.
+        board.post("map", "New map: Henesys.", "…".into());
+        board.set_status(json!({"dead": false, "map": "Ellinia"}), "…".into());
+        assert_eq!(say(json!({"text": "Henesys has a shop."})).status, 409);
+        // An answer to his words is said whatever changed.
+        let hp = board.post("heard", "He said: \"how much HP\"", "…".into());
+        assert_eq!(say(json!({"text": "HP {hp}.", "answers": hp})).status, 200);
+        assert_eq!(board.take_says(), vec!["Ouch. Revive in town.", "HP {hp}."]);
     }
 
     #[test]

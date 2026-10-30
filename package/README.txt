@@ -78,6 +78,12 @@ How it talks
   (companion/spectrum.json, companion/age.json).
   Your own numbers are answered at once, without asking a model: "how much HP
   do I have", "what level am I", "how long to level" (English or Hebrew).
+  When a model (Claude or MapleSyrup's own) names your HP, MP, EXP or level
+  as they are now, the number you hear is the one on your screen as it is
+  said, not as it was a few seconds before when the answer was written; and
+  a remark of Claude's own about something that happened (a death, a new
+  map) is not said once that is no longer so (you are up again, or
+  somewhere else).
   When it isn't sure of a game fact, it says its best guess right away and
   checks it in the background; it speaks again only if it was wrong.
   Grok: with an xAI key, Grok answers the conversation (quick, and freer with

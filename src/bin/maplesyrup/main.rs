@@ -2288,10 +2288,16 @@ fn snapshot_text(
 /// A line of Claude's, said in MapleSyrup's voice (the one the player
 /// picked) and shown: by the natural voice when there is one, else by the
 /// PC's own.
-fn claude_says(out: &mut Outputs, text: String) -> Option<u64> {
+fn claude_says(
+    out: &mut Outputs,
+    text: String,
+    fresh: Option<&ms::companion::fresh::Fresh>,
+) -> Option<u64> {
     match &out.mouth.ai {
+        // (Its slots are filled when the voice takes it.)
         Some(worker) => Some(worker.send(Job::Say { heard: None, text })),
         None => {
+            let text = fresh.map_or(text.clone(), |fresh| fresh.fill(&text).text);
             out.show(Kind::Reply, &text);
             if out.voice_on().pc()
                 && let Some(voice) = &out.mouth.sapi
@@ -2469,7 +2475,7 @@ fn claude_absent(
         "claude",
         "not connected: told him to look at the Claude window",
     );
-    claude_says(out, claude_absent_line(language, said).to_string());
+    claude_says(out, claude_absent_line(language, said).to_string(), None);
 }
 
 /// The bar of how it talks to him moved to the level named `id` (on his
@@ -4104,6 +4110,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     // with an xAI key, Grok answering the conversation (faster, and freer).
     // Look-ups run in the background.
     let mut ai_note = String::from("no OpenAI key: simple answers, Windows voice");
+    // The game's values of the moment, for the slots of the lines models
+    // write ({hp}…), filled when they are said.
+    let fresh = Arc::new(ms::companion::fresh::Fresh::new());
     let latest = Arc::new(Latest::default());
     let (news_tx, news_rx) = mpsc::channel::<News>();
     // What it learned about this screen: the HUD, found from the pixels
@@ -4143,6 +4152,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     }
                     let mut brain = Brain::new();
                     brain.learning = Some(learning.clone());
+                    // The slots of its lines ({hp}…) take the values of the
+                    // moment they are said.
+                    brain.fresh = Some(Arc::clone(&fresh));
                     // It looks back on the conversation now and then, and
                     // learns (the sessions before this one first).
                     if let Some(sessions) = session_dir.parent() {
@@ -4734,6 +4746,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 }
             }
             let actions = companion.observe(tick.at, tick.obs.clone());
+            fresh.observe(&tick.obs);
             stats.frame(tick.at, &tick.obs, &companion);
             if actions
                 .iter()
@@ -4900,7 +4913,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         if let Some(board) = &claude_board {
             for text in board.take_says() {
                 out.session.line("claude", &format!("says: {text}"));
-                if let Some(id) = claude_says(&mut out, text.clone()) {
+                if let Some(id) = claude_says(&mut out, text.clone(), Some(&fresh)) {
                     claude_lines.handed(id, text);
                 }
             }

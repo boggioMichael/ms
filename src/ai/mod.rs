@@ -800,7 +800,7 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                         // A look-up's finding is shown on the phone, never
                         // said: one answer, not two.
                         Job::Say { heard: None, text } if lookup::shown_only(&text) => {
-                            let text = brain::for_speech(&text);
+                            let text = brain::for_speech(&brain.fill(&text));
                             if !text.is_empty() {
                                 let _ = tx.send(Done::Shown {
                                     kind: Kind::Info,
@@ -810,7 +810,9 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                         }
                         Job::Say { heard, text } => {
                             let asked = Instant::now();
-                            let text = brain::for_speech(&text);
+                            // (Its slots filled with the values of now first:
+                            // the speech form drops their underscores.)
+                            let text = brain::for_speech(&brain.fill(&text));
                             if text.is_empty() {
                                 let _ = tx.send(Done::Voiced { id });
                                 continue;
@@ -1501,6 +1503,10 @@ fn coach(chat: &OpenAi, mouth: Mouth, brain: &mut Brain, watch: Watch, tx: &Send
     let started = Instant::now();
     let mut instructions = brain.persona();
     instructions.push_str(COACH_GUIDE);
+    if let Some(slots) = brain.slots_guide() {
+        instructions.push_str("\n\n");
+        instructions.push_str(&slots);
+    }
     let learned = brain.learned();
     if !learned.is_empty() {
         instructions.push_str(LEARNED_GUIDE);
@@ -1574,7 +1580,9 @@ engine:\n{snapshot}\n\n{reason}"
             // the voice did say once it is done: a line called off before
             // a sound was made was not said. (On a call the call says it.)
             let taken = brain.recent.taken();
-            let filtered = brain.recent.filter(&brain::for_speech(&answer.text));
+            let filtered = brain
+                .recent
+                .filter(&brain::for_speech(&brain.fill(&answer.text)));
             if filtered.dropped > 0 {
                 let _ = tx.send(Done::Noted {
                     line: format!(
@@ -1656,6 +1664,8 @@ struct Saying<'a> {
     total: usize,
     dropped: usize,
     restated: Vec<String>,
+    /// The game's values now, for the slots of a sentence (`{hp}`…).
+    fresh: Option<std::sync::Arc<crate::companion::fresh::Fresh>>,
 }
 
 impl Saying<'_> {
@@ -1664,6 +1674,16 @@ impl Saying<'_> {
     /// game's state back to someone who did not ask about it, or announces
     /// a level-up he did not ask about.
     fn take(&mut self, sentence: &str, recent: &mut brain::Recent, voice: &Sender<String>) {
+        // Its slots filled with the values of the moment it goes to the
+        // voice: the number heard is the number then.
+        let filled;
+        let sentence = match &self.fresh {
+            Some(fresh) => {
+                filled = fresh.fill(sentence).text;
+                filled.as_str()
+            }
+            None => sentence,
+        };
         let (sentence, level_ups) = brain::without_level_ups(sentence, self.level_asked);
         if !level_ups.is_empty() {
             self.restated.extend(level_ups);
@@ -1740,6 +1760,10 @@ fn converse<'a>(
     // service keeps the start cached, and answers sooner.
     let mut instructions = brain.persona();
     instructions.push_str(EYES_GUIDE);
+    if let Some(slots) = brain.slots_guide() {
+        instructions.push_str("\n\n");
+        instructions.push_str(&slots);
+    }
     let learned = brain.learned();
     // Classic World: what it doesn't have, and to say when it's not sure.
     let classic = brain::classic_world(snapshot, &learned);
@@ -1798,6 +1822,7 @@ fn converse<'a>(
         kept: Vec::new(),
         total: 0,
         dropped: 0,
+        fresh: brain.fresh.clone(),
         restated: Vec::new(),
     };
     let mut looped = false;
