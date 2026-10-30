@@ -246,7 +246,12 @@ If the phone cannot connect
   the zip: double-click "MapleSyrup with Claude.cmd" or "MapleSyrup (phone
   over internet).cmd"). They link the phone through a Cloudflare tunnel: no
   certificate warning, no firewall question, works on mobile data too. The
-  address changes each time: scan the QR code again.
+  address changes each time: scan the QR code again. The QR code shows once
+  the new address works (a few seconds): a phone or a PC that asks for it
+  earlier is told it does not exist ("This site can't be reached",
+  DNS_PROBE_FINISHED_NXDOMAIN) and keeps that answer for minutes. If that
+  happened anyway, start MapleSyrup again for a new address, or open it on
+  mobile data; on the PC, "ipconfig /flushdns" clears the kept answer.
 
 If Windows blocks MapleSyrup.exe ("Smart App Control" / "blocked by your
 organization's Device Guard policy")

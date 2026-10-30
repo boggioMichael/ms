@@ -354,6 +354,11 @@ struct Clip {
     wav: Arc<Vec<u8>>,
 }
 
+/// Where the phone link answers that it is MapleSyrup's (a phone, or the
+/// tunnel checking that it reaches it), and what it says.
+pub const HEALTH_PATH: &str = "/health";
+pub const HEALTH: &str = "ok maplesyrup";
+
 /// Everything the phone link shares between the server's threads and the
 /// main loop.
 pub struct Hub {
@@ -666,7 +671,7 @@ impl Hub {
                 Response::new(200, "text/html; charset=utf-8", PAGE)
                     .with_header("Referrer-Policy", "no-referrer")
             }
-            ("GET", "/health") => Response::text(200, "ok maplesyrup"),
+            ("GET", HEALTH_PATH) => Response::text(200, HEALTH),
             ("GET", "/dog.js") => Response::new(200, "text/javascript; charset=utf-8", DOG_JS)
                 .with_header("Cache-Control", "no-cache"),
             ("GET", "/dog-parts.png") => {

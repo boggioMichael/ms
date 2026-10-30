@@ -580,7 +580,12 @@ fn start_phone(
             }
         };
         let local = phone::serve_local(Arc::clone(&hub), 0)?;
+        // (It returns once the link works, or after a while: a link opened
+        // too early stays dead for minutes.)
         let opened = tunnel::open(&binary, local, &session_dir.join("tunnel.log"))?;
+        if opened.answered == Some(false) {
+            println!("  the link may take a few more seconds to open");
+        }
         let link = phone::link(&opened.url, &key);
         return Ok(PhoneLink {
             hub,
