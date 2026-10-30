@@ -15,6 +15,8 @@ use ms::phone::{Hub, VoiceOn};
 use ms::util::latency::{self, Key, Mode, Stage, TRACER};
 use serde_json::json;
 
+/// How far the phone's stamps may be off the PC's clock in this test.
+const PHONE_CLOCK_SLACK_MS: i64 = 5;
 const KEY: &str = "sk-test-key-0123456789abcdef";
 const BOARD_KEY: &str = "0123456789abcdef0123456789abcdef";
 const LINK_KEY: &str = "k1";
@@ -92,6 +94,14 @@ fn until_voiced(worker: &Worker, id: u64, on_audio: &mut dyn FnMut(bool, bool)) 
 
 /// Each of `stages` is in `line`, and none comes before the one before it.
 fn in_order(line: &str, stages: &[Stage]) {
+    in_order_within(line, stages, 0);
+}
+
+/// [`in_order`], give or take `slack` milliseconds: the phone's stamps are
+/// its own clock carried over to the PC's (the uptime it last heard, plus
+/// half a trip), right to within a few milliseconds — here, the moment the
+/// test's clock started against the link's.
+fn in_order_within(line: &str, stages: &[Stage], slack: i64) {
     let ms = |stage: &Stage| -> i64 {
         line.split(' ')
             .find_map(|part| part.strip_prefix(stage.name())?.strip_prefix('='))
@@ -100,7 +110,7 @@ fn in_order(line: &str, stages: &[Stage]) {
             .unwrap()
     };
     for pair in stages.windows(2) {
-        assert!(ms(&pair[0]) <= ms(&pair[1]), "{:?} in {line}", pair);
+        assert!(ms(&pair[0]) <= ms(&pair[1]) + slack, "{:?} in {line}", pair);
     }
 }
 
@@ -219,7 +229,7 @@ fn a_turn_of_its_own_brain_and_one_of_claudes_are_a_line_each() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     let line = &lines[0];
     assert!(line.contains("mode=claude"), "{line}");
-    in_order(
+    in_order_within(
         line,
         &[
             Stage::Spoke,
@@ -236,6 +246,7 @@ fn a_turn_of_its_own_brain_and_one_of_claudes_are_a_line_each() {
             Stage::Clip,
             Stage::Played,
         ],
+        PHONE_CLOCK_SLACK_MS,
     );
     assert!(line.contains(" spans=game_status@"), "{line}");
     assert!(line.contains(" settle=550"), "{line}");
