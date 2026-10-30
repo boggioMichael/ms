@@ -1634,6 +1634,11 @@
       if (m && m.levels) clipMouth = { seq, levels: m.levels, step: m.step_ms || 40 };
     }).catch(() => {});
   });
+  player.addEventListener("playing", () => {
+    if (!latencyOn() || playingClip === null || stampedClip === playingClip) return;
+    stampedClip = playingClip;
+    latencyPost({ clip: playingClip, played: pcT(Date.now()) });
+  });
   player.addEventListener("ended", () => { quietUntil = Date.now() + CLIP_TAIL_MS; playNextClip(); updateHold(); });
   player.addEventListener("error", () => { playNextClip(); updateHold(); });
 
@@ -2369,6 +2374,7 @@
       const rms = Math.sqrt(sum / input.length);
       const db = rms > 1e-5 ? 20 * Math.log10(rms) : -100;
       $("meter").style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)) + "%";
+      if (latencyOn() && db > floorDb + LATENCY_VOICE_DB) voiceAt = Date.now();
       talkingOver(db);
       if (!sendAudio.checked) return;
       const a = audio, both = recordingOn();
@@ -2468,6 +2474,42 @@
   // pause (status.settle_ms).
   let settleMs = 550;
 
+  // ---- timing (only while the PC asks for it: status.latency) --------------------------
+  // When the microphone last heard a voice (louder than the room), when the
+  // recogniser last changed the words and closed the sentence, when it was
+  // sent, when a clip began to play, and a live call's turns — on the PC's
+  // clock (its uptime as the last poll said, plus half a trip): the PC
+  // writes each turn's stages in its session log. Off, nothing is sent.
+  const LATENCY_VOICE_DB = 10, LATENCY_VOICE_RECENT_MS = 5000;
+  let voiceAt = 0, spokeAt = 0, finalAt = 0, stampedClip = null;
+  function latencyOn() { return status.latency === true; }
+  function pcT(ms) { return uptimeAt.uptime + (ms - uptimeAt.at + halfTrip()) / 1000; }
+  function heardStamps(now) {
+    const stamps = { spoke: pcT(spokeAt || now), sent: pcT(now), settle: settleMs,
+      rtt: Math.round(audio && audio.rtt ? audio.rtt : 0) };
+    if (voiceAt && now - voiceAt < LATENCY_VOICE_RECENT_MS) stamps.voice = pcT(voiceAt);
+    if (finalAt && finalAt >= spokeAt) stamps.final = pcT(finalAt);
+    finalAt = 0;
+    return stamps;
+  }
+  function latencyPost(body) {
+    if (latencyOn()) postJson("/api/latency", body).catch(() => {});
+  }
+  // A live call's turn, once, at its first sound: from when OpenAI heard
+  // the player stop (tools that ran after that, before the sound, with it).
+  function latencyLive(soundAt) {
+    const stop = liveCall.heardStopAt;
+    if (!latencyOn() || !stop || liveCall.latencyStop === stop) return;
+    liveCall.latencyStop = stop;
+    const live = { stop: pcT(stop), sound: pcT(soundAt) };
+    if (liveCall.startedAt) live.start = pcT(liveCall.startedAt);
+    if (liveCall.responding) live.response = pcT(liveCall.responding);
+    if (voiceAt && soundAt - voiceAt < LATENCY_VOICE_RECENT_MS) live.voice = pcT(voiceAt);
+    const ran = liveCall.toolsRan;
+    if (ran && ran.from >= stop) { live.tools = ran.names; live.tools_from = pcT(ran.from); live.tools_to = pcT(ran.to); }
+    latencyPost({ live });
+  }
+
   // `before`: the words were heard before this phone started speaking (a
   // sentence cut off by a clip is still the player's).
   function sendHeard(text, before) {
@@ -2485,7 +2527,9 @@
     clearTimeout(hearingTimer);
     hearingSent = text;
     $("heard").textContent = "“" + text + "”";
-    postJson("/api/heard", { text }).catch(() => {});
+    const body = { text };
+    if (latencyOn()) body.latency = heardStamps(now);
+    postJson("/api/heard", body).catch(() => {});
   }
 
   // The sentence being said: which result it is, how many of its words were
@@ -2515,7 +2559,7 @@
     // like a walkie-talkie; the player still stops it by talking loud over
     // it (talkingOver), which lets it listen at once.
     if (held) return;
-    heardAt = Date.now();
+    heardAt = spokeAt = Date.now();
     if (index !== current) { current = index; sentWords = 0; sentAll = ""; }
     said = transcript;
     const rest = restOf(index, transcript);
@@ -2537,6 +2581,7 @@
   }
   function final(index, transcript) {
     if (held) return;
+    spokeAt = finalAt = Date.now();
     clearTimeout(settleTimer);
     clearTimeout(hearingTimer);
     const rest = restOf(index, transcript);
@@ -2908,6 +2953,7 @@
         // PC counts these, and makes calls wait a little longer).
         if (liveCall.talking && Date.now() - liveCall.talkingAt < 1000) postJson("/api/turn", { what: "jumped in" }).catch(() => {});
         liveCall.userTalking = true;
+        liveCall.startedAt = Date.now();
         // The answer to their words will take in what was added meanwhile.
         liveCall.respondWanted = false;
         // The PC hears of it too (its coach keeps quiet while they talk).
@@ -2918,7 +2964,7 @@
       case "input_audio_buffer.speech_stopped":
         liveCall.userTalking = false;
         postJson("/api/talking", { on: false, who: "player" }).catch(() => {});
-        liveCall.stoppedAt = Date.now();
+        liveCall.stoppedAt = liveCall.heardStopAt = Date.now();
         liveCall.firstSoundTold = false;
         setTimeout(flushSay, 400);
         break;
@@ -2935,6 +2981,7 @@
         if (liveCall.stoppedAt && !liveCall.firstSoundTold) {
           liveCall.firstSoundTold = true;
           liveTiming("live: first sound " + ((Date.now() - liveCall.stoppedAt) / 1000).toFixed(1) + " s after the player stopped");
+          latencyLive(Date.now());
         }
         liveTalking(true);
         break;
@@ -3052,6 +3099,7 @@
     // answers. `respond` knows.)
     respond();
     // The call answers again after the tools: the player waits for that too.
+    liveCall.toolsRan = { names: calls.map((c) => c.name).join("/"), from: doneAt || Date.now(), to: Date.now() };
     liveCall.stoppedAt = doneAt || Date.now();
     liveCall.firstSoundTold = false;
     liveTiming("live: " + calls.map((c) => c.name).join(", ") + " ran in " + ((Date.now() - (doneAt || Date.now())) / 1000).toFixed(1) + " s; the answer after them is timed from here" + (liveCall.userTalking ? " (the player is talking: it answers with their next words)" : ""));

@@ -48,6 +48,7 @@ use ms::platform::sound::Player;
 use ms::platform::{self, voice::Voice};
 use ms::sight::Sight;
 use ms::sight::things::Fired;
+use ms::util::latency;
 use ms::vision::snapshot::{Detectors, PerceptionPipeline};
 use serde_json::json;
 use syrup::timing::FPSCounter;
@@ -106,6 +107,10 @@ OPTIONS
   --overlay-on-stream   let OBS and screenshots see the panel (by default it
                         keeps out of captures)
   --plain               no colours or redrawing in the console
+  --latency             write in the session log how long each stage of every
+                        voice turn took, one line per turn (also when
+                        MAPLESYRUP_LATENCY is set); tools/latency_table.py
+                        makes a table of them. It only writes them down
   --no-update           never look for a new version (it updates itself
                         otherwise: fetched in the background, installed at
                         the next start, rolled back if it does not come up)
@@ -202,6 +207,9 @@ struct Options {
     /// not connected (then it says so instead): what the Claude launcher
     /// starts.
     claude_only: bool,
+    /// Write how long each stage of every voice turn took in the session
+    /// log (`ms::util::latency`).
+    latency: bool,
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -247,6 +255,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         install_claude: false,
         background: false,
         claude_only: false,
+        latency: latency::asked_by_env(),
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -325,6 +334,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 o.claude_only = true;
                 o.claude = true;
             }
+            latency::FLAG => o.latency = true,
             "-h" | "--help" | "/?" => return Err(String::new()),
             other if other.starts_with('-') => return Err(format!("unknown option {other}")),
             path => o.input = Some(PathBuf::from(path)),
@@ -2285,6 +2295,20 @@ fn snapshot_text(
     snapshot
 }
 
+/// The game as a turn's timing tells it — in view (`in_view`: its screen is
+/// read) in front (`foreground`) or covered, behind another window and not
+/// read, not to be captured, or not open — as the reading for Claude has it
+/// ([`claude_scene`]).
+fn latency_game(companion: &Companion, in_view: bool, foreground: bool) -> latency::Game {
+    match companion.last().map(|o| &o.game) {
+        Some(GameView::Seen(_)) if in_view && foreground => latency::Game::Front,
+        Some(GameView::Seen(_)) if in_view => latency::Game::Covered,
+        Some(GameView::Seen(_)) => latency::Game::Behind,
+        Some(GameView::Unavailable(_)) => latency::Game::Unavailable,
+        _ => latency::Game::Closed,
+    }
+}
+
 /// A line of Claude's, said in MapleSyrup's voice (the one the player
 /// picked) and shown: by the natural voice when there is one, else by the
 /// PC's own.
@@ -3483,21 +3507,28 @@ impl Outputs {
                         about,
                     });
                 } else {
-                    return self.hand_clip(kind, wav, length);
+                    return self.hand_clip(id, kind, wav, length);
                 }
             }
         }
         None
     }
 
-    /// Hand the phone a clip of this `kind` (its page drops a warning or
-    /// news that waited too long for the tap), to play after the ones
-    /// before it. Returns when it begins to be heard.
-    fn hand_clip(&mut self, kind: Kind, wav: Vec<u8>, length: Duration) -> Option<Instant> {
+    /// Hand the phone a clip of job `id`'s line, of this `kind` (its page
+    /// drops a warning or news that waited too long for the tap), to play
+    /// after the ones before it. Returns when it begins to be heard.
+    fn hand_clip(
+        &mut self,
+        id: u64,
+        kind: Kind,
+        wav: Vec<u8>,
+        length: Duration,
+    ) -> Option<Instant> {
         let Some(hub) = &self.phone else {
             return None;
         };
-        hub.set_clip(kind, wav);
+        let clip = hub.set_clip(kind, wav);
+        latency::TRACER.clip(id, clip);
         // The phone fetches it at once and plays it after the last.
         let begins = self
             .mouth
@@ -3567,7 +3598,7 @@ impl Outputs {
                 length,
                 ..
             } = self.mouth.phone_held.remove(0);
-            if let Some(begins) = self.hand_clip(kind, wav, length) {
+            if let Some(begins) = self.hand_clip(id, kind, wav, length) {
                 handed.push((id, begins));
             }
         }
@@ -3969,6 +4000,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     ai::pronounce::load(&settings_dir);
     let session_dir = session::new_dir(&session::sessions_base(&settings_dir));
     let session = Session::open(session_dir.clone());
+    latency::TRACER.enable(options.latency);
     // What the session comes to, in numbers, kept on this PC — and made
     // ready to share only if the player turned that on (`ms::metrics`).
     let mut stats = ms::metrics::Stats::start(&settings_dir);
@@ -4564,6 +4596,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         lang_asks: 0,
         claude: false,
     };
+    if options.latency {
+        out.session.line(latency::LOG_KIND, latency::LOG_HEADER);
+    }
     let hello = companion.hello();
     out.apply(hello, &mut companion, None);
 
@@ -4914,6 +4949,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             for text in board.take_says() {
                 out.session.line("claude", &format!("says: {text}"));
                 if let Some(id) = claude_says(&mut out, text.clone(), Some(&fresh)) {
+                    latency::TRACER.said(&text, id);
                     claude_lines.handed(id, text);
                 }
             }
@@ -4947,6 +4983,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         );
                         let id = worker.send(job);
                         turns.asked(id, words);
+                        latency::TRACER.answered_here(*seq, id);
                     }
                     _ => out.session.line(
                         "claude",
@@ -4984,6 +5021,8 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 let overheard = matches!(inbound, Inbound::Overheard(_));
                 match inbound {
                     Inbound::Heard(heard) | Inbound::Overheard(heard) => {
+                        // (When it was taken, for the timing.)
+                        let heard_at = Instant::now();
                         // What the phone wrote down right after a talk-over
                         // whose words were written down already: those words
                         // again (or their end).
@@ -5110,6 +5149,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 &headline,
                                 format!("{headline}{note}\n\n{tone}\n\n{claude_reading}"),
                             );
+                            latency::TRACER.open(
+                                latency::Key::Heard(seq),
+                                latency::Mode::Claude,
+                                &heard,
+                                heard_at,
+                            );
                             // They wait for Claude's answer: the game's
                             // events wait meanwhile, and MapleSyrup answers
                             // if Claude doesn't in time.
@@ -5215,6 +5260,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                             text: answer,
                                         });
                                         turns.asked(id, &text);
+                                        latency::TRACER.open(
+                                            latency::Key::Job(id),
+                                            latency::Mode::Instant,
+                                            &heard,
+                                            heard_at,
+                                        );
                                     }
                                     continue;
                                 }
@@ -5233,6 +5284,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                         // Its turn, like any reply's: talked
                                         // over, it is the one cut short.
                                         turns.asked(id, &text);
+                                        latency::TRACER.open(
+                                            latency::Key::Job(id),
+                                            latency::Mode::Instant,
+                                            &heard,
+                                            heard_at,
+                                        );
                                     }
                                     continue;
                                 }
@@ -5247,6 +5304,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 if let Some(worker) = &out.mouth.ai {
                                     let id = worker.send(job);
                                     turns.asked(id, &text);
+                                    latency::TRACER.open(
+                                        latency::Key::Job(id),
+                                        latency::Mode::Model,
+                                        &heard,
+                                        heard_at,
+                                    );
                                 }
                             }
                         } else {
@@ -5959,6 +6022,12 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             if let Some(worker) = &out.mouth.ai {
                 let id = worker.send(job);
                 turns.asked(id, &text);
+                latency::TRACER.open(
+                    latency::Key::Job(id),
+                    latency::Mode::Model,
+                    &text,
+                    Instant::now(),
+                );
             }
         }
 
@@ -6121,6 +6190,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     if let Some(at) = at.filter(|_| start || companion.muted()) {
                         claude_lines.reached(id, at);
                     }
+                    if start
+                        && voice_on.pc()
+                        && !companion.muted()
+                        && let Some(at) = at
+                    {
+                        latency::TRACER.stamp_at(latency::Key::Job(id), latency::Stage::PcPlay, at);
+                    }
                     if start {
                         companion.remember_spoken(now, &text);
                         // (And as the voice was given it: what a transcriber
@@ -6157,13 +6233,18 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                         claude_lines.reached(id, begins);
                     }
                 }
-                Done::Voiced { id } => turns.voiced(id),
+                Done::Voiced { id } => {
+                    turns.voiced(id);
+                    latency::TRACER.voiced(id);
+                }
                 Done::Silent { id, heard } => {
                     turns.finished(id);
+                    latency::TRACER.ended(latency::Key::Job(id), latency::End::Silent);
                     out.session.line("silent", &heard);
                 }
                 Done::Failed { id, heard, error } => {
                     turns.finished(id);
+                    latency::TRACER.ended(latency::Key::Job(id), latency::End::Failed);
                     // (A line of Claude's whose voice failed was shown: it
                     // reached him as much as it will.)
                     claude_lines.reached(id, Instant::now());
@@ -6291,6 +6372,11 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 ),
                 Ordering::Relaxed,
             );
+            if latency::TRACER.enabled() {
+                let foreground = options.input.is_some() || game_area.is_some_and(|a| a.foreground);
+                let in_view = in_front.load(Ordering::Relaxed);
+                latency::TRACER.game(latency_game(&companion, in_view, foreground));
+            }
         }
 
         // The panel and the dog, about twelve times a second.
@@ -6418,6 +6504,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     (status.as_object_mut(), out.call_status())
                 {
                     fields.extend(call);
+                }
+                // (While the timing is on, the page sends its stamps.)
+                if latency::TRACER.enabled() {
+                    status[latency::STATUS_FIELD] = json!(true);
                 }
                 hub.set_status(status);
                 // What a live call can see: the screen only while the game is
@@ -6580,6 +6670,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     },
                 );
             }
+        }
+
+        for line in latency::TRACER.due(Instant::now()) {
+            out.session.line(latency::LOG_KIND, &line);
         }
 
         std::thread::sleep(Duration::from_millis(15));
