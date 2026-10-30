@@ -27,15 +27,48 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
 use syrup::geometry::{NormRect, Rect};
-use syrup::glyphs::{GlyphOptions, GlyphSet, LearnError, TextReading};
+use syrup::glyphs::{GlyphMatch, GlyphOptions, GlyphSet, LearnError, TextReading};
 use syrup::threshold::text_evidence;
 
 use crate::vision::hud_text::{parse_current_max, parse_percent};
+
+/// The delimiters the HUD writes around its numbers, as `delimiters.json`
+/// has them (checked by the tests).
+const DELIMITERS: &str = include_str!("delimiters.json");
+
+/// The characters around a value on the HUD's lines (`HP[50/114]`).
+#[derive(Debug, Deserialize)]
+struct Delimiters {
+    /// What the glyph before a value is learned as, whatever a labeller
+    /// took it for.
+    open: char,
+    /// What the glyph after a value is learned as.
+    close: char,
+    /// The other characters labellers write for them.
+    #[serde(default)]
+    also: Vec<char>,
+}
+
+impl Delimiters {
+    /// The delimiters, read once from `delimiters.json`.
+    fn get() -> &'static Delimiters {
+        static DELIMITERS_READ: OnceLock<Delimiters> = OnceLock::new();
+        DELIMITERS_READ.get_or_init(|| {
+            serde_json::from_str(DELIMITERS).unwrap_or_else(|e| panic!("delimiters.json: {e}"))
+        })
+    }
+
+    /// Whether `c` is one of them.
+    fn contains(&self, c: char) -> bool {
+        c == self.open || c == self.close || self.also.contains(&c)
+    }
+}
 
 /// A value the HUD prints beside a bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -390,6 +423,70 @@ fn normalised(text: &str) -> String {
     text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
+/// A label being learned: as the labeller wrote it, and as the HUD writes
+/// it ([`canonical`]), which is what is learned.
+struct Label<'a> {
+    said: &'a str,
+    text: &'a str,
+}
+
+impl Label<'_> {
+    /// For the log, when `spelling` is not what the labeller wrote.
+    fn as_said(&self, spelling: &str, from: &str) -> String {
+        if spelling == self.said {
+            String::new()
+        } else {
+            format!(" (the {from} said \"{}\")", self.said)
+        }
+    }
+}
+
+/// How far apart, in the line's typical pitch, the centres of two glyphs
+/// must stand for the gap between them to be a space. The glyph reader puts
+/// a space wherever a gap is half the line's height, and the classic HUD
+/// draws its thin digits on a wide, even pitch, a narrow 1 alone in a whole
+/// cell: two 1s leave that much room between them. On the player's screen
+/// of 25 October `HP[50/114]` read "50/1 14" (50 of 1: no reading, and the
+/// teacher asked every 25 s), `HP[0/114]` at a death "0/1 14" (1 was taken
+/// for the maximum), `HP[115/130]` "1 15/130" (warned of as 12%). Within a
+/// number the centres stand one pitch apart (13.5 to 19.5 columns on the
+/// owner's 4K line, whose pitch is 17); across the bracket the classic HUD
+/// draws too dark to be read, two (`619[49.84%]`: 34).
+const WORD_PITCH: f32 = 1.5;
+
+/// The line as read, with a space only where its glyphs stand at least
+/// [`WORD_PITCH`] typical pitches apart: of the spaces the glyph reader put
+/// in, those inside a run of evenly pitched glyphs — a number — go. (None
+/// is added: a gap the reader did not find wide is not a space.)
+fn respaced(reading: &TextReading) -> String {
+    let glyphs = &reading.glyphs;
+    let drawn = reading.text.chars().filter(|c| !c.is_whitespace()).count();
+    if glyphs.len() < 2 || drawn != glyphs.len() {
+        return reading.text.clone();
+    }
+    let centre = |g: &GlyphMatch| g.bounds.x as f32 + g.bounds.w as f32 / 2.0;
+    let pitch = |i: usize| centre(&glyphs[i]) - centre(&glyphs[i - 1]);
+    let mut pitches: Vec<f32> = (1..glyphs.len()).map(pitch).collect();
+    pitches.sort_by(f32::total_cmp);
+    let typical = pitches[pitches.len() / 2];
+    // The reader's text is each glyph's character in order, a space before
+    // some of them.
+    let mut out = String::with_capacity(reading.text.len());
+    let (mut next, mut spaced) = (0, false);
+    for c in reading.text.chars() {
+        if c.is_whitespace() {
+            spaced = true;
+            continue;
+        }
+        if spaced && next > 0 && pitch(next) >= WORD_PITCH * typical {
+            out.push(' ');
+        }
+        out.push(c);
+        (next, spaced) = (next + 1, false);
+    }
+    out
+}
+
 /// A line as read, with no space beside a decimal point or a thousands
 /// comma: the glyph reader puts one where the gap after a glyph is wide
 /// (the owner's classic `830[7.52%]` read "…7 .52%", which parsed as
@@ -414,10 +511,58 @@ fn tight(text: &str) -> String {
     out
 }
 
-/// The ways `label` (already normalised) might be printed on the line: as
-/// given first, then without the field's own name in front, without the
-/// brackets, with the thousands grouped by commas and without — every
-/// combination, each once. The value in it is never changed.
+/// `label` (normalised) with what stands around its value written as the
+/// HUD writes it: the field's name where the labeller wrote it, and a
+/// delimiter ([`Delimiters`]) on each side of the value where the labeller
+/// wrote anything else there — whatever they took it for. The OCR engine
+/// read the classic HUD's opening bracket as a t, a dot, a colon and a
+/// quote (25 October), and each, learned, made that one glyph another
+/// character to the font: no reading of it was sure, and each new label
+/// was refused or put another in its place. The value is as written, from
+/// its first digit to the first end that still says it; a label that says
+/// no value of the field is left as it is.
+fn canonical(field: Field, label: &str) -> String {
+    let Some(value) = parse(field, label) else {
+        return label.to_string();
+    };
+    let chars: Vec<char> = label.chars().collect();
+    let (Some(first), Some(last)) = (
+        chars.iter().position(char::is_ascii_digit),
+        chars.iter().rposition(char::is_ascii_digit),
+    ) else {
+        return label.to_string();
+    };
+    let text = |from: usize, to: usize| chars[from..to].iter().collect::<String>();
+    let Some(end) = (last + 1..=chars.len())
+        .find(|&end| parse(field, &text(first, end)).as_ref() == Some(&value))
+    else {
+        return label.to_string();
+    };
+    // In front of the value: the field's name, if the labeller wrote it,
+    // and whatever else they wrote there, which is the delimiter.
+    let name = field.label();
+    let named = text(0, first).to_ascii_uppercase().starts_with(name);
+    let name_ends = if named { name.chars().count() } else { 0 };
+    let delimiters = Delimiters::get();
+    let mut out = String::with_capacity(label.len());
+    if named {
+        out.push_str(name);
+    }
+    if first > name_ends {
+        out.push(delimiters.open);
+    }
+    out.push_str(&text(first, end));
+    if end < chars.len() {
+        out.push(delimiters.close);
+    }
+    out
+}
+
+/// The ways `label` (already normalised, and [`canonical`]) might be
+/// printed on the line: as given first, then without the field's own name
+/// in front, without the delimiters, with the thousands grouped by commas
+/// and without — every combination, each once. The value in it is never
+/// changed.
 fn spellings(field: Field, label: &str) -> Vec<String> {
     let prefix = field.label();
     let without_prefix = |s: &str| -> Option<String> {
@@ -426,22 +571,18 @@ fn spellings(field: Field, label: &str) -> Vec<String> {
             .strip_prefix(prefix)
             .map(|rest| s[s.len() - rest.len()..].to_string())
     };
-    // Brackets go only where dropping them does not run two numbers
+    // Delimiters go only where dropping them does not run two numbers
     // together: "8,954,288[18.99%]" without its brackets is not a line
     // anyone prints.
-    let without_brackets = |s: &str| -> Option<String> {
+    let delimiters = Delimiters::get();
+    let without_delimiters = |s: &str| -> Option<String> {
         let chars: Vec<char> = s.chars().collect();
         let joins = (1..chars.len().saturating_sub(1)).any(|i| {
-            matches!(chars[i], '[' | ']' | '(' | ')')
+            delimiters.contains(chars[i])
                 && chars[i - 1].is_ascii_digit()
                 && chars[i + 1].is_ascii_digit()
         });
-        (!joins).then(|| {
-            chars
-                .iter()
-                .filter(|c| !matches!(c, '[' | ']' | '(' | ')'))
-                .collect()
-        })
+        (!joins).then(|| chars.iter().filter(|c| !delimiters.contains(**c)).collect())
     };
     let without_commas = |s: &str| -> String { s.chars().filter(|c| *c != ',').collect() };
     let with_commas = |s: &str| -> String {
@@ -485,7 +626,7 @@ fn spellings(field: Field, label: &str) -> Vec<String> {
         .flatten()
         .collect();
     for base in &bases {
-        for bracketed in [Some(base.clone()), without_brackets(base)]
+        for bracketed in [Some(base.clone()), without_delimiters(base)]
             .into_iter()
             .flatten()
         {
@@ -497,15 +638,16 @@ fn spellings(field: Field, label: &str) -> Vec<String> {
     out
 }
 
-/// The ways `label` (already normalised) might read on the classic HUD's
-/// line: as on any line ([`spellings`]); then without its brackets, even
-/// where that runs two numbers together — the classic HUD draws them
-/// yellow-green, darker than its panel in the channel the glyph reader
-/// measures, so to the reader they are not there, and "619[49.84%]" reads
-/// as 619, a gap, 49.84% —; then with the field's name in front, where the
-/// line shows it and the labeller left it out. Those without the field's
-/// name go first, whatever the labeller said: the number alone is the
-/// cheaper line to read (see [`Numbers::learn`]'s classic attempts).
+/// The ways `label` (already normalised, and [`canonical`]) might read on
+/// the classic HUD's line: as on any line ([`spellings`]); then without its
+/// delimiters, even where that runs two numbers together — the classic HUD
+/// draws them yellow-green, darker than its panel in the channel the glyph
+/// reader measures, so to the reader they are not there (at 4K), and
+/// "619[49.84%]" reads as 619, a gap, 49.84% —; then with the field's name
+/// in front, where the line shows it and the labeller left it out. Those
+/// without the field's name go first, whatever the labeller said: the
+/// number alone is the cheaper line to read (see [`Numbers::learn`]'s
+/// classic attempts).
 ///
 /// The name is not only dressing. On the player's 4K frame MP's number
 /// alone does not learn: at the digits' own height (22 rows) the glyph
@@ -515,13 +657,10 @@ fn spellings(field: Field, label: &str) -> Vec<String> {
 /// rows tall, setting its height, both round to 4 and match at 0.998.
 fn classic_spellings(field: Field, label: &str) -> Vec<String> {
     let mut out = spellings(field, label);
+    let delimiters = Delimiters::get();
     let bare: Vec<String> = out
         .iter()
-        .map(|s| {
-            s.chars()
-                .filter(|c| !matches!(c, '[' | ']' | '(' | ')'))
-                .collect()
-        })
+        .map(|s| s.chars().filter(|c| !delimiters.contains(*c)).collect())
         .collect();
     for s in bare {
         if !s.is_empty() && !out.contains(&s) {
@@ -693,8 +832,13 @@ impl Numbers {
         numbers
     }
 
-    /// Learn a kept example again, from its picture, into its own font.
-    fn relearn(&mut self, sample: Sample) {
+    /// Learn a kept example again, from its picture, into its own font —
+    /// with its delimiters as the HUD writes them ([`canonical`]): an
+    /// example kept with what a labeller took a bracket for (".100/114",
+    /// "t93/114") would put that glyph back in the font as another
+    /// character.
+    fn relearn(&mut self, mut sample: Sample) {
+        sample.text = canonical(sample.field, &sample.text);
         let Ok(picture) = image::open(self.dir.join(&sample.picture)) else {
             return;
         };
@@ -841,7 +985,7 @@ impl Numbers {
                 .value
                 .filter(|r| !place.classic() || classic_sure(r));
             read = reading.and_then(|r| {
-                parse(field, &tight(&r.text)).map(|value| Read {
+                parse(field, &tight(&respaced(&r))).map(|value| Read {
                     value,
                     text: r.text,
                 })
@@ -949,12 +1093,13 @@ impl Numbers {
     }
 
     /// Learn `field`'s line from `frame`, where it reads exactly `text`
-    /// (as the labeller saw it; spaces do not count). The line is looked
-    /// for above the bar, on it and around it, and the first that splits
-    /// into as many glyphs as the label has characters is learned from and
-    /// remembered for `field`; failing those, the classic HUD's line above
-    /// the bar (a [`Window`]), into the classic font — first, for a field
-    /// last read there. Returns what was learned, for the log.
+    /// (as the labeller saw it; spaces do not count), with the delimiters
+    /// around its value as the HUD writes them ([`canonical`]). The line is
+    /// looked for above the bar, on it and around it, and the first that
+    /// splits into as many glyphs as the label has characters is learned
+    /// from and remembered for `field`; failing those, the classic HUD's
+    /// line above the bar (a [`Window`]), into the classic font — first,
+    /// for a field last read there. Returns what was learned, for the log.
     pub fn learn(
         &mut self,
         frame: &RgbaImage,
@@ -964,10 +1109,15 @@ impl Numbers {
         from: &str,
         now: Instant,
     ) -> Result<String, String> {
-        let label = normalised(text);
-        if label.is_empty() {
+        let said = normalised(text);
+        if said.is_empty() {
             return Err("an empty label".into());
         }
+        let canonical = canonical(field, &said);
+        let label = Label {
+            said: &said,
+            text: &canonical,
+        };
         self.state.entry(field).or_default().last_sample = Some(now);
         // Of all the ways tried (three lines, each spelling), the failure
         // reported is the most telling one: a line that split into as many
@@ -995,8 +1145,8 @@ impl Numbers {
             (Some((_, w)), _) | (None, Some((_, w))) => w,
             (None, None) => "no line to learn from".into(),
         };
-        let kept = self.keep_failure(frame, field, band, &label);
-        Err(format!("\"{label}\" could not be learned: {why}{kept}"))
+        let kept = self.keep_failure(frame, field, band, &said);
+        Err(format!("\"{said}\" could not be learned: {why}{kept}"))
     }
 
     /// Learn `field`'s line on, by or around the bar, into the font: what
@@ -1006,7 +1156,7 @@ impl Numbers {
         frame: &RgbaImage,
         field: Field,
         band: &NormRect,
-        label: &str,
+        label: &Label,
         from: &str,
         why: &mut Option<(u8, String)>,
     ) -> Option<String> {
@@ -1018,7 +1168,7 @@ impl Numbers {
         // [6370/6370]" for a line that shows 6370 / 6370, or 8954288 for
         // 8,954,288. The line decides, among the ways the value could be
         // printed; the glyph reader keeps only what reads back.
-        let labels = spellings(field, label);
+        let labels = spellings(field, label.text);
         for line in lines {
             let region = line.region(band, fw, fh);
             if region.w < 8 || region.h < 6 {
@@ -1035,11 +1185,7 @@ impl Numbers {
                         self.lines.insert(field, line);
                         self.classic_first.remove(&field);
                         self.state.entry(field).or_default().attempts = 0;
-                        let as_said = if spelling == label {
-                            String::new()
-                        } else {
-                            format!(" (the {from} said \"{label}\")")
-                        };
+                        let as_said = label.as_said(spelling, from);
                         return Some(format!(
                             "learned {count} glyphs of \"{spelling}\"{as_said} ({:?} the {} bar, from the {from}); the font knows {} characters",
                             line,
@@ -1047,7 +1193,7 @@ impl Numbers {
                             self.glyphs()
                         ));
                     }
-                    Err(e) => note(why, &e, spelling, label, &format!("{line:?} the bar")),
+                    Err(e) => note(why, &e, spelling, label.said, &format!("{line:?} the bar")),
                 }
             }
         }
@@ -1070,7 +1216,7 @@ impl Numbers {
         frame: &RgbaImage,
         field: Field,
         band: &NormRect,
-        label: &str,
+        label: &Label,
         from: &str,
         why: &mut Option<(u8, String)>,
     ) -> Option<String> {
@@ -1100,7 +1246,7 @@ impl Numbers {
                 windows.push((window, Some(runs)));
             }
         }
-        let labels = classic_spellings(field, label);
+        let labels = classic_spellings(field, label.text);
         let mut tries = 0;
         for spelling in &labels {
             let chars = spelling.chars().count();
@@ -1154,18 +1300,14 @@ impl Numbers {
                         self.windows.insert(field, window);
                         self.classic_first.insert(field);
                         self.state.entry(field).or_default().attempts = 0;
-                        let as_said = if spelling == label {
-                            String::new()
-                        } else {
-                            format!(" (the {from} said \"{label}\")")
-                        };
+                        let as_said = label.as_said(spelling, from);
                         return Some(format!(
                             "learned {count} glyphs of \"{spelling}\"{as_said} (the line above the {} bar, in the classic HUD's font, from the {from}); the font knows {} characters",
                             field.label(),
                             self.glyphs()
                         ));
                     }
-                    Err(e) => note(why, &e, spelling, label, "the line above the bar"),
+                    Err(e) => note(why, &e, spelling, label.said, "the line above the bar"),
                 }
             }
         }
@@ -1386,6 +1528,291 @@ pub(crate) mod tests {
         let dir = std::env::temp_dir().join(format!("ms-numbers-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    /// A Classic World HP line as the player's screen drew it on 25
+    /// October (`HP[50/114]`), above an HP bar `fill` full: a thin font on
+    /// a fixed pitch (the 5×7 font, 2 columns apart), where a narrow 1
+    /// stands in a whole cell — two 1s leave half the line's height between
+    /// them, where the glyph reader puts a space ("50/1 14", "1 15/130").
+    /// The opening bracket is drawn light enough for the reader to see, the
+    /// closing one dark green, which it does not see (its labellers do:
+    /// ".100/114)", "HPt93/114)").
+    pub(crate) fn classic_line(text: &str, fill: f32) -> (RgbaImage, NormRect) {
+        let (fw, fh) = (1280u32, 720u32);
+        let mut f = RgbaImage::from_pixel(fw, fh, Rgba([70, 100, 150, 255]));
+        for y in 640..fh {
+            for x in 0..fw {
+                f.put_pixel(x, y, Rgba([44, 46, 52, 255]));
+            }
+        }
+        let (x0, y0, w, h) = (100u32, 690u32, 260u32, 10u32);
+        let end = x0 + (w as f32 * fill.clamp(0.0, 1.0)) as u32;
+        for y in y0..y0 + h {
+            for x in x0..x0 + w {
+                let p = if x < end {
+                    Rgba([230, 40, 50, 255])
+                } else {
+                    Rgba([90, 90, 96, 255])
+                };
+                f.put_pixel(x, y, p);
+            }
+        }
+        let pitch = i64::from(draw::GLYPH_WIDTH + 2);
+        for (i, c) in text.chars().enumerate() {
+            let ink = match c {
+                '[' => Rgba([200, 235, 150, 255]),
+                ']' => Rgba([60, 150, 20, 255]),
+                _ => Rgba([235, 235, 235, 255]),
+            };
+            let x = i64::from(x0) + 2 + i as i64 * pitch;
+            draw::draw_text(&c.to_string(), x, i64::from(y0) - 11, 1, |x, y| {
+                f.put_pixel(x as u32, y as u32, ink)
+            });
+        }
+        (f, NormRect::from_pixels(x0, y0, w, h, fw, fh))
+    }
+
+    /// The labels of the player's session of 25 October, in its order —
+    /// the model's, and the OCR engine's with its misread brackets — each
+    /// on the line it was read from, learned as the sight learns them.
+    pub(crate) fn learn_the_sessions_labels(numbers: &mut Numbers) {
+        let now = Instant::now();
+        for (line, label, from) in [
+            ("HP[73/114]", "73/114", "model"),
+            ("HP[100/114]", ".100/114)", "ocr"),
+            ("HP[50/114]", "HP[50/114]", "model"),
+            ("HP[93/114]", "HPt93/114)", "ocr"),
+            ("HP[114/114]", "'114/114)", "ocr"),
+        ] {
+            let amount = parse(Field::Hp, line).expect("a line of the session");
+            let (frame, band) = classic_line(line, amount.percent() / 100.0);
+            let learned = numbers.learn(&frame, Field::Hp, &band, label, from, now);
+            eprintln!("{label}: {learned:?}");
+        }
+    }
+
+    #[test]
+    fn the_classic_line_of_25_october_is_read_every_frame_whatever_its_labels_took_the_brackets_for()
+     {
+        let dir = temp_dir("classic-25-10");
+        let mut numbers = Numbers::load(&dir);
+        learn_the_sessions_labels(&mut numbers);
+        // Not one of the labellers' misreadings of the bracket is a
+        // character of either font: one glyph, one character.
+        let chars: Vec<char> = numbers
+            .font
+            .chars()
+            .chain(numbers.classic.values().flat_map(GlyphSet::chars))
+            .collect();
+        for junk in ['.', 't', '\'', ':', ')'] {
+            assert!(!chars.contains(&junk), "{junk:?} learned: {chars:?}");
+        }
+        // Every line of the session reads, on every frame, as it says — the
+        // death (0 of 114, never 0 of 1), the revival, level 6's 115 and
+        // 111 of 130 (never 15 or 1 of 130: "HP critical: 12%!", "1%!").
+        let amount = |current, max| Some(Value::Amount { current, max });
+        for (line, want) in [
+            ("HP[0/114]", amount(0, 114)),
+            ("HP[50/114]", amount(50, 114)),
+            ("HP[73/114]", amount(73, 114)),
+            ("HP[114/114]", amount(114, 114)),
+            ("HP[115/130]", amount(115, 130)),
+            ("HP[111/130]", amount(111, 130)),
+        ] {
+            let fill = parse(Field::Hp, line).unwrap().percent() / 100.0;
+            let (frame, band) = classic_line(line, fill);
+            for i in 0..3 {
+                let read = numbers.read(&frame, Field::Hp, &band);
+                assert_eq!(read.map(|r| r.value), want, "{line}, frame {i}");
+            }
+        }
+        // And so after a restart, from the examples kept.
+        let mut again = Numbers::load(&dir);
+        let (frame, band) = classic_line("HP[50/114]", 50.0 / 114.0);
+        assert_eq!(
+            again.read(&frame, Field::Hp, &band).map(|r| r.value),
+            amount(50, 114)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_delimiters_are_data_and_never_part_of_a_value() {
+        let d = Delimiters::get();
+        assert_ne!(d.open, d.close);
+        for c in [d.open, d.close].into_iter().chain(d.also.iter().copied()) {
+            assert!(!c.is_ascii_digit() && !c.is_whitespace(), "{c:?}");
+            assert!(d.contains(c));
+            // A value written between them still says itself.
+            let line = format!("{c}50/114{c}");
+            assert_eq!(
+                parse(Field::Hp, &line),
+                Some(Value::Amount {
+                    current: 50,
+                    max: 114
+                }),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn what_a_labeller_wrote_around_a_value_is_learned_as_the_huds_delimiters() {
+        let (open, close) = (Delimiters::get().open, Delimiters::get().close);
+        // The OCR engine's and the model's labels of 25 October.
+        for (said, field, want) in [
+            (".100/114)", Field::Hp, format!("{open}100/114{close}")),
+            ("HPt93/114)", Field::Hp, format!("HP{open}93/114{close}")),
+            ("'114/114)", Field::Hp, format!("{open}114/114{close}")),
+            (":33/114)", Field::Hp, format!("{open}33/114{close}")),
+            ("hp[50/114]", Field::Hp, format!("HP{open}50/114{close}")),
+            ("73/114", Field::Hp, "73/114".into()),
+            ("MP53/53", Field::Mp, "MP53/53".into()),
+            // EXP's percent sign is its value's; the bracket between its
+            // two numbers is as written.
+            ("830[7.52%]", Field::Exp, format!("830[7.52%{close}")),
+            (
+                "EXP8,954,288(18.99%)",
+                Field::Exp,
+                format!("EXP8,954,288(18.99%{close}"),
+            ),
+        ] {
+            let written = canonical(field, said);
+            assert_eq!(written, want, "{said}");
+            assert_eq!(parse(field, &written), parse(field, said), "{said}");
+            assert_eq!(canonical(field, &written), written, "{said}: settled");
+        }
+        // Delimiters a labeller read as digits are digits to the label: its
+        // number is wrong, and the bar refuses it (`believable`).
+        assert_eq!(canonical(Field::Hp, "150/1141"), "150/1141");
+        // A label that is no value of the field is left as it is.
+        assert_eq!(canonical(Field::Hp, "2400/400"), "2400/400");
+        assert_eq!(canonical(Field::Hp, "HP[--/--]"), "HP[--/--]");
+    }
+
+    /// A reading of `text` as the glyph reader gives it: each character a
+    /// glyph `pitch` columns after the one before (a space adds `gap`),
+    /// one column wide for a 1 and five for anything else.
+    fn reading(text: &str, pitch: u32, gap: u32) -> TextReading {
+        let mut x = 0;
+        let mut glyphs = Vec::new();
+        for c in text.chars() {
+            if c == ' ' {
+                x += gap;
+                continue;
+            }
+            let w = if c == '1' { 1 } else { 5 };
+            glyphs.push(GlyphMatch {
+                ch: c,
+                bounds: Rect {
+                    x: x + (5 - w) / 2,
+                    y: 0,
+                    w,
+                    h: 7,
+                },
+                score: 1.0,
+                margin: 1.0,
+            });
+            x += pitch;
+        }
+        TextReading {
+            text: text.into(),
+            glyphs,
+        }
+    }
+
+    #[test]
+    fn a_space_inside_an_evenly_pitched_number_is_not_read() {
+        // The narrow 1s of the classic HUD, a whole cell each: the reader's
+        // spaces between them go, the numbers stand.
+        for (said, want) in [
+            ("50/1 14", "50/114"),
+            ("0/1 14", "0/114"),
+            ("1 15/130", "115/130"),
+            ("1 1 1/130", "111/130"),
+        ] {
+            assert_eq!(respaced(&reading(said, 7, 0)), want, "{said}");
+        }
+        // A cell left empty between two glyphs (the bracket the classic HUD
+        // draws too dark to be read) is a space, as the reader said.
+        assert_eq!(respaced(&reading("830 7.52%", 7, 7)), "830 7.52%");
+        assert_eq!(
+            parse(Field::Exp, &tight(&respaced(&reading("830 7.52%", 7, 7)))),
+            Some(Value::Percent(7.52))
+        );
+        // One glyph, or a text that does not match its glyphs: as read.
+        assert_eq!(respaced(&reading("7", 7, 0)), "7");
+        let mut odd = reading("50/114", 7, 0);
+        odd.text = "50/1 14 ".into();
+        odd.glyphs.pop();
+        assert_eq!(respaced(&odd), "50/1 14 ");
+    }
+
+    #[test]
+    fn examples_kept_with_what_a_labeller_took_the_bracket_for_are_relearned_as_delimiters() {
+        // What a MapleSyrup before this one kept on 25 October: the line
+        // from the bracket on, learned with the OCR engine's ".100/114)" as
+        // ".100/114" and its "HPt93/114)" as "t93/114" — the one glyph a dot
+        // in one example and a t in the other.
+        let dir = temp_dir("kept-junk");
+        let mut classic = Vec::new();
+        for (n, (line, kept)) in [("HP[100/114]", ".100/114"), ("HP[93/114]", "t93/114")]
+            .into_iter()
+            .enumerate()
+        {
+            let fill = parse(Field::Hp, line).unwrap().percent() / 100.0;
+            let (frame, band) = classic_line(line, fill);
+            let (fw, fh) = frame.dimensions();
+            let whole = Window::whole(&band, fw, fh).region(&band, fw, fh);
+            // The cut before the bracket: past the field's name, H and P.
+            let (left, _) = cuts(&frame, whole).expect("the line")[2];
+            let window = Window::starting(left, &band, fw, fh);
+            let region = window.region(&band, fw, fh);
+            let picture = format!("font/hp-classic-{}.png", n + 1);
+            std::fs::create_dir_all(dir.join("font")).unwrap();
+            image::imageops::crop_imm(&frame, region.x, region.y, region.w, region.h)
+                .to_image()
+                .save(dir.join(&picture))
+                .unwrap();
+            classic.push(Sample {
+                field: Field::Hp,
+                text: kept.into(),
+                picture,
+                line: Line::Above,
+                from: "ocr".into(),
+                when: "2026-10-25 21:03".into(),
+                window: Some(window),
+            });
+        }
+        let saved = Saved {
+            samples: Vec::new(),
+            classic,
+        };
+        std::fs::write(
+            dir.join("font.json"),
+            serde_json::to_string(&saved).unwrap(),
+        )
+        .unwrap();
+        let mut numbers = Numbers::load(&dir);
+        assert_eq!(numbers.samples().len(), 2, "both relearned");
+        let open = Delimiters::get().open;
+        for sample in numbers.samples() {
+            assert!(sample.text.starts_with(open), "{}", sample.text);
+        }
+        let chars: Vec<char> = numbers.classic[&Field::Hp].chars().collect();
+        assert!(!chars.contains(&'.') && !chars.contains(&'t'), "{chars:?}");
+        assert!(chars.contains(&open), "{chars:?}");
+        // And the line reads, bracket and all.
+        let (frame, band) = classic_line("HP[0/114]", 0.0);
+        assert_eq!(
+            numbers.read(&frame, Field::Hp, &band).map(|r| r.value),
+            Some(Value::Amount {
+                current: 0,
+                max: 114
+            })
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The classic HUD of a player's 4K screen (see `tests/classic_hud.rs`)

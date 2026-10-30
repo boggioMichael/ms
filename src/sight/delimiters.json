@@ -1,0 +1,6 @@
+{
+  "about": "The delimiters the HUD writes around the numbers beside its bars (HP[50/114]), for learning the glyphs it draws them in. Whatever a labeller took a delimiter for (the OCR engine read the classic HUD's opening bracket as a t, a dot, a colon and a quote), the glyph before a value is learned as \"open\" and the one after it as \"close\": one glyph is always one character to the font. \"also\": the other characters labellers write for them, which a line may be tried without, like these.",
+  "open": "[",
+  "close": "]",
+  "also": ["(", ")"]
+}
