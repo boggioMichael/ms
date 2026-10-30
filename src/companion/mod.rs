@@ -11,12 +11,14 @@
 //! whether the player is still there when the game has sat idle for twenty
 //! minutes without a word from them. Everything else waits to be asked.
 
+pub mod age;
 pub mod attitude;
 pub mod chat;
 pub mod commands;
 pub mod exp;
 pub mod instant;
 pub mod observation;
+pub mod spectrum;
 
 pub use attitude::{Attitude, Deck};
 

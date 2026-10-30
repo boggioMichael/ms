@@ -124,8 +124,29 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     one below it is a misread until it has held `LOWER_LEVEL_HOLDS` times
     as long, then taken quietly. The EXP bar's wrap only has the sight
     read the number again.
-  - A tone complaint ("don't talk to me this way") drops the attitude to
-    friendly (`commands::tone_complaint`).
+  - A tone complaint ("don't talk to me this way") brings the bar down to
+    the friendly voice's own level (`commands::tone_complaint`).
+  - **The bar** (`companion::spectrum`, `spectrum.json`): how it talks, from
+    a level for young children to the wildest. Each level names the deck
+    voice its own lines use (an `Attitude`), whether it is for adults only,
+    and its instructions for the models (`style::rules`). Where the player
+    set it is `Memory::tone`; it talks at `Memory::level` — held at the
+    last level open to all while the age gate does not know them to be of
+    age (`companion::age`, `age.json`: the age of majority by country and
+    region, never under 18, each with the law it comes from and where it
+    was read (a test holds every entry to it); the country from their
+    public IP, the first lookup that answers). `Memory::retune` keeps `attitude` the level's
+    voice. The phone posts `/api/tone` and `/api/age`, and reads `tone` and
+    `age` off the status: the question is asked once the bar is set past
+    the levels open to all (savage and unhinged; blunt's mild swearing is
+    open, like the game's own teen rating). The bar is on the main screen,
+    right under Start listening. When the level it talks at changes (not
+    at start, not for a new place), `ToneHeard` waits for it to settle and
+    says the level's own `said_when_set` line; while Claude talks, Claude
+    gets a `tone` event instead and says one itself. Claude has the
+    level's rules (`claude::tone`) with every `heard` and `phone` event
+    and in `player_profile`, and the brief (`kit/CLAUDE.md`) tells it to
+    follow them.
 - **`coach/`**: when MapleSyrup speaks up on its own beyond that. `Coach`
   is fed every frame and returns a `Reason` when a model should look:
   `CloseCall` and `Streak` (reactions: they wait only for the talking to

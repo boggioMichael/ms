@@ -89,6 +89,8 @@ words: a say for words he has since followed with newer ones is not said (he mov
 over your voice. When he tells you to stop or be quiet, stop: say nothing more unless he asks. A line of yours \
 he spoke before hearing is named in his words (\"not said\"): he never heard it. \
 kind=\"phone\": his phone connected — he can talk to you now. \
+kind=\"tone\": he moved the bar of how you talk to him on his phone: from now on talk to him the way it says, and \
+say one short line in the new tone (heard and phone events carry the bar's rules too). \
 kind=\"death\" | \"level_up\" | \"map\" | \"hp\" | \"mp\" | \"dialog\" | \"thing\" | \"window\" | \"state\": something \
 changed. Speak up only when it helps him right now — danger, a real milestone, a quest or dialog you can help \
 with, something he asked you to watch; otherwise stay silent. kind=\"offline\": MapleSyrup stopped.";

@@ -99,6 +99,88 @@
   .seg.three { grid-template-columns: repeat(3, 1fr); }
   .seg button { border: 1px solid var(--line); background: var(--card2); color: var(--dim); border-radius: 10px; padding: 9px 4px; font-size: 14px; }
   .seg button.sel { background: var(--syrup); color: #1a1209; border-color: var(--syrup); font-weight: 700; }
+  /* How it talks: a bar from the gentlest level to the wildest. It runs the
+     same way in every language, right-to-left pages too: the gentlest on
+     the left, the wildest on the right. Its look follows where its knob is
+     (TONE_LOOK in the script sets the --tone-* colours, --at, --sweet and
+     --gross): a sweet pink with sparkles and hearts at one end, the syrup in
+     the middle, a sickly sludge green that oozes, bubbles and draws flies at
+     the other. The range input itself is invisible over the drawn bar: it
+     takes the touches and the keys, the drawing follows its value. */
+  .tone-card { margin-top: 12px; padding: 10px 12px 8px; text-align: start; border-radius: 14px; background: var(--card2);
+    border: 1px solid var(--tone-edge, var(--line)); box-shadow: 0 0 22px var(--tone-haze, transparent);
+    transition: border-color .4s ease, box-shadow .4s ease; }
+  .tone-card h2 { margin: 0 0 2px; }
+  .tone-now, .tone-lock { margin: 4px 0 0; }
+  .age-card { margin-top: 10px; padding: 12px; text-align: start; border-radius: 14px; background: var(--card2);
+    border: 1px solid var(--syrup-dark); }
+  .tone { position: relative; direction: ltr; margin: 4px 0 2px; }
+  .tone-track { position: relative; height: 46px; }
+  .tone-rail, .tone-fill, .tone-locked { position: absolute; top: 50%; height: 16px; margin-top: -8px; border-radius: 999px; }
+  .tone-rail { left: 0; right: 0; background: linear-gradient(90deg, var(--tone-ramp, var(--line), var(--line)));
+    opacity: .22; box-shadow: inset 0 1px 3px #000c; }
+  .tone-fill { left: 0; width: calc(var(--at, .5) * (100% - 38px) + 19px); overflow: hidden;
+    background: linear-gradient(90deg, var(--tone-b), var(--tone-a) 35%, var(--tone-c) 50%, var(--tone-a) 65%, var(--tone-b));
+    background-size: 220% 100%; animation: tone-flow 2.6s linear infinite;
+    box-shadow: 0 0 16px var(--tone-glow), inset 0 1px 0 #ffffff59; transition: width .3s cubic-bezier(.3, 1.45, .5, 1); }
+  .tone-fill::before, .tone-fill::after { content: ""; position: absolute; inset: 0; pointer-events: none; }
+  /* Sparkles towards the sweet end, sludge towards the wild one. */
+  .tone-fill::before { opacity: var(--sweet, 0); animation: tone-sparkle 1.4s linear infinite;
+    background: radial-gradient(circle, #fff 0 1.3px, transparent 2px) 0 0 / 15px 10px,
+      radial-gradient(circle, #ffffffb3 0 1px, transparent 1.7px) 7px 5px / 15px 10px; }
+  .tone-fill::after { opacity: var(--gross, 0); animation: tone-ooze 3.2s linear infinite;
+    background: radial-gradient(circle at 30% 65%, #3b2c09d9 0 3.5px, transparent 4.5px) 0 0 / 23px 16px,
+      radial-gradient(circle at 72% 30%, #c3cf45 0 2px, transparent 3px) 11px 0 / 23px 16px,
+      radial-gradient(circle at 50% 100%, #4a3b0c 0 4px, transparent 5px) 5px 0 / 17px 16px; }
+  /* Past the levels open to all, for a player not known to be of age. */
+  .tone-locked { right: 0; left: calc(var(--lock, 1) * (100% - 38px) + 19px); border-radius: 0 999px 999px 0;
+    background: repeating-linear-gradient(135deg, #000000b3 0 5px, #00000052 5px 10px); }
+  .tone-locked::before { content: "🔒"; position: absolute; left: -9px; top: -22px; font-size: 13px; }
+  .tone-knob { position: absolute; top: 50%; left: calc(var(--at, .5) * (100% - 38px)); width: 38px; height: 38px; margin-top: -19px;
+    border-radius: 50%; display: grid; place-items: center; font-size: 20px; line-height: 1;
+    background: radial-gradient(circle at 34% 28%, #ffffffb8, transparent 48%), var(--tone-a, var(--syrup));
+    border: 2px solid #ffffff73; box-shadow: 0 0 0 5px var(--tone-ring, transparent), 0 4px 18px var(--tone-glow, transparent);
+    transition: left .3s cubic-bezier(.3, 1.45, .5, 1), background-color .3s ease; }
+  .tone-knob.sweet { animation: tone-beat 1.15s ease-in-out infinite; }
+  .tone-knob.gross { animation: tone-wobble 2.3s ease-in-out infinite; }
+  .tone-knob.pop { animation: tone-pop .4s ease-out; }
+  #toneBar { position: absolute; left: 0; top: 0; width: 100%; height: 46px; margin: 0; z-index: 2; opacity: 0; cursor: pointer;
+    -webkit-appearance: none; appearance: none; background: none; direction: ltr; }
+  #toneBar::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 38px; height: 38px; }
+  #toneBar::-moz-range-thumb { width: 38px; height: 38px; border: 0; }
+  #toneBar:focus-visible + .tone-track .tone-knob { outline: 2px solid var(--text); outline-offset: 3px; }
+  .tone-fx { position: absolute; left: 0; right: 0; bottom: 23px; height: 0; pointer-events: none; z-index: 3; }
+  .fx { position: absolute; bottom: 0; font-style: normal; line-height: 1; will-change: transform, opacity; }
+  .fx-sweet { animation: fx-float 1.9s ease-out forwards; }
+  .fx-fly { animation: fx-buzz 2.3s ease-in-out forwards; }
+  .fx-poo { animation: fx-float 2.4s ease-out forwards; }
+  .fx-goo { width: var(--s, 9px); height: var(--s, 9px); border-radius: 50%; animation: fx-bubble 1.8s ease-in forwards;
+    background: radial-gradient(circle at 35% 30%, #eef59a, #8f9b22 45%, #574711); box-shadow: 0 0 6px #7f8f1f99; }
+  .tone .ends { display: flex; justify-content: space-between; font-size: 12px; font-weight: 600; direction: ltr; }
+  .tone .ends span { unicode-bidi: plaintext; }
+  .tone .ends span:first-child { color: var(--tone-low, var(--faint)); }
+  .tone .ends span:last-child { color: var(--tone-high, var(--faint)); }
+  .tone-now b { color: var(--tone-c, var(--text)); text-shadow: 0 0 12px var(--tone-glow, transparent); font-size: 16px; transition: color .3s ease; }
+  @keyframes tone-flow { to { background-position: -220% 0; } }
+  @keyframes tone-sparkle { to { background-position: 15px -10px, 22px -5px; } }
+  @keyframes tone-ooze { to { background-position: -23px 0, -12px 0, -12px 0; } }
+  @keyframes tone-beat { 0%, 100% { transform: scale(1); } 14% { transform: scale(1.15); } 28% { transform: scale(1); } 42% { transform: scale(1.09); } }
+  @keyframes tone-wobble { 0%, 100% { transform: rotate(0) scale(1); } 25% { transform: rotate(-9deg) scale(1.05, .93); }
+    50% { transform: rotate(6deg) scale(.95, 1.06); } 75% { transform: rotate(-4deg); } }
+  @keyframes tone-pop { 0% { transform: scale(1); } 40% { transform: scale(1.38); } 100% { transform: scale(1); } }
+  @keyframes fx-float { 0% { transform: translate(0, 0) scale(.6); opacity: 0; } 15% { opacity: 1; }
+    100% { transform: translate(var(--dx, 0), -66px) scale(1.15) rotate(var(--r, 0deg)); opacity: 0; } }
+  @keyframes fx-bubble { 0% { transform: translate(0, 0) scale(.4); opacity: 0; } 20% { opacity: 1; }
+    85% { transform: translate(var(--dx, 0), -40px) scale(1); opacity: 1; } 100% { transform: translate(var(--dx, 0), -44px) scale(1.8); opacity: 0; } }
+  @keyframes fx-buzz { 0% { transform: translate(0, 0); opacity: 0; } 10% { opacity: 1; } 25% { transform: translate(15px, -18px) rotate(20deg); }
+    45% { transform: translate(-13px, -30px) rotate(-25deg); } 65% { transform: translate(17px, -40px) rotate(15deg); }
+    85% { transform: translate(-9px, -52px) rotate(-10deg); opacity: 1; } 100% { transform: translate(var(--dx, 0), -64px); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .tone-fill, .tone-fill::before, .tone-fill::after, .tone-knob.sweet, .tone-knob.gross, .tone-knob.pop { animation: none; }
+    .tone-fx { display: none; }
+  }
+  button.link { background: none; border: 0; padding: 0; color: var(--syrup); font: inherit; text-decoration: underline; }
+  .age-q { font-weight: 700; font-size: 17px; margin-bottom: 4px; }
   label.opt { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; color: var(--dim); font-size: 14px; }
   select { background: var(--card2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px; font-size: 14px; }
   input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--syrup); flex: none; }
@@ -230,6 +312,32 @@
 
 <section class="card mic">
   <button id="listen">🎙️ Start listening</button>
+  <!-- How it talks: right by the button, and the question its wild end asks. -->
+  <div class="tone-card" id="toneCard">
+    <h2 id="toneTitle" data-t="attitude">How it talks to you</h2>
+    <div class="tone">
+      <input type="range" id="toneBar" min="0" max="0" step="1" value="0" aria-labelledby="toneTitle">
+      <div class="tone-track" aria-hidden="true">
+        <div class="tone-rail"></div>
+        <div class="tone-fill"></div>
+        <div class="tone-locked" id="toneLockZone" hidden></div>
+        <div class="tone-knob" id="toneKnob"><span id="toneFace"></span></div>
+        <div class="tone-fx" id="toneFx"></div>
+      </div>
+      <div class="ends"><span data-t="tone_low">For kids</span><span data-t="tone_high">Wildest</span></div>
+    </div>
+    <div class="sub tone-now"><b id="toneName"></b> <span id="toneHint"></span></div>
+    <div class="sub tone-lock" id="toneLock" hidden><span id="toneLockText"></span> <button class="link" id="toneAge" data-t="age_change">Change my answer</button></div>
+  </div>
+  <div class="age-card" id="ageCard" hidden>
+    <div class="age-q" id="ageQ"></div>
+    <div class="sub" id="ageIn"></div>
+    <div class="sub" data-t="age_hint">The wild end of “How it talks to you” swears hard, so it's for adults. Until you answer, it swears only a little.</div>
+    <div class="buttons two" style="margin-top:10px">
+      <button id="ageYes" data-t="age_yes">Yes</button>
+      <button id="ageNo" data-t="age_no">No</button>
+    </div>
+  </div>
   <div class="meter"><i id="meter"></i></div>
   <div id="micStatus" data-t="mic_idle">Tap, allow the microphone, and talk to me like you would to a friend.</div>
   <div id="heard"></div>
@@ -279,11 +387,7 @@
     </section>
 
     <section class="card">
-      <h2 data-t="attitude">How it talks to you</h2>
-      <div class="seg three" id="attitudeSeg">
-        <button data-a="friendly" data-t="a_friendly">Friendly</button><button data-a="blunt" data-t="a_blunt">Blunt</button><button data-a="savage" data-t="a_savage">Savage</button>
-      </div>
-      <div class="sub" style="margin:6px 0 0" data-t="attitude_hint">Savage swears and roasts you, personally.</div>
+      <h2 data-t="h_conversation">Conversation</h2>
       <label class="opt"><span data-t="coach">Speaks up on its own while you play</span> <input type="checkbox" id="coachBox" checked></label>
       <div class="sub" style="margin:4px 0 0" data-t="coach_hint"></div>
       <label class="opt"><span data-t="answer_all">Answer everything I say</span> <input type="checkbox" id="always" checked></label>
@@ -430,7 +534,9 @@
       teach_hint: "Teach me by talking: “see that? that's an Orange Mushroom”, “that's the boss's HP, tell me when it's under 20%”, “I'm level 61”.",
       forget: "Forget", sure: "Sure?", says: "says",
       woof: "Woof!", voice_pick: "Voice", voice_openai: "OpenAI (built in)", live_call: "Live call on the phone (fastest, understands any language; speaks in its own voice)",
-      attitude: "How it talks to you", a_friendly: "Friendly", a_blunt: "Blunt", a_savage: "Savage", attitude_hint: "Savage swears and roasts you, personally.",
+      attitude: "How it talks to you", a_friendly: "Friendly", a_blunt: "Blunt", a_savage: "Savage", a_kids: "For kids", a_unhinged: "Unhinged",
+      ah_kids: "For young kids: gentle and encouraging, simple words, nothing rude or scary.", ah_friendly: "Warm and fun, teases gently, no swearing.", ah_blunt: "Direct and bossy, roasts your bad plays, mild swearing.", ah_savage: "Swears and roasts you, personally.", ah_unhinged: "Curses hard in every sentence and holds nothing back.",
+      tone_low: "For kids", tone_high: "Wildest", tone_locked: "🔒 Past {lvl} is for adults ({n}+).", age_q: "Are you {n} or older?", age_in: "{c}: adulthood starts at {n}.", age_hint: "The wild end of “How it talks to you” swears hard, so it's for adults. Until you answer, it swears only a little.", age_yes: "Yes", age_no: "No", age_change: "Change my answer",
       h_memory: "What I know about you", mem_told: "you told me", mem_style: "How you like me to talk", mem_lately: "Lately", mem_lessons: "What you corrected me on",
       mem_empty: "Nothing yet. I learn as we play: what you're working on, how you like me to talk, and what you correct me on. It all stays on your PC.", mem_sessions: "learned from {n} sessions", mem_looked: "{n} answers I looked up, kept", mem_wait: "I answer {n} s after you stop talking",
       replies_on: "Replies spoken on", v_pc: "PC", v_phone: "Phone", v_both: "Both", v_off: "Off",
@@ -486,7 +592,9 @@
       teach_hint: "למד אותי בדיבור: „רואה את זה? זה Orange Mushroom”, „זה ה-HP של הבוס, תגיד לי כשהוא מתחת ל-20%”, „אני ברמה 61”.",
       forget: "שכח", sure: "בטוח?", says: "אומר",
       woof: "הב!", voice_pick: "קול", voice_openai: "OpenAI (מובנה)", live_call: "שיחה חיה בטלפון (הכי מהיר, מבין כל שפה; מדבר בקול שלו)",
-      attitude: "איך הוא מדבר אליך", a_friendly: "נחמד", a_blunt: "ישיר", a_savage: "פרוע", attitude_hint: "פרוע מקלל ויורד עליך אישית.",
+      attitude: "איך הוא מדבר אליך", a_friendly: "נחמד", a_blunt: "ישיר", a_savage: "פרוע", a_kids: "לילדים", a_unhinged: "מופרע",
+      ah_kids: "לילדים קטנים: עדין ומעודד, מילים פשוטות, בלי שום דבר גס או מפחיד.", ah_friendly: "חם וכיפי, עוקץ בעדינות, בלי קללות.", ah_blunt: "ישיר ושתלטן, יורד על מהלכים גרועים, קללות קלות.", ah_savage: "מקלל ויורד עליך אישית.", ah_unhinged: "מקלל חזק בכל משפט ולא מתאפק בכלום.",
+      tone_low: "לילדים", tone_high: "הכי פרוע", tone_locked: "🔒 מעבר ל„{lvl}” זה למבוגרים בלבד ({n}+).", age_q: "האם גילך {n} ומעלה?", age_in: "{c}: בגירות מגיל {n}.", age_hint: "הצד הפרוע של „איך הוא מדבר אליך” מקלל חזק, ולכן הוא למבוגרים בלבד. עד שתענה, הוא מקלל רק קצת.", age_yes: "כן", age_no: "לא", age_change: "לשנות את התשובה",
       h_memory: "מה שאני יודע עליך", mem_told: "אמרת לי", mem_style: "איך אתה אוהב שאני מדבר", mem_lately: "לאחרונה", mem_lessons: "במה תיקנת אותי",
       mem_empty: "עדיין כלום. אני לומד תוך כדי משחק: על מה אתה עובד, איך אתה אוהב שאדבר, ובמה אתה מתקן אותי. הכל נשאר במחשב שלך.", mem_sessions: "למדתי מ-{n} סשנים", mem_looked: "{n} תשובות שחיפשתי שמורות", mem_wait: "אני עונה {n} שניות אחרי שאתה מסיים לדבר",
       replies_on: "איפה לשמוע את התשובות", v_pc: "מחשב", v_phone: "טלפון", v_both: "שניהם", v_off: "כבוי",
@@ -542,7 +650,9 @@
       teach_hint: "Enséñame hablando: «¿ves eso? es un Orange Mushroom», «esa es la vida del jefe, avísame cuando baje del 20 %», «soy nivel 61».",
       forget: "Olvidar", sure: "¿Seguro?", says: "dice",
       woof: "¡Guau!", voice_pick: "Voz", voice_openai: "OpenAI (integrada)", live_call: "Llamada en vivo en el teléfono (lo más rápido, pero con la voz y el cerebro de OpenAI)",
-      attitude: "Cómo te habla", a_friendly: "Amable", a_blunt: "Directo", a_savage: "Salvaje", attitude_hint: "Salvaje dice palabrotas y se burla de ti sin piedad.",
+      attitude: "Cómo te habla", a_friendly: "Amable", a_blunt: "Directo", a_savage: "Salvaje", a_kids: "Para niños", a_unhinged: "Desatado",
+      ah_kids: "Para niños pequeños: amable y alentador, palabras sencillas, nada grosero ni que dé miedo.", ah_friendly: "Cálido y divertido, se burla con cariño, sin palabrotas.", ah_blunt: "Directo y mandón, se ríe de tus malas jugadas, palabrotas suaves.", ah_savage: "Dice palabrotas y se burla de ti sin piedad.", ah_unhinged: "Suelta palabrotas fuertes en cada frase y no se corta en nada.",
+      tone_low: "Para niños", tone_high: "Lo más salvaje", tone_locked: "🔒 Más allá de {lvl} es para adultos ({n}+).", age_q: "¿Tienes {n} años o más?", age_in: "{c}: mayoría de edad a los {n}.", age_hint: "El extremo salvaje de “Cómo te habla” suelta palabrotas fuertes, así que es para adultos. Hasta que respondas, solo suelta alguna palabrota suave.", age_yes: "Sí", age_no: "No", age_change: "Cambiar mi respuesta",
       h_memory: "Lo que sé de ti", mem_told: "me lo dijiste", mem_style: "Cómo te gusta que hable", mem_lately: "Últimamente", mem_lessons: "En qué me corregiste",
       mem_empty: "Nada todavía. Aprendo mientras jugamos: en qué estás, cómo te gusta que hable y en qué me corriges. Todo se queda en tu PC.", mem_sessions: "aprendí de {n} sesiones", mem_looked: "{n} respuestas que busqué, guardadas", mem_wait: "Respondo {n} s después de que dejas de hablar",
       replies_on: "Respuestas habladas en", v_pc: "PC", v_phone: "Móvil", v_both: "Ambos", v_off: "No",
@@ -579,7 +689,9 @@
       teach_hint: "Me ensine falando: “tá vendo? é um Orange Mushroom”, “esse é o HP do chefe, me avisa quando ficar abaixo de 20%”, “sou nível 61”.",
       forget: "Esquecer", sure: "Certeza?", says: "diz",
       woof: "Au au!", voice_pick: "Voz", voice_openai: "OpenAI (embutida)", live_call: "Chamada ao vivo no celular (mais rápida, mas com a voz e o cérebro da OpenAI)",
-      attitude: "Como ele fala com você", a_friendly: "Gentil", a_blunt: "Direto", a_savage: "Selvagem", attitude_hint: "Selvagem xinga e zoa você sem dó.",
+      attitude: "Como ele fala com você", a_friendly: "Gentil", a_blunt: "Direto", a_savage: "Selvagem", a_kids: "Para crianças", a_unhinged: "Insano",
+      ah_kids: "Para crianças pequenas: gentil e animador, palavras simples, nada grosseiro ou assustador.", ah_friendly: "Caloroso e divertido, zoa de leve, sem palavrões.", ah_blunt: "Direto e mandão, zoa suas jogadas ruins, palavrões leves.", ah_savage: "Xinga e zoa você sem dó.", ah_unhinged: "Solta palavrão pesado em toda frase e não se segura em nada.",
+      tone_low: "Para crianças", tone_high: "O mais selvagem", tone_locked: "🔒 Depois de {lvl} é só para adultos ({n}+).", age_q: "Você tem {n} anos ou mais?", age_in: "{c}: maioridade aos {n}.", age_hint: "O lado selvagem de “Como ele fala com você” solta palavrão pesado, então é só para adultos. Até você responder, ele só solta palavrão leve.", age_yes: "Sim", age_no: "Não", age_change: "Mudar minha resposta",
       h_memory: "O que eu sei sobre você", mem_told: "você me contou", mem_style: "Como você gosta que eu fale", mem_lately: "Ultimamente", mem_lessons: "Onde você me corrigiu",
       mem_empty: "Nada ainda. Eu aprendo enquanto a gente joga: no que você está, como gosta que eu fale e onde você me corrige. Tudo fica no seu PC.", mem_sessions: "aprendi com {n} sessões", mem_looked: "{n} respostas que pesquisei, guardadas", mem_wait: "Respondo {n} s depois que você para de falar",
       replies_on: "Respostas faladas no", v_pc: "PC", v_phone: "Celular", v_both: "Ambos", v_off: "Nenhum",
@@ -616,7 +728,9 @@
       teach_hint: "Apprends-moi en parlant : « tu vois ça ? c'est un Orange Mushroom », « c'est la vie du boss, préviens-moi sous 20 % », « je suis niveau 61 ».",
       forget: "Oublier", sure: "Sûr ?", says: "dit",
       woof: "Ouaf !", voice_pick: "Voix", voice_openai: "OpenAI (intégrée)", live_call: "Appel en direct sur le téléphone (le plus rapide, mais avec la voix et le cerveau d'OpenAI)",
-      attitude: "Comment il te parle", a_friendly: "Sympa", a_blunt: "Direct", a_savage: "Sauvage", attitude_hint: "Sauvage jure et te clashe sans pitié.",
+      attitude: "Comment il te parle", a_friendly: "Sympa", a_blunt: "Direct", a_savage: "Sauvage", a_kids: "Pour enfants", a_unhinged: "Déchaîné",
+      ah_kids: "Pour les petits : doux et encourageant, mots simples, rien de grossier ni d'effrayant.", ah_friendly: "Chaleureux et drôle, taquine gentiment, sans gros mots.", ah_blunt: "Direct et autoritaire, se moque de tes mauvais coups, gros mots légers.", ah_savage: "Jure et te clashe sans pitié.", ah_unhinged: "Jure fort à chaque phrase et ne se retient sur rien.",
+      tone_low: "Pour enfants", tone_high: "Le plus sauvage", tone_locked: "🔒 Au-delà de {lvl}, c'est réservé aux adultes ({n}+).", age_q: "As-tu {n} ans ou plus ?", age_in: "{c} : majorité à {n} ans.", age_hint: "Le côté sauvage de « Comment il te parle » jure fort, donc c'est réservé aux adultes. Tant que tu n'as pas répondu, il ne jure qu'un peu.", age_yes: "Oui", age_no: "Non", age_change: "Changer ma réponse",
       h_memory: "Ce que je sais de toi", mem_told: "tu me l'as dit", mem_style: "Comment tu aimes que je parle", mem_lately: "Dernièrement", mem_lessons: "Ce sur quoi tu m'as corrigé",
       mem_empty: "Rien pour l'instant. J'apprends en jouant : ce que tu fais, comment tu aimes que je parle et ce sur quoi tu me corriges. Tout reste sur ton PC.", mem_sessions: "appris de {n} sessions", mem_looked: "{n} réponses cherchées, gardées", mem_wait: "Je réponds {n} s après que tu as fini de parler",
       replies_on: "Réponses parlées sur", v_pc: "PC", v_phone: "Téléphone", v_both: "Les deux", v_off: "Aucun",
@@ -653,7 +767,9 @@
       teach_hint: "Bring es mir im Gespräch bei: „Siehst du das? Das ist ein Orange Mushroom“, „das sind die HP vom Boss, sag mir unter 20 % Bescheid“, „ich bin Level 61“.",
       forget: "Vergessen", sure: "Sicher?", says: "sagt",
       woof: "Wuff!", voice_pick: "Stimme", voice_openai: "OpenAI (eingebaut)", live_call: "Live-Anruf auf dem Handy (am schnellsten, aber mit OpenAIs Stimme und Gehirn)",
-      attitude: "Wie er mit dir redet", a_friendly: "Freundlich", a_blunt: "Direkt", a_savage: "Gnadenlos", attitude_hint: "Gnadenlos flucht und disst dich persönlich.",
+      attitude: "Wie er mit dir redet", a_friendly: "Freundlich", a_blunt: "Direkt", a_savage: "Gnadenlos", a_kids: "Für Kinder", a_unhinged: "Entfesselt",
+      ah_kids: "Für kleine Kinder: sanft und ermutigend, einfache Wörter, nichts Grobes oder Gruseliges.", ah_friendly: "Herzlich und lustig, neckt sanft, kein Fluchen.", ah_blunt: "Direkt und bestimmend, disst deine schlechten Züge, leichtes Fluchen.", ah_savage: "Flucht und disst dich persönlich.", ah_unhinged: "Flucht in jedem Satz heftig und hält sich mit nichts zurück.",
+      tone_low: "Für Kinder", tone_high: "Am wildesten", tone_locked: "🔒 Alles über {lvl} ist nur für Erwachsene ({n}+).", age_q: "Bist du {n} oder älter?", age_in: "{c}: volljährig ab {n}.", age_hint: "Das wilde Ende von „Wie er mit dir redet“ flucht heftig und ist darum nur für Erwachsene. Bis du antwortest, flucht er höchstens ein bisschen.", age_yes: "Ja", age_no: "Nein", age_change: "Antwort ändern",
       h_memory: "Was ich über dich weiß", mem_told: "hast du mir gesagt", mem_style: "Wie ich mit dir reden soll", mem_lately: "Zuletzt", mem_lessons: "Wo du mich korrigiert hast",
       mem_empty: "Noch nichts. Ich lerne beim Spielen: woran du gerade bist, wie ich mit dir reden soll und wo du mich korrigierst. Alles bleibt auf deinem PC.", mem_sessions: "aus {n} Sitzungen gelernt", mem_looked: "{n} nachgeschlagene Antworten gespeichert", mem_wait: "Ich antworte {n} s, nachdem du aufhörst zu sprechen",
       replies_on: "Antworten gesprochen auf", v_pc: "PC", v_phone: "Handy", v_both: "Beiden", v_off: "Aus",
@@ -690,7 +806,9 @@
       teach_hint: "말로 가르쳐 줘: “저거 보여? 주황버섯이야”, “저게 보스 HP야, 20% 아래로 떨어지면 알려 줘”, “나 61레벨이야”.",
       forget: "잊기", sure: "확실해?", says: "말:",
       woof: "멍!", voice_pick: "목소리", voice_openai: "OpenAI (기본)", live_call: "휴대폰 실시간 통화 (가장 빠르지만 OpenAI의 목소리와 두뇌)",
-      attitude: "말투", a_friendly: "친절", a_blunt: "직설", a_savage: "독설", attitude_hint: "독설 모드는 욕도 하고 대놓고 놀려.",
+      attitude: "말투", a_friendly: "친절", a_blunt: "직설", a_savage: "독설", a_kids: "어린이용", a_unhinged: "막장",
+      ah_kids: "어린아이용: 다정하게 응원하고, 쉬운 말만 쓰고, 거칠거나 무서운 말은 안 해요.", ah_friendly: "따뜻하고 재밌게, 살살 놀리고, 욕은 안 해요.", ah_blunt: "직설적이고 강하게, 못한 플레이는 놀리고, 가벼운 욕도 해요.", ah_savage: "욕도 하고 대놓고 놀려요.", ah_unhinged: "문장마다 센 욕을 하고 아무것도 안 참아요.",
+      tone_low: "어린이용", tone_high: "가장 거칠게", tone_locked: "🔒 {lvl}보다 센 단계는 성인 전용이에요 ({n}+).", age_q: "만 {n}세 이상인가요?", age_in: "{c}: 만 {n}세부터 성인이에요.", age_hint: "“말투”의 거친 쪽은 욕이 심해서 성인 전용이에요. 답하기 전까지는 가벼운 욕만 해요.", age_yes: "네", age_no: "아니요", age_change: "답 바꾸기",
       h_memory: "내가 너에 대해 아는 것", mem_told: "네가 말해 줬어", mem_style: "네가 좋아하는 말투", mem_lately: "최근", mem_lessons: "네가 고쳐 준 것",
       mem_empty: "아직 없어. 같이 플레이하면서 배워: 네가 하고 있는 것, 좋아하는 말투, 네가 고쳐 준 것. 전부 네 PC에만 저장돼.", mem_sessions: "{n}개 세션에서 배움", mem_looked: "찾아본 답 {n}개 저장", mem_wait: "말이 끝나고 {n}초 뒤에 대답해",
       replies_on: "대답을 들을 곳", v_pc: "PC", v_phone: "휴대폰", v_both: "둘 다", v_off: "끄기",
@@ -727,7 +845,9 @@
       teach_hint: "話して教えてね:「あれ見える？オレンジマッシュルームだよ」「あれがボスのHP、20%を切ったら教えて」「僕はレベル61」。",
       forget: "忘れる", sure: "本当に？", says: "セリフ:",
       woof: "ワン!", voice_pick: "声", voice_openai: "OpenAI（内蔵）", live_call: "スマホでライブ通話（最速、ただしOpenAIの声と頭脳）",
-      attitude: "話し方", a_friendly: "やさしい", a_blunt: "ストレート", a_savage: "毒舌", attitude_hint: "毒舌モードは悪口も言うし、容赦なくいじるよ。",
+      attitude: "話し方", a_friendly: "やさしい", a_blunt: "ストレート", a_savage: "毒舌", a_kids: "子ども向け", a_unhinged: "暴走",
+      ah_kids: "小さな子ども向け：やさしく励まして、かんたんな言葉で、乱暴なことも怖いことも言わない。", ah_friendly: "あたたかく楽しく、軽くいじるだけ、悪口なし。", ah_blunt: "ストレートで仕切りたがり、下手なプレイはいじる、軽い悪口あり。", ah_savage: "悪口も言うし、容赦なくいじるよ。", ah_unhinged: "毎回きつい暴言を吐いて、何も遠慮しない。",
+      tone_low: "子ども向け", tone_high: "いちばん過激", tone_locked: "🔒 {lvl}より上は大人専用です（{n}+）。", age_q: "{n}歳以上ですか？", age_in: "{c}：{n}歳から成人です。", age_hint: "「話し方」の過激な側は暴言がきついので大人専用です。答えるまでは、軽い悪態くらいにとどめます。", age_yes: "はい", age_no: "いいえ", age_change: "答えを変える",
       h_memory: "きみについて知っていること", mem_told: "きみが教えてくれた", mem_style: "好きな話し方", mem_lately: "最近", mem_lessons: "きみが直してくれたこと",
       mem_empty: "まだ何もないよ。一緒に遊びながら覚えるね：今やっていること、好きな話し方、直してくれたこと。全部きみのPCに保存されるよ。", mem_sessions: "{n}回のセッションから学習", mem_looked: "調べた答え{n}件を保存", mem_wait: "話し終わってから{n}秒で答えるよ",
       replies_on: "返事を話す場所", v_pc: "PC", v_phone: "スマホ", v_both: "両方", v_off: "オフ",
@@ -764,7 +884,9 @@
       teach_hint: "用说话来教我：“看到那个了吗？那是绿水灵”，“那是Boss的血条，低于 20% 时告诉我”，“我 61 级”。",
       forget: "忘掉", sure: "确定？", says: "会说",
       woof: "汪!", voice_pick: "声音", voice_openai: "OpenAI（内置）", live_call: "手机实时通话（最快，但用的是 OpenAI 的声音和大脑）",
-      attitude: "说话方式", a_friendly: "友好", a_blunt: "直接", a_savage: "毒舌", attitude_hint: "毒舌模式会骂人，还会毫不留情地损你。",
+      attitude: "说话方式", a_friendly: "友好", a_blunt: "直接", a_savage: "毒舌", a_kids: "儿童", a_unhinged: "疯狂",
+      ah_kids: "给小朋友：温柔、鼓励，用简单的词，不说粗话，也不吓人。", ah_friendly: "温暖有趣，轻轻调侃，不说脏话。", ah_blunt: "直接又强势，会吐槽你的烂操作，偶尔轻微脏话。", ah_savage: "会骂人，还会毫不留情地损你。", ah_unhinged: "每句都狠狠爆粗，什么都不忍着。",
+      tone_low: "儿童", tone_high: "最狂野", tone_locked: "🔒 比“{lvl}”更狂的档位仅限成年人（{n}+）。", age_q: "你满{n}岁了吗？", age_in: "{c}：{n}岁成年。", age_hint: "“说话方式”最狂的那头会狠狠爆粗，所以仅限成年人。在你回答之前，它最多只会轻微爆粗。", age_yes: "是", age_no: "不是", age_change: "修改我的回答",
       h_memory: "我对你的了解", mem_told: "你告诉我的", mem_style: "你喜欢我怎么说话", mem_lately: "最近", mem_lessons: "你纠正过我的",
       mem_empty: "还没有。我们一起玩的时候我会学：你在做什么、你喜欢我怎么说话、你纠正过我什么。全部只保存在你的电脑上。", mem_sessions: "从 {n} 次会话中学习", mem_looked: "已保存 {n} 个查到的答案", mem_wait: "你说完 {n} 秒后我就回答",
       replies_on: "在哪里说出回答", v_pc: "电脑", v_phone: "手机", v_both: "都要", v_off: "关闭",
@@ -801,7 +923,9 @@
       teach_hint: "用說話來教我：「看到那個了嗎？那是橘子菇菇」、「那是王的血條，低於 20% 時告訴我」、「我 61 等」。",
       forget: "忘掉", sure: "確定？", says: "會說",
       woof: "汪!", voice_pick: "聲音", voice_openai: "OpenAI（內建）", live_call: "手機即時通話（最快，但用的是 OpenAI 的聲音和大腦）",
-      attitude: "說話方式", a_friendly: "友善", a_blunt: "直接", a_savage: "毒舌", attitude_hint: "毒舌模式會罵人，還會毫不留情地損你。",
+      attitude: "說話方式", a_friendly: "友善", a_blunt: "直接", a_savage: "毒舌", a_kids: "兒童", a_unhinged: "瘋狂",
+      ah_kids: "給小朋友：溫柔、鼓勵，用簡單的詞，不說粗話，也不嚇人。", ah_friendly: "溫暖有趣，輕輕調侃，不說髒話。", ah_blunt: "直接又強勢，會吐槽你的爛操作，偶爾輕微髒話。", ah_savage: "會罵人，還會毫不留情地損你。", ah_unhinged: "每句都狠狠爆粗，什麼都不忍著。",
+      tone_low: "兒童", tone_high: "最狂野", tone_locked: "🔒 比「{lvl}」更狂的檔位僅限成年人（{n}+）。", age_q: "你滿{n}歲了嗎？", age_in: "{c}：{n}歲成年。", age_hint: "「說話方式」最狂的那頭會狠狠爆粗，所以僅限成年人。在你回答之前，它最多只會輕微爆粗。", age_yes: "是", age_no: "不是", age_change: "修改我的回答",
       h_memory: "我對你的了解", mem_told: "你告訴我的", mem_style: "你喜歡我怎麼說話", mem_lately: "最近", mem_lessons: "你糾正過我的",
       mem_empty: "還沒有。我們一起玩的時候我會學：你在做什麼、你喜歡我怎麼說話、你糾正過我什麼。全部只存在你的電腦上。", mem_sessions: "從 {n} 次工作階段中學習", mem_looked: "已儲存 {n} 個查到的答案", mem_wait: "你說完 {n} 秒後我就回答",
       replies_on: "在哪裡說出回答", v_pc: "電腦", v_phone: "手機", v_both: "都要", v_off: "關閉",
@@ -838,7 +962,9 @@
       teach_hint: "สอนฉันด้วยการพูด: “เห็นนั่นไหม? นั่นคือ Orange Mushroom”, “นั่นคือ HP ของบอส บอกฉันเมื่อต่ำกว่า 20%”, “ฉันเลเวล 61”",
       forget: "ลืม", sure: "แน่ใจไหม?", says: "พูดว่า",
       woof: "โฮ่ง!", voice_pick: "เสียง", voice_openai: "OpenAI (ในตัว)", live_call: "โทรสดบนมือถือ (เร็วที่สุด แต่ใช้เสียงและสมองของ OpenAI)",
-      attitude: "สไตล์การพูด", a_friendly: "ใจดี", a_blunt: "ตรงๆ", a_savage: "โหด", attitude_hint: "โหดจะด่าและแซวคุณแบบไม่ยั้ง",
+      attitude: "สไตล์การพูด", a_friendly: "ใจดี", a_blunt: "ตรงๆ", a_savage: "โหด", a_kids: "สำหรับเด็ก", a_unhinged: "โหดสุด",
+      ah_kids: "สำหรับเด็กเล็ก: อ่อนโยน ให้กำลังใจ ใช้คำง่ายๆ ไม่มีคำหยาบหรือเรื่องน่ากลัว", ah_friendly: "อบอุ่นและสนุก แซวเบาๆ ไม่สบถ", ah_blunt: "ตรงๆ และชอบสั่ง แซวตอนคุณเล่นพลาด สบถเบาๆ", ah_savage: "ด่าและแซวคุณแบบไม่ยั้ง", ah_unhinged: "สบถหนักทุกประโยค ไม่ยั้งอะไรเลย",
+      tone_low: "สำหรับเด็ก", tone_high: "โหดที่สุด", tone_locked: "🔒 ระดับที่เกิน “{lvl}” สำหรับผู้ใหญ่เท่านั้น ({n}+)", age_q: "คุณอายุ {n} ปีขึ้นไปหรือเปล่า", age_in: "{c}: บรรลุนิติภาวะเมื่ออายุ {n} ปี", age_hint: "ฝั่งโหดของ “สไตล์การพูด” สบถหนัก จึงสำหรับผู้ใหญ่เท่านั้น จนกว่าคุณจะตอบ มันจะสบถแค่เบา ๆ", age_yes: "ใช่", age_no: "ไม่ใช่", age_change: "เปลี่ยนคำตอบ",
       h_memory: "สิ่งที่ฉันรู้เกี่ยวกับคุณ", mem_told: "คุณบอกฉัน", mem_style: "คุณชอบให้ฉันพูดแบบไหน", mem_lately: "ช่วงนี้", mem_lessons: "เรื่องที่คุณแก้ให้ฉัน",
       mem_empty: "ยังไม่มีเลย ฉันเรียนรู้ระหว่างที่เราเล่นด้วยกัน: คุณกำลังทำอะไร ชอบให้ฉันพูดแบบไหน และเรื่องที่คุณแก้ให้ฉัน ทั้งหมดเก็บไว้ในพีซีของคุณเท่านั้น", mem_sessions: "เรียนรู้จาก {n} เซสชัน", mem_looked: "เก็บคำตอบที่ค้นมาแล้ว {n} ข้อ", mem_wait: "ฉันตอบหลังจากคุณหยุดพูด {n} วินาที",
       replies_on: "พูดคำตอบที่", v_pc: "คอม", v_phone: "มือถือ", v_both: "ทั้งสอง", v_off: "ปิด",
@@ -875,7 +1001,9 @@
       teach_hint: "Dạy mình bằng lời nói: “thấy cái đó không? đó là Orange Mushroom”, “đó là máu của boss, báo mình khi dưới 20%”, “mình cấp 61”.",
       forget: "Quên", sure: "Chắc chưa?", says: "sẽ nói",
       woof: "Gâu!", voice_pick: "Giọng", voice_openai: "OpenAI (có sẵn)", live_call: "Gọi trực tiếp trên điện thoại (nhanh nhất, nhưng dùng giọng và bộ não của OpenAI)",
-      attitude: "Cách nói chuyện", a_friendly: "Thân thiện", a_blunt: "Thẳng thắn", a_savage: "Gắt", attitude_hint: "Gắt sẽ chửi thề và cà khịa bạn thẳng mặt.",
+      attitude: "Cách nói chuyện", a_friendly: "Thân thiện", a_blunt: "Thẳng thắn", a_savage: "Gắt", a_kids: "Cho trẻ em", a_unhinged: "Mất kiểm soát",
+      ah_kids: "Cho trẻ nhỏ: nhẹ nhàng, khích lệ, từ ngữ đơn giản, không thô tục hay đáng sợ.", ah_friendly: "Ấm áp, vui vẻ, trêu nhẹ, không chửi thề.", ah_blunt: "Thẳng thắn, hay ra lệnh, cà khịa khi bạn chơi dở, chửi thề nhẹ.", ah_savage: "Chửi thề và cà khịa bạn thẳng mặt.", ah_unhinged: "Chửi thề nặng trong mọi câu, không kiêng nể gì.",
+      tone_low: "Cho trẻ em", tone_high: "Gắt nhất", tone_locked: "🔒 Từ sau {lvl} là dành cho người lớn ({n}+).", age_q: "Bạn từ {n} tuổi trở lên chứ?", age_in: "{c}: tuổi trưởng thành là {n}.", age_hint: "Phía gắt của “Cách nói chuyện” chửi thề nặng nên chỉ dành cho người lớn. Cho đến khi bạn trả lời, nó chỉ chửi thề nhẹ thôi.", age_yes: "Có", age_no: "Không", age_change: "Đổi câu trả lời",
       h_memory: "Những gì mình biết về bạn", mem_told: "bạn đã kể", mem_style: "Bạn thích mình nói chuyện thế nào", mem_lately: "Gần đây", mem_lessons: "Những điều bạn đã sửa cho mình",
       mem_empty: "Chưa có gì. Mình học trong lúc chơi cùng bạn: bạn đang làm gì, bạn thích mình nói thế nào và những gì bạn sửa cho mình. Tất cả chỉ lưu trên PC của bạn.", mem_sessions: "học từ {n} phiên", mem_looked: "đã lưu {n} câu trả lời mình tra", mem_wait: "Mình trả lời {n} giây sau khi bạn ngừng nói",
       replies_on: "Đọc câu trả lời trên", v_pc: "PC", v_phone: "Điện thoại", v_both: "Cả hai", v_off: "Tắt",
@@ -912,7 +1040,9 @@
       teach_hint: "Ajari aku lewat obrolan: “lihat itu? itu Orange Mushroom”, “itu HP bos, kasih tahu aku kalau di bawah 20%”, “aku level 61”.",
       forget: "Lupakan", sure: "Yakin?", says: "akan bilang",
       woof: "Guk!", voice_pick: "Suara", voice_openai: "OpenAI (bawaan)", live_call: "Panggilan langsung di ponsel (paling cepat, tapi pakai suara dan otak OpenAI)",
-      attitude: "Cara dia bicara", a_friendly: "Ramah", a_blunt: "Blak-blakan", a_savage: "Sadis", attitude_hint: "Sadis bakal ngumpat dan nge-roast kamu habis-habisan.",
+      attitude: "Cara dia bicara", a_friendly: "Ramah", a_blunt: "Blak-blakan", a_savage: "Sadis", a_kids: "Untuk anak", a_unhinged: "Brutal",
+      ah_kids: "Untuk anak kecil: lembut dan menyemangati, kata-kata sederhana, tanpa yang kasar atau menakutkan.", ah_friendly: "Hangat dan seru, menggoda pelan, tanpa umpatan.", ah_blunt: "Blak-blakan dan suka ngatur, nge-roast permainan jelekmu, umpatan ringan.", ah_savage: "Ngumpat dan nge-roast kamu habis-habisan.", ah_unhinged: "Ngumpat kasar di tiap kalimat dan nggak nahan apa pun.",
+      tone_low: "Untuk anak", tone_high: "Paling liar", tone_locked: "🔒 Di atas {lvl} khusus dewasa ({n}+).", age_q: "Apakah kamu berusia {n} tahun atau lebih?", age_in: "{c}: dewasa mulai usia {n}.", age_hint: "Sisi liar dari “Cara dia bicara” ngumpat kasar, jadi khusus dewasa. Sampai kamu menjawab, dia cuma ngumpat ringan.", age_yes: "Ya", age_no: "Tidak", age_change: "Ubah jawabanku",
       h_memory: "Yang kutahu tentangmu", mem_told: "kamu yang bilang", mem_style: "Cara bicara yang kamu suka", mem_lately: "Belakangan ini", mem_lessons: "Yang kamu koreksi",
       mem_empty: "Belum ada. Aku belajar sambil kita main: apa yang sedang kamu kejar, cara bicara yang kamu suka, dan apa yang kamu koreksi. Semuanya tetap di PC-mu.", mem_sessions: "belajar dari {n} sesi", mem_looked: "{n} jawaban yang kucari, disimpan", mem_wait: "Aku menjawab {n} dtk setelah kamu berhenti bicara",
       replies_on: "Jawaban diucapkan di", v_pc: "PC", v_phone: "Ponsel", v_both: "Keduanya", v_off: "Mati",
@@ -949,7 +1079,9 @@
       teach_hint: "Научи меня голосом: «видишь? это Orange Mushroom», «это HP босса, скажи, когда станет меньше 20%», «у меня 61 уровень».",
       forget: "Забыть", sure: "Точно?", says: "скажет",
       woof: "Гав!", voice_pick: "Голос", voice_openai: "OpenAI (встроенный)", live_call: "Живой звонок на телефоне (быстрее всего, но голос и мозг OpenAI)",
-      attitude: "Как он с тобой говорит", a_friendly: "Дружелюбно", a_blunt: "Прямо", a_savage: "Жёстко", attitude_hint: "Жёстко — матерится и подкалывает тебя лично.",
+      attitude: "Как он с тобой говорит", a_friendly: "Дружелюбно", a_blunt: "Прямо", a_savage: "Жёстко", a_kids: "Для детей", a_unhinged: "Без тормозов",
+      ah_kids: "Для маленьких детей: мягко и ободряюще, простые слова, ничего грубого или страшного.", ah_friendly: "Тепло и весело, подкалывает по-доброму, без мата.", ah_blunt: "Прямо и властно, подкалывает за плохую игру, лёгкие ругательства.", ah_savage: "Матерится и подкалывает тебя лично.", ah_unhinged: "Жёстко матерится в каждой фразе и ни в чём себя не сдерживает.",
+      tone_low: "Для детей", tone_high: "Жёстче некуда", tone_locked: "🔒 Всё жёстче, чем «{lvl}», — только для взрослых ({n}+).", age_q: "Тебе уже есть {n}?", age_in: "{c}: совершеннолетие с {n}.", age_hint: "Жёсткий край «Как он с тобой говорит» сильно матерится, поэтому он только для взрослых. Пока ты не ответишь, он говорит без мата.", age_yes: "Да", age_no: "Нет", age_change: "Изменить ответ",
       h_memory: "Что я о тебе знаю", mem_told: "ты мне сказал", mem_style: "Как тебе нравится, чтобы я говорил", mem_lately: "В последнее время", mem_lessons: "В чём ты меня поправил",
       mem_empty: "Пока ничего. Я учусь, пока мы играем: чем ты занят, как тебе нравится, чтобы я говорил, и в чём ты меня поправляешь. Всё остаётся на твоём ПК.", mem_sessions: "выучено за {n} сессий", mem_looked: "{n} найденных ответов сохранено", mem_wait: "Я отвечаю через {n} с после того, как ты замолчишь",
       replies_on: "Где озвучивать ответы", v_pc: "ПК", v_phone: "Телефон", v_both: "Оба", v_off: "Нигде",
@@ -1144,13 +1276,12 @@
     for (const b of $("voiceSeg").children) b.classList.toggle("sel", b.dataset.on === voiceOn);
     renderVoices(status.voices, status.voice);
     $("liveCallRow").style.display = status.live ? "" : "none";
-    if (status.attitude && Date.now() > attitudeHeldUntil) {
-      for (const b of $("attitudeSeg").children) b.classList.toggle("sel", b.dataset.a === status.attitude);
-    }
-    // The attitude changed during a call (the picker, or the player
-    // objecting to the tone): the call gets its instructions again and
-    // goes on in the new tone, without starting over.
-    if (liveCall.on && status.attitude && liveCall.attitude && status.attitude !== liveCall.attitude) retune(status.attitude);
+    renderTone();
+    // The level it talks at changed during a call (the bar, the age
+    // answered, the player objecting to the tone): the call gets its
+    // instructions again and goes on in the new tone, without starting over.
+    const toneNow = status.tone && status.tone.now;
+    if (liveCall.on && toneNow && liveCall.tone && toneNow !== liveCall.tone) retune(toneNow);
     if (typeof status.always_listen === "boolean" && document.activeElement !== $("always")) $("always").checked = status.always_listen;
     if (typeof status.coach === "boolean" && Date.now() > coachHeldUntil) $("coachBox").checked = status.coach;
     renderUpdate(status.update);
@@ -1892,13 +2023,208 @@
     // told again, it decides again.
     else hello();
   });
-  // How it talks: the PC keeps it, and a live call is retuned to it once
-  // the PC reports it (render), the conversation kept.
-  let attitudeHeldUntil = 0;
-  for (const b of $("attitudeSeg").children) b.addEventListener("click", () => {
-    attitudeHeldUntil = Date.now() + 2000;
-    for (const x of $("attitudeSeg").children) x.classList.toggle("sel", x === b);
-    postJson("/api/attitude", { attitude: b.dataset.a }).catch(() => {});
+  // How it talks: a bar from the gentlest level to the wildest, as the PC
+  // lists them (status.tone.levels: each one's name, and whether it is for
+  // adults only); the words for each are this page's (a_<name>,
+  // ah_<name>). The PC keeps where the bar is set (status.tone.set) and
+  // the level it talks at (status.tone.now): a player not known to be of
+  // age where they are is held at the last level open to all, and asked
+  // (status.age). The bar shows where it really talks. A live call is
+  // retuned once the PC reports a new level (render), the conversation kept.
+  // (A bar just moved shows where it was moved to, and an answer just
+  // given hides the question, until the PC's status catches up.)
+  let toneHeldUntil = 0, ageHeldUntil = 0, askAgain = false;
+  function wordsFor(prefix, id) { const key = prefix + id, s = t(key); return s === key ? "" : s; }
+  function levelName(id) { return wordsFor("a_", id) || id; }
+  function toneLevels() { return (status.tone && status.tone.levels) || []; }
+  function showLevel(id) {
+    $("toneName").textContent = levelName(id);
+    $("toneHint").textContent = wordsFor("ah_", id);
+  }
+  // How the bar looks along its length, from its gentlest end (0) to its
+  // wildest (1): the colours it runs through (a sweet pink, the syrup in the
+  // middle, a sickly sludge green), the face on its knob, and what floats up
+  // from the knob, the more the nearer it is to an end (hearts and sparkles
+  // at the sweet end; bubbles of sludge, flies and the odd turd at the wild
+  // one). Only the knob's place counts, so any number of levels looks right.
+  const TONE_LOOK = {
+    colors: [[0, [255, 79, 168]], [0.25, [255, 140, 190]], [0.5, [242, 163, 58]], [0.75, [178, 160, 32]], [1, [112, 128, 22]]],
+    faces: ["🥰", "😊", "😏", "😈", "🤢"],
+    sweet: ["💖", "💕", "💗", "💞", "✨"],
+    flies: ["🪰"],
+    turds: ["💩"],
+    // What floats up at most at once, and how often it may.
+    most: 14, every: 240,
+  };
+  const calm = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : { matches: false };
+  function mix(a, b, f) { return a.map((v, i) => Math.round(v + (b[i] - v) * f)); }
+  function rgb(c, alpha) { return alpha === undefined ? `rgb(${c.join(",")})` : `rgba(${c.join(",")},${alpha})`; }
+  function toneColor(at) {
+    const stops = TONE_LOOK.colors;
+    for (let i = 1; i < stops.length; i++) {
+      const [p0, c0] = stops[i - 1], [p1, c1] = stops[i];
+      if (at <= p1) return mix(c0, c1, p1 > p0 ? Math.max(0, (at - p0) / (p1 - p0)) : 0);
+    }
+    return stops[stops.length - 1][1];
+  }
+  // Where the knob is along the bar (0 to 1), and how near an end.
+  function toneAt() {
+    const max = Number($("toneBar").max) || 0;
+    return max > 0 ? Number($("toneBar").value) / max : 0.5;
+  }
+  function sweetness(at) { return Math.max(0, 1 - 2 * at); }
+  function grossness(at) { return Math.max(0, 2 * at - 1); }
+  (function lookBar() {
+    const stops = TONE_LOOK.colors, card = $("toneCard").style;
+    card.setProperty("--tone-ramp", stops.map(([at, c]) => `${rgb(c)} ${at * 100}%`).join(", "));
+    card.setProperty("--tone-low", rgb(mix(stops[0][1], [255, 255, 255], 0.2)));
+    card.setProperty("--tone-high", rgb(mix(stops[stops.length - 1][1], [255, 255, 255], 0.2)));
+  })();
+  let toneShownAt = -1;
+  function lookTone() {
+    const at = toneAt(), c = toneColor(at), card = $("toneCard").style, knob = $("toneKnob");
+    const sweet = sweetness(at), gross = grossness(at);
+    card.setProperty("--at", String(at));
+    card.setProperty("--tone-a", rgb(c));
+    card.setProperty("--tone-b", rgb(mix(c, [0, 0, 0], 0.3)));
+    card.setProperty("--tone-c", rgb(mix(c, [255, 255, 255], 0.35)));
+    card.setProperty("--tone-glow", rgb(c, 0.55));
+    card.setProperty("--tone-ring", rgb(c, 0.22));
+    card.setProperty("--tone-edge", rgb(c, 0.45));
+    card.setProperty("--tone-haze", rgb(c, 0.12));
+    card.setProperty("--sweet", sweet.toFixed(2));
+    card.setProperty("--gross", gross.toFixed(2));
+    const faces = TONE_LOOK.faces;
+    $("toneFace").textContent = faces[Math.round(at * (faces.length - 1))];
+    knob.classList.toggle("sweet", sweet >= 0.5);
+    knob.classList.toggle("gross", gross >= 0.5);
+    // Moved: the knob pops, and a handful floats up at once.
+    if (toneShownAt >= 0 && at !== toneShownAt) {
+      knob.classList.remove("pop");
+      void knob.offsetWidth;
+      knob.classList.add("pop");
+      for (let i = 0; i < 4; i++) toneFx();
+    }
+    toneShownAt = at;
+  }
+  $("toneKnob").addEventListener("animationend", (e) => { if (e.animationName === "tone-pop") $("toneKnob").classList.remove("pop"); });
+  // One thing floating up from the knob (none while the bar is out of
+  // sight, or for a player who asked for less motion).
+  function toneFx() {
+    const fx = $("toneFx");
+    if (calm.matches || document.hidden || !$("toneCard").offsetParent || !$("sheet").hidden
+      || fx.childElementCount >= TONE_LOOK.most) return;
+    const at = toneAt(), sweet = sweetness(at), gross = grossness(at);
+    if (!sweet && !gross) return;
+    const pick = (list) => list[Math.floor(Math.random() * list.length)];
+    const el = document.createElement("i");
+    if (sweet) {
+      el.className = "fx fx-sweet";
+      el.textContent = pick(TONE_LOOK.sweet);
+    } else {
+      const roll = Math.random();
+      if (roll < 0.5) {
+        el.className = "fx fx-goo";
+        el.style.setProperty("--s", `${6 + Math.random() * 8 * gross}px`);
+      } else {
+        el.className = roll < 0.85 ? "fx fx-fly" : "fx fx-poo";
+        el.textContent = pick(roll < 0.85 ? TONE_LOOK.flies : TONE_LOOK.turds);
+      }
+    }
+    const knob = $("toneKnob").offsetWidth;
+    el.style.left = `${at * (fx.clientWidth - knob) + knob / 2 - 8 + (Math.random() - 0.5) * 30}px`;
+    el.style.setProperty("--dx", `${(Math.random() - 0.5) * 50}px`);
+    el.style.setProperty("--r", `${(Math.random() - 0.5) * 40}deg`);
+    if (el.textContent) el.style.fontSize = `${11 + Math.random() * 8 * Math.max(sweet, gross)}px`;
+    el.addEventListener("animationend", () => el.remove());
+    fx.append(el);
+  }
+  setInterval(() => {
+    const at = toneAt();
+    if (Math.random() < 0.8 * Math.max(sweetness(at), grossness(at))) toneFx();
+  }, TONE_LOOK.every);
+  lookTone();
+  function countryName(code) {
+    try { return new Intl.DisplayNames([locale], { type: "region" }).of(code) || code; } catch (e) { return code; }
+  }
+  function renderTone() {
+    const levels = toneLevels(), tone = status.tone || {}, age = status.age || {};
+    if (levels.length) {
+      $("toneBar").max = String(levels.length - 1);
+      if (Date.now() > toneHeldUntil) {
+        $("toneBar").value = String(Math.max(0, levels.findIndex((l) => l.id === tone.now)));
+        showLevel(tone.now);
+      }
+    }
+    // The wild end, locked while the player is not known to be of age
+    // (once where they are is known).
+    const first = levels.findIndex((l) => l.adults_only);
+    const known = !!age.known && typeof age.age === "number";
+    const locked = known && first > 0 && !age.adult;
+    $("toneLock").hidden = !locked;
+    $("toneLockZone").hidden = !locked;
+    if (locked) {
+      $("toneLockText").textContent = t("tone_locked", age.age).replace("{lvl}", levelName(levels[first - 1].id));
+      $("toneAge").textContent = age.answered ? t("age_change") : t("age_q", age.age);
+      // The bar is shaded from between the last open level and the first
+      // one for adults.
+      $("toneCard").style.setProperty("--lock", String((first - 0.5) / Math.max(1, levels.length - 1)));
+    }
+    lookTone();
+    // The question: the PC asks it once where they are is known, and the
+    // player may ask for it again (to change their answer).
+    const ask = known && !age.adult && (!!age.ask || askAgain) && Date.now() > ageHeldUntil;
+    $("ageCard").hidden = !ask;
+    if (ask) {
+      $("ageQ").textContent = t("age_q", age.age);
+      $("ageIn").textContent = age.country ? t("age_in", age.age).replace("{c}", countryName(age.country)) : "";
+    }
+  }
+  // While a finger (or the mouse) is on the bar, the bar is the player's:
+  // the PC's status does not move it under them, however long they hold it.
+  let toneTouched = false;
+  $("toneBar").addEventListener("pointerdown", () => { toneTouched = true; toneHeldUntil = Infinity; });
+  function toneReleased() {
+    if (!toneTouched) return;
+    toneTouched = false;
+    toneHeldUntil = Date.now() + 2000;
+  }
+  window.addEventListener("pointerup", toneReleased);
+  window.addEventListener("pointercancel", toneReleased);
+  $("toneBar").addEventListener("input", () => {
+    if (!toneTouched) toneHeldUntil = Date.now() + 2000;
+    const level = toneLevels()[Number($("toneBar").value)];
+    if (level) showLevel(level.id);
+    lookTone();
+  });
+  $("toneBar").addEventListener("change", () => {
+    toneTouched = false;
+    toneHeldUntil = Date.now() + 2000;
+    const level = toneLevels()[Number($("toneBar").value)];
+    if (!level) return;
+    postJson("/api/tone", { tone: level.id }).catch(() => {});
+    // Past the levels open to all, never asked: asked now (the PC holds the
+    // level until the answer, and moves to it on a yes). Someone who said
+    // they are not of age is not asked again for moving the bar: the lock
+    // says why, and "Change my answer" is there.
+    const age = status.age;
+    if (level.adults_only && age && !age.adult && !age.answered) { askAgain = true; renderTone(); }
+  });
+  function answerAge(adult) {
+    const age = status.age && status.age.age;
+    if (typeof age !== "number") return;
+    askAgain = false;
+    ageHeldUntil = Date.now() + 3000;
+    $("ageCard").hidden = true;
+    postJson("/api/age", { age, adult }).catch(() => {});
+  }
+  $("ageYes").addEventListener("click", () => answerAge(true));
+  $("ageNo").addEventListener("click", () => answerAge(false));
+  $("toneAge").addEventListener("click", () => {
+    askAgain = true;
+    ageHeldUntil = 0;
+    renderTone();
+    $("ageCard").scrollIntoView({ block: "nearest", behavior: "smooth" });
   });
   $("always").addEventListener("change", () => postJson("/api/listen", { always: $("always").checked }).catch(() => {}));
   const lang = $("lang");
@@ -2470,8 +2796,8 @@
     pending: [], eyesAt: 0, pictureAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false, hint: "",
     stoppedAt: 0, firstSoundTold: true,
     // A response under way (since when; 0: none), one asked for while it
-    // was, and the attitude and API the call was started with.
-    responding: 0, respondWanted: false, flushing: false, attitude: "", api: "ga" };
+    // was, and the level it talks at and API the call was started with.
+    responding: 0, respondWanted: false, flushing: false, tone: "", api: "ga" };
   function canLive() { return !!status.live && !!window.RTCPeerConnection && status.always_listen !== false; }
   // The live call can be turned off (liveWanted, with the settings): then
   // Grok answers and the voice picked speaks, on the phone too.
@@ -2502,7 +2828,7 @@
       const call = await r.json().catch(() => ({}));
       if (!r.ok || !call.key) throw new Error(call.error || ("PC " + r.status));
       liveCall.hint = call.hint || "";
-      liveCall.attitude = call.attitude || "";
+      liveCall.tone = call.tone || "";
       liveCall.api = call.api || "ga";
       const track = stream && stream.getAudioTracks()[0];
       if (!track) throw new Error("no microphone");
@@ -2783,12 +3109,12 @@
   }
   setInterval(flushSay, 1000);
 
-  // The call's instructions again, in the attitude the PC reports now,
+  // The call's instructions again, at the level the PC reports now,
   // handed to the call as it goes (session.update): the conversation is
   // kept, and the next thing it says is in the new tone.
-  async function retune(attitude) {
-    const was = liveCall.attitude;
-    liveCall.attitude = attitude;
+  async function retune(tone) {
+    const was = liveCall.tone;
+    liveCall.tone = tone;
     try {
       const r = await api("/api/instructions?lang=" + encodeURIComponent(locale));
       const j = r.ok ? await r.json() : {};
@@ -2798,7 +3124,7 @@
       liveSend({ type: "session.update", session });
     } catch (e) {
       // (The next poll tries again.)
-      if (liveCall.attitude === attitude) liveCall.attitude = was;
+      if (liveCall.tone === tone) liveCall.tone = was;
     }
   }
 

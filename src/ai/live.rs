@@ -110,19 +110,19 @@ talk again.
 - set_coaching when they ask you to stop speaking up on your own (\"only talk when I ask\", \"no more tips\"), or \
 to start again.";
 
-/// The instructions for a call: who it is, its rules and the attitude the
-/// player picked, what it learned about the player (`learned`: what they
-/// told it, the notebook, their corrections), and the last things said (so a
-/// call picked up again keeps its thread).
+/// The instructions for a call: who it is, its rules and how it talks at
+/// the level of the bar it talks at, what it learned about the player
+/// (`learned`: what they told it, the notebook, their corrections), and the
+/// last things said (so a call picked up again keeps its thread).
 pub fn instructions(
     learned: &str,
     recent: &[String],
     language: Option<&str>,
-    attitude: super::style::Attitude,
+    level: &crate::companion::spectrum::Level,
 ) -> String {
     let mut text = format!(
         "{LIVE_PERSONA}\n\n{}\n\n{LIVE_MORE}",
-        super::style::rules(attitude)
+        super::style::rules(level)
     );
     if let Some(name) = language
         .filter(|l| !l.trim().is_empty())
@@ -398,6 +398,7 @@ impl Live {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::companion::spectrum::Spectrum;
 
     #[test]
     fn a_call_is_told_who_it_is_what_it_knows_and_what_was_said() {
@@ -405,7 +406,7 @@ mod tests {
             "About the player (they told you this):\n- Their class is Night Lord.",
             &["Player: hey".into(), "MapleSyrup: Hey! Ready?".into()],
             Some("he-IL"),
-            crate::companion::Attitude::Savage,
+            Spectrum::get().of_voice(crate::companion::Attitude::Savage),
         );
         assert!(text.contains("MapleSyrup's rules"));
         assert!(text.contains("Your attitude: savage"));
@@ -436,7 +437,7 @@ mod tests {
         assert!(text.contains("learned from playing together"));
         assert!(text.contains("Night Lord"));
         assert!(text.contains("MapleSyrup: Hey! Ready?"));
-        let fresh = instructions("", &[], None, Default::default());
+        let fresh = instructions("", &[], None, Spectrum::get().of_voice(Default::default()));
         assert!(fresh.contains("Your attitude: blunt"));
         assert!(!fresh.contains("conversation so far"));
         assert!(!fresh.contains("learned from playing together"));
@@ -472,9 +473,9 @@ mod tests {
 about whatever they say, and say it isn't open only when they ask about the game.";
         assert!(persona.contains(rule), "the conversation lacks: {rule}");
         assert!(LIVE_MORE.contains(rule), "the call lacks: {rule}");
-        // And every call gets them, whatever the attitude.
-        for attitude in crate::companion::Attitude::ALL {
-            let text = instructions("", &[], None, attitude);
+        // And every call gets them, wherever the bar is.
+        for level in Spectrum::get().levels() {
+            let text = instructions("", &[], None, level);
             assert!(text.contains(
                 "greet only when your watcher says the phone just connected, never on your own"
             ));

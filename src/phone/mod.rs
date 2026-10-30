@@ -23,8 +23,9 @@
 //!
 //! On a live call (`crate::ai::live`) the phone talks to OpenAI itself and
 //! asks the PC for a short-lived key (`/api/live`), the screen
-//! (`/api/eyes`), MapleSyrup's tools (`/api/tool`) and, when the attitude
-//! changes mid-call, the call's instructions again (`/api/instructions`);
+//! (`/api/eyes`), MapleSyrup's tools (`/api/tool`) and, when the level it
+//! talks at changes mid-call, the call's instructions again
+//! (`/api/instructions`);
 //! it tells the PC what was said (`/api/said`) and when MapleSyrup's voice
 //! is playing (`/api/talking`, to turn the game down). MapleSyrup's own
 //! lines for the call come as messages with `speak` and, behind a
@@ -177,8 +178,11 @@ pub enum Inbound {
     /// long behind the call's own voice, or the call ended. For the log,
     /// which must not say it was said.
     NotSaid(String),
-    /// How MapleSyrup should talk to the player from now on.
-    Attitude(crate::companion::Attitude),
+    /// Where the player set the bar of how MapleSyrup talks to them: a
+    /// level's name (`companion/spectrum.json`).
+    Tone(String),
+    /// Their answer to "are you N or older?".
+    Age(crate::companion::age::Answer),
     /// The voice to speak in: an ElevenLabs voice's id, or "openai".
     Speaker(String),
     /// About updates: look now, install what is staged, or whether to
@@ -210,13 +214,15 @@ pub enum UpdateAsk {
 /// What the phone's live call asks the PC for.
 pub trait Service: Send + Sync {
     /// A short-lived key for the call, and where to connect: `{key, url,
-    /// model, attitude}`. `recent`: the last things said (a call picked up
-    /// again); `language`: the phone's language.
+    /// model, tone}` (`tone`: the level of the bar it talks at).
+    /// `recent`: the last things said (a call picked up again);
+    /// `language`: the phone's language.
     fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String>;
-    /// The call's instructions as they are now: `{instructions, attitude}`.
-    /// The phone asks for them when the attitude changes during a call
-    /// (the picker, or the player objecting to the tone) and hands them to
-    /// the call, which goes on in the new tone without starting over.
+    /// The call's instructions as they are now: `{instructions, tone}`.
+    /// The phone asks for them when the level it talks at changes during a
+    /// call (the bar, the age answered, the player objecting to the tone)
+    /// and hands them to the call, which goes on in the new tone without
+    /// starting over.
     fn instructions(&self, language: Option<&str>) -> Value;
     /// Run one of MapleSyrup's tools the call's model asked for, on the
     /// frame the player is looking at. Returns what to tell the model.
@@ -1031,8 +1037,9 @@ impl Hub {
                 }
             }
             ("GET", "/api/instructions") => {
-                // The call's instructions as they are now (the attitude
-                // changed mid-call): the page hands them to the call.
+                // The call's instructions as they are now (the level it
+                // talks at changed mid-call): the page hands them to the
+                // call.
                 let Some(service) = self.service() else {
                     return Response::json(503, &json!({"error": "live calls need an OpenAI key"}));
                 };
@@ -1136,21 +1143,37 @@ impl Hub {
                     &json!({"error": "what is \"jumped in\", or \"dropped\" with the line's text"}),
                 ),
             },
-            ("POST", "/api/attitude") => match text_field("attitude")
-                .as_deref()
-                .and_then(crate::companion::Attitude::parse)
-            {
-                Some(attitude) => {
-                    let mut state = self.lock();
-                    state.inbox.retain(|i| !matches!(i, Inbound::Attitude(_)));
-                    state.inbox.push(Inbound::Attitude(attitude));
-                    Response::json(200, &json!({"ok": true, "attitude": attitude}))
+            ("POST", "/api/tone") => {
+                let spectrum = crate::companion::spectrum::Spectrum::get();
+                match text_field("tone").and_then(|id| spectrum.index(&id)) {
+                    Some(at) => {
+                        let id = spectrum.level(at).id.clone();
+                        let mut state = self.lock();
+                        state.inbox.retain(|i| !matches!(i, Inbound::Tone(_)));
+                        state.inbox.push(Inbound::Tone(id.clone()));
+                        Response::json(200, &json!({"ok": true, "tone": id}))
+                    }
+                    None => Response::json(
+                        400,
+                        &json!({"error": "unknown_tone", "tones": spectrum.ids()}),
+                    ),
                 }
-                None => Response::json(
-                    400,
-                    &json!({"error": "attitude is friendly, blunt or savage"}),
-                ),
-            },
+            }
+            ("POST", "/api/age") => {
+                let body = body();
+                let age = body.get("age").and_then(Value::as_u64);
+                let adult = body.get("adult").and_then(Value::as_bool);
+                match (age.and_then(|a| u32::try_from(a).ok()), adult) {
+                    (Some(age), Some(adult)) => {
+                        let answer = crate::companion::age::Answer { age, adult };
+                        let mut state = self.lock();
+                        state.inbox.retain(|i| !matches!(i, Inbound::Age(_)));
+                        state.inbox.push(Inbound::Age(answer));
+                        Response::json(200, &json!({"ok": true}))
+                    }
+                    _ => Response::json(400, &json!({"error": "bad_request"})),
+                }
+            }
             ("POST", "/api/speaker") => match text_field("id").filter(|id| {
                 !id.is_empty()
                     && id.len() <= 64
@@ -1479,11 +1502,11 @@ mod tests {
     impl Service for FakeService {
         fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String> {
             Ok(
-                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language, "attitude": "savage"}),
+                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language, "tone": "savage"}),
             )
         }
         fn instructions(&self, language: Option<&str>) -> Value {
-            json!({"instructions": format!("Your attitude: friendly ({})", language.unwrap_or("-")), "attitude": "friendly"})
+            json!({"instructions": format!("Your attitude: friendly ({})", language.unwrap_or("-")), "tone": "friendly"})
         }
         fn tool(
             &self,
@@ -1582,14 +1605,14 @@ mod tests {
             (Some("ek_1"), Some(2))
         );
         assert_eq!(call["lang"], "he-IL");
-        assert_eq!(call["attitude"], "savage");
-        // The attitude changed mid-call: the instructions as they are now,
-        // for the page to hand to the call.
+        assert_eq!(call["tone"], "savage");
+        // The level it talks at changed mid-call: the instructions as they
+        // are now, for the page to hand to the call.
         let r = hub.handle(&request("GET", "/api/instructions?k=k1&lang=he-IL", ""));
         assert_eq!(r.status, 200);
         let now: Value = serde_json::from_slice(&r.body).unwrap();
         assert_eq!(now["instructions"], "Your attitude: friendly (he-IL)");
-        assert_eq!(now["attitude"], "friendly");
+        assert_eq!(now["tone"], "friendly");
         assert_eq!(
             hub.handle(&request("GET", "/api/instructions", "")).status,
             403
@@ -1643,7 +1666,8 @@ mod tests {
             ),
             ("/api/workshop?k=k1", r#"{"action": "undo"}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
-            ("/api/attitude?k=k1", r#"{"attitude": "savage"}"#),
+            ("/api/tone?k=k1", r#"{"tone": " Savage "}"#),
+            ("/api/age?k=k1", r#"{"age": 18, "adult": true}"#),
             ("/api/speaker?k=k1", r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#),
         ] {
             assert_eq!(
@@ -1687,7 +1711,16 @@ mod tests {
                 Inbound::Workshop(WorkshopAsk::Change("shorter HP warning".into())),
                 Inbound::Workshop(WorkshopAsk::Undo),
                 Inbound::Turn("jumped in".into()),
-                Inbound::Attitude(crate::companion::Attitude::Savage),
+                Inbound::Tone(
+                    crate::companion::spectrum::Spectrum::get()
+                        .of_voice(crate::companion::Attitude::Savage)
+                        .id
+                        .clone()
+                ),
+                Inbound::Age(crate::companion::age::Answer {
+                    age: 18,
+                    adult: true
+                }),
                 Inbound::Speaker("pNInz6obpgDQGcFmaJgB".into()),
             ]
         );
@@ -1697,14 +1730,21 @@ mod tests {
             400
         );
         assert_eq!(
-            hub.handle(&request(
-                "POST",
-                "/api/attitude?k=k1",
-                r#"{"attitude": "loud"}"#
-            ))
-            .status,
+            hub.handle(&request("POST", "/api/tone?k=k1", r#"{"tone": "loud"}"#))
+                .status,
             400
         );
+        for bad in [
+            r#"{"age": 18}"#,
+            r#"{"age": -1, "adult": true}"#,
+            r#"{"adult": true}"#,
+        ] {
+            assert_eq!(
+                hub.handle(&request("POST", "/api/age?k=k1", bad)).status,
+                400,
+                "{bad}"
+            );
+        }
         assert_eq!(
             hub.handle(&request("POST", "/api/update?k=k1", r#"{"action": "fly"}"#))
                 .status,

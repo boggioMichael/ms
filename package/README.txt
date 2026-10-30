@@ -53,11 +53,27 @@ Start
 How it talks
   Like a gamer friend on voice chat, not an assistant: one short sentence,
   the point first, no "let me check", and it tells you what to do. Pick how
-  it talks to you on the phone (Settings -> "How it talks to you"):
+  it talks to you on the phone, on the bar right under "Start listening",
+  from the gentlest to the wildest (it answers in the new tone as soon as
+  you let go; with Claude talking, Claude follows the bar too):
+    For kids  for young children: gentle, encouraging, simple words, nothing
+              rude or scary
     Friendly  warm and fun, no swearing
     Blunt     the usual: bossy, cocky, teases you, swears a little
-    Savage    swears and roasts you personally (you asked for it); it still
-              won't go after who you are (religion, origin, gender and so on)
+    Savage    swears and roasts you personally (you asked for it)
+    Unhinged  curses hard in every sentence and holds nothing back
+  Even at its wildest it won't go after who you are (religion, origin,
+  gender and so on), threaten anyone or tell you to hurt yourself.
+  Savage and Unhinged are for adults only (Blunt swears only a little, like
+  the game's own teen rating). Set the bar there and the phone asks once
+  whether you are of age where you are - the age of adulthood in your
+  country (and state or province, where it differs), found from your
+  internet connection's address; 18 in most places, 19, 20 or 21 in some,
+  and never under 18 - and until you say you are, it talks no wilder than
+  Blunt, wherever the bar is. "Change my answer" under the bar asks again.
+  The levels, the ages by country (with the law each comes from, checked in
+  October 2026) and where it looks the country up are data
+  (companion/spectrum.json, companion/age.json).
   Your own numbers are answered at once, without asking a model: "how much HP
   do I have", "what level am I", "how long to level" (English or Hebrew).
   When it isn't sure of a game fact, it says its best guess right away and
@@ -146,7 +162,7 @@ How it talks
   turn) is dropped, not said: no "drink, you're at 12" after you potted
   back to 100. On the phone a line is as old as the PC made it, not as its
   arrival: one that waited out a stalled link is shown, not said.
-  "Don't talk to me this way" makes it friendly.
+  "Don't talk to me this way" brings the bar back to Friendly.
   On the phone you can choose where replies are spoken (PC, phone, both, off)
   and switch to "only after 'syrup'" for streaming.
 
@@ -358,6 +374,11 @@ Privacy
   Updates: it asks datta-syrup.ai for a new version 45 s after it starts and
   then hourly (a plain request: your IP address, and that MapleSyrup runs);
   off with --no-update or on the phone.
+  Your country: once a start it asks a free lookup service which country
+  (and state or province) your IP address is in - api.country.is, else
+  free.freeipapi.com, else get.geojs.io (a plain request: your IP address)
+  - for the age the wild end of "How it talks to you" asks about. The
+  answer and your reply to the age question stay on this PC (memory.json).
   The workshop (off unless you turn it on) hands your request and the end of
   the session's log to the coding agent on your PC, which sends them to its
   own provider (Anthropic or OpenAI).

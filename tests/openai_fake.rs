@@ -2109,7 +2109,7 @@ fn a_live_call_gets_a_short_lived_key_from_a_realtime_model_the_key_can_use() {
         "- Their class is Night Lord.",
         &[],
         Some("he-IL"),
-        Default::default(),
+        ms::companion::spectrum::Spectrum::get().of_voice(Default::default()),
     );
     let tools = ms::ai::live::tools(vec![
         json!({"type": "function", "name": "remember_fact", "strict": true, "parameters": {}}),
@@ -2205,7 +2205,22 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
         "Easy Zakum needs level 50.",
         ms::ai::knowledge::Source::Player,
     );
-    learning.memory().attitude = ms::companion::Attitude::Savage;
+    // The bar set to savage on the phone, by a player who said they are of
+    // age (an age no place asks more than).
+    {
+        let mut memory = learning.memory();
+        memory.tone = Some(
+            ms::companion::spectrum::Spectrum::get()
+                .of_voice(ms::companion::Attitude::Savage)
+                .id
+                .clone(),
+        );
+        memory.age = Some(ms::companion::age::Answer {
+            age: 99,
+            adult: true,
+        });
+        memory.retune();
+    }
     let mut brain = Brain::new();
     brain.learning = Some(learning.clone());
     let ai = OpenAi::new("sk-test-key-0123456789abcdef", &base, "cedar", None);

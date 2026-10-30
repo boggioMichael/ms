@@ -472,7 +472,8 @@ or say nothing",
     }
 
     /// What MapleSyrup knows about the player and his game: his own file,
-    /// its notebook, his character as read now.
+    /// its notebook, his character as read now, and how he set Claude to
+    /// talk to him (the bar on his phone).
     fn player(&self) -> Response {
         let character = {
             let inner = self.lock();
@@ -502,6 +503,11 @@ or say nothing",
             text.push_str("MapleSyrup knows nothing else about him yet.");
         } else {
             text.push_str(&known);
+        }
+        if let Some(learning) = self.learning() {
+            let tone = super::tone(learning.memory().level());
+            text.push_str("\n\n");
+            text.push_str(&tone);
         }
         Response::json(200, &json!({"text": text}))
     }
@@ -1036,6 +1042,9 @@ mod tests {
             text.contains("Wants to reach level 30 this week."),
             "{text}"
         );
+        // And how he set it to talk to him: the level the bar is at.
+        let level = crate::companion::spectrum::Spectrum::get().of_voice(Default::default());
+        assert!(text.ends_with(&crate::claude::tone(level)), "{text}");
         let file = std::fs::read_to_string(dir.join("about-me.txt")).unwrap();
         assert_eq!(file.matches("level 30").count(), 1, "{file}");
         let _ = std::fs::remove_dir_all(&dir);
