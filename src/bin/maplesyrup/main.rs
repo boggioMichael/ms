@@ -715,6 +715,16 @@ impl Source {
         }
     }
 
+    /// Whether the game behind another window still comes through as it is
+    /// drawn (see [`GameCapture::draws_covered`]); a picture or a recording
+    /// always does.
+    fn draws_covered(&self) -> bool {
+        match self {
+            Source::Game(capture) => capture.draws_covered(),
+            _ => true,
+        }
+    }
+
     fn next(&mut self) -> Captured {
         match self {
             Source::Game(capture) => capture.capture(),
@@ -794,8 +804,16 @@ impl Mailbox {
 /// Capture, on a thread of its own: a frame every `1/fps` seconds (half a
 /// second between tries while the game cannot be captured) into the
 /// mailbox, so the vision thread never waits on the compositor or on GDI,
-/// and a slow frame of vision costs the next capture nothing.
-fn grab(mut source: Source, mailbox: Arc<Mailbox>, running: Arc<AtomicBool>, fps: f64) {
+/// and a slow frame of vision costs the next capture nothing. After each
+/// frame, `covered` says whether the game behind another window still
+/// comes through as it is drawn ([`Source::draws_covered`]).
+fn grab(
+    mut source: Source,
+    mailbox: Arc<Mailbox>,
+    running: Arc<AtomicBool>,
+    covered: Arc<AtomicBool>,
+    fps: f64,
+) {
     let period = Duration::from_secs_f64(1.0 / fps);
     let mut capture_path: Option<String> = None;
     while running.load(Ordering::Relaxed) {
@@ -803,6 +821,9 @@ fn grab(mut source: Source, mailbox: Arc<Mailbox>, running: Arc<AtomicBool>, fps
         let captured = source.next();
         let took = began.elapsed();
         let seen = matches!(captured, Captured::Frame { .. });
+        if seen {
+            covered.store(source.draws_covered(), Ordering::Relaxed);
+        }
         // Said once, and again if the path changes (the GPU path giving
         // up, say): where the frames are coming from.
         let note = match &captured {
@@ -835,6 +856,17 @@ fn grab(mut source: Source, mailbox: Arc<Mailbox>, running: Arc<AtomicBool>, fps
             std::thread::sleep(rest);
         }
     }
+}
+
+/// Whether the game is in view, for the vision engine and the models: a
+/// picture given on the command line always is; the game's window
+/// (`foreground`: whether it is the window in front; None when there is no
+/// window to see: closed or minimised) when it is in front, or behind
+/// another window while the capture gets the game as it is drawn
+/// (`draws_covered`) — the owner's tester was told "the game is behind
+/// another window" five times in one evening while he played.
+fn game_in_view(input: bool, foreground: Option<bool>, draws_covered: bool) -> bool {
+    input || foreground.is_some_and(|front| front || draws_covered)
 }
 
 /// While Claude listens, one frame in this many also goes through the
@@ -883,10 +915,11 @@ fn watch(
                 frame_id += 1;
                 let vision_start = Instant::now();
                 // What MapleSyrup learned about this screen replaces the
-                // old HUD reader's guesses. Only while the game is the window
-                // in front: the capture is of the screen where the game is,
-                // so another window over it would be measured (and sent to
-                // OpenAI) instead.
+                // old HUD reader's guesses. Only while the game is in view:
+                // in front, or behind another window on the compositor's
+                // frames; on a capture that copies the screen, another
+                // window over it would be measured (and sent to OpenAI)
+                // instead ([`game_in_view`]).
                 let in_view = in_front.load(Ordering::Relaxed);
                 if in_view {
                     latest.put(Arc::clone(&image));
@@ -4341,9 +4374,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     let source = Source::open(&options)?;
     let slot = Arc::new(TickSlot::default());
     let running = Arc::new(AtomicBool::new(true));
-    // Whether the game is the window in front (a screenshot given on the
-    // command line always is).
+    // Whether the game is in view: the window in front, or behind another
+    // one while the capture still gets it as it is drawn (a screenshot
+    // given on the command line always is).
     let in_front = Arc::new(AtomicBool::new(options.input.is_some()));
+    // Whether the capture gets the game as it is drawn, covered or not
+    // (the compositor's frames), as the capture thread last found.
+    let draws_covered = Arc::new(AtomicBool::new(false));
     let vision = {
         let (slot, running, fps) = (Arc::clone(&slot), Arc::clone(&running), options.fps);
         let shared = Shared {
@@ -4361,10 +4398,14 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         };
         let mailbox = Arc::new(Mailbox::default());
         {
-            let (mailbox, running) = (Arc::clone(&mailbox), Arc::clone(&running));
+            let (mailbox, running, covered) = (
+                Arc::clone(&mailbox),
+                Arc::clone(&running),
+                Arc::clone(&draws_covered),
+            );
             std::thread::Builder::new()
                 .name("capture".into())
-                .spawn(move || grab(source, mailbox, running, fps))
+                .spawn(move || grab(source, mailbox, running, covered, fps))
                 .map_err(|e| e.to_string())?;
         }
         std::thread::Builder::new()
@@ -6102,8 +6143,16 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 _ => None,
             };
             out.mouth.game_pid = game_area.map(|a| a.pid).filter(|pid| *pid != 0);
+            // In view: in front, or behind another window while the capture
+            // gets it as it is drawn (minimised, there is no game area).
+            // Behind another window on a capture that copies the screen,
+            // that window would be read instead: not in view.
             in_front.store(
-                options.input.is_some() || game_area.is_some_and(|a| a.foreground),
+                game_in_view(
+                    options.input.is_some(),
+                    game_area.map(|a| a.foreground),
+                    draws_covered.load(Ordering::Relaxed),
+                ),
                 Ordering::Relaxed,
             );
         }
@@ -6423,6 +6472,23 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_game_behind_another_window_is_in_view_when_it_comes_through_as_drawn() {
+        // In front: in view, whatever the capture.
+        assert!(game_in_view(false, Some(true), false));
+        assert!(game_in_view(false, Some(true), true));
+        // Behind another window: in view on the compositor's frames (the
+        // window over it is not in them)…
+        assert!(game_in_view(false, Some(false), true));
+        // …not on a capture that copies the screen (that window would be
+        // read instead).
+        assert!(!game_in_view(false, Some(false), false));
+        // No window to see (closed, minimised): not in view.
+        assert!(!game_in_view(false, None, true));
+        // A picture given on the command line always is.
+        assert!(game_in_view(true, None, false));
+    }
 
     #[test]
     fn a_line_cut_short_keeps_the_words_heard() {

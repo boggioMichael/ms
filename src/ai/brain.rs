@@ -844,9 +844,11 @@ fn presence(so_far: &SoFar) -> Option<String> {
 
 /// What the companion sees, as a few plain lines for the model, and what
 /// a friend in the room would know of the session so far (`so_far`).
-/// `in_front`: whether the game is the window in front — behind another
-/// window it is still read, but the picture is withheld, and the model is
-/// told so rather than told the game is in view and given no picture.
+/// `in_front`: whether the game is in view (in front, or behind another
+/// window while the capture gets it as it is drawn) — behind another window
+/// on a capture that copies the screen it is still read, but the picture is
+/// withheld, and the model is told so rather than told the game is in view
+/// and given no picture.
 pub fn snapshot_with_view(
     obs: Option<&Observation>,
     in_front: bool,

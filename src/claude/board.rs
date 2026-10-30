@@ -20,7 +20,7 @@
 //!   coming while he talked over Claude's voice, is not said (409, and
 //!   why: Claude answers the newest instead).
 //! - `GET /local/look?region=…` — the screen (or part of it) as a JPEG,
-//!   while the game is the window in front.
+//!   while the game is in view.
 //! - `GET /local/wiki?q=…` / `POST /local/wiki` `{"about", "answer",
 //!   "source"}` — the local MapleStory wiki: what MapleSyrup knows about the
 //!   game (looked up, or the player's corrections; `knowledge.json`), and a
@@ -204,7 +204,7 @@ impl Board {
         inner.text = text;
     }
 
-    /// The screen now (None while the game is not the window in front).
+    /// The screen now (None while the game is not in view).
     pub fn set_frame(&self, frame: Option<Arc<RgbaImage>>) {
         self.lock().frame = frame;
     }
@@ -605,7 +605,7 @@ or say nothing",
         let Some(frame) = self.lock().frame.clone() else {
             return Response::json(
                 404,
-                &json!({"error": "MapleStory isn't the window in front, so there is no picture of it"}),
+                &json!({"error": "MapleStory isn't in view (closed, minimised, or behind a window where it can't be captured), so there is no picture of it"}),
             );
         };
         let name = request.param("region").unwrap_or("full");
@@ -649,7 +649,7 @@ impl Board {
         let Some(frame) = self.lock().frame.clone() else {
             return Response::json(
                 404,
-                &json!({"error": "MapleStory isn't the window in front, so there is no picture of it"}),
+                &json!({"error": "MapleStory isn't in view (closed, minimised, or behind a window where it can't be captured), so there is no picture of it"}),
             );
         };
         let name = request.param("region").unwrap_or("full");

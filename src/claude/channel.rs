@@ -867,7 +867,7 @@ fn tools(channel: bool) -> Value {
         json!({
             "name": "save_picture",
             "title": "Save a picture of his game",
-            "description": "Save the game's window as it is now (only while MapleStory is the window in front), or \
+            "description": "Save the game's window as it is now (only while MapleStory is in view), or \
         a part of it, as a PNG file on his PC at full size, and get its path: to edit it, compare or keep it — his \
         character to dress up, an outfit, a map. (look_at_screen is for seeing; this is for working with the picture.)",
             "inputSchema": {

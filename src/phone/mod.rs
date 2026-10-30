@@ -591,7 +591,7 @@ impl Hub {
     }
 
     /// What a call's model can see now: the frame (None while the game is
-    /// not the window in front), and what is read off it.
+    /// not in view), and what is read off it.
     pub fn set_sight(&self, frame: Option<Arc<RgbaImage>>, snapshot: String) {
         self.lock().sight = Sight { frame, snapshot };
     }

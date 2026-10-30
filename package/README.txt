@@ -100,7 +100,7 @@ How it talks
   listens while it talks. Speak any language, switch or mix languages
   mid-sentence (Hebrew and English, say) and it follows you, with no setting.
   Talk over it and it stops and goes with what you said. It sees your screen
-  while MapleStory is the window in front, and says its own lines (low HP,
+  while MapleStory is in view, and says its own lines (low HP,
   a level-up) on the call too, in the language you're speaking: handed to
   the call at most every 20 seconds, with the number only for HP and MP; a
   death or a level-up goes at once and is said even when it comes late. A
@@ -355,7 +355,9 @@ Privacy
   With an OpenAI key, to answer you, OpenAI gets: what you say (on a live
   call, your voice itself), the conversation, what it reads off the game
   (level, bars, map), pictures of your game window - only while MapleStory
-  is the window in front - and its notebook about you (memory.json,
+  is in view: in front, or behind another window while Windows hands it
+  the game window's own frames, which no window over it is part of - and
+  its notebook about you (memory.json,
   about-me.txt and the lessons in knowledge.json), with each reply and with
   each look the coach takes (about every minute or three while you play).
   Every few minutes it also sends the notebook and the latest conversation
