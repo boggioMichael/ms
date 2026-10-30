@@ -103,10 +103,19 @@ How it talks
   rather than stopping to look things up, even when it isn't completely
   sure ("I think..."): when it gets something wrong, just correct it, and
   it remembers (see "It learns as you play"). Talk over it and it stops and
-  listens ("wait", or just ask something else); a warning, or news such as
-  a death, still plays out on the PC. Pause mid-sentence and go on, and it
+  listens (ask it to stop, or just ask something else); a warning, or news
+  such as a death, still plays out on the PC. It always answers what you
+  said last: say something new and whatever it was still saying or making
+  for what you said before is dropped. Pause mid-sentence and go on, and it
   waits for the rest instead of answering half of it. The phone keeps
   listening while it talks on the PC and tells your voice from its own.
+  You are nearer the phone than the PC's speakers, so when you talk louder
+  than its voice there, it pauses, as it does on the phone (where the phone
+  doesn't listen while it talks: it would hear itself). Either way the PC
+  writes down what the phone's microphone heard of your voice then: any
+  word of yours stops it for good, in any language, and a noise or a laugh
+  lets it go on from where it was. (Talking softer than its voice, say two
+  words.)
   While it speaks, MapleStory's sound is turned down for a moment.
   The OpenAI account needs credit (platform.openai.com/settings/organization/billing);
   without it MapleSyrup says so and goes on with simple answers and the
@@ -330,7 +339,10 @@ Privacy
   key, what it says goes to ElevenLabs to be spoken.
   Outside a live call, your phone's browser turns your speech into text with
   its own speech service (Google's on Chrome and Android, Apple's on
-  Safari): your voice goes there, with or without any key. With "phone over
+  Safari): your voice goes there, with or without any key. When you talk over
+  its voice louder than it, on the phone or on the PC, the second or two of
+  the phone's microphone with your voice in it go to OpenAI to be written
+  down, to tell your words from a noise. With "phone over
   the internet", everything the phone and the PC exchange goes through
   Cloudflare.
   Updates: it asks datta-syrup.ai for a new version 45 s after it starts and

@@ -84,7 +84,10 @@ In this session MapleSyrup also pushes what changes in the game as <channel sour
 events, each ending with the whole reading at that moment:
 kind=\"hello\": the link to MapleSyrup came up. kind=\"heard\": he said this out loud through MapleSyrup's phone \
 page (speech recognition; may be misheard) — about anything, not only the game: answer him as you would any \
-message, with say when he can't read the screen. \
+message, with say when he can't read the screen, giving its heard_id as say's answers. Always answer his newest \
+words: a say for words he has since followed with newer ones is not said (he moved on), nor one while he talks \
+over your voice. When he tells you to stop or be quiet, stop: say nothing more unless he asks. A line of yours \
+he spoke before hearing is named in his words (\"not said\"): he never heard it. \
 kind=\"phone\": his phone connected — he can talk to you now. \
 kind=\"death\" | \"level_up\" | \"map\" | \"hp\" | \"mp\" | \"dialog\" | \"thing\" | \"window\" | \"state\": something \
 changed. Speak up only when it helps him right now — danger, a real milestone, a quest or dialog you can help \
@@ -108,7 +111,10 @@ pub trait Api: Send + Sync {
     fn events(&self, since: Option<u64>, wait: Duration, listening: bool) -> Result<Batch, String>;
     /// The reading now: `{status, text, recent}`.
     fn status(&self) -> Result<Value, String>;
-    fn say(&self, text: &str) -> Result<(), String>;
+    /// A line for MapleSyrup's voice; `answers`: the number of the
+    /// player's words (their `heard` event) it answers. Not said (an
+    /// error, and why) when he has moved on.
+    fn say(&self, text: &str, answers: Option<u64>) -> Result<(), String>;
     /// `{mime, data, width, height, region, frame}`.
     fn look(&self, region: &str) -> Result<Value, String>;
     /// The region saved as a PNG file at full size: `{path, width, height, region}`.
@@ -333,8 +339,8 @@ impl Api for Local {
         self.call("GET", "/local/status", &[], Duration::from_secs(10))
     }
 
-    fn say(&self, text: &str) -> Result<(), String> {
-        let body = json!({ "text": text }).to_string();
+    fn say(&self, text: &str, answers: Option<u64>) -> Result<(), String> {
+        let body = json!({ "text": text, "answers": answers }).to_string();
         self.call(
             "POST",
             "/local/say",
@@ -434,14 +440,37 @@ fn send(out: &Out, message: &Value) {
 
 /// One event for Claude.
 fn notify(out: &Out, kind: &str, content: &str) {
+    notify_with(out, content, json!({ "kind": kind }));
+}
+
+/// One event for Claude, with `meta` (each entry an attribute of its
+/// `<channel>` tag).
+fn notify_with(out: &Out, content: &str, meta: Value) {
     send(
         out,
         &json!({
             "jsonrpc": "2.0",
             "method": "notifications/claude/channel",
-            "params": {"content": content, "meta": {"kind": kind}},
+            "params": {"content": content, "meta": meta},
         }),
     );
+}
+
+/// An event as the companion posted it, for Claude: what the player said
+/// carries its number (`heard_id`), which Claude gives back as `say`'s
+/// `answers` — a line for words he has since followed with newer ones is
+/// not said.
+fn notify_event(out: &Out, event: &Value) {
+    let kind = event["kind"].as_str().unwrap_or("event");
+    let content = event["text"].as_str().unwrap_or_default();
+    match event["seq"].as_u64().filter(|_| kind == "heard") {
+        Some(seq) => notify_with(
+            out,
+            content,
+            json!({ "kind": kind, "heard_id": seq.to_string() }),
+        ),
+        None => notify(out, kind, content),
+    }
 }
 
 /// Whether the client is Claude Code (which takes channel events), from
@@ -616,7 +645,11 @@ impl<A: Api + 'static> Bridge<A> {
                 if line.is_empty() {
                     return failed("Nothing to say: give the text.");
                 }
-                match self.api.say(&line) {
+                // (A number, or a number in a string: as Claude wrote it.)
+                let answers = arguments["answers"]
+                    .as_u64()
+                    .or_else(|| text("answers").parse().ok());
+                match self.api.say(&line, answers) {
                     Ok(()) => said("Said."),
                     Err(why) => failed(&format!("Not said: {why}.")),
                 }
@@ -881,10 +914,15 @@ fn tools(channel: bool) -> Value {
             "title": "Say it out loud",
             "description": "Say this out loud to the player in MapleSyrup's voice (his speakers or his phone), for \
 when he can't read the screen — he is playing, or he spoke to you through MapleSyrup. Spoken style: one or two \
-short sentences, no lists or markdown, in his language (in Hebrew, address him in the masculine).",
+short sentences, no lists or markdown, in his language (in Hebrew, address him in the masculine). He comes first: \
+a line for words he has since followed with newer ones, or sent while he talks over your voice, is not said, and \
+the answer says what he said instead.",
             "inputSchema": {
                 "type": "object",
-                "properties": {"text": {"type": "string", "description": "What to say, exactly as it should be spoken."}},
+                "properties": {
+                    "text": {"type": "string", "description": "What to say, exactly as it should be spoken."},
+                    "answers": {"type": "integer", "description": "The heard_id of his words this answers (on their <channel kind=\"heard\"> tag). Leave it out when you speak up on your own."},
+                },
                 "required": ["text"],
                 "additionalProperties": false,
             },
@@ -944,11 +982,7 @@ fn feed<A: Api>(
                 }
                 if listening {
                     for event in &batch.events {
-                        notify(
-                            &out,
-                            event["kind"].as_str().unwrap_or("event"),
-                            event["text"].as_str().unwrap_or_default(),
-                        );
+                        notify_event(&out, event);
                     }
                 }
                 since = Some(batch.last);
@@ -1026,6 +1060,19 @@ mod tests {
         fn restart(&self) {
             *self.run.lock().unwrap() = (Vec::new(), "second".into());
         }
+
+        /// The number of the player's newest words posted (0: none).
+        fn newest_heard(&self) -> u64 {
+            self.run
+                .lock()
+                .unwrap()
+                .0
+                .iter()
+                .filter(|e| e["kind"] == "heard")
+                .filter_map(|e| e["seq"].as_u64())
+                .max()
+                .unwrap_or(0)
+        }
     }
 
     impl Api for Fake {
@@ -1064,7 +1111,12 @@ mod tests {
                 "recent": [{"what": "Level up: 16 → 17.", "seconds_ago": 30}],
             }))
         }
-        fn say(&self, text: &str) -> Result<(), String> {
+        fn say(&self, text: &str, answers: Option<u64>) -> Result<(), String> {
+            // (Its words since, by their number: a line for older ones is
+            // refused, as the companion's board does.)
+            if answers.is_some_and(|n| n < self.newest_heard()) {
+                return Err("he said something newer".into());
+            }
             self.said.lock().unwrap().push(text.into());
             Ok(())
         }
@@ -1297,6 +1349,32 @@ mod tests {
             *fake.said.lock().unwrap(),
             vec!["בוא נלך לאליניה".to_string()]
         );
+        // A line for words he has since followed with newer ones is not
+        // said, and Claude is told why.
+        fake.post("heard", "He said: tell me a joke");
+        fake.post("heard", "He said: how much HP do I have");
+        let late = call(
+            &mut bridge,
+            30,
+            "say",
+            json!({"text": "Why did the slime…", "answers": 1}),
+        );
+        assert_eq!(late["isError"], true);
+        assert!(
+            late["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("Not said: he said something newer"),
+            "{late}"
+        );
+        let newest = call(
+            &mut bridge,
+            31,
+            "say",
+            json!({"text": "62%.", "answers": "2"}),
+        );
+        assert_eq!(newest["content"][0]["text"], "Said.");
+        assert_eq!(fake.said.lock().unwrap().len(), 2);
         assert_eq!(
             call(&mut bridge, 11, "say", json!({"text": ""}))["isError"],
             true
@@ -1409,6 +1487,15 @@ mod tests {
         let lines = wait_for(&sink, |l| channel_events(l).len() >= 3);
         let kinds: Vec<String> = channel_events(&lines).into_iter().map(|(k, _)| k).collect();
         assert_eq!(kinds, ["hello", "heard", "level_up"]);
+        // What he said carries its number (the death before the hello was
+        // the first), for say's `answers`; nothing else does.
+        let metas: Vec<Value> = lines
+            .iter()
+            .filter(|l| l["method"] == "notifications/claude/channel")
+            .map(|l| l["params"]["meta"].clone())
+            .collect();
+        assert_eq!(metas[1], json!({"kind": "heard", "heard_id": "2"}));
+        assert_eq!(metas[2], json!({"kind": "level_up"}));
         // Every line is a whole message (the reader parsed each).
         assert!(lines.iter().all(|l| l["jsonrpc"] == "2.0"));
         bridge.stop();

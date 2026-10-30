@@ -516,6 +516,13 @@ pub struct Companion {
     /// Lines spoken lately (when, and normalised), to tell the phone hearing
     /// MapleSyrup's own voice from the player.
     spoken: std::collections::VecDeque<(f64, String)>,
+    /// When a voice louder than its own was last heard over it (the phone
+    /// measures it): the player's — what is heard around then is his.
+    voice_over: Option<f64>,
+    /// The same lines as the voice was given them, where that differs
+    /// ("Henesys" said as "הֶנֶסִיס" in a Hebrew line): a transcriber writes
+    /// what it hears ([`Companion::talked_over`]).
+    voiced: std::collections::VecDeque<(f64, String)>,
     /// Counts small-talk answers, to vary them.
     turn: u32,
     /// Whether the HP and MP bars are being read or guessed at.
@@ -925,11 +932,10 @@ const OWN_REST_WORDS: usize = 3;
 /// ended.
 const OWN_LEAD_SECS: f64 = 0.5;
 const OWN_SECS_PER_WORD: f64 = 0.4;
-/// The words a question starts with: the player's few words after its own,
-/// starting so, ask about what it said.
-const QUESTION_WORDS: &[&str] = &[
-    "where", "wheres", "what", "whats", "how", "hows", "why", "which", "who", "whos", "when",
-];
+/// How long after a voice louder than its own was heard over it what the
+/// phone writes down is still the player's: the words of that moment, and
+/// the sentence they end.
+const VOICE_OVER_FOR: f64 = 6.0;
 
 /// Edits (insertions, deletions, substitutions) from `a` to `b`, by letter.
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -950,11 +956,20 @@ fn edit_distance(a: &str, b: &str) -> usize {
 }
 
 /// Whether `word` (normalised) is one of `said`, or the phone's spelling of
-/// one: its plural or possessive ("mp" for "mps", "point" for "points"), or,
-/// for words of six letters or more, two letters off (three from nine) —
-/// "genesis" for "henesys", "racoon" for "raccoon", "equivalent" for
-/// "equipment". (Not "tell" for "tall": short words are words.)
+/// one: the same word with one more letter at its end, or two after four
+/// letters or more (an ending: "mp" for "mps", "point" for "points" — not
+/// "the" for "there"), or, for words of six letters or more, two letters
+/// off (three from nine) — "genesis" for "henesys", "racoon" for
+/// "raccoon", "equivalent" for "equipment". (Not "tell" for "tall": short
+/// words are words.)
 fn said_or_near(word: &str, said: &[&str]) -> bool {
+    near(word, said, 2)
+}
+
+/// [`said_or_near`], with an ending counted only after `least` letters or
+/// more: in what is mostly the player's voice, a word of two letters is a
+/// word of his ("no" is no "not", "לא" no "לאט").
+fn near(word: &str, said: &[&str], least: usize) -> bool {
     let n = word.chars().count();
     said.iter().any(|s| {
         if *s == word {
@@ -962,10 +977,12 @@ fn said_or_near(word: &str, said: &[&str]) -> bool {
         }
         let m = s.chars().count();
         let (short, long) = if m <= n { (*s, word) } else { (word, *s) };
-        if short.chars().count() >= 2
-            && long
-                .strip_prefix(short)
-                .is_some_and(|tail| tail == "s" || tail == "es")
+        let stem = short.chars().count();
+        if stem >= least
+            && long.strip_prefix(short).is_some_and(|ending| {
+                let letters = ending.chars().count();
+                letters == 1 || (letters == 2 && stem >= 4)
+            })
         {
             return true;
         }
@@ -973,115 +990,145 @@ fn said_or_near(word: &str, said: &[&str]) -> bool {
     })
 }
 
-/// Whether `token`, a word as the phone wrote it, is a name: capitalised
-/// within the sentence ("Miha", "Hennessey") — not its first word, nor "I"
-/// or an all-capitals "OK", "MP".
-fn looks_like_a_name(token: &str, first: bool) -> bool {
-    let core = token.trim_matches(|c: char| !c.is_alphanumeric());
-    let mut chars = core.chars();
-    !first
-        && chars.next().is_some_and(char::is_uppercase)
-        && chars.any(char::is_lowercase)
-        && !core.starts_with("I'")
-        && !core.starts_with("I’")
+/// How the words heard (`heard`, normalised) line up with one of its own
+/// lines (`line`, normalised): the pairs (heard word, line word), in order —
+/// the longest such run of the same words in both (a word heard as said, or
+/// the phone's near-spelling of it).
+fn aligned(heard: &[&str], line: &[&str]) -> Vec<(usize, usize)> {
+    let (n, m) = (heard.len(), line.len());
+    let same = |i: usize, j: usize| said_or_near(heard[i], &[line[j]]);
+    let mut longest = vec![vec![0u16; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            longest[i][j] = if same(i, j) {
+                longest[i + 1][j + 1] + 1
+            } else {
+                longest[i + 1][j].max(longest[i][j + 1])
+            };
+        }
+    }
+    let (mut i, mut j, mut pairs) = (0, 0, Vec::new());
+    while i < n && j < m {
+        if same(i, j) && longest[i][j] == longest[i + 1][j + 1] + 1 {
+            pairs.push((i, j));
+            i += 1;
+            j += 1;
+        } else if longest[i + 1][j] >= longest[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    pairs
 }
 
-/// Words that stop MapleSyrup on their own when the player says them over it.
-const STOP_WORDS: &[&str] = &[
-    "stop",
-    "wait",
-    "mute",
-    "השתק",
-    "hold",
-    "shush",
-    "shh",
-    "quiet",
-    "enough",
-    "cancel",
-    "nevermind",
-    "רגע",
-    "די",
-    "עצור",
-    "תפסיק",
-    "שקט",
-    "חכה",
-    "סטופ",
-    "para",
-    "espera",
-    "basta",
-    "chega",
-    "attends",
-    "arrête",
-    "arrete",
-    "stopp",
-    "warte",
-    "halt",
-    "잠깐",
-    "그만",
-    "멈춰",
-    "待って",
-    "ストップ",
-    "やめて",
-    "等等",
-    "停",
-    "别说了",
-    "別說了",
-    "стоп",
-    "подожди",
-    "хватит",
-];
+/// Which of the words heard (`heard`, normalised) are its line `line`, in
+/// its order ([`aligned`]; two words or more — one word alike is no more
+/// than a word alike).
+fn in_line_order(heard: &[&str], line: &[&str]) -> Vec<bool> {
+    let mut own = vec![false; heard.len()];
+    let pairs = aligned(heard, line);
+    if pairs.len() >= 2 {
+        for (i, _) in pairs {
+            own[i] = true;
+        }
+    }
+    own
+}
 
-/// Words a correction starts with: a sentence that begins with one is the
-/// player's, however much of MapleSyrup's own line it goes on to quote
-/// ("no, I'm not at the Gate of the Future").
-const DENIALS: &[&str] = &[
-    "no", "not", "nope", "nah", "wrong", "לא", "non", "nein", "нет", "아니", "いや", "不",
-];
+/// Which of the words heard are its own line, `line`, written another way:
+/// heard in the place of words of the line that the phone wrote
+/// differently — between two of its words that have more of the line
+/// between them ("sixty point two three percent" for "60.23%") — or, with
+/// `going_on` (the line is still being said, and nobody was heard over
+/// it), after the last of its words heard: its next words, as the phone is
+/// writing them. Only where enough of the line was heard, in order, to be
+/// sure it is that line: three words, or two with one of four letters or
+/// more. (Never more than three words for each of the line's, and three
+/// more: the player's own sentence is not its few words written another
+/// way.)
+fn misheard(heard: &[&str], line: &[&str], going_on: bool) -> Vec<bool> {
+    let pairs = aligned(heard, line);
+    let mut out = vec![false; heard.len()];
+    let sure = pairs.len() >= 3
+        || (pairs.len() == 2 && pairs.iter().any(|(i, _)| heard[*i].chars().count() >= 4));
+    if !sure {
+        return out;
+    }
+    let fits = |heard_words: usize, line_words: usize| {
+        heard_words > 0 && line_words > 0 && heard_words <= 3 * line_words + 3
+    };
+    for pair in pairs.windows(2) {
+        let ((h1, l1), (h2, l2)) = (pair[0], pair[1]);
+        if fits(h2 - h1 - 1, l2 - l1 - 1) {
+            out[h1 + 1..h2].iter_mut().for_each(|o| *o = true);
+        }
+    }
+    if going_on
+        && let Some(&(h, l)) = pairs.last()
+        && fits(heard.len() - h - 1, line.len() - l - 1)
+    {
+        out[h + 1..].iter_mut().for_each(|o| *o = true);
+    }
+    out
+}
 
-/// Sounds that are not words.
-const FILLERS: &[&str] = &[
-    "uh", "um", "uhm", "umm", "hmm", "mm", "mmm", "ah", "oh", "eh", "er", "אה", "אמ", "הממ", "אממ",
-];
+/// Whether `token`, a word as the phone wrote it, is a name: capitalised
+/// within the sentence ("Miha", "Hennessey") — not its first word, nor an
+/// all-capitals "OK", "MP", nor one capital letter with an ending after an
+/// apostrophe.
+fn looks_like_a_name(token: &str, first: bool) -> bool {
+    let core = token.trim_matches(|c: char| !c.is_alphanumeric());
+    let stem = core.split(['\'', '’']).next().unwrap_or_default();
+    let mut chars = stem.chars();
+    !first && chars.next().is_some_and(char::is_uppercase) && chars.any(char::is_lowercase)
+}
 
-/// How numbers sound: the phone may write "sixty percent" for MapleSyrup's
-/// "60%".
-const NUMBER_WORDS: &[&str] = &[
-    "zero",
-    "one",
-    "two",
-    "three",
-    "four",
-    "five",
-    "six",
-    "seven",
-    "eight",
-    "nine",
-    "ten",
-    "eleven",
-    "twelve",
-    "thirteen",
-    "fourteen",
-    "fifteen",
-    "sixteen",
-    "seventeen",
-    "eighteen",
-    "nineteen",
-    "twenty",
-    "thirty",
-    "forty",
-    "fifty",
-    "sixty",
-    "seventy",
-    "eighty",
-    "ninety",
-    "hundred",
-    "thousand",
-    "million",
-    "point",
-    "percent",
-    "per",
-    "cent",
-];
+/// `text` without the marks written on its letters (niqqud, harakat, an
+/// accent written apart): characters that can only go on a word, never
+/// start one, and are no digits. The voice is given "הֶנֶסִיס", a
+/// transcriber writes "הנסיס".
+fn without_marks(text: &str) -> String {
+    text.chars()
+        .filter(|&c| {
+            c.is_numeric() || unicode_ident::is_xid_start(c) || !unicode_ident::is_xid_continue(c)
+        })
+        .collect()
+}
+
+/// `text` without a transcriber's notes on what it heard — "(laughs)",
+/// "[music]": no words said.
+fn without_notes(text: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut open: Option<char> = None;
+    for c in text.chars() {
+        match (open, c) {
+            (None, '(') => open = Some(')'),
+            (None, '[') => open = Some(']'),
+            (None, '{') => open = Some('}'),
+            (Some(close), c) if c == close => {
+                open = None;
+                kept.push(' ');
+            }
+            (Some(_), _) => {}
+            (None, c) => kept.push(c),
+        }
+    }
+    kept
+}
+
+/// Whether `word` is a sound, not a word: one short unit (a letter or two)
+/// said over and over — a laugh ("חחח", "hahaha"), a hum ("mmm").
+fn a_sound(word: &str) -> bool {
+    let letters: Vec<char> = word.chars().collect();
+    (1..=2).any(|unit| {
+        letters.len() >= unit + 2
+            && letters
+                .iter()
+                .enumerate()
+                .all(|(i, c)| *c == letters[i % unit])
+    })
+}
 
 /// MapleSyrup's own lines, the way a friend on voice chat would say them.
 /// One list per attitude (friendly, blunt, savage); the first line of each
@@ -2652,6 +2699,8 @@ impl Companion {
             marks: 0,
             now: 0.0,
             spoken: std::collections::VecDeque::new(),
+            voice_over: None,
+            voiced: std::collections::VecDeque::new(),
             turn: 0,
             hp_steady: Steadiness::new(),
             mp_steady: Steadiness::new(),
@@ -2749,6 +2798,20 @@ impl Companion {
         }
     }
 
+    /// Note how the voice was given the line just spoken (`voiced`: its
+    /// words respelled for the voice), when that differs from how it is
+    /// written: what a transcriber hears of its own voice is spelled so.
+    pub fn remember_voiced(&mut self, now: f64, voiced: &str) {
+        let voiced = commands::normalize(&without_marks(voiced));
+        if self.spoken.back().is_some_and(|(_, said)| *said == voiced) {
+            return;
+        }
+        self.voiced.push_back((now, voiced));
+        while self.voiced.front().is_some_and(|(t, _)| now - t > 45.0) {
+            self.voiced.pop_front();
+        }
+    }
+
     /// Whether `heard` is only MapleSyrup's own voice coming back through the
     /// phone's microphone, with nothing of the player's in it.
     pub fn is_echo(&self, now: f64, heard: &str) -> bool {
@@ -2761,10 +2824,13 @@ impl Companion {
     /// you doing — let's play"). `None` when nothing of the player's is left.
     ///
     /// A run counts as an echo when its words were said lately and mostly in
-    /// that order: three words or more, or two within a few seconds. A word
-    /// or two the player repeats from MapleSyrup's line stays theirs, and so
-    /// does a run they quote after words of their own, or a sentence that
-    /// starts with "no" (a correction, whatever it quotes).
+    /// that order: three words or more, or two within a few seconds; so do
+    /// the words between two such runs in the place of words of its line,
+    /// written differently. A word or two the player repeats from
+    /// MapleSyrup's line stays theirs, and so does a run they quote after
+    /// words of their own. When a voice louder than its own was heard over
+    /// it just now ([`Companion::voice_heard_over`]), what is left after
+    /// the echo is his, however little.
     pub fn strip_echo(&self, now: f64, heard: &str) -> Option<String> {
         let heard = heard.trim();
         // Each word of the sentence, normalised, with the token it came from.
@@ -2791,15 +2857,9 @@ impl Companion {
             return Some(heard.to_string());
         }
         let said = |w: &str| recent.iter().any(|(_, line)| line.contains(&w));
-        // A sentence that starts with "no", "not", "wrong" (or "stop") — a
-        // word MapleSyrup did not just use itself — is a correction, the
-        // player's whatever it goes on to quote: what is left of it after
-        // the echo is never thrown away.
-        let denial = {
-            let first = words[0].0.as_str();
-            let denies = |w: &&str| first == *w || (unspaced(first) && first.starts_with(w));
-            !said(first) && (DENIALS.iter().any(denies) || STOP_WORDS.iter().any(denies))
-        };
+        // His voice over its own just now: what is left of the sentence
+        // after the echo is his, never thrown away.
+        let his_voice = self.voice_heard_lately(now);
         let theirs: Vec<bool> = words.iter().map(|(w, _)| !said(w)).collect();
         let mut echo = vec![false; words.len()];
         let mut start = 0;
@@ -2844,6 +2904,25 @@ impl Companion {
         if !echo.contains(&true) {
             return Some(heard.to_string());
         }
+        // Between two runs of its echo, words in the place of some of its
+        // line's are that line written another way ("פארק שקד" for "Park
+        // Shuttle", "racoon" for "raccoon").
+        let plain: Vec<&str> = words.iter().map(|(w, _)| w.as_str()).collect();
+        let all_said: Vec<&str> = recent
+            .iter()
+            .flat_map(|(_, line)| line.iter().copied())
+            .collect();
+        let mut in_place: Vec<bool> = plain.iter().map(|w| said_or_near(w, &all_said)).collect();
+        for (_, line) in &recent {
+            for (slot, misheard) in in_place.iter_mut().zip(misheard(&plain, line, false)) {
+                *slot |= misheard;
+            }
+        }
+        for i in 0..words.len() {
+            if in_place[i] && echo[..i].contains(&true) && echo[i + 1..].contains(&true) {
+                echo[i] = true;
+            }
+        }
         // Tokens with a word of the player's in them, in order.
         let mut kept: Vec<usize> = words
             .iter()
@@ -2853,7 +2932,7 @@ impl Companion {
             .collect();
         kept.dedup();
         let left = echo.iter().filter(|e| !**e).count();
-        if left < 2 && !denial {
+        if left == 0 || (left < 2 && !his_voice) {
             return None;
         }
         let rest = kept
@@ -2862,38 +2941,134 @@ impl Companion {
             .collect::<Vec<_>>()
             .join(" ");
         // Mostly its own voice: the few words left are its own too, written
-        // differently ("Monster פארק שקד" for "Monster Park Shuttle"), unless
-        // they stop it or ask for something.
+        // differently — unless his voice was heard over it.
         let mostly_echo = left <= 3 && left * 10 < words.len() * 3;
-        if mostly_echo && !denial {
-            let stops = commands::normalize(&rest)
-                .split(' ')
-                .any(|w| STOP_WORDS.contains(&w));
-            if !stops && commands::local_command(&rest).is_none() {
-                return None;
-            }
+        if mostly_echo && !his_voice {
+            return None;
         }
         Some(rest)
     }
 
     /// What the phone is hearing right now, while MapleSyrup may be
     /// talking: the player's own words in it, when there are enough to stop
-    /// talking for — two or more among the last few words, or a word such as
-    /// "stop" or "wait". `None` when it is only MapleSyrup's own voice
-    /// coming back (or a sound or two).
+    /// talking for — two or more among the last few words, or one when a
+    /// voice louder than its own was heard over it just now. `None` when it
+    /// is only MapleSyrup's own voice coming back (or a sound or two).
     pub fn barge_in(&self, now: f64, hearing: &str) -> Option<String> {
-        self.players_words(now, hearing, 2)
+        let enough = if self.voice_heard_lately(now) { 1 } else { 2 };
+        self.players_words(now, hearing, enough)
+    }
+
+    /// The phone heard a voice over a clip of its own, louder than its own,
+    /// at `now` (it measures how loud), and paused the clip: the player's.
+    /// What the phone writes down then, listening afresh with its voice
+    /// paused, is his ([`Companion::barge_in`], [`Companion::own_words`]):
+    /// a word of his is enough. (Until it goes on, stops, or begins again:
+    /// [`Companion::no_voice_over`], [`Companion::voice_began`].)
+    pub fn voice_heard_over(&mut self, now: f64) {
+        self.voice_over = Some(now);
+    }
+
+    /// The voice heard over its own last was no voice of his after all:
+    /// what its microphone heard of it had none of his words (the game, a
+    /// laugh).
+    pub fn no_voice_over(&mut self) {
+        self.voice_over = None;
+    }
+
+    /// Its voice begins again at `now` (its next answer, after it stopped
+    /// or went quiet): a voice heard over the one before is none over this
+    /// one, whose echo is its own again.
+    pub fn voice_began(&mut self, now: f64) {
+        if self.voice_over.is_some_and(|at| at < now) {
+            self.voice_over = None;
+        }
+    }
+
+    /// Whether a voice louder than its own was heard over it lately
+    /// ([`VOICE_OVER_FOR`]).
+    pub fn voice_heard_lately(&self, now: f64) -> bool {
+        self.voice_over
+            .is_some_and(|at| (-1.0..=VOICE_OVER_FOR).contains(&(now - at)))
     }
 
     /// Whether the player is still talking (`hearing`, while their last
     /// sentence is being answered and nothing has been said yet): one word
     /// of theirs is enough.
     pub fn still_talking(&self, now: f64, hearing: &str) -> bool {
-        self.players_words(now, hearing, 1).is_some()
+        self.his_words(now, hearing).is_some()
+    }
+
+    /// The player's words in `hearing`, from his first to his last, its own
+    /// voice left out ([`Companion::still_talking`]): `None` when there are
+    /// none.
+    pub fn his_words(&self, now: f64, hearing: &str) -> Option<String> {
+        self.players_words(now, hearing, 1)
+    }
+
+    /// The player's words in what the phone's microphone heard of a loud
+    /// moment over MapleSyrup's voice, written down by a transcriber
+    /// (`written`), once its own voice is taken out — the words of its
+    /// lines said lately, or the transcriber's spelling of them, and its
+    /// line written another way in the place of some of its words
+    /// ([`misheard`]: over its voice on the PC, which nothing cancels, the
+    /// transcriber writes its lines with his words; on the phone, the
+    /// microphone cancels most of its voice, not all). Any word of theirs
+    /// is enough to stop for, in any language: they spoke over it. `None`
+    /// when it was only its own voice, or a sound with no words of theirs
+    /// (a laugh or a hum, the same sound over and over, or the
+    /// transcriber's note on the game's noise).
+    pub fn talked_over(&self, now: f64, written: &str) -> Option<String> {
+        let mut lines = self.lines_said_lately(now);
+        lines.extend(
+            self.voiced
+                .iter()
+                .filter(|(at, _)| (-1.0..=ECHO_WINDOW).contains(&(now - at)))
+                .map(|(_, line)| line.split(' ').filter(|w| !w.is_empty()).collect()),
+        );
+        let said: Vec<&str> = lines.iter().flatten().copied().collect();
+        let written = without_notes(written);
+        let tokens: Vec<&str> = written.split_whitespace().collect();
+        let words: Vec<(String, usize)> = tokens
+            .iter()
+            .enumerate()
+            .flat_map(|(i, token)| {
+                commands::normalize(&without_marks(token))
+                    .split(' ')
+                    .filter(|w| !w.is_empty())
+                    .map(|w| (w.to_string(), i))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let plain: Vec<&str> = words.iter().map(|(w, _)| w.as_str()).collect();
+        let mut own = vec![false; words.len()];
+        for line in &lines {
+            for (slot, misheard) in own.iter_mut().zip(misheard(&plain, line, false)) {
+                *slot |= misheard;
+            }
+        }
+        // A token is theirs when a word of it is. (A short word of its own
+        // with an ending is a word of his here: what is written down is his
+        // voice, louder than its own.)
+        let mut theirs = vec![false; tokens.len()];
+        for ((word, token), own) in words.iter().zip(&own) {
+            if !own && !near(word, &said, 3) && !a_sound(word) {
+                theirs[*token] = true;
+            }
+        }
+        let theirs: Vec<&str> = tokens
+            .iter()
+            .zip(&theirs)
+            .filter(|(_, theirs)| **theirs)
+            .map(|(token, _)| *token)
+            .collect();
+        (!theirs.is_empty()).then(|| theirs.join(" "))
     }
 
     /// The player's words in `hearing` when there are at least `enough`
-    /// of them among the last few (or a stop word).
+    /// of them among the last few: words it did not say lately, nor its own
+    /// line written another way ([`misheard`]) — nor a number, when it said
+    /// numbers — nor a sound said over and over.
     fn players_words(&self, now: f64, hearing: &str, enough: usize) -> Option<String> {
         let tokens: Vec<&str> = hearing.split_whitespace().collect();
         let mut words: Vec<(String, usize)> = Vec::new();
@@ -2908,36 +3083,42 @@ impl Companion {
         if words.is_empty() {
             return None;
         }
-        let lines: Vec<&str> = self
+        let lines: Vec<(f64, &str)> = self
             .spoken
             .iter()
             .filter(|(t, _)| (-1.0..=ECHO_WINDOW).contains(&(now - t)))
-            .map(|(_, said)| said.as_str())
+            .map(|(t, said)| (*t, said.as_str()))
             .collect();
         let said: std::collections::HashSet<&str> =
-            lines.iter().flat_map(|line| line.split(' ')).collect();
+            lines.iter().flat_map(|(_, line)| line.split(' ')).collect();
         let numbers = lines
             .iter()
-            .any(|line| line.chars().any(|c| c.is_ascii_digit()));
+            .any(|(_, line)| line.chars().any(char::is_numeric));
+        // Its own lines written another way: in the place of some of their
+        // words, or — a line still being said, with nobody heard over it —
+        // as their next words come.
+        let plain: Vec<&str> = words.iter().map(|(w, _)| w.as_str()).collect();
+        let over = self.voice_heard_lately(now);
+        let mut its_own = vec![false; words.len()];
+        for (at, line) in &lines {
+            let line: Vec<&str> = line.split(' ').filter(|w| !w.is_empty()).collect();
+            let ends = at + OWN_LEAD_SECS + OWN_SECS_PER_WORD * line.len() as f64 + OWN_LEAD_SECS;
+            let going_on = !over && now <= ends;
+            for (slot, misheard) in its_own.iter_mut().zip(misheard(&plain, &line, going_on)) {
+                *slot |= misheard;
+            }
+        }
         let theirs: Vec<bool> = words
             .iter()
-            .map(|(w, _)| {
-                w.chars().count() >= 2
+            .zip(&its_own)
+            .map(|((w, _), its_own)| {
+                !its_own
+                    && w.chars().count() >= 2
                     && !said.contains(w.as_str())
-                    && !FILLERS.contains(&w.as_str())
-                    && !(numbers
-                        && (w.chars().all(|c| c.is_ascii_digit())
-                            || NUMBER_WORDS.contains(&w.as_str())))
+                    && !a_sound(w)
+                    && !(numbers && w.chars().all(char::is_numeric))
             })
             .collect();
-        let stop_word = |w: &str| {
-            STOP_WORDS.contains(&w) || (unspaced(w) && STOP_WORDS.iter().any(|s| w.contains(s)))
-        };
-        let tail = words.len().saturating_sub(3);
-        let stop = words[tail..]
-            .iter()
-            .zip(&theirs[tail..])
-            .any(|((w, _), &t)| t && stop_word(w));
         let recent = words.len().saturating_sub(6);
         let count: usize = words[recent..]
             .iter()
@@ -2945,7 +3126,7 @@ impl Companion {
             .filter(|(_, t)| **t)
             .map(|((w, _), _)| if unspaced(w) { 2 } else { 1 })
             .sum();
-        if !stop && count < enough.max(1) {
+        if count < enough.max(1) {
             return None;
         }
         // From the player's first word to their last (a word of theirs that
@@ -2963,27 +3144,34 @@ impl Companion {
     /// The player's words in a sentence the phone heard, with MapleSyrup's
     /// own voice taken out (`strip_echo`). Heard while MapleSyrup talks or
     /// just after, what is left must also have at least `need` words it did
-    /// not just say (or a stop word): a word or two of its own voice that the
-    /// phone wrote differently is not the player's. (Two while it talks;
-    /// one just after, so a quick "yes" to its question still counts.)
+    /// not just say: a word or two of its own voice that the phone wrote
+    /// differently is not the player's. (Two while it talks; one just
+    /// after, so a quick answer to its question still counts — and one
+    /// when a voice louder than its own was heard over it just now.)
     ///
     /// Its own voice is never the player: a sentence of two words or more
     /// whose words are mostly ([`OWN_SHARE`]) its own — said in the last
     /// [`OWN_WINDOW`] s, or the phone's near-spelling of them — is dropped
     /// whole, with no "kept" remainder, unless the rest is
     /// [`OWN_REST_WORDS`] words or more (of three letters or more) that it
-    /// did not say, a question about it ("where is that pillar") or a word
-    /// that stops it; and a remainder never carries a name. A sentence that
-    /// starts with two words of the player's, or with "no" or "stop", is
-    /// theirs whatever it quotes (its echo starts with its own voice: the
-    /// clip plays first). The same for the PC's voice, a clip on the phone
-    /// and a call's transcript: each is a line noted as said.
+    /// did not say; and a remainder never carries a name. A sentence that
+    /// starts with two words of the player's is theirs whatever it quotes
+    /// (its echo starts with its own voice: the clip plays first), and so is
+    /// one heard as a voice louder than its own spoke over it. The same for
+    /// the PC's voice, a clip on the phone and a call's transcript: each is
+    /// a line noted as said.
     pub fn own_words(&self, now: f64, heard: &str, need: usize) -> Option<String> {
         let rest = self.strip_echo(now, heard)?;
         let rest = self.not_mostly_own(now, heard, rest)?;
         if need == 0 {
             return Some(rest);
         }
+        // (A voice louder than its own was heard over it: one is enough.)
+        let need = if self.voice_heard_lately(now) {
+            1
+        } else {
+            need
+        };
         self.players_words(now, &rest, need).map(|_| rest)
     }
 
@@ -2991,6 +3179,11 @@ impl Companion {
     /// every line still being said, or said within [`OWN_WINDOW`] s before
     /// `now` (see [`OWN_SECS_PER_WORD`]).
     fn said_lately(&self, now: f64) -> Vec<&str> {
+        self.lines_said_lately(now).into_iter().flatten().collect()
+    }
+
+    /// The lines of [`Companion::said_lately`], each its words.
+    fn lines_said_lately(&self, now: f64) -> Vec<Vec<&str>> {
         self.spoken
             .iter()
             .filter(|(at, said)| {
@@ -2998,7 +3191,7 @@ impl Companion {
                 let end = at + OWN_LEAD_SECS + OWN_SECS_PER_WORD * words as f64;
                 *at <= now + 1.0 && end >= now - OWN_WINDOW
             })
-            .flat_map(|(_, said)| said.split(' ').filter(|w| !w.is_empty()))
+            .map(|(_, said)| said.split(' ').filter(|w| !w.is_empty()).collect())
             .collect()
     }
 
@@ -3017,47 +3210,56 @@ impl Companion {
                 words.push((word.to_string(), i));
             }
         }
-        let said = self.said_lately(now);
-        if words.len() >= 2 && !said.is_empty() {
-            let own: Vec<bool> = words.iter().map(|(w, _)| said_or_near(w, &said)).collect();
-            let first = words[0].0.as_str();
+        let lines = self.lines_said_lately(now);
+        if words.len() >= 2 && !lines.is_empty() {
+            // Its own: heard in the order of one of its lines (a word of the
+            // line heard elsewhere in the sentence is the player's — "is" in
+            // "where is the blue mushroom forest").
+            let plain: Vec<&str> = words.iter().map(|(w, _)| w.as_str()).collect();
+            let mut own = vec![false; words.len()];
+            for line in &lines {
+                for (slot, in_order) in own.iter_mut().zip(in_line_order(&plain, line)) {
+                    *slot |= in_order;
+                }
+            }
             let leads = !own[0] && !own[1];
-            let denial =
-                !said.contains(&first) && (DENIALS.contains(&first) || STOP_WORDS.contains(&first));
+            let his_voice = self.voice_heard_lately(now);
             let share = own.iter().filter(|o| **o).count() as f32 / words.len() as f32;
-            if share >= OWN_SHARE && !leads && !denial {
+            if share >= OWN_SHARE && !leads && !his_voice {
                 let theirs: Vec<&(String, usize)> = words
                     .iter()
                     .zip(&own)
                     .filter(|(_, own)| !**own)
                     .map(|(word, _)| word)
                     .collect();
+                // (Words of his it never said, of three letters or more: a
+                // word of its own out of its order — its line heard twice
+                // over — is no word of his.)
+                let said = self.said_lately(now);
                 let strong: std::collections::HashSet<&str> = theirs
                     .iter()
                     .map(|(w, _)| w.as_str())
-                    .filter(|w| w.chars().count() >= 3)
+                    .filter(|w| w.chars().count() >= 3 && !said_or_near(w, &said))
                     .collect();
-                // (A question about what it said — "…to the blue pillar,
-                // where is that pillar?" — is theirs: two words or more of
-                // theirs, the first a question word.)
-                let asks = theirs.len() >= 2 && QUESTION_WORDS.contains(&theirs[0].0.as_str());
-                // (A word that stops it, said over it — "mute", "stop" — is
-                // theirs: the main loop still acts on it.)
-                let stops = theirs.iter().any(|(w, _)| STOP_WORDS.contains(&w.as_str()));
-                let asks = asks || stops;
                 let named = theirs
                     .iter()
                     .any(|(_, i)| looks_like_a_name(tokens[*i], *i == 0));
-                if (strong.len() < OWN_REST_WORDS && !asks) || named {
+                if strong.len() < OWN_REST_WORDS || named {
                     return None;
                 }
             }
         }
         // A remainder never carries a name ("my name is Armani my name is
-        // Miha" was learned as his).
+        // Miha" was learned as his). (Heard as a voice louder than its own
+        // spoke over it, his words begin where the remainder does: the phone
+        // writes their first word with a capital, as a sentence's.)
         if rest != heard.trim() {
+            let his_voice = self.voice_heard_lately(now);
             let named = rest.split_whitespace().enumerate().any(|(k, token)| {
-                looks_like_a_name(token, k == 0 && tokens.first() == Some(&token))
+                looks_like_a_name(
+                    token,
+                    k == 0 && (his_voice || tokens.first() == Some(&token)),
+                )
             });
             if named {
                 return None;
@@ -5436,20 +5638,46 @@ mod tests {
         // A sound or a single word is not enough…
         assert_eq!(c.barge_in(11.5, "minutes to the next level um"), None);
         assert_eq!(c.barge_in(11.5, "minutes to the next level okay"), None);
-        // …two words of the player's are, and so is "wait".
+        // …two words of the player's are, in any language.
         assert_eq!(
             c.barge_in(11.5, "to the next level what about my HP"),
             Some("what about my HP".to_string())
         );
+        assert_eq!(
+            c.barge_in(11.5, "等等，我想问"),
+            Some("等等，我想问".to_string())
+        );
+        // A word after its own words, as the line goes on, may be its next
+        // words written another way; a word alone is a word.
+        assert_eq!(c.barge_in(11.5, "twenty minutes wait"), None);
+        assert_eq!(c.barge_in(11.5, "רגע"), None);
+        // With a voice louder than its own heard over it just now (the
+        // phone measures it), one word of his is enough.
+        c.voice_heard_over(11.4);
         assert_eq!(
             c.barge_in(11.5, "twenty minutes wait"),
             Some("wait".to_string())
         );
         assert_eq!(c.barge_in(11.5, "רגע"), Some("רגע".to_string()));
         assert_eq!(
-            c.barge_in(11.5, "等等，我想问"),
-            Some("等等，我想问".to_string())
+            c.barge_in(11.5, "you're at sixty point two three percent EXP"),
+            None,
+            "its own words written another way are still its own"
         );
+        // Its next answer begins: that voice was over the voice before, and
+        // one word is no stop again; its next words written another way,
+        // as the line goes on, are its own.
+        c.voice_began(13.0);
+        c.remember_spoken(13.0, "OK, waiting. Twenty minutes is not long.");
+        assert_eq!(
+            c.barge_in(13.5, "OK waiting twenty minutes is not lung"),
+            None
+        );
+        assert_eq!(c.barge_in(13.5, "רגע"), None);
+        // (A voice heard over it after it began still counts.)
+        c.voice_heard_over(13.6);
+        c.voice_began(13.6);
+        assert_eq!(c.barge_in(13.7, "רגע"), Some("רגע".to_string()));
         // Nothing said lately: any two words are the player's.
         let quiet = Companion::seeded(Settings::default(), SEED);
         assert_eq!(
@@ -5457,10 +5685,93 @@ mod tests {
             Some("with the quest".to_string())
         );
         assert_eq!(quiet.barge_in(5.0, "uh"), None);
-        // Still talking while the answer is being made: one word will do.
+        // Still talking while the answer is being made: one word will do
+        // (not a sound said over and over).
         assert!(quiet.still_talking(5.0, "now"));
-        assert!(!quiet.still_talking(5.0, "um"));
+        assert!(!quiet.still_talking(5.0, "mmm"));
         assert!(!c.still_talking(11.5, "next level"));
+    }
+
+    #[test]
+    fn what_the_microphone_heard_over_its_voice_is_told_from_its_own_words() {
+        let mut c = Companion::seeded(Settings::default(), SEED);
+        c.remember_spoken(
+            10.0,
+            "Why did the Orange Mushroom cross the road? To get to Henesys.",
+        );
+        // The stop that paused it, written down from the phone's
+        // microphone, its own voice faintly under it. Any word of his is
+        // enough, in any language (the bug of 25 October: a joke that could
+        // not be silenced).
+        assert_eq!(c.talked_over(12.0, "די"), Some("די".to_string()));
+        assert_eq!(
+            c.talked_over(12.0, "the Orange Mushroom די תשתוק"),
+            Some("די תשתוק".to_string())
+        );
+        for word in ["תשתוק", "מספיק", "shut up", "basta", "그만", "хватит"] {
+            assert_eq!(c.talked_over(12.0, word).as_deref(), Some(word), "{word}");
+        }
+        assert_eq!(
+            c.talked_over(12.0, "רגע, כמה HP יש לי?"),
+            Some("רגע, כמה HP יש לי?".to_string())
+        );
+        // Its own voice, or the transcriber's spelling of it: no talk-over.
+        assert_eq!(
+            c.talked_over(12.0, "cross the road to get to Henesis"),
+            None
+        );
+        assert_eq!(c.talked_over(12.0, "Mushroom"), None);
+        // A short word of his is his, even when a word of its line begins
+        // with it ("No!" over "Not yet", "לא!" over "לאט").
+        let mut short = Companion::seeded(Settings::default(), SEED);
+        short.remember_spoken(10.0, "Not yet, he is still far. לאט לאט.");
+        for word in ["No!", "Hey!", "לא!"] {
+            assert_eq!(
+                short.talked_over(12.0, word).as_deref(),
+                Some(word),
+                "{word}"
+            );
+        }
+        assert_eq!(short.talked_over(12.0, "not yet"), None);
+        // Over its voice on the PC, which nothing cancels, the transcriber
+        // writes its line with his words: a word of its line written
+        // another way in its place is its own; his are his.
+        assert_eq!(
+            c.talked_over(12.0, "Why did the Orange Mushroom cruise the road?"),
+            None
+        );
+        assert_eq!(
+            c.talked_over(12.0, "Why did the Orange Mushroom cruise the road? Stop."),
+            Some("Stop.".to_string())
+        );
+        // A sound with no words of the player's: none — a laugh in any
+        // writing, a hum, a transcriber's note.
+        for sound in [
+            "",
+            "חחח",
+            "Hahaha!",
+            "jajaja",
+            "ㅋㅋㅋ",
+            "Mmm.",
+            "(laughs)",
+            "[music] ...",
+        ] {
+            assert_eq!(c.talked_over(12.0, sound), None, "{sound}");
+        }
+        assert_eq!(
+            c.talked_over(12.0, "(laughs) wait"),
+            Some("wait".to_string())
+        );
+        // A name in a Hebrew line, as the voice said it: the transcriber
+        // writes it in Hebrew, and it is still its own voice.
+        let mut he = Companion::seeded(Settings::default(), SEED);
+        he.remember_spoken(10.0, "תלך ל-Henesys, משם ל-Ellinia.");
+        he.remember_voiced(10.0, "תלך לְהֶנֶסִיס, משם לְאֶלִינְיָה.");
+        assert_eq!(he.talked_over(12.0, "תלך להנסיס משם לאלינייה"), None);
+        assert_eq!(
+            he.talked_over(12.0, "להנסיס עצור"),
+            Some("עצור".to_string())
+        );
     }
 
     #[test]
@@ -5484,8 +5795,8 @@ mod tests {
             None
         );
         // Three words and more of the player's are theirs (12:01: walking
-        // to the NPC); so is a question about what it said, and a word
-        // that stops it.
+        // to the NPC); its own word written another way between its words
+        // ("racoon") is not.
         let mut c = Companion::seeded(Settings::default(), SEED);
         c.remember_spoken(
             0.0,
@@ -5498,8 +5809,15 @@ mod tests {
                 0
             )
             .as_deref(),
-            Some("racoon OK tell me when to stop")
+            Some("OK tell me when to stop")
         );
+        // A few words of his after its own — a question, a stop — are told
+        // from its own voice by his voice: heard over its own, louder.
+        assert_eq!(
+            c.own_words(11.0, "the tall raccoon on the right side where is it", 0),
+            None
+        );
+        c.voice_heard_over(10.5);
         assert!(
             c.own_words(11.0, "the tall raccoon on the right side where is it", 0)
                 .is_some()
@@ -5508,6 +5826,17 @@ mod tests {
             c.own_words(11.0, "the tall raccoon on the right side mute please", 0)
                 .as_deref(),
             Some("mute please")
+        );
+        // His words where his voice came in begin a sentence of his: the
+        // phone writes them with a capital, and that is no name.
+        assert_eq!(
+            c.own_words(
+                11.0,
+                "the tall raccoon on the right side. Stop, where is it",
+                0
+            )
+            .as_deref(),
+            Some("Stop, where is it")
         );
         // Two words of the player's, the rest its own: its own (12:10,
         // "Join the cannabis" kept at f9b6047).
@@ -9036,7 +9365,11 @@ mod tests {
         ] {
             assert_eq!(c.strip_echo(14.0, heard).as_deref(), Some(heard));
         }
-        // "No" and then only its own words: not thrown away as an echo.
+        // One word and then only its own words: by the words alone, its
+        // echo with its first word written another way. His voice heard
+        // over its own tells them apart.
+        assert_eq!(c.strip_echo(14.0, "no the gate of the future"), None);
+        c.voice_heard_over(13.5);
         assert_eq!(
             c.strip_echo(14.0, "no the gate of the future").as_deref(),
             Some("no")
@@ -9074,15 +9407,12 @@ mod tests {
             ),
             None
         );
-        // "Wait" over it still stops it.
-        assert_eq!(
-            c.strip_echo(
-                8.0,
-                "אני לא מצליח לקרוא את שם המפה מהמסך כרגע נראה שאתה עדיין באזור של Monster רגע עצור"
-            )
-            .as_deref(),
-            Some("רגע עצור")
-        );
+        // His words over it, in his voice heard over its own, are his.
+        let over_it =
+            "אני לא מצליח לקרוא את שם המפה מהמסך כרגע נראה שאתה עדיין באזור של Monster רגע עצור";
+        assert_eq!(c.strip_echo(8.0, over_it), None);
+        c.voice_heard_over(7.5);
+        assert_eq!(c.strip_echo(8.0, over_it).as_deref(), Some("רגע עצור"));
     }
 
     #[test]
