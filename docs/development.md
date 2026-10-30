@@ -40,7 +40,11 @@ keeps what the pixels mean in MapleStory, and the orchestration.
   and `quality.rs` re-export Syrup's.
 - **`capture.rs`**: which window is the game, and a capture session on it
   (`syrup::capture::Window`; on Windows, Windows.Graphics.Capture with GDI
-  as the fallback; `GameCapture::path` says which).
+  as the fallback; `GameCapture::path` says which). On the compositor's
+  frames a covered window comes through as drawn (`draws_covered`), so the
+  game is in view behind another window too (`game_in_view` in the
+  binary); on the CPU path, whose last resort copies the screen, only in
+  front.
 - **`util/`**: `stages.rs`, per-stage timing of the path from its tracing
   spans; `pool.rs`, the vision engine's worker threads.
 
@@ -124,8 +128,29 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     one below it is a misread until it has held `LOWER_LEVEL_HOLDS` times
     as long, then taken quietly. The EXP bar's wrap only has the sight
     read the number again.
-  - A tone complaint ("don't talk to me this way") drops the attitude to
-    friendly (`commands::tone_complaint`).
+  - A tone complaint ("don't talk to me this way") brings the bar down to
+    the friendly voice's own level (`commands::tone_complaint`).
+  - **The bar** (`companion::spectrum`, `spectrum.json`): how it talks, from
+    a level for young children to the wildest. Each level names the deck
+    voice its own lines use (an `Attitude`), whether it is for adults only,
+    and its instructions for the models (`style::rules`). Where the player
+    set it is `Memory::tone`; it talks at `Memory::level` — held at the
+    last level open to all while the age gate does not know them to be of
+    age (`companion::age`, `age.json`: the age of majority by country and
+    region, never under 18, each with the law it comes from and where it
+    was read (a test holds every entry to it); the country from their
+    public IP, the first lookup that answers). `Memory::retune` keeps `attitude` the level's
+    voice. The phone posts `/api/tone` and `/api/age`, and reads `tone` and
+    `age` off the status: the question is asked once the bar is set past
+    the levels open to all (savage and unhinged; blunt's mild swearing is
+    open, like the game's own teen rating). The bar is on the main screen,
+    right under Start listening. When the level it talks at changes (not
+    at start, not for a new place), `ToneHeard` waits for it to settle and
+    says the level's own `said_when_set` line; while Claude talks, Claude
+    gets a `tone` event instead and says one itself. Claude has the
+    level's rules (`claude::tone`) with every `heard` and `phone` event
+    and in `player_profile`, and the brief (`kit/CLAUDE.md`) tells it to
+    follow them.
 - **`coach/`**: when MapleSyrup speaks up on its own beyond that. `Coach`
   is fed every frame and returns a `Reason` when a model should look:
   `CloseCall` and `Streak` (reactions: they wait only for the talking to
@@ -209,11 +234,45 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     for it (`playNextClip`, `blocked`); at the tap the hello and the terms
     play, and a clip no longer news is dropped — `/api/state`'s `clips`
     carry kind and age; a warning past `SAY_STALE_MS`, news past
-    `NEWS_STALE_MS`. `hearingLanguage` turns the clip-mode recogniser to
+    `NEWS_STALE_MS` (`tooOld`). A message is as old as the PC made it
+    (`lineAge`: its `t` against the PC's `uptime`), not as its arrival:
+    after a stalled link a warning made before it is shown, not said, by
+    the call or the device's own voice. The recogniser's `network` error
+    (the browser's speech service did not answer) is retried in silence;
+    `NETWORK_ERRORS_TOLD` in a row with nothing heard between them is a
+    note, worded for any device (`rec_offline` when `navigator.onLine` is
+    false, else `rec_unreachable`), gone once words are heard or the
+    device is back online. On the PC a warning carries the bar it is about
+    (`companion::About`); a potion on that bar before its voice is heard
+    drops it — its voice being made (`Outputs::answered`), its clip held
+    for the player's turn (`drop_answered_clips`), parked for the call's
+    gap (`hand`). `hearingLanguage` turns the clip-mode recogniser to
     Hebrew after two Hebrew sentences on the call (or one long one) and
     back after two English ones, shown beside the language picker (`#lang`,
     on the main screen) with an × to undo; `/api/state` carries a boot id,
     and a page open across a restart starts over.
+- **Lines said later than they were written.** A model writes slots, not
+  the numbers it read (`{hp}`, `{hp_now}`, `{mp}`, `{exp}`, `{level}`…;
+  `companion::fresh::SLOTS` is the one list, `guide()` what the models are
+  told); `Fresh` keeps the values of the moment (the main loop feeds it
+  every frame) and the worker fills a line just before its voice is made
+  (`Job::Say`, `Saying::take`, the coach's line; before `for_speech`, which
+  drops underscores). A line of Claude's own (no `answers`) is refused by
+  the board once the game changed since the last event (`Basis`: dead or
+  alive, the map).
+- **With Claude, his words get an answer.** The board knows whether his
+  newest words were answered (`waiting_since`: any line of Claude's said
+  after them); while they wait, game events are held in the binary
+  (`ClaudeWait`), and after `board::ANSWER_WAIT` MapleSyrup's own brain
+  answers them (`answered_here`; Claude's `say` for those words is then
+  refused, with why). Speech streams give up after `openai::VOICE_STALL`
+  with nothing coming (curl's low-speed limit), and the other voice says
+  the line.
+- **The recording** (`app/recorder.rs`, `bin/maplesyrup/recording.rs`):
+  Desktop Duplication can lose the screen mid-recording (a game going full
+  screen); two looks with no frame (`SCREEN_LOST_LOOKS`) save it and start
+  again through GDI (`Picture::ScreenWithoutDuplication`). The mixer counts
+  the frames with each sound (`Sounded`), said in the log at save.
 - **`app/`**, **`platform/`**, **`observe/`**, **`overlay/`**: the
   screen, the console and voice, the dashboard and preview, the overlay.
 
@@ -351,16 +410,21 @@ The phone page, against a stand-in PC in a headless Chromium (`pip install
 playwright && playwright install chromium`; from the repository root):
 
 ```sh
-python3 tools/phone_ui_check.py              # all five scenarios
+python3 tools/phone_ui_check.py              # all seven scenarios
 python3 tools/phone_ui_check.py live hello   # some of them
 ```
 
-`ui` (the main screen, Settings, the toggle's hello), `recognition` and
-`loudness` (turn-taking: a stand-in recognizer, a microphone fed from a
-file), `live` (a stand-in call: the relay, urgency and drops, a warning's
-colour and bark, the recogniser's Hebrew, the call off when the page is
-hidden) and `hello`, which runs under the browser's own autoplay policy
-(no clip before a tap, as on a phone; the other four allow autoplay).
+`ui` (the main screen, Settings, the toggle's hello), `recognition`,
+`loudness`, `talkover` and `pcvoice` (turn-taking: a stand-in recognizer, a
+microphone fed from a file — a short word over the phone's voice pauses it,
+the PC's `go_on` lets it go on at once, and a louder voice as it goes on
+pauses it again; a short word louder than its voice on the PC is told to the
+PC, not once more after a `go_on`, and at once when its voice begins again a
+moment later), `live` (a stand-in call: the relay,
+urgency and drops, a warning's colour and bark, the recogniser's Hebrew, the
+call off when the page is hidden) and `hello`, which runs under the
+browser's own autoplay policy (no clip before a tap, as on a phone; the
+other six allow autoplay).
 `PHONE_PAGE=<path>` runs them against another copy of the page, to see a
 check fail against the page as it was.
 

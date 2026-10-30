@@ -1,6 +1,6 @@
 """The phone page against a stand-in PC, in a headless browser: no console
 errors, the main screen shows only the essentials (the language picker
-among them), the gear opens Settings, the voice search narrows the list,
+and, right under Start listening, the bar of how it talks among them), the gear opens Settings, the voice search narrows the list,
 the live-call toggle flipped before Listen says hello again, sharing play
 stats starts off (on posts it, the view is JSON with no name in it,
 "Delete it" posts the delete and says "Deleted" only on the PC's ok — a
@@ -12,15 +12,24 @@ turn-taking, with a stand-in speech
 recognizer, a stand-in call and a microphone fed from a file: the words so
 far never land after the sentence, a sentence cut off by a clip is still
 sent but nothing written while the clip plays or just after (its own
-voice), a loud sound over a clip pauses it until the PC's word, a PC started
+voice), a loud sound over a clip pauses it until the PC's word — a short
+word too ("די!"), and the PC's go_on lets it go on at once — a short word
+louder than its voice on the PC's speakers is told to the PC (its first
+moments are how loud it is, kept when it begins again a moment later; not
+again after a go_on), a PC started
 again is greeted again and its clips play, a page reloaded mid-visit is not
-greeted twice, and on a call MapleSyrup's own lines are said by the call,
+greeted twice, a "network" error from the recognizer is retried in silence
+(a note, for any device — offline, or the service out of reach — only
+after three in a row, gone once words are heard or the device is back
+online), a line is as old as the PC made it, not as its arrival (a warning
+made before the link stalled is not said, by the device's own voice or the
+call), and on a call MapleSyrup's own lines are said by the call,
 never by the phone's own voice: the call's hello says what it does to a
 player the PC does not know, lines are handed over with the reading behind
 them and the game as read now, never while the call is answering (one turn
 asked for at a time), a warning dropped once stale (and the PC told), a
 death or a level-up said however late, a warning's row red and news's amber
-(the dog barks at a warning only), a change of attitude retunes the call in
+(the dog barks at a warning only), a change of the level it talks at retunes the call in
 place, Hebrew heard on the call sets the recogniser's language (two
 sentences, or one long one; two English ones set it back; shown beside the
 picker, with a × back), a language the player asked the PC for out loud is
@@ -30,10 +39,13 @@ that lost the call is told it is on, the page leaving tells it the call is
 off, and a call that fails to open hands its hello back; and, under the
 browser's own autoplay policy (a phone's: no clip before a tap), the hello
 clip made before the tap is kept for it, and the terms with it, but not a
-stale warning or stale news. Needs `pip install playwright &&
+stale warning or stale news; and with the PC's timing on (status.latency) a
+sentence carries when its words last changed, when the recogniser closed it
+and when it was sent, on the PC's clock, a clip that begins to play is told,
+and with it off none of that is sent. Needs `pip install playwright &&
 playwright install chromium`; run from the repository root: `python3
 tools/phone_ui_check.py` (or with some of `ui`, `recognition`, `live`,
-`loudness`, `hello` to run those alone; PHONE_PAGE=path checks another
+`loudness`, `talkover`, `pcvoice`, `hello`, `latency` to run those alone; PHONE_PAGE=path checks another
 copy of the page, to see a check fail against the page as it was).
 Screenshots land in `target/phone-ui/`."""
 import json, os, re, struct, sys, threading, time, http.server, socketserver
@@ -61,6 +73,7 @@ STATUS = {
     "speaking": False, "speaking_pc": False, "thinking": False, "ai": "grok-4.3",
     "learned": {"things": [], "hud": True, "level": 152, "level_from": "screen"},
     "live": True, "call_greets": True, "recording": {"state": "off"}, "attitude": "savage",
+    "tone": None, "age": None,
     "voices": [
         {"id": "v1", "name": "Rachel", "about": "female · calm · american"},
         {"id": "v2", "name": "Adam", "about": "male · deep · american"},
@@ -72,13 +85,15 @@ STATUS = {
     "voice": "v2", "settle_ms": 550, "memory": None, "warn": {"hp": 30.0, "mp": 15.0},
 }
 # How long the page waits for the PC's word on a loud sound before the
-# clip goes on, and a little more.
-PAUSE_SLACK = 2000
+# clip goes on (PAUSE_MS: the PC writes down what the phone's microphone
+# heard of that moment first), and a little more.
+PAUSE_SLACK = 3200
 # The stand-in PC's state, as the page polls it (/api/state), and every
 # request the page made. `clips`: what a clip is and when it was made, by
 # its number (a clip not in it is listed by nobody, as a PC from before
 # would).
-STATE = {"boot": "b1", "clip": 0, "cut": 0, "messages": [], "voice_on": "both", "clips": {}}
+STATE = {"boot": "b1", "clip": 0, "cut": 0, "go_on": 0, "messages": [], "voice_on": "both", "clips": {},
+         "pc_voice": 0, "pc_voice_until": 0}
 REQUESTS = []
 LOCK = threading.Lock()
 
@@ -95,7 +110,7 @@ def wav(rate, data):
 # The spoken lines the stand-in PC hands out: silent, this long.
 CLIP_SECONDS = {"default": 8}
 # What the stand-in PC reads off the game for a call (/api/eyes), and the
-# call's instructions once the attitude has changed (/api/instructions).
+# call's instructions once the level it talks at has changed (/api/instructions).
 EYES = "The MapleStory window is open and in view.\nCharacter: level 152.\nHP 11%, MP about 40%."
 INSTRUCTIONS = "You are MapleSyrup. Your attitude: friendly."
 # Whether the stand-in PC can start a call (/api/live): off, a call that
@@ -124,6 +139,16 @@ def share_view():
             "export": {"format": 1, "install_id": "6f1c2a9e-3b7d-4c55-9a0e-2d8f1b7c4e31" if on else None, "app_version": "0.9.0",
                        "sessions": [SHARED_SESSION]}}
 
+# The bar of how it talks, as the PC's own data has it (each level's name,
+# and whether it is for adults only), and the stand-in's tone and age:
+# set where the bar is, talking at `now`; of age in Israel unless told.
+LEVELS = [{"id": l["id"], "adults_only": l["adults_only"]}
+          for l in json.load(open(os.path.join(REPO, "src", "companion", "spectrum.json"), encoding="utf-8"))["levels"]]
+def tone(set_, now=None): return {"levels": LEVELS, "set": set_, "now": now or set_}
+def of_age(**change): return dict({"age": 18, "country": "IL", "known": True, "ask": False, "answered": True, "adult": True}, **change)
+STATUS["tone"] = tone("savage")
+STATUS["age"] = of_age()
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _send(self, code, body, ctype):
@@ -148,7 +173,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 clips = [{"seq": seq, "kind": kind, "age_ms": int((time.time() - made) * 1000)} for seq, (kind, made) in sorted(STATE["clips"].items())]
                 body = {"status": STATUS, "mic": {"live": False, "level": 0, "speaking": False}, "voice_on": STATE["voice_on"],
                         "messages": messages, "last_id": len(STATE["messages"]), "uptime": 100.0, "boot": STATE["boot"], "clip": STATE["clip"],
-                        "clips": clips, "cut": STATE["cut"]}
+                        "clips": clips, "cut": STATE["cut"], "go_on": STATE["go_on"], "pc_voice": STATE["pc_voice"],
+                        "pc_voice_ms": max(0, int((STATE["pc_voice_until"] - time.time()) * 1000))}
             self._send(200, json.dumps(body).encode(), "application/json")
         elif path == "/api/clip":
             self._log()
@@ -156,7 +182,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, wav(8000, pcm(seconds, 8000)), "audio/wav")
         elif path == "/api/mouth": self._log(); self._send(200, b'{"step_ms": 40, "levels": []}', "application/json")
         elif path == "/api/eyes": self._log(); self._send(200, json.dumps({"snapshot": EYES, "image": None}).encode(), "application/json")
-        elif path == "/api/instructions": self._log(); self._send(200, json.dumps({"instructions": INSTRUCTIONS, "attitude": "friendly"}).encode(), "application/json")
+        elif path == "/api/instructions": self._log(); self._send(200, json.dumps({"instructions": INSTRUCTIONS, "tone": "friendly"}).encode(), "application/json")
         elif path == "/api/share": self._log(); self._send(200, json.dumps(share_view()).encode(), "application/json")
         elif path == "/api/stats": self._log(); self._send(200, json.dumps({"sessions": SESSIONS, "share": {"on": SHARE["on"]}}).encode(), "application/json")
         else: self._log(); self._send(404, b"{}", "application/json")
@@ -167,8 +193,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except Exception: pass
         self._log(body)
         path = urlparse(self.path).path
-        if path == "/api/live" and not LIVE["opens"]: self._send(200, b'{"error": "no key"}', "application/json")
-        elif path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "attitude": "savage"}).encode(), "application/json")
+        if path == "/api/tone":
+            # As the PC does: the bar set, the level held at the last open
+            # one for a player not of age.
+            ids = [l["id"] for l in LEVELS]
+            at = ids.index((body or {}).get("tone"))
+            first = [l["adults_only"] for l in LEVELS].index(True)
+            STATUS["tone"] = tone(ids[at], ids[at if STATUS["age"]["adult"] else min(at, first - 1)])
+            self._send(200, b'{"ok":true}', "application/json")
+        elif path == "/api/age":
+            adult = (body or {}).get("adult") is True
+            STATUS["age"] = dict(STATUS["age"], adult=adult, ask=False, answered=True)
+            ids = [l["id"] for l in LEVELS]
+            first = [l["adults_only"] for l in LEVELS].index(True)
+            at = ids.index(STATUS["tone"]["set"])
+            STATUS["tone"] = tone(ids[at], ids[at if adult else min(at, first - 1)])
+            self._send(200, b'{"ok":true}', "application/json")
+        elif path == "/api/live" and not LIVE["opens"]: self._send(200, b'{"error": "no key"}', "application/json")
+        elif path == "/api/live": self._send(200, json.dumps({"key": "ek_test", "url": f"http://127.0.0.1:{port}/sdp", "hint": "", "api": "ga", "tone": "savage"}).encode(), "application/json")
         elif path == "/sdp": self._send(200, b"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n", "application/sdp")
         elif path in ("/api/share", "/api/share/delete"):
             # As the PC answers: a code for what went wrong (the page has the
@@ -258,7 +300,7 @@ def wait_for(check, seconds, what):
 
 def reset_pc():
     with LOCK:
-        STATE.update({"boot": "b1", "clip": 0, "cut": 0, "messages": [], "clips": {}})
+        STATE.update({"boot": "b1", "clip": 0, "cut": 0, "go_on": 0, "messages": [], "clips": {}, "pc_voice": 0, "pc_voice_until": 0})
         CLIP_SECONDS.clear(); CLIP_SECONDS["default"] = 8
         REQUESTS.clear()
 
@@ -275,6 +317,9 @@ def ui_checks(browser):
     # The language is on the main screen (the recogniser's language: a
     # Hebrew speaker on an en-US phone must see where to say so).
     assert page.is_visible("#lang"), "the language picker belongs on the main screen"
+    # How it talks is on the main screen, right under "Start listening".
+    listen, knob = page.locator("#listen").bounding_box(), page.locator("#toneKnob").bounding_box()
+    assert page.is_visible("#toneKnob") and 0 < knob["y"] - (listen["y"] + listen["height"]) < 90, (listen, knob)
     strip = page.inner_text("#stripText")
     assert "Lv 152" in strip and "HP 100%" in strip and "EXP 19%" in strip, strip
     page.screenshot(path=os.path.join(SHOTS, "phone-main.png"), full_page=True)
@@ -465,6 +510,155 @@ def ui_checks(browser):
     SHARE["available"] = True
     page.close()
 
+def tone_checks(browser):
+    """The bar of how it talks, and the age question: the bar shows where it
+    really talks (the PC holds a player not known to be of age at the last
+    level open to all), moving it posts the level, the question comes from
+    the PC (with the country, by name) only once the bar is set past the
+    levels open to all, a player who never answered is asked when they move
+    it there, one who said no is not asked again for moving it (the lock
+    says why, and offers to change the answer) — in English and Hebrew."""
+    reset_pc()
+    ids = [l["id"] for l in LEVELS]
+    open_id = LEVELS[[l["adults_only"] for l in LEVELS].index(True) - 1]["id"]
+    wild_id = LEVELS[[l["adults_only"] for l in LEVELS].index(True)]["id"]
+    wildest = ids[-1]
+    STATUS["tone"] = tone(wild_id)
+    STATUS["age"] = of_age()
+    page = browser.new_page(viewport={"width": 390, "height": 844})
+    watch(page)
+    page.goto(f"http://127.0.0.1:{port}/?k=test")
+    page.wait_for_timeout(1200)
+    def move_to(level_id):
+        page.evaluate("""(at) => { const bar = document.querySelector("#toneBar"); bar.value = String(at);
+          bar.dispatchEvent(new Event("input")); bar.dispatchEvent(new Event("change")); }""", ids.index(level_id))
+    # Of age: no question, no lock; the bar where it is set, its words below.
+    assert page.is_hidden("#ageCard")
+    assert page.get_attribute("#toneBar", "max") == str(len(LEVELS) - 1)
+    assert page.input_value("#toneBar") == str(ids.index(wild_id))
+    assert (page.inner_text("#toneName"), page.inner_text("#toneHint")) == ("Savage", "Swears and roasts you, personally."), page.inner_text(".tone-now")
+    assert page.is_hidden("#toneLock")
+    assert page.inner_text(".tone .ends").split("\n") == ["For kids", "Wildest"], page.inner_text(".tone .ends")
+    page.locator("#toneBar").scroll_into_view_if_needed()
+    page.screenshot(path=os.path.join(SHOTS, "phone-tone.png"), full_page=True)
+    # Dragged by a finger that stays on it: the bar stays where the finger
+    # is, however long, though the PC's status still says where it was (and
+    # the drawn knob goes with it); let go, and the level is posted.
+    box = page.locator("#toneBar").bounding_box()
+    knob = page.locator("#toneKnob").bounding_box()["width"]
+    y = box["y"] + box["height"] / 2
+    def x_of(i): return box["x"] + knob / 2 + i / (len(ids) - 1) * (box["width"] - knob)
+    here = ids.index(wild_id)
+    t_hold = time.time()
+    page.mouse.move(x_of(here), y)
+    page.mouse.down()
+    for step in range(1, 11):
+        page.mouse.move(x_of(here) + (x_of(len(ids) - 1) - x_of(here)) * step / 10, y)
+    page.wait_for_timeout(3000)
+    assert page.input_value("#toneBar") == str(len(ids) - 1), ("the bar moved under the finger holding it", page.input_value("#toneBar"))
+    assert page.inner_text("#toneName") == "Unhinged", page.inner_text("#toneName")
+    drawn = page.locator("#toneKnob").bounding_box()
+    assert abs(drawn["x"] + drawn["width"] / 2 - x_of(len(ids) - 1)) < 3, ("the drawn knob is not under the finger", drawn)
+    assert not any(r["path"] == "/api/tone" for r in requests_since(t_hold)), "a level was posted before the finger let go"
+    page.mouse.up()
+    wait_for(lambda: any((r["body"] or {}).get("tone") == wildest for r in requests_since(t_hold, "/api/tone")), 3, "letting go did not post the level")
+    # Moved to the wildest: the level posted, by name.
+    t0 = time.time()
+    move_to(wildest)
+    wait_for(lambda: any((r["body"] or {}).get("tone") == wildest for r in requests_since(t0, "/api/tone")), 3, "moving the bar did not post the level")
+    wait_for(lambda: page.inner_text("#toneName") == "Unhinged", 3, ("the bar moved, its words did not", page.inner_text("#toneName")))
+    assert page.is_hidden("#ageCard"), "a player of age was asked"
+    # Never answered, the bar set past the open levels (savage, from before
+    # the bar): the PC holds it at the last open level and asks — once where
+    # they are is known, on the main screen, with the country by name.
+    STATUS["age"] = of_age(adult=False, ask=True, answered=False, known=False)
+    STATUS["tone"] = tone(wild_id, open_id)
+    page.wait_for_timeout(1200)
+    assert page.is_hidden("#ageCard"), "asked before the place was known"
+    STATUS["age"] = of_age(adult=False, ask=True, answered=False)
+    wait_for(lambda: page.is_visible("#ageCard"), 3, "the age question did not show")
+    assert page.inner_text("#ageQ") == "Are you 18 or older?", page.inner_text("#ageQ")
+    assert page.inner_text("#ageIn") == "Israel: adulthood starts at 18.", page.inner_text("#ageIn")
+    page.screenshot(path=os.path.join(SHOTS, "phone-age.png"), full_page=True)
+    t1 = time.time()
+    page.click("#ageYes")
+    wait_for(lambda: any(r["body"] == {"age": 18, "adult": True} for r in requests_since(t1, "/api/age")), 3, "yes was not posted with the age")
+    assert page.is_hidden("#ageCard")
+    page.wait_for_timeout(1200)
+    assert page.is_hidden("#ageCard"), "asked again after answering"
+    assert STATUS["tone"]["now"] == wild_id, STATUS["tone"]
+    # Said no: not asked again; the bar where it really talks, the wild end
+    # locked and saying so, with a way to change the answer. Moving the bar
+    # past the lock posts the level (the PC moves to it if the answer ever
+    # changes) and does not ask again.
+    STATUS["age"] = of_age(adult=False)
+    STATUS["tone"] = tone(wild_id, open_id)
+    page.wait_for_timeout(1200)
+    assert page.is_hidden("#ageCard")
+    wait_for(lambda: page.inner_text("#toneName") == "Blunt", 3, ("not shown where it really talks", page.inner_text("#toneName")))
+    assert page.input_value("#toneBar") == str(ids.index(open_id)), page.input_value("#toneBar")
+    assert page.is_visible("#toneLock")
+    assert page.inner_text("#toneLockText") == "🔒 Past Blunt is for adults (18+).", page.inner_text("#toneLockText")
+    assert page.inner_text("#toneAge") == "Change my answer", page.inner_text("#toneAge")
+    page.locator("#toneLock").scroll_into_view_if_needed()
+    page.screenshot(path=os.path.join(SHOTS, "phone-tone-locked.png"), full_page=True)
+    t2 = time.time()
+    move_to(wildest)
+    wait_for(lambda: any((r["body"] or {}).get("tone") == wildest for r in requests_since(t2, "/api/tone")), 3, "moving past the lock did not post the level")
+    page.wait_for_timeout(800)
+    assert page.is_hidden("#ageCard"), "someone who said no was asked again for moving the bar"
+    # "Change my answer" asks again, right there.
+    page.click("#toneAge")
+    wait_for(lambda: page.is_visible("#ageCard") and page.is_hidden("#sheet"), 3, "changing the answer did not ask again")
+    t3 = time.time()
+    page.click("#ageNo")
+    wait_for(lambda: any(r["body"] == {"age": 18, "adult": False} for r in requests_since(t3, "/api/age")), 3, "no was not posted with the age")
+    assert page.is_hidden("#ageCard")
+    page.wait_for_timeout(1200)
+    assert page.is_hidden("#ageCard"), "asked again after answering"
+    # Never answered, the bar at a level open to all (the usual): nothing is
+    # asked; the lock's link is the question, and moving the bar past the
+    # lock asks it.
+    STATUS["age"] = of_age(adult=False, answered=False)
+    STATUS["tone"] = tone(open_id)
+    page.wait_for_timeout(1200)
+    assert page.is_hidden("#ageCard"), "asked with the bar at a level open to all"
+    wait_for(lambda: page.inner_text("#toneAge") == "Are you 18 or older?", 3, ("the lock's link is not the question", page.inner_text("#toneAge")))
+    t4 = time.time()
+    move_to(wild_id)
+    wait_for(lambda: any((r["body"] or {}).get("tone") == wild_id for r in requests_since(t4, "/api/tone")), 3, "moving past the lock did not post the level")
+    wait_for(lambda: page.is_visible("#ageCard"), 3, "moving the bar past the lock did not ask someone never asked")
+    # Asked right under the bar, where the finger is.
+    bar, card = page.locator("#toneCard").bounding_box(), page.locator("#ageCard").bounding_box()
+    assert 0 <= card["y"] - (bar["y"] + bar["height"]) < 40, (bar, card)
+    page.click("#ageYes")
+    wait_for(lambda: STATUS["age"]["adult"], 3, "yes did not reach the PC")
+    # Hebrew: the question and the lock in the page's Hebrew, right to left.
+    STATUS["age"] = of_age(adult=False, ask=True, answered=False)
+    STATUS["tone"] = tone(wild_id, open_id)
+    page.select_option("#lang", "he-IL")
+    wait_for(lambda: page.is_visible("#ageCard"), 6, "the age question did not show in Hebrew")
+    assert page.get_attribute("html", "dir") == "rtl"
+    assert page.inner_text("#ageQ") == "האם גילך 18 ומעלה?", page.inner_text("#ageQ")
+    assert page.inner_text("#ageIn") == "ישראל: בגירות מגיל 18.", page.inner_text("#ageIn")
+    page.screenshot(path=os.path.join(SHOTS, "phone-age-he.png"), full_page=True)
+    STATUS["age"] = of_age(adult=False)
+    wait_for(lambda: page.inner_text("#toneName") == "ישיר", 3, ("the level's name not in Hebrew", page.inner_text("#toneName")))
+    # (Answered now: the lock's link changes the answer, once the status says so.)
+    wait_for(lambda: page.inner_text("#toneAge") == "לשנות את התשובה", 3, ("the lock's link", page.inner_text("#toneAge")))
+    assert page.inner_text("#toneLockText") == "🔒 מעבר ל„ישיר” זה למבוגרים בלבד (18+).", page.inner_text("#toneLockText")
+    # The bar runs the same way as in every language, on a right-to-left
+    # page too: the gentlest on the left, the wildest on the right.
+    assert page.evaluate("getComputedStyle(document.querySelector('#toneBar')).direction") == "ltr"
+    low, high = page.locator(".tone .ends span").all()
+    assert (low.inner_text(), high.inner_text()) == ("לילדים", "הכי פרוע"), (low.inner_text(), high.inner_text())
+    assert low.bounding_box()["x"] < high.bounding_box()["x"], "the gentlest end of the bar is not on the left"
+    page.locator("#toneLock").scroll_into_view_if_needed()
+    page.screenshot(path=os.path.join(SHOTS, "phone-tone-locked-he.png"), full_page=True)
+    STATUS["tone"] = tone(wild_id)
+    STATUS["age"] = of_age()
+    page.close()
+
 def listening_page(browser):
     """A page listening with the stand-in recognizer (no live call), told
     to wait a long moment after the words stop before it takes a sentence
@@ -536,6 +730,41 @@ def recognition_checks(browser):
     page.evaluate('window.__rec.result(0, "what level am I", true)')
     wait_for(lambda: any(r["body"].get("text") == "what level am I" for r in requests_since(t_back, "/api/heard")), 3,
              "the player's sentence after the clip was not sent")
+    # Speech recognition's "network" error (the browser's speech service did
+    # not answer this time) is retried in silence: one is no note; three in
+    # a row with nothing heard between them say what it is, on any device
+    # (the note blamed "the phone" on a computer that was online and being
+    # answered). Words heard again take the note away. Offline, it says so
+    # at once, and the note goes when the device is back online.
+    def shown_note(): return page.evaluate("(() => { const n = document.querySelector('#note'); return n.style.display === 'none' ? '' : n.textContent; })()")
+    network = 'window.__rec.onerror({ error: "network" })'
+    page.evaluate(network)
+    page.wait_for_timeout(100)
+    assert shown_note() == "", ("one network error was a note", shown_note())
+    page.evaluate(network); page.evaluate(network)
+    assert shown_note() == "Speech recognition can't reach its service right now. Still trying…", shown_note()
+    page.evaluate('window.__rec.result(0, "testing", false)')
+    assert shown_note() == "", ("the note stayed after words were heard", shown_note())
+    page.context.set_offline(True)
+    page.evaluate(network)
+    assert shown_note() == "This device is offline, and speech recognition needs the internet.", shown_note()
+    t_online = time.time()
+    page.context.set_offline(False)
+    wait_for(lambda: shown_note() == "", 3, "the offline note stayed once the device was back online")
+    wait_for(lambda: requests_since(t_online, "/api/state"), 8, "the page did not reach the PC again after being offline")
+    # This device's own voice says the PC's lines as they come, but a line
+    # is as old as the PC says (its `t` against the PC's uptime, 100 here),
+    # not as old as its arrival: a warning the PC made ten seconds before it
+    # got here — the link stalled meanwhile — is shown, not said ("drink,
+    # you're at 12" to a player who potted back to 100).
+    with LOCK:
+        n = len(STATE["messages"])
+        STATE["messages"].append({"id": n + 1, "t": 99.5, "kind": "warning", "text": "Pot, HP's at 30%.", "speak": True})
+        STATE["messages"].append({"id": n + 2, "t": 90.0, "kind": "warning", "text": "Drink, HP's at 12%.", "speak": True})
+    wait_for(lambda: "Pot, HP's at 30%." in page.evaluate("window.__spoken"), 4, "a fresh warning was not said by the device's own voice")
+    wait_for(lambda: any(li == "Drink, HP's at 12%." for li in page.evaluate("[...document.querySelectorAll('#log li.warning')].map((li) => li.firstChild.textContent)")), 3,
+             "the late warning was not shown")
+    assert "Drink, HP's at 12%." not in page.evaluate("window.__spoken"), ("a warning made before the link stalled was said as new", page.evaluate("window.__spoken"))
     # The PC is started again (a new boot): the page says hello again and
     # takes its clips from the start.
     page.wait_for_timeout(300)
@@ -571,7 +800,7 @@ def loudness_checks(p):
     wait_for(lambda: page.evaluate("!window.msVoice.paused"), 4, "the clip did not start")
     wait_for(lambda: interrupts(t0), 9, "the loud sound never paused the clip")
     assert page.evaluate("window.msVoice.paused"), "the clip pauses while the PC waits for words"
-    wait_for(lambda: page.evaluate("!window.msVoice.paused"), 3, "the clip did not go on after the PC's silence")
+    wait_for(lambda: page.evaluate("!window.msVoice.paused"), 4, "the clip did not go on after the PC's silence")
     assert interrupts(t0) == 1, "the same loudness tripped the clip again"
     wait_for(lambda: page.evaluate("window.msVoice.ended"), 10, "the clip did not play to its end")
     assert interrupts(t0) == 1
@@ -597,6 +826,142 @@ def loudness_checks(p):
     page.close()
     browser.close()
 
+def syllables(seconds, rate, amplitude):
+    """A voice's worth of loudness: a fifth of a second loud, a moment
+    quiet, over and over (a steady tone is soon taken for noise)."""
+    out, left = b"", seconds
+    while left > 0:
+        out += pcm(min(0.2, left), rate, amplitude) + pcm(min(0.07, max(left - 0.2, 0)), rate)
+        left -= 0.27
+    return out
+
+def talkover_checks(p):
+    """The microphone fed from a file: a short word over the phone's voice
+    ("די!", a quarter of a second), then a louder voice through the pause
+    and on, then another short word. (The bug of 25 October, a joke that
+    could not be silenced: a word that short never paused the clip — it
+    took half a second of loudness in a row.)"""
+    mic = os.path.join(SHOTS, "mic-short-words.wav")
+    # (The microphone's gain control lifts a quiet word a long way and holds
+    # a loud voice down: the first word is quiet, for the louder voice to
+    # stand out from it.)
+    with open(mic, "wb") as f:
+        f.write(wav(48000, pcm(5, 48000) + pcm(0.25, 48000, 1000) + pcm(0.35, 48000) + syllables(1.6, 48000, 24000)
+                    + pcm(5.8, 48000) + pcm(0.25, 48000, 24000) + pcm(20, 48000)))
+    browser = p.chromium.launch(args=browser_args(mic))
+    page, mic_started = listening_page(browser)
+    def at(seconds):
+        wait = mic_started + seconds - time.time()
+        if wait > 0: time.sleep(wait)
+    def interrupts(t): return len(requests_since(t, "/api/interrupt"))
+    # A quarter of a second of his voice over the clip pauses it; the PC
+    # finds none of his words in it (go_on) and it goes on at once, not
+    # after the page's wait.
+    t0 = time.time()
+    at(1.5)
+    with LOCK: STATE["clip"] = 1
+    wait_for(lambda: page.evaluate("!window.msVoice.paused"), 4, "the clip did not start")
+    wait_for(lambda: interrupts(t0), 8, "a short word over the clip never paused it")
+    paused_at = time.time()
+    # (The word, not the longer voice after it: that begins 5.6 s in.)
+    first = requests_since(t0, "/api/interrupt")[0]["t"] - mic_started
+    assert first < 5.7, f"a short word over the clip never paused it (the voice after it did, {first:.2f} s in)"
+    assert page.evaluate("window.msVoice.paused"), "the clip pauses while the PC listens"
+    # (The PC takes a moment to write it down: meanwhile he says more.)
+    at(6.0)
+    with LOCK: STATE["go_on"] = 1
+    wait_for(lambda: page.evaluate("!window.msVoice.paused"), 2, "the PC's go_on did not let the clip go on")
+    assert time.time() - paused_at < 2.0, "it went on only after the page's own wait"
+    # He was still talking, louder, as it went on: that pauses it again.
+    # (Going on was taken for the clip's start, and what the microphone
+    # heard in its first moments for the clip's own floor: his voice. It
+    # was deaf to him for the rest of the clip.)
+    wait_for(lambda: interrupts(t0) == 2, 3, "a louder voice as the clip went on did not pause it again")
+    with LOCK: STATE["go_on"] = 2
+    wait_for(lambda: page.evaluate("!window.msVoice.paused"), 2, "the second go_on did not let the clip go on")
+    wait_for(lambda: page.evaluate("window.msVoice.ended"), 12, "the clip did not play to its end")
+    assert interrupts(t0) == 2
+    # The next one: this time the PC found his "די" in it and cuts. It
+    # stays stopped.
+    t1 = time.time()
+    at(12)
+    with LOCK: STATE["clip"] = 2
+    wait_for(lambda: page.evaluate("!window.msVoice.paused"), 4, "the second clip did not start")
+    wait_for(lambda: interrupts(t1), 8, "the second short word never paused it")
+    with LOCK: STATE["cut"] = 1
+    wait_for(lambda: page.evaluate("window.msVoice.paused && !window.msVoice.getAttribute('src')"), 3, "the PC's cut did not stop the clip")
+    page.wait_for_timeout(PAUSE_SLACK)
+    assert page.evaluate("window.msVoice.paused && !window.msVoice.getAttribute('src')"), "a cut clip must not go on"
+    # The page asks for go_on with its poll, so the PC can wake it.
+    assert any("go" in r["query"] for r in requests_since(t0, "/api/state")), "the poll does not ask for go_on"
+    page.close()
+    browser.close()
+
+def pcvoice_checks(p):
+    """The microphone fed from a file: its voice on the PC's speakers (the
+    phone does not play it, so nothing cancels it here), and the player's
+    short words over it, louder. (The bug of 25 October with the voice on
+    the PC: a word over it was taken for its own voice, or needed a word
+    list to count.)"""
+    mic = os.path.join(SHOTS, "mic-over-pc.wav")
+    word = lambda: pcm(0.25, 48000, 24000)
+    with open(mic, "wb") as f:
+        f.write(wav(48000, pcm(3, 48000) + syllables(4, 48000, 1500) + word() + syllables(3.25, 48000, 1500) + word()
+                    + syllables(2.75, 48000, 1500) + word() + syllables(1.25, 48000, 1500) + pcm(2, 48000) + word()
+                    + pcm(1.75, 48000) + syllables(3, 48000, 1500) + word() + syllables(0.75, 48000, 1500)
+                    + pcm(1.6, 48000) + syllables(0.6, 48000, 1500) + word() + syllables(1, 48000, 1500) + pcm(10, 48000)))
+    browser = p.chromium.launch(args=browser_args(mic))
+    page, mic_started = listening_page(browser)
+    def at(seconds):
+        wait = mic_started + seconds - time.time()
+        if wait > 0: time.sleep(wait)
+    def interrupts(t): return requests_since(t, "/api/interrupt")
+    def heard_at(r): return r["t"] - mic_started
+    def no_clip(): return page.evaluate("window.msVoice.paused") and not requests_since(t0, "/api/clip")
+    # Its voice begins on the PC (3 s in, for 12 s): its first moments are
+    # how loud it is here, and on its own it is no talk-over.
+    t0 = time.time()
+    at(3.0)
+    with LOCK: STATE["pc_voice"] = 1; STATE["pc_voice_until"] = time.time() + 12
+    at(6.9)
+    assert not interrupts(t0), "its own voice on the PC was taken for his"
+    # A quarter of a second of his voice over it (7 s in): the PC is told at
+    # once, and nothing pauses (the PC plays its voice itself).
+    wait_for(lambda: interrupts(t0), 3, "a short word over its voice on the PC was never told")
+    first = heard_at(interrupts(t0)[0])
+    assert 7.0 < first < 7.9, f"told {first:.2f} s in, not for the word at 7 s"
+    assert no_clip()
+    # Another word 3.5 s later: told again.
+    wait_for(lambda: len(interrupts(t0)) == 2, 4, "the second word over its voice on the PC was never told")
+    assert 10.5 < heard_at(interrupts(t0)[1]) < 11.4
+    # The PC found none of his words in it (go_on): that loudness again is
+    # no voice of his — the third word, as loud, is not told.
+    with LOCK: STATE["go_on"] = 1
+    at(15.5)
+    assert len(interrupts(t0)) == 2, "the same sound was told again after the PC found no words in it"
+    # Its voice is over (15 s in): a loud word with no voice of its own to
+    # talk over is told nothing.
+    at(18.5)
+    assert len(interrupts(t0)) == 2, "a loud word with its voice over was told"
+    # Its next voice (19.6 s in, more than four seconds after the last) is
+    # measured afresh: his word over it (22 s in) is told, as over the first.
+    at(19.6)
+    with LOCK: STATE["pc_voice"] = 2; STATE["pc_voice_until"] = time.time() + 3.4
+    wait_for(lambda: len(interrupts(t0)) == 3, 5, "a word over its next voice on the PC was never told")
+    assert 22.0 < heard_at(interrupts(t0)[2]) < 22.9
+    assert no_clip()
+    # A voice that begins again a moment after (its next line, 24.6 s in) is
+    # the same voice: his word 0.6 s into it is told at once, not lost to a
+    # second of measuring.
+    at(24.6)
+    with LOCK: STATE["pc_voice"] = 3; STATE["pc_voice_until"] = time.time() + 2
+    wait_for(lambda: len(interrupts(t0)) == 4, 3, "a word just after its voice began again was not told")
+    assert 25.2 < heard_at(interrupts(t0)[3]) < 26.0
+    # The page asks for the PC's voice with its poll, so the PC can wake it.
+    assert any("pv" in r["query"] for r in requests_since(t0, "/api/state")), "the poll does not ask for the PC's voice"
+    page.close()
+    browser.close()
+
 # What the dog was told to react to, in order.
 DOG_SPY = """
 window.__reacts = [];
@@ -611,7 +976,7 @@ const hookDog = setInterval(() => {
 
 def live_checks(browser):
     STATUS["live"] = True
-    STATUS["attitude"] = "savage"
+    STATUS["tone"] = tone("savage")
     STATUS["new_player"] = True
     reset_pc()
     with LOCK: STATE["voice_on"] = "phone"
@@ -629,8 +994,8 @@ def live_checks(browser):
     def sent(kind): return [e for e in page.evaluate("window.__dcSent") if e["type"] == kind]
     def items_with(text): return [e for e in sent("conversation.item.create") if text in json.dumps(e)]
     def event(ev): page.evaluate("(ev) => window.__dc.onmessage({ data: JSON.stringify(ev) })", ev)
-    def line(id, kind, text, fact=None, urgent=False):
-        m = {"id": id, "t": 100.0 + id, "kind": kind, "text": text, "speak": True}
+    def line(id, kind, text, fact=None, urgent=False, t=None):
+        m = {"id": id, "t": 100.0 + id if t is None else t, "kind": kind, "text": text, "speak": True}
         if fact: m["fact"] = fact
         if urgent: m["urgent"] = True
         with LOCK: STATE["messages"].append(m)
@@ -703,12 +1068,24 @@ def live_checks(browser):
     wait_for(lambda: any(r["body"] == {"what": "dropped", "text": "Move, you're melting."} for r in requests_since(t_late, "/api/turn")), 2, "the PC was not told of the line that was not said")
     assert not any((r["body"] or {}).get("text") == "Level 153! Nice." for r in requests_since(t_late, "/api/turn")), "the level-up was reported as not said"
     event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
-    # The attitude changed on the PC (the picker here, or the player
-    # objecting to the tone): the call gets its instructions again and goes
-    # on, not started over.
+    # A line is as old as the PC says (its `t` against the PC's uptime, 100
+    # here), not as old as its arrival: a warning the PC made ten seconds
+    # before it got here — the link stalled meanwhile — is not handed to
+    # the call, and the PC is told; a fresh one that follows still is.
+    t_stalled = time.time()
+    line(6, "warning", "Drink, HP's at 12%.", "HP 12% (read 0 s ago)", t=90.0)
+    line(7, "warning", "Pot, HP's at 25%.", "HP 25% (read 0 s ago)", t=100.0)
+    wait_for(lambda: items_with("HP's at 25%") or items_with("HP's at 12%"), 4, "neither warning was handed to the call")
+    assert not items_with("HP's at 12%"), "a warning made before the link stalled was handed to the call as new"
+    wait_for(lambda: items_with("HP's at 25%"), 2, "the fresh warning was not handed to the call")
+    wait_for(lambda: any(r["body"] == {"what": "dropped", "text": "Drink, HP's at 12%."} for r in requests_since(t_stalled, "/api/turn")), 2, "the PC was not told of the late line")
+    event({"type": "response.created"}); event({"type": "response.done", "response": {"output": []}})
+    # The level it talks at changed on the PC (the bar here, the age
+    # answered, or the player objecting to the tone): the call gets its
+    # instructions again and goes on, not started over.
     t1 = time.time()
-    STATUS["attitude"] = "friendly"
-    wait_for(lambda: sent("session.update"), 4, "the call was not retuned to the new attitude")
+    STATUS["tone"] = tone("friendly")
+    wait_for(lambda: sent("session.update"), 4, "the call was not retuned to the new level")
     update = sent("session.update")[-1]["session"]
     assert update == {"type": "realtime", "instructions": INSTRUCTIONS}, update
     assert requests_since(t1, "/api/instructions") and not requests_since(t1, "/api/live"), "the call was started over"
@@ -820,7 +1197,7 @@ def live_checks(browser):
     # The hello carries the live-call toggle: the PC leaves the hello to
     # the call when one is coming, and says it itself when not.
     assert hellos[0]["body"].get("live") is True, hellos[0]["body"]
-    STATUS["attitude"] = "savage"
+    STATUS["tone"] = tone("savage")
     # The page leaving (closed, navigated away): its last word is that the
     # call is off — a beacon, since nothing else runs by then.
     t_gone = time.time()
@@ -996,23 +1373,63 @@ def hello_checks(p):
                    "six clips before the tap, the hello first")
     browser.close()
 
+def latency_checks(browser):
+    """The PC's timing on (status.latency): the sentence's stamps go with it,
+    on the PC's clock (its uptime, 100 s on every poll here, and a moment),
+    and a clip's start is told; off, nothing of the timing is sent."""
+    STATUS["latency"] = True
+    page, _ = listening_page(browser)
+    t0 = time.time()
+    page.evaluate('window.__rec.result(0, "what level am I", false)')
+    page.wait_for_timeout(50)
+    page.evaluate('window.__rec.result(0, "what level am I", true)')
+    page.wait_for_timeout(400)
+    heard = [r["body"] for r in requests_since(t0, "/api/heard")]
+    assert heard and heard[-1]["text"] == "what level am I", heard
+    stamps = heard[-1].get("latency") or {}
+    assert all(name in stamps for name in ("spoke", "final", "sent", "settle", "rtt")), stamps
+    assert stamps["spoke"] <= stamps["final"] <= stamps["sent"] and 100 <= stamps["sent"] < 200, stamps
+    with LOCK:
+        CLIP_SECONDS["1"] = 0.5
+        STATE["clip"] = 1
+        STATE["clips"][1] = ("reply", time.time())
+    told = lambda: [r["body"] for r in requests_since(t0, "/api/latency") if r["body"] and r["body"].get("clip") == 1]
+    wait_for(told, 5, "the clip's start was not told")
+    # (The stand-in's uptime stands still: only that it is on its clock.)
+    assert 100 <= told()[0]["played"] < 200, told()
+    # Off again: a sentence is only its words.
+    del STATUS["latency"]
+    wait_for(lambda: page.evaluate("window.__rec.running"), 5, "recognition never started again after the clip")
+    page.wait_for_timeout(300)
+    t1 = time.time()
+    page.evaluate('window.__rec.result(0, "where am I", true)')
+    page.wait_for_timeout(400)
+    heard = [r["body"] for r in requests_since(t1, "/api/heard")]
+    assert heard and "latency" not in heard[-1], heard
+    assert not requests_since(t1, "/api/latency")
+    page.close()
+
 def browser_args(mic_file):
     """A browser with a microphone fed from `mic_file`, and clips allowed to
     play without a tap."""
     return ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
             f"--use-file-for-fake-audio-capture={mic_file}", "--autoplay-policy=no-user-gesture-required"]
 
-chosen = set(sys.argv[1:]) or {"ui", "recognition", "live", "loudness", "hello"}
+chosen = set(sys.argv[1:]) or {"ui", "tone", "recognition", "live", "loudness", "talkover", "pcvoice", "hello", "latency"}
 with sync_playwright() as p:
     quiet = os.path.join(SHOTS, "mic-quiet.wav")
     with open(quiet, "wb") as f:
         f.write(wav(48000, pcm(60, 48000)))
     browser = p.chromium.launch(args=browser_args(quiet))
     if "ui" in chosen: ui_checks(browser)
+    if "tone" in chosen: tone_checks(browser)
     if "recognition" in chosen: recognition_checks(browser)
     if "live" in chosen: live_checks(browser)
+    if "latency" in chosen: latency_checks(browser)
     browser.close()
     if "loudness" in chosen: loudness_checks(p)
+    if "talkover" in chosen: talkover_checks(p)
+    if "pcvoice" in chosen: pcvoice_checks(p)
     if "hello" in chosen: hello_checks(p)
 srv.shutdown()
 if errors:

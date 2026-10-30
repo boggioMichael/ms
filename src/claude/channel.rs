@@ -15,6 +15,8 @@
 //! - `player_profile` / `player_remember` — what MapleSyrup knows about the
 //!   player and his game (`about-me.txt`, its notebook), and a lasting fact
 //!   about him;
+//! - `set_tone` — the bar of how it talks to him (as on his phone) moved to
+//!   another level, when he asks Claude to talk another way;
 //! - `say` (Claude Code only) — MapleSyrup's voice says it.
 //!
 //! In a Claude Code session it is also a channel: it declares Claude Code's
@@ -84,8 +86,13 @@ In this session MapleSyrup also pushes what changes in the game as <channel sour
 events, each ending with the whole reading at that moment:
 kind=\"hello\": the link to MapleSyrup came up. kind=\"heard\": he said this out loud through MapleSyrup's phone \
 page (speech recognition; may be misheard) — about anything, not only the game: answer him as you would any \
-message, with say when he can't read the screen. \
+message, with say when he can't read the screen, giving its heard_id as say's answers. Always answer his newest \
+words: a say for words he has since followed with newer ones is not said (he moved on), nor one while he talks \
+over your voice. When he tells you to stop or be quiet, stop: say nothing more unless he asks. A line of yours \
+he spoke before hearing is named in his words (\"not said\"): he never heard it. \
 kind=\"phone\": his phone connected — he can talk to you now. \
+kind=\"tone\": he moved the bar of how you talk to him on his phone: from now on talk to him the way it says, and \
+say one short line in the new tone (heard and phone events carry the bar's rules too). \
 kind=\"death\" | \"level_up\" | \"map\" | \"hp\" | \"mp\" | \"dialog\" | \"thing\" | \"window\" | \"state\": something \
 changed. Speak up only when it helps him right now — danger, a real milestone, a quest or dialog you can help \
 with, something he asked you to watch; otherwise stay silent. kind=\"offline\": MapleSyrup stopped.";
@@ -108,7 +115,10 @@ pub trait Api: Send + Sync {
     fn events(&self, since: Option<u64>, wait: Duration, listening: bool) -> Result<Batch, String>;
     /// The reading now: `{status, text, recent}`.
     fn status(&self) -> Result<Value, String>;
-    fn say(&self, text: &str) -> Result<(), String>;
+    /// A line for MapleSyrup's voice; `answers`: the number of the
+    /// player's words (their `heard` event) it answers. Not said (an
+    /// error, and why) when he has moved on.
+    fn say(&self, text: &str, answers: Option<u64>) -> Result<(), String>;
     /// `{mime, data, width, height, region, frame}`.
     fn look(&self, region: &str) -> Result<Value, String>;
     /// The region saved as a PNG file at full size: `{path, width, height, region}`.
@@ -120,6 +130,9 @@ pub trait Api: Send + Sync {
     fn player(&self) -> Result<Value, String>;
     /// Whether it was new.
     fn remember(&self, fact: &str) -> Result<bool, String>;
+    /// The bar of how it talks to him moved to the level named `tone`:
+    /// that level's name as taken.
+    fn tone(&self, tone: &str) -> Result<String, String>;
 }
 
 /// The companion on this PC, found through its link file each time (it
@@ -333,8 +346,8 @@ impl Api for Local {
         self.call("GET", "/local/status", &[], Duration::from_secs(10))
     }
 
-    fn say(&self, text: &str) -> Result<(), String> {
-        let body = json!({ "text": text }).to_string();
+    fn say(&self, text: &str, answers: Option<u64>) -> Result<(), String> {
+        let body = json!({ "text": text, "answers": answers }).to_string();
         self.call(
             "POST",
             "/local/say",
@@ -404,6 +417,17 @@ impl Api for Local {
         )
         .map(|v| v["new"].as_bool().unwrap_or(true))
     }
+
+    fn tone(&self, tone: &str) -> Result<String, String> {
+        let body = json!({ "tone": tone }).to_string();
+        self.call(
+            "POST",
+            "/local/tone",
+            body.as_bytes(),
+            Duration::from_secs(10),
+        )
+        .map(|v| v["tone"].as_str().unwrap_or(tone).to_string())
+    }
 }
 
 /// `text` for a query string: letters and digits as they are, everything
@@ -434,14 +458,37 @@ fn send(out: &Out, message: &Value) {
 
 /// One event for Claude.
 fn notify(out: &Out, kind: &str, content: &str) {
+    notify_with(out, content, json!({ "kind": kind }));
+}
+
+/// One event for Claude, with `meta` (each entry an attribute of its
+/// `<channel>` tag).
+fn notify_with(out: &Out, content: &str, meta: Value) {
     send(
         out,
         &json!({
             "jsonrpc": "2.0",
             "method": "notifications/claude/channel",
-            "params": {"content": content, "meta": {"kind": kind}},
+            "params": {"content": content, "meta": meta},
         }),
     );
+}
+
+/// An event as the companion posted it, for Claude: what the player said
+/// carries its number (`heard_id`), which Claude gives back as `say`'s
+/// `answers` — a line for words he has since followed with newer ones is
+/// not said.
+fn notify_event(out: &Out, event: &Value) {
+    let kind = event["kind"].as_str().unwrap_or("event");
+    let content = event["text"].as_str().unwrap_or_default();
+    match event["seq"].as_u64().filter(|_| kind == "heard") {
+        Some(seq) => notify_with(
+            out,
+            content,
+            json!({ "kind": kind, "heard_id": seq.to_string() }),
+        ),
+        None => notify(out, kind, content),
+    }
 }
 
 /// Whether the client is Claude Code (which takes channel events), from
@@ -613,10 +660,20 @@ impl<A: Api + 'static> Bridge<A> {
         match params["name"].as_str().unwrap_or_default() {
             "say" => {
                 let line = text("text");
-                if line.is_empty() {
-                    return failed("Nothing to say: give the text.");
+                // (A number, or a number in a string: as Claude wrote it.)
+                let answers = arguments["answers"]
+                    .as_u64()
+                    .or_else(|| text("answers").parse().ok());
+                // Nothing to say on purpose, about words of his: quiet.
+                if line.is_empty() && answers.is_none() {
+                    return failed(
+                        "Nothing to say: give the text (or his heard_id, to stay quiet on purpose).",
+                    );
                 }
-                match self.api.say(&line) {
+                match self.api.say(&line, answers) {
+                    Ok(()) if line.is_empty() => {
+                        said("Quiet: nothing said, and MapleSyrup won't answer them either.")
+                    }
                     Ok(()) => said("Said."),
                     Err(why) => failed(&format!("Not said: {why}.")),
                 }
@@ -687,6 +744,19 @@ impl<A: Api + 'static> Bridge<A> {
                 Ok(player) => said(player["text"].as_str().unwrap_or_default()),
                 Err(why) => failed(&format!("Nothing to read: {why}.")),
             },
+            "set_tone" => {
+                let tone = text("tone");
+                if tone.is_empty() {
+                    return failed("Give the level to talk at.");
+                }
+                match self.api.tone(&tone) {
+                    Ok(tone) => said(&format!(
+                        "The bar is at {tone} now. A player not known to be of age is held at the last \
+level open to all; a `tone` event brings the rules of the level you talk at."
+                    )),
+                    Err(why) => failed(&format!("Not moved: {why}.")),
+                }
+            }
             "player_remember" => {
                 let fact = text("fact");
                 if fact.is_empty() {
@@ -803,7 +873,7 @@ fn tools(channel: bool) -> Value {
         json!({
             "name": "save_picture",
             "title": "Save a picture of his game",
-            "description": "Save the game's window as it is now (only while MapleStory is the window in front), or \
+            "description": "Save the game's window as it is now (only while MapleStory is in view), or \
         a part of it, as a PNG file on his PC at full size, and get its path: to edit it, compare or keep it — his \
         character to dress up, an outfit, a map. (look_at_screen is for seeing; this is for working with the picture.)",
             "inputSchema": {
@@ -874,17 +944,41 @@ fn tools(channel: bool) -> Value {
             },
             "annotations": keeps("Remember about him"),
         }),
+        json!({
+            "name": "set_tone",
+            "title": "How it talks to him",
+            "description": "Move the bar of how you and MapleSyrup talk to him — the one on his phone, gentlest \
+        first — to another level, when he asks you to talk to him another way, in any words (to swear or not, to be \
+        gentler, to roast him, no filter). A player not known to be of age where he is stays at the last level open to \
+        all (the phone asks him); a `tone` event then brings the rules of the level you talk at.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"tone": {
+                    "type": "string",
+                    "enum": crate::companion::spectrum::Spectrum::get().ids(),
+                    "description": "The level, gentlest first.",
+                }},
+                "required": ["tone"],
+                "additionalProperties": false,
+            },
+            "annotations": keeps("How it talks to him"),
+        }),
     ];
     if channel {
         tools.push(json!({
             "name": "say",
             "title": "Say it out loud",
-            "description": "Say this out loud to the player in MapleSyrup's voice (his speakers or his phone), for \
+            "description": format!("Say this out loud to the player in MapleSyrup's voice (his speakers or his phone), for \
 when he can't read the screen — he is playing, or he spoke to you through MapleSyrup. Spoken style: one or two \
-short sentences, no lists or markdown, in his language (in Hebrew, address him in the masculine).",
+short sentences, no lists or markdown, in his language (in Hebrew, address him in the masculine). He comes first: \
+a line for words he has since followed with newer ones, or sent while he talks over your voice, is not said, and \
+the answer says what he said instead. {}", crate::companion::fresh::guide()),
             "inputSchema": {
                 "type": "object",
-                "properties": {"text": {"type": "string", "description": "What to say, exactly as it should be spoken."}},
+                "properties": {
+                    "text": {"type": "string", "description": "What to say, exactly as it should be spoken. Empty, with answers, to stay quiet on purpose about those words of his (he told you to be quiet, or he was talking to someone else): nothing is said, and MapleSyrup won't answer them for you."},
+                    "answers": {"type": "integer", "description": "The heard_id of his words this answers (on their <channel kind=\"heard\"> tag). Leave it out when you speak up on your own."},
+                },
                 "required": ["text"],
                 "additionalProperties": false,
             },
@@ -944,11 +1038,7 @@ fn feed<A: Api>(
                 }
                 if listening {
                     for event in &batch.events {
-                        notify(
-                            &out,
-                            event["kind"].as_str().unwrap_or("event"),
-                            event["text"].as_str().unwrap_or_default(),
-                        );
+                        notify_event(&out, event);
                     }
                 }
                 since = Some(batch.last);
@@ -1008,6 +1098,7 @@ mod tests {
         said: Mutex<Vec<String>>,
         wiki: Mutex<Vec<(String, String, String)>>,
         facts: Mutex<Vec<String>>,
+        tones: Mutex<Vec<String>>,
         /// Whether the last poll said Claude takes the events.
         listening: AtomicBool,
         /// How many polls there were.
@@ -1025,6 +1116,19 @@ mod tests {
         /// Started again: its numbers start over.
         fn restart(&self) {
             *self.run.lock().unwrap() = (Vec::new(), "second".into());
+        }
+
+        /// The number of the player's newest words posted (0: none).
+        fn newest_heard(&self) -> u64 {
+            self.run
+                .lock()
+                .unwrap()
+                .0
+                .iter()
+                .filter(|e| e["kind"] == "heard")
+                .filter_map(|e| e["seq"].as_u64())
+                .max()
+                .unwrap_or(0)
         }
     }
 
@@ -1064,7 +1168,12 @@ mod tests {
                 "recent": [{"what": "Level up: 16 → 17.", "seconds_ago": 30}],
             }))
         }
-        fn say(&self, text: &str) -> Result<(), String> {
+        fn say(&self, text: &str, answers: Option<u64>) -> Result<(), String> {
+            // (Its words since, by their number: a line for older ones is
+            // refused, as the companion's board does.)
+            if answers.is_some_and(|n| n < self.newest_heard()) {
+                return Err("he said something newer".into());
+            }
             self.said.lock().unwrap().push(text.into());
             Ok(())
         }
@@ -1107,6 +1216,15 @@ mod tests {
             }
             facts.push(fact.into());
             Ok(true)
+        }
+        fn tone(&self, tone: &str) -> Result<String, String> {
+            let spectrum = crate::companion::spectrum::Spectrum::get();
+            let at = spectrum
+                .index(tone)
+                .ok_or_else(|| format!("the levels are {}", spectrum.ids().join(", ")))?;
+            let id = spectrum.level(at).id.clone();
+            self.tones.lock().unwrap().push(id.clone());
+            Ok(id)
         }
     }
 
@@ -1236,6 +1354,7 @@ mod tests {
                 "maple_wiki_save",
                 "player_profile",
                 "player_remember",
+                "set_tone",
                 "say"
             ]
         );
@@ -1254,7 +1373,7 @@ mod tests {
         desktop.on_line(r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#);
         let names = tool_names(&sink.lines(), 3);
         assert!(!names.contains(&"say".to_string()), "{names:?}");
-        assert_eq!(names.len(), 7);
+        assert_eq!(names.len(), 8);
         desktop.stop();
     }
 
@@ -1297,6 +1416,32 @@ mod tests {
             *fake.said.lock().unwrap(),
             vec!["בוא נלך לאליניה".to_string()]
         );
+        // A line for words he has since followed with newer ones is not
+        // said, and Claude is told why.
+        fake.post("heard", "He said: tell me a joke");
+        fake.post("heard", "He said: how much HP do I have");
+        let late = call(
+            &mut bridge,
+            30,
+            "say",
+            json!({"text": "Why did the slime…", "answers": 1}),
+        );
+        assert_eq!(late["isError"], true);
+        assert!(
+            late["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("Not said: he said something newer"),
+            "{late}"
+        );
+        let newest = call(
+            &mut bridge,
+            31,
+            "say",
+            json!({"text": "62%.", "answers": "2"}),
+        );
+        assert_eq!(newest["content"][0]["text"], "Said.");
+        assert_eq!(fake.said.lock().unwrap().len(), 2);
         assert_eq!(
             call(&mut bridge, 11, "say", json!({"text": ""}))["isError"],
             true
@@ -1382,6 +1527,25 @@ mod tests {
                 .unwrap()
                 .contains("Wants level 30 this week.")
         );
+        // He asks to be talked to another way: the bar moves, to a level it
+        // has.
+        let moved = call(&mut bridge, 41, "set_tone", json!({"tone": "unhinged"}));
+        assert!(
+            moved["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("The bar is at unhinged now."),
+            "{moved}"
+        );
+        assert_eq!(*fake.tones.lock().unwrap(), vec!["unhinged".to_string()]);
+        let none = call(&mut bridge, 42, "set_tone", json!({"tone": "wild"}));
+        assert_eq!(none["isError"], true);
+        assert!(
+            none["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("kids, friendly, blunt, savage, unhinged")
+        );
         bridge.stop();
     }
 
@@ -1409,6 +1573,15 @@ mod tests {
         let lines = wait_for(&sink, |l| channel_events(l).len() >= 3);
         let kinds: Vec<String> = channel_events(&lines).into_iter().map(|(k, _)| k).collect();
         assert_eq!(kinds, ["hello", "heard", "level_up"]);
+        // What he said carries its number (the death before the hello was
+        // the first), for say's `answers`; nothing else does.
+        let metas: Vec<Value> = lines
+            .iter()
+            .filter(|l| l["method"] == "notifications/claude/channel")
+            .map(|l| l["params"]["meta"].clone())
+            .collect();
+        assert_eq!(metas[1], json!({"kind": "heard", "heard_id": "2"}));
+        assert_eq!(metas[2], json!({"kind": "level_up"}));
         // Every line is a whole message (the reader parsed each).
         assert!(lines.iter().all(|l| l["jsonrpc"] == "2.0"));
         bridge.stop();

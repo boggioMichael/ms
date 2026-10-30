@@ -43,7 +43,8 @@ pub struct Glance<'a> {
     pub now: f64,
     pub obs: &'a Observation,
     pub scene: Option<&'a scene::Verdict>,
-    /// The game is the window in front: what is captured is the game.
+    /// The game is in view: what is captured is the game (in front, or
+    /// behind another window on the compositor's frames).
     pub in_view: bool,
     /// Someone is talking: the player, or MapleSyrup (a reply being made
     /// or said).

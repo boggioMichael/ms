@@ -39,7 +39,8 @@ pub struct Look<'a> {
     /// When: paces the sight's searches, so a bench can run them on a
     /// simulated clock.
     pub now: Instant,
-    /// Whether the game is the window in front; the sight looks only then.
+    /// Whether the game is in view (in front, or behind another window
+    /// while the capture gets it as it is drawn); the sight looks only then.
     pub in_view: bool,
 }
 

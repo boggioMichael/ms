@@ -16,6 +16,9 @@ serde_json = "1.0"
 minifb = "0.28.0"
 # The vision engine's worker threads (`util::pool`).
 rayon = "1"
+# Which characters only go on a word (the marks on its letters), to match
+# what a transcriber writes against the voice's own words in any script.
+unicode-ident = "1"
 
 # The generic engine MapleSyrup is the MapleStory edition of. Pinned to
 # syrup's speed branch: the same answers as PR #2 ("compiled operations"),

@@ -334,9 +334,17 @@ pub fn installer_cmd() -> String {
 /// character) at its end.
 pub fn brief(about: Option<&str>) -> String {
     let about = about.map(str::trim).filter(|a| !a.is_empty());
+    // (How his numbers are said: the slots MapleSyrup fills when the line is
+    // said, from the one list of them.)
+    let numbers = format!(
+        "{BRIEF}\n## His numbers out loud\n\n{}\n",
+        crate::companion::fresh::guide()
+    );
     match about {
-        Some(about) => format!("{BRIEF}\n## About him (MapleSyrup's file about him)\n\n{about}\n"),
-        None => BRIEF.to_string(),
+        Some(about) => {
+            format!("{numbers}\n## About him (MapleSyrup's file about him)\n\n{about}\n")
+        }
+        None => numbers,
     }
 }
 
@@ -382,6 +390,12 @@ pub fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_brief_tells_claude_how_long_his_words_wait_for_it() {
+        let wait = format!("{} seconds", super::super::board::ANSWER_WAIT.as_secs());
+        assert!(BRIEF.contains(&wait), "the brief must say {wait}");
+    }
 
     #[test]
     fn the_mcp_config_starts_the_bridge_from_a_path_with_hebrew_in_it() {
@@ -544,6 +558,10 @@ mod tests {
     fn the_brief_tells_claude_to_talk_through_say_and_keeps_the_players_own() {
         assert!(BRIEF.contains("`say`"));
         assert!(BRIEF.contains("Classic World"));
+        // How it talks to him is the bar's: its rules come as it moves.
+        assert!(BRIEF.contains("## How you talk to him"));
+        assert!(BRIEF.contains("`tone` event"));
+        assert!(crate::claude::channel::CHANNEL_INSTRUCTIONS.contains("kind=\"tone\""));
         assert!(
             BRIEF.contains("It can be about\n  anything, not only the game"),
             "what he says isn't only about the game"
@@ -554,7 +572,11 @@ mod tests {
         let with = brief(Some(about));
         assert!(with.starts_with(BRIEF));
         assert!(with.ends_with(&format!("{about}\n")));
-        assert_eq!(brief(Some("  \n")), BRIEF);
+        // With nothing about him, the brief and how his numbers are said.
+        let plain = brief(Some("  \n"));
+        assert!(plain.starts_with(BRIEF));
+        assert!(plain.contains(&crate::companion::fresh::guide()));
+        assert!(!plain.contains("## About him"));
         let dir = std::env::temp_dir().join(format!(
             "ms-claude-kit-{}",
             crate::phone::tls::random_hex(4)

@@ -12,15 +12,20 @@
 //! ```
 //!
 //! `/api/state` can wait (`wait=` milliseconds) until there is something
-//! new — a line, a spoken clip, a reply cut short — so the phone hears of
-//! it at once instead of at its next look. It lists the clips the phone can
-//! still fetch with what each is (`kind`) and how old (`age_ms`): a phone
-//! that could play none before a tap plays no stale news at the tap.
+//! new — a line, a spoken clip, a reply cut short, a clip paused for a loud
+//! sound told to go on (`go_on`: there were no words of the player's in
+//! it), its voice beginning on the PC's speakers (`pc_voice`, and how long
+//! it plays: `pc_voice_ms`; the phone hears the player louder than it) —
+//! so the phone hears of it at once instead of at its next look. It
+//! lists the clips the phone can still fetch with what each is (`kind`)
+//! and how old (`age_ms`): a phone that could play none before a tap plays
+//! no stale news at the tap.
 //!
 //! On a live call (`crate::ai::live`) the phone talks to OpenAI itself and
 //! asks the PC for a short-lived key (`/api/live`), the screen
-//! (`/api/eyes`), MapleSyrup's tools (`/api/tool`) and, when the attitude
-//! changes mid-call, the call's instructions again (`/api/instructions`);
+//! (`/api/eyes`), MapleSyrup's tools (`/api/tool`) and, when the level it
+//! talks at changes mid-call, the call's instructions again
+//! (`/api/instructions`);
 //! it tells the PC what was said (`/api/said`) and when MapleSyrup's voice
 //! is playing (`/api/talking`, to turn the game down). MapleSyrup's own
 //! lines for the call come as messages with `speak` and, behind a
@@ -59,6 +64,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::companion::Kind;
+use crate::util::latency;
 use audio::{Mic, MicSummary};
 use http::{Conn, HttpError, Request, Response};
 use image::RgbaImage;
@@ -125,6 +131,10 @@ pub enum Inbound {
     /// The player talked over MapleSyrup's voice on the phone (heard by the
     /// phone itself): stop talking.
     Interrupt,
+    /// What the player said over MapleSyrup's voice on the phone, written
+    /// down on the PC from the phone's own microphone (the phone's speech
+    /// recognition is off while it speaks): a sentence like `Heard`.
+    Overheard(String),
     /// A button: a command's word.
     Command(String),
     /// The page opened, from this browser (`agent`), with its live-call
@@ -169,8 +179,11 @@ pub enum Inbound {
     /// long behind the call's own voice, or the call ended. For the log,
     /// which must not say it was said.
     NotSaid(String),
-    /// How MapleSyrup should talk to the player from now on.
-    Attitude(crate::companion::Attitude),
+    /// Where the player set the bar of how MapleSyrup talks to them: a
+    /// level's name (`companion/spectrum.json`).
+    Tone(String),
+    /// Their answer to "are you N or older?".
+    Age(crate::companion::age::Answer),
     /// The voice to speak in: an ElevenLabs voice's id, or "openai".
     Speaker(String),
     /// About updates: look now, install what is staged, or whether to
@@ -202,13 +215,15 @@ pub enum UpdateAsk {
 /// What the phone's live call asks the PC for.
 pub trait Service: Send + Sync {
     /// A short-lived key for the call, and where to connect: `{key, url,
-    /// model, attitude}`. `recent`: the last things said (a call picked up
-    /// again); `language`: the phone's language.
+    /// model, tone}` (`tone`: the level of the bar it talks at).
+    /// `recent`: the last things said (a call picked up again);
+    /// `language`: the phone's language.
     fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String>;
-    /// The call's instructions as they are now: `{instructions, attitude}`.
-    /// The phone asks for them when the attitude changes during a call
-    /// (the picker, or the player objecting to the tone) and hands them to
-    /// the call, which goes on in the new tone without starting over.
+    /// The call's instructions as they are now: `{instructions, tone}`.
+    /// The phone asks for them when the level it talks at changes during a
+    /// call (the bar, the age answered, the player objecting to the tone)
+    /// and hands them to the call, which goes on in the new tone without
+    /// starting over.
     fn instructions(&self, language: Option<&str>) -> Value;
     /// Run one of MapleSyrup's tools the call's model asked for, on the
     /// frame the player is looking at. Returns what to tell the model.
@@ -310,6 +325,14 @@ struct State {
     last_clip: u64,
     /// How many times a reply was cut short: the phone stops its clips.
     cut: u64,
+    /// How many times a clip paused for a loud sound over it was told to go
+    /// on: the sound had no words of the player's in it.
+    go_on: u64,
+    /// How many times its voice began on the PC's speakers, and until when
+    /// it plays: the phone listens for the player's voice over it (louder
+    /// than its own, at the phone's microphone).
+    pc_voice: u64,
+    pc_voice_until: Option<Instant>,
     /// What a live call's model can see.
     sight: Sight,
     /// Pictures of the things it was taught: by id, with a tag that changes
@@ -337,6 +360,11 @@ struct Clip {
     made: Instant,
     wav: Arc<Vec<u8>>,
 }
+
+/// Where the phone link answers that it is MapleSyrup's (a phone, or the
+/// tunnel checking that it reaches it), and what it says.
+pub const HEALTH_PATH: &str = "/health";
+pub const HEALTH: &str = "ok maplesyrup";
 
 /// Everything the phone link shares between the server's threads and the
 /// main loop.
@@ -391,6 +419,9 @@ impl Hub {
                 mouths: VecDeque::new(),
                 last_clip: 0,
                 cut: 0,
+                go_on: 0,
+                pc_voice: 0,
+                pc_voice_until: None,
                 sight: Sight::default(),
                 thumbs: std::collections::HashMap::new(),
             }),
@@ -428,6 +459,12 @@ impl Hub {
     /// (that would be a second voice, and another mind).
     pub fn pause_live(&self, paused: bool) {
         self.live_paused.store(paused, Ordering::Relaxed);
+    }
+
+    /// The moment the link had been up `uptime` seconds (the clock the page
+    /// keeps: `uptime` on its status, and its lines' `t`).
+    fn at(&self, uptime: f64) -> Instant {
+        self.started + Duration::try_from_secs_f64(uptime).unwrap_or_default()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -561,7 +598,7 @@ impl Hub {
     }
 
     /// What a call's model can see now: the frame (None while the game is
-    /// not the window in front), and what is read off it.
+    /// not in view), and what is read off it.
     pub fn set_sight(&self, frame: Option<Arc<RgbaImage>>, snapshot: String) {
         self.lock().sight = Sight { frame, snapshot };
     }
@@ -575,6 +612,36 @@ impl Hub {
         state.clips.clear();
         drop(state);
         self.changed.notify_all();
+    }
+
+    /// The clip the phone paused for a loud sound over it goes on now: the
+    /// sound had no words of the player's in it (its own echo, the game, a
+    /// laugh).
+    pub fn go_on(&self) {
+        self.lock().go_on += 1;
+        self.changed.notify_all();
+    }
+
+    /// Its voice on the PC's speakers plays until `until` (None: it is not
+    /// playing). A voice that begins is news for a waiting page: it learns
+    /// how loud its voice is at its microphone from the first moments, and
+    /// tells the PC of a voice louder than that over it.
+    pub fn set_pc_voice(&self, until: Option<Instant>) {
+        let mut state = self.lock();
+        let now = Instant::now();
+        let was = state.pc_voice_until.is_some_and(|at| at > now);
+        state.pc_voice_until = until.filter(|at| *at > now);
+        if !was && state.pc_voice_until.is_some() {
+            state.pc_voice += 1;
+            drop(state);
+            self.changed.notify_all();
+        }
+    }
+
+    /// What the phone's microphone heard from `from` to `to`, as far as it
+    /// has come in, with its rate (None: nothing of that time).
+    pub fn mic_between(&self, from: Instant, to: Instant) -> Option<(Vec<i16>, u32)> {
+        self.lock().mic.between(from, to)
     }
 
     /// The picture of a thing it was taught, for the phone's list.
@@ -617,7 +684,7 @@ impl Hub {
                 Response::new(200, "text/html; charset=utf-8", PAGE)
                     .with_header("Referrer-Policy", "no-referrer")
             }
-            ("GET", "/health") => Response::text(200, "ok maplesyrup"),
+            ("GET", HEALTH_PATH) => Response::text(200, HEALTH),
             ("GET", "/dog.js") => Response::new(200, "text/javascript; charset=utf-8", DOG_JS)
                 .with_header("Cache-Control", "no-cache"),
             ("GET", "/dog-parts.png") => {
@@ -686,7 +753,21 @@ impl Hub {
                 if !wait.is_zero() {
                     let (clip, cut) = (number("clip"), number("cut"));
                     let deadline = Instant::now() + wait;
-                    while state.next_id - 1 <= since && state.last_clip <= clip && state.cut <= cut
+                    // (A page from before `go` or `pv` asks for none: it
+                    // waits only for the rest.)
+                    let asked = |name: &str| {
+                        if request.param(name).is_some() {
+                            number(name)
+                        } else {
+                            u64::MAX
+                        }
+                    };
+                    let (go, pv) = (asked("go"), asked("pv"));
+                    while state.next_id - 1 <= since
+                        && state.last_clip <= clip
+                        && state.cut <= cut
+                        && state.go_on <= go
+                        && state.pc_voice <= pv
                     {
                         let left = deadline.saturating_duration_since(Instant::now());
                         if left.is_zero() {
@@ -734,6 +815,12 @@ impl Hub {
                         "clip": state.last_clip,
                         "clips": clips,
                         "cut": state.cut,
+                        "go_on": state.go_on,
+                        "pc_voice": state.pc_voice,
+                        "pc_voice_ms": state
+                            .pc_voice_until
+                            .map(|at| at.saturating_duration_since(now).as_millis() as u64)
+                            .unwrap_or(0),
                     }),
                 )
             }
@@ -872,7 +959,17 @@ impl Hub {
                     }
                     _ => (samples, None),
                 };
-                self.lock().mic.ingest(&mic, rate, Instant::now());
+                // (Its last sample was heard `age` ago: kept by when it was
+                // heard, to be written down if it was said over its voice.)
+                let now = Instant::now();
+                let heard = now
+                    .checked_sub(Duration::from_secs_f64(age_of(request)))
+                    .unwrap_or(now);
+                {
+                    let mut state = self.lock();
+                    state.mic.ingest(&mic, rate, now);
+                    state.mic.keep(&mic, rate, heard);
+                }
                 if let Some(recording) = self.recording() {
                     recording.phone(rate, &mic, played.as_deref(), age_of(request));
                 }
@@ -916,6 +1013,14 @@ impl Hub {
             },
             ("POST", "/api/heard") => match text_field("text") {
                 Some(text) if !text.trim().is_empty() => {
+                    // (Its stamps first: the turn the sentence becomes
+                    // takes them.)
+                    if latency::TRACER.enabled() {
+                        let body = body();
+                        if let Some(stamps) = body.get(latency::STATUS_FIELD) {
+                            latency::TRACER.phone_heard(text.trim(), stamps, |t| self.at(t));
+                        }
+                    }
                     self.lock()
                         .inbox
                         .push(Inbound::Heard(text.trim().to_string()));
@@ -947,8 +1052,9 @@ impl Hub {
                 }
             }
             ("GET", "/api/instructions") => {
-                // The call's instructions as they are now (the attitude
-                // changed mid-call): the page hands them to the call.
+                // The call's instructions as they are now (the level it
+                // talks at changed mid-call): the page hands them to the
+                // call.
                 let Some(service) = self.service() else {
                     return Response::json(503, &json!({"error": "live calls need an OpenAI key"}));
                 };
@@ -1052,21 +1158,37 @@ impl Hub {
                     &json!({"error": "what is \"jumped in\", or \"dropped\" with the line's text"}),
                 ),
             },
-            ("POST", "/api/attitude") => match text_field("attitude")
-                .as_deref()
-                .and_then(crate::companion::Attitude::parse)
-            {
-                Some(attitude) => {
-                    let mut state = self.lock();
-                    state.inbox.retain(|i| !matches!(i, Inbound::Attitude(_)));
-                    state.inbox.push(Inbound::Attitude(attitude));
-                    Response::json(200, &json!({"ok": true, "attitude": attitude}))
+            ("POST", "/api/tone") => {
+                let spectrum = crate::companion::spectrum::Spectrum::get();
+                match text_field("tone").and_then(|id| spectrum.index(&id)) {
+                    Some(at) => {
+                        let id = spectrum.level(at).id.clone();
+                        let mut state = self.lock();
+                        state.inbox.retain(|i| !matches!(i, Inbound::Tone(_)));
+                        state.inbox.push(Inbound::Tone(id.clone()));
+                        Response::json(200, &json!({"ok": true, "tone": id}))
+                    }
+                    None => Response::json(
+                        400,
+                        &json!({"error": "unknown_tone", "tones": spectrum.ids()}),
+                    ),
                 }
-                None => Response::json(
-                    400,
-                    &json!({"error": "attitude is friendly, blunt or savage"}),
-                ),
-            },
+            }
+            ("POST", "/api/age") => {
+                let body = body();
+                let age = body.get("age").and_then(Value::as_u64);
+                let adult = body.get("adult").and_then(Value::as_bool);
+                match (age.and_then(|a| u32::try_from(a).ok()), adult) {
+                    (Some(age), Some(adult)) => {
+                        let answer = crate::companion::age::Answer { age, adult };
+                        let mut state = self.lock();
+                        state.inbox.retain(|i| !matches!(i, Inbound::Age(_)));
+                        state.inbox.push(Inbound::Age(answer));
+                        Response::json(200, &json!({"ok": true}))
+                    }
+                    _ => Response::json(400, &json!({"error": "bad_request"})),
+                }
+            }
             ("POST", "/api/speaker") => match text_field("id").filter(|id| {
                 !id.is_empty()
                     && id.len() <= 64
@@ -1082,6 +1204,12 @@ impl Hub {
                 }
                 None => Response::json(400, &json!({"error": "which voice?"})),
             },
+            // When a clip began to play, a turn of the live call: for the
+            // timing, while it is on.
+            ("POST", latency::PHONE_PATH) if latency::TRACER.enabled() => {
+                latency::TRACER.phone(&body(), |t| self.at(t));
+                Response::json(200, &json!({"ok": true}))
+            }
             ("POST", "/api/interrupt") => {
                 self.lock().inbox.push(Inbound::Interrupt);
                 Response::json(200, &json!({"ok": true}))
@@ -1395,11 +1523,11 @@ mod tests {
     impl Service for FakeService {
         fn live(&self, recent: &[String], language: Option<&str>) -> Result<Value, String> {
             Ok(
-                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language, "attitude": "savage"}),
+                json!({"key": "ek_1", "url": "https://x/calls", "recent": recent.len(), "lang": language, "tone": "savage"}),
             )
         }
         fn instructions(&self, language: Option<&str>) -> Value {
-            json!({"instructions": format!("Your attitude: friendly ({})", language.unwrap_or("-")), "attitude": "friendly"})
+            json!({"instructions": format!("Your attitude: friendly ({})", language.unwrap_or("-")), "tone": "friendly"})
         }
         fn tool(
             &self,
@@ -1498,14 +1626,14 @@ mod tests {
             (Some("ek_1"), Some(2))
         );
         assert_eq!(call["lang"], "he-IL");
-        assert_eq!(call["attitude"], "savage");
-        // The attitude changed mid-call: the instructions as they are now,
-        // for the page to hand to the call.
+        assert_eq!(call["tone"], "savage");
+        // The level it talks at changed mid-call: the instructions as they
+        // are now, for the page to hand to the call.
         let r = hub.handle(&request("GET", "/api/instructions?k=k1&lang=he-IL", ""));
         assert_eq!(r.status, 200);
         let now: Value = serde_json::from_slice(&r.body).unwrap();
         assert_eq!(now["instructions"], "Your attitude: friendly (he-IL)");
-        assert_eq!(now["attitude"], "friendly");
+        assert_eq!(now["tone"], "friendly");
         assert_eq!(
             hub.handle(&request("GET", "/api/instructions", "")).status,
             403
@@ -1559,7 +1687,8 @@ mod tests {
             ),
             ("/api/workshop?k=k1", r#"{"action": "undo"}"#),
             ("/api/turn?k=k1", r#"{"what": "jumped in"}"#),
-            ("/api/attitude?k=k1", r#"{"attitude": "savage"}"#),
+            ("/api/tone?k=k1", r#"{"tone": " Savage "}"#),
+            ("/api/age?k=k1", r#"{"age": 18, "adult": true}"#),
             ("/api/speaker?k=k1", r#"{"id": "pNInz6obpgDQGcFmaJgB"}"#),
         ] {
             assert_eq!(
@@ -1603,7 +1732,16 @@ mod tests {
                 Inbound::Workshop(WorkshopAsk::Change("shorter HP warning".into())),
                 Inbound::Workshop(WorkshopAsk::Undo),
                 Inbound::Turn("jumped in".into()),
-                Inbound::Attitude(crate::companion::Attitude::Savage),
+                Inbound::Tone(
+                    crate::companion::spectrum::Spectrum::get()
+                        .of_voice(crate::companion::Attitude::Savage)
+                        .id
+                        .clone()
+                ),
+                Inbound::Age(crate::companion::age::Answer {
+                    age: 18,
+                    adult: true
+                }),
                 Inbound::Speaker("pNInz6obpgDQGcFmaJgB".into()),
             ]
         );
@@ -1613,14 +1751,21 @@ mod tests {
             400
         );
         assert_eq!(
-            hub.handle(&request(
-                "POST",
-                "/api/attitude?k=k1",
-                r#"{"attitude": "loud"}"#
-            ))
-            .status,
+            hub.handle(&request("POST", "/api/tone?k=k1", r#"{"tone": "loud"}"#))
+                .status,
             400
         );
+        for bad in [
+            r#"{"age": 18}"#,
+            r#"{"age": -1, "adult": true}"#,
+            r#"{"adult": true}"#,
+        ] {
+            assert_eq!(
+                hub.handle(&request("POST", "/api/age?k=k1", bad)).status,
+                400,
+                "{bad}"
+            );
+        }
         assert_eq!(
             hub.handle(&request("POST", "/api/update?k=k1", r#"{"action": "fly"}"#))
                 .status,
@@ -1861,6 +2006,57 @@ mod tests {
     }
 
     #[test]
+    fn with_the_timing_off_a_sentence_with_stamps_is_only_a_sentence() {
+        // (Off unless the program turns it on: the page's stamps change
+        // nothing, and its timing call is no call.)
+        let hub = hub();
+        hub.handle(&request(
+            "POST",
+            "/api/heard?k=k1",
+            r#"{"text":" where am I ","latency":{"spoke":1.5,"sent":2.0}}"#,
+        ));
+        assert_eq!(hub.take_inbox(), vec![Inbound::Heard("where am I".into())]);
+        let path = format!("{}?k=k1", latency::PHONE_PATH);
+        let played = hub.handle(&request("POST", &path, r#"{"clip":1,"played":2.5}"#));
+        assert_eq!(played.status, 404);
+        assert!(hub.take_inbox().is_empty());
+    }
+
+    #[test]
+    fn the_page_sends_its_timing_under_the_names_the_pc_reads() {
+        use latency::field::*;
+        let names = [
+            VOICE,
+            SPOKE,
+            FINAL,
+            SENT,
+            SETTLE,
+            RTT,
+            CLIP,
+            PLAYED,
+            LIVE,
+            LIVE_START,
+            LIVE_STOP,
+            LIVE_RESPONSE,
+            LIVE_SOUND,
+            LIVE_TOOLS,
+            LIVE_TOOLS_FROM,
+            LIVE_TOOLS_TO,
+        ];
+        for name in names {
+            let sent = [
+                format!("{name}: "),
+                format!(".{name} = "),
+                format!("{{ {name} }}"),
+            ];
+            assert!(sent.iter().any(|s| PAGE.contains(s.as_str())), "{name}");
+        }
+        assert!(PAGE.contains(&format!("status.{} === true", latency::STATUS_FIELD)));
+        assert!(PAGE.contains(&format!("body.{} = ", latency::STATUS_FIELD)));
+        assert!(PAGE.contains(&format!("\"{}\"", latency::PHONE_PATH)));
+    }
+
+    #[test]
     fn sentences_and_buttons_reach_the_inbox() {
         let hub = hub();
         hub.handle(&request(
@@ -1960,6 +2156,101 @@ mod tests {
         let mut bad = request("POST", "/api/audio?k=k1&rate=5", "");
         bad.body = vec![0, 0];
         assert_eq!(hub.handle(&bad).status, 400);
+    }
+
+    #[test]
+    fn what_the_microphone_heard_lately_is_there_by_when_it_was_heard() {
+        let hub = hub();
+        // A quarter second at 16 kHz, its last sample heard 100 ms ago.
+        let mut req = request("POST", "/api/audio?k=k1&rate=16000&age=100", "");
+        req.body = (0..4000).flat_map(|_| 1000i16.to_le_bytes()).collect();
+        assert_eq!(hub.handle(&req).status, 204);
+        let now = Instant::now();
+        let (samples, rate) = hub
+            .mic_between(now - Duration::from_millis(600), now)
+            .unwrap();
+        assert_eq!(rate, 16_000);
+        assert!(
+            (3990..=4000).contains(&samples.len()),
+            "all of it: {}",
+            samples.len()
+        );
+        assert!(samples.iter().all(|&s| s == 1000));
+        // Its last sample was heard 100 ms ago: nothing from after that.
+        assert!(
+            hub.mic_between(now - Duration::from_millis(90), now)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_clip_paused_for_a_sound_is_told_to_go_on_at_once() {
+        let hub = hub();
+        let state = || body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        assert_eq!(state()["go_on"], 0);
+        // A page waiting for news hears of it at once.
+        let waiter = {
+            let hub = Arc::clone(&hub);
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let got = body(&hub.handle(&request(
+                    "GET",
+                    "/api/state?k=k1&since=0&wait=1500&clip=0&cut=0&go=0",
+                    "",
+                )));
+                (started.elapsed(), got)
+            })
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        hub.go_on();
+        let (took, got) = waiter.join().unwrap();
+        assert_eq!(got["go_on"], 1);
+        assert!(took < Duration::from_millis(1200), "{took:?}");
+        // A page from before it does not wait for it, nor is woken by it.
+        let started = Instant::now();
+        let got = body(&hub.handle(&request(
+            "GET",
+            "/api/state?k=k1&since=0&wait=300&clip=0&cut=0",
+            "",
+        )));
+        assert_eq!(got["go_on"], 1);
+        assert!(started.elapsed() >= Duration::from_millis(250));
+    }
+
+    #[test]
+    fn its_voice_beginning_on_the_pc_wakes_the_page_with_how_long_it_plays() {
+        let hub = hub();
+        let state = || body(&hub.handle(&request("GET", "/api/state?k=k1", "")));
+        assert_eq!(
+            (state()["pc_voice"].clone(), state()["pc_voice_ms"].clone()),
+            (json!(0), json!(0))
+        );
+        let waiter = {
+            let hub = Arc::clone(&hub);
+            std::thread::spawn(move || {
+                let started = Instant::now();
+                let got = body(&hub.handle(&request(
+                    "GET",
+                    "/api/state?k=k1&since=0&wait=1500&clip=0&cut=0&go=0&pv=0",
+                    "",
+                )));
+                (started.elapsed(), got)
+            })
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        hub.set_pc_voice(Some(Instant::now() + Duration::from_secs(3)));
+        let (took, got) = waiter.join().unwrap();
+        assert_eq!(got["pc_voice"], 1);
+        let left = got["pc_voice_ms"].as_u64().unwrap();
+        assert!((2500..=3000).contains(&left), "{left}");
+        assert!(took < Duration::from_millis(1200), "{took:?}");
+        // Going on with more lines is no new beginning; stopped, nothing is left.
+        hub.set_pc_voice(Some(Instant::now() + Duration::from_secs(5)));
+        assert_eq!(state()["pc_voice"], 1);
+        hub.set_pc_voice(None);
+        assert_eq!(state()["pc_voice_ms"], 0);
+        hub.set_pc_voice(Some(Instant::now() + Duration::from_secs(1)));
+        assert_eq!(state()["pc_voice"], 2);
     }
 
     /// A stand-in recording: what it was handed.
