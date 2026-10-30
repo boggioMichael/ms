@@ -226,12 +226,14 @@ pub trait Service: Send + Sync {
     /// starting over.
     fn instructions(&self, language: Option<&str>) -> Value;
     /// Run one of MapleSyrup's tools the call's model asked for, on the
-    /// frame the player is looking at. Returns what to tell the model.
+    /// frame the player is looking at, with what is read off it
+    /// (`reading`). Returns what to tell the model.
     fn tool(
         &self,
         name: &str,
         arguments: &str,
         frame: Option<&RgbaImage>,
+        reading: &str,
     ) -> (String, Option<crate::ai::Effect>);
 }
 
@@ -1084,8 +1086,9 @@ impl Hub {
                 };
                 let name = text_field("name").unwrap_or_default();
                 let arguments = body()["arguments"].as_str().unwrap_or("{}").to_string();
-                let frame = self.lock().sight.frame.clone();
-                let (output, effect) = service.tool(&name, &arguments, frame.as_deref());
+                let sight = self.lock().sight.clone();
+                let (output, effect) =
+                    service.tool(&name, &arguments, sight.frame.as_deref(), &sight.snapshot);
                 if let Some(effect) = effect {
                     self.lock().inbox.push(Inbound::Effect(effect));
                 }
@@ -1534,6 +1537,7 @@ mod tests {
             name: &str,
             arguments: &str,
             frame: Option<&RgbaImage>,
+            _reading: &str,
         ) -> (String, Option<crate::ai::Effect>) {
             (
                 format!("{name} {arguments} {}", frame.is_some()),

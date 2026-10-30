@@ -395,6 +395,14 @@ mod tests {
     fn the_brief_tells_claude_how_long_his_words_wait_for_it() {
         let wait = format!("{} seconds", super::super::board::ANSWER_WAIT.as_secs());
         assert!(BRIEF.contains(&wait), "the brief must say {wait}");
+        // And how long the call waits for its answer to a question.
+        let wait = format!(
+            "within {} seconds",
+            crate::ai::thinker::CLAUDE_WAIT.as_secs()
+        );
+        assert!(BRIEF.contains(&wait), "the brief must say {wait}");
+        assert!(BRIEF.contains("kind=\"question\""));
+        assert!(BRIEF.contains("question_id"));
     }
 
     #[test]

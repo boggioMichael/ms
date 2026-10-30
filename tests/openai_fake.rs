@@ -2260,12 +2260,7 @@ fn every_reply_knows_the_rules_the_attitude_and_what_it_learned() {
     let learned = instructions
         .find("What you learned from playing together")
         .unwrap();
-    assert!(
-        learned
-            > instructions
-                .find("Without a picture you can't see the game")
-                .unwrap()
-    );
+    assert!(learned > instructions.find("you get no pictures").unwrap());
     assert!(instructions[learned..].contains("Night Lord"));
     assert!(
         instructions[learned..]
@@ -2916,15 +2911,8 @@ fn last_reply_request(seen: &Arc<Mutex<Vec<Value>>>) -> Value {
         .unwrap()
 }
 
-fn close_to(color: [u8; 3], want: [u8; 3]) -> bool {
-    color
-        .iter()
-        .zip(want)
-        .all(|(a, b)| (*a as i32 - b as i32).abs() < 40)
-}
-
 #[test]
-fn a_question_about_the_screen_gets_it_close_up_at_full_resolution_and_chit_chat_does_not() {
+fn no_question_sends_a_picture_the_model_sees_the_game_through_its_vision_engine() {
     if !have_curl() {
         return;
     }
@@ -2938,7 +2926,7 @@ fn a_question_about_the_screen_gets_it_close_up_at_full_resolution_and_chit_chat
     let ask = |heard: &str| {
         let id = worker.send(Job::Converse {
             heard: heard.into(),
-            snapshot: "The MapleStory window is open and in view.".into(),
+            snapshot: "The MapleStory window is open and in view. Level 27, map Henesys.".into(),
             facts: Default::default(),
             speak: false,
             eyes: Some(eyes.clone()),
@@ -2948,69 +2936,29 @@ fn a_question_about_the_screen_gets_it_close_up_at_full_resolution_and_chit_chat
         assert!(reply.is_some(), "{heard}");
         last_reply_request(&seen)
     };
-    // The owner's questions about the screen (his real session).
-    let mut added = Vec::new();
+    // The owner's questions about the screen (his real session), his
+    // quests, and chit-chat: none sends a picture of the screen. The game
+    // goes as the vision engine reads it, and look_closer is how the model
+    // asks MapleSyrup's eyes for what that doesn't give.
     for heard in [
         "where am I",
         "I don't want money talk to me in English I don't want money I want to know what level am I and how do I look",
         "what's equipped look at what's equipped and tell me what to get",
         "Where are the blue mushroom",
+        "What's the next quest I should go to",
+        "hey",
+        "I need money",
     ] {
         let request = ask(heard);
-        let pictures = pictures_of(&request);
-        assert_eq!(pictures.len(), 4, "{heard}");
-        assert!(
-            pictures.iter().all(|p| p.0 == "high"),
-            "{heard}: {pictures:?}"
-        );
-        // The whole screen at 1280 across (rulers around it), then the
-        // minimap, the HUD and the middle at the frame's own pixels (the
-        // middle as OpenAI looks at it: 768 on its short side).
-        assert_eq!(pictures[0].1, (1280 + 44, 720 + 44));
-        assert_eq!(pictures[1].1, (922, 519));
-        assert!(close_to(pictures[1].2, [220, 30, 30]), "{:?}", pictures[1]);
-        assert_eq!(pictures[2].1, (1690, 216));
-        assert!(close_to(pictures[2].2, [30, 200, 30]), "{:?}", pictures[2]);
-        assert_eq!(pictures[3].1, (1050, 768));
-        assert!(close_to(pictures[3].2, [30, 30, 220]), "{:?}", pictures[3]);
-        // Each close-up says what it is.
+        assert!(pictures_of(&request).is_empty(), "{heard}");
         let words = request["body"]["input"].to_string();
-        assert!(words.contains("Close-up 1 of 3, full resolution: the minimap"));
-        assert!(words.contains("Close-up 2 of 3, full resolution: the HUD"));
-        assert!(
-            words.contains(
-                "Close-up 3 of 3, full resolution: the middle of the screen: his character"
-            )
-        );
-        // Told to read it off them, never to guess.
+        assert!(words.contains("read by your vision engine"), "{heard}");
+        assert!(words.contains("Level 27, map Henesys"), "{heard}");
         let instructions = request["body"]["instructions"].as_str().unwrap();
-        assert!(
-            instructions.contains("Read the answer off them, as a person reading the screen would")
-        );
-        assert!(instructions.contains("Use look_closer for anything still too small"));
+        assert!(instructions.contains("you get no pictures"));
+        assert!(instructions.contains("call look_closer with your question"));
         assert!(instructions.contains("never guess a map, a level or a look"));
-        added.push(pictures.iter().map(|p| p.3).sum::<usize>());
     }
-    // Asked about his quests (12:52:06): the Quest Helper too, top right.
-    let request = ask("What's the next quest I should go to");
-    let pictures = pictures_of(&request);
-    assert_eq!(pictures.len(), 5);
-    assert!(pictures.iter().all(|p| p.0 == "high"));
-    assert_eq!(pictures[4].1, (960, 648));
-    assert!(close_to(pictures[4].2, [230, 210, 40]), "{:?}", pictures[4]);
-    assert!(
-        request["body"]["input"]
-            .to_string()
-            .contains("Close-up 4 of 4, full resolution: the Quest Helper")
-    );
-    // Chit-chat: the small picture at low detail, as before.
-    for heard in ["hey", "I need money", "Mikael"] {
-        let pictures = pictures_of(&ask(heard));
-        assert_eq!(pictures.len(), 1, "{heard}");
-        assert_eq!(pictures[0].0, "low");
-        assert_eq!(pictures[0].1, (640 + 44, 360 + 44));
-    }
-    println!("bytes of pictures per question about the screen (painted 4K frame): {added:?}");
     // Where the vision engine found the HUD (another layout's, wider): the
     // HUD's close-up takes it in too.
     let found = ms::ai::Eyes {

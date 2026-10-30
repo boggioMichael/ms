@@ -105,8 +105,31 @@ fn function(name: &str, description: &str, properties: Value) -> Value {
 }
 
 fn a_box(what: &str) -> Value {
-    json!({"type": "array", "items": {"type": "number"},
-           "description": format!("{what}: [x0, y0, x1, y1] in the first picture's 0–1000 coordinates (rulers on its edges)")})
+    json!({"type": ["array", "null"], "items": {"type": "number"},
+           "description": format!("{what}: [x0, y0, x1, y1] in a picture's 0–1000 coordinates (rulers on its edges), or null when you have no picture: MapleSyrup's eyes find it on the whole screen")})
+}
+
+/// The box a tool was given (`args["box"]`): a box of the screen, the whole
+/// screen when none was given (the caller sees no picture and MapleSyrup's
+/// eyes look over all of it), or an error to tell the model.
+fn given_box(args: &Value) -> Result<Option<NBox>, String> {
+    let values: Vec<f64> = args["box"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_f64)
+        .collect();
+    if values.is_empty() {
+        return Ok(None);
+    }
+    NBox::from_thousandths(&values)
+        .map(Some)
+        .ok_or_else(|| "The box must be four numbers from 0 to 1000.".to_string())
+}
+
+/// The whole screen, as a box.
+fn whole_screen() -> NBox {
+    NBox::new(0.0, 0.0, 1.0, 1.0)
 }
 
 impl Toolbox {
@@ -265,19 +288,18 @@ speak again only if you were wrong. Also when the player asks you to look someth
                 let Some(kind) = Kind::parse(&text("kind")) else {
                     return ("Unknown kind.".into(), None);
                 };
-                let values: Vec<f64> = args["box"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_f64)
-                    .collect();
-                let Some(rough) = NBox::from_thousandths(&values) else {
-                    return ("The box must be four numbers from 0 to 1000.".into(), None);
+                let given = match given_box(&args) {
+                    Ok(given) => given,
+                    Err(why) => return (why, None),
                 };
+                let rough = given.unwrap_or_else(whole_screen);
                 let describe = text("describe");
-                // A close-up to pin it down; the rough box if that fails.
+                // A close-up to pin it down; the rough box if that fails —
+                // when there was one: with none, MapleSyrup's eyes looked
+                // over the whole screen, and a thing they did not find is
+                // not learned as the whole screen.
                 let (question, around) = teacher::refine(frame, &rough, &name, &describe);
-                let place = look(&self.eyes, &question)
+                let found = look(&self.eyes, &question)
                     .ok()
                     .and_then(|answer| teacher::parse_refined(&answer, &around))
                     .filter(|b| {
@@ -285,8 +307,15 @@ speak again only if you were wrong. Also when the player asks you to look someth
                         let g = rough.grown(1.0, 1.0);
                         let (cx, cy) = b.center();
                         cx >= g.x0 && cx <= g.x1 && cy >= g.y0 && cy <= g.y1
-                    })
-                    .unwrap_or(rough);
+                    });
+                let Some(place) = found.or(given) else {
+                    return (
+                        format!(
+                            "MapleSyrup's eyes couldn't find {name} on the screen: ask them where it is, or what it looks like."
+                        ),
+                        None,
+                    );
+                };
                 let alert = When::parse(&text("alert")).map(|when| Alert {
                     when,
                     threshold: args["threshold"].as_f64().map(|t| t as f32),
@@ -478,14 +507,9 @@ and installs the next time MapleSyrup starts. Tell the player it takes a few min
                 let Some(frame) = frame else {
                     return ("The game can't be seen right now.".into(), None);
                 };
-                let values: Vec<f64> = args["box"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_f64)
-                    .collect();
-                let Some(place) = NBox::from_thousandths(&values) else {
-                    return ("The box must be four numbers from 0 to 1000.".into(), None);
+                let place = match given_box(&args) {
+                    Ok(given) => given.unwrap_or_else(whole_screen),
+                    Err(why) => return (why, None),
                 };
                 match look(
                     &self.eyes,
@@ -840,6 +864,35 @@ pub fn refused(name: &str, args: &Value, heard: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_box_is_optional_and_none_means_the_whole_screen() {
+        // No box (the call sees no picture): MapleSyrup's eyes look over
+        // the whole screen.
+        assert_eq!(given_box(&json!({})), Ok(None));
+        assert_eq!(given_box(&json!({"box": null})), Ok(None));
+        assert_eq!(given_box(&json!({"box": []})), Ok(None));
+        let whole = whole_screen();
+        assert_eq!(
+            (whole.x0, whole.y0, whole.x1, whole.y1),
+            (0.0, 0.0, 1.0, 1.0)
+        );
+        // A box given is taken; a wrong one is said to be wrong.
+        assert!(matches!(
+            given_box(&json!({"box": [100, 200, 300, 400]})),
+            Ok(Some(_))
+        ));
+        assert!(given_box(&json!({"box": [1, 2, 3]})).is_err());
+        // The tools say so.
+        let box_schema = a_box("A tight box around it");
+        assert_eq!(box_schema["type"], json!(["array", "null"]));
+        assert!(
+            box_schema["description"]
+                .as_str()
+                .unwrap()
+                .contains("null when you have no picture")
+        );
+    }
 
     fn toolbox(dir: &std::path::Path) -> Toolbox {
         Toolbox {

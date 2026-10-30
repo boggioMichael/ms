@@ -46,6 +46,7 @@ pub mod pronounce;
 pub mod style;
 pub mod talkover;
 pub mod teaching;
+pub mod thinker;
 pub mod tools;
 
 use std::path::{Path, PathBuf};
@@ -871,7 +872,9 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                             reason,
                             label,
                             snapshot,
-                            eyes,
+                            // (The coach sees the game as the vision engine
+                            // reads it: no pictures.)
+                            eyes: _,
                             said,
                             language,
                             speak,
@@ -891,7 +894,6 @@ pub fn spawn_brains(brains: Brains, mut brain: Brain, toolbox: Option<Toolbox>) 
                                     reason: &reason,
                                     label,
                                     snapshot: &snapshot,
-                                    eyes: eyes.as_ref(),
                                     said: &said,
                                     language: language.as_deref(),
                                     speak,
@@ -1175,17 +1177,12 @@ fn speak_line(
 
 /// How the model is told it can see the game.
 const EYES_GUIDE: &str = "\n\nWith the player's words comes what your vision engine reads off the game right now \
-(not said by the player) and, while the game is in view, a picture of the game window as it is now, with rulers on \
-its edges (0 to 1000 across and down) for pointing at things. When their words are about the screen (where they \
-are, the map, their level, HP or MP, how they look, an NPC, a quest, an item, a window, what you see), the picture \
-is sharp and close-ups at full resolution come with it: the minimap (the map's name is at its top), the HUD (LV., \
-job, name, HP[now/max], MP[now/max], EXP) and the middle of the screen (their character, his name tag under him, \
-and any window or dialog). Read the answer off them, as a person reading the screen would: the map's name off the \
-minimap, the numbers off the HUD (or from what your vision engine read, with its age), what they wear off their \
-character — the one whose name tag under him is the HUD's name. Use look_closer for anything still too small. \
-Never answer about the screen from memory, from an earlier picture or from the small low-detail picture, and \
-never guess a map, a level or a look: if you truly can't read it, say so in a few words and say what you can see. Use what you see, like a friend looking at the \
-same screen. Without a picture you can't see the game right now.";
+(not said by the player): level, job and name, HP, MP and EXP with how old each number is, the map, what moves on \
+the screen, an open dialog and its text, buffs, the things it was taught, and the session. That is how you see the \
+game: you get no pictures. Answer about the screen from it, like a friend looking at the same screen; for small \
+print or a detail it doesn't give (what they wear, a window's text), call look_closer with your question — \
+MapleSyrup's eyes look for you. Never answer about the screen from memory, and never guess a map, a level or a \
+look: if the reading doesn't say and look_closer can't tell, say so in a few words.";
 
 /// How the model is told about MapleStory Classic World, when the player
 /// plays it ([`brain::classic_world`]): what it does not have, and that a
@@ -1200,12 +1197,12 @@ NPCs, recipes or routes. What you see on their screen beats what you remember.";
 
 /// How the model is told about its tools.
 const TOOLS_GUIDE: &str = "\n\nYou get better the more the player teaches you:
-- Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with a tight box around it in the picture's 0-1000 coordinates. Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language). The alert is about that thing appearing, disappearing or crossing a value — never attach an unrelated announcement to it (a level-up is watched by MapleSyrup itself; their own character is always on screen and is never a thing to learn).
+- Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\", \"see that? it's...\") or asks you to watch for something, call learn_thing with what they call it and what it looks like (leave the box out: MapleSyrup's eyes find it on the screen). Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the boss is under 20%\"), set alert, threshold and say (what you'll say then, in their language). The alert is about that thing appearing, disappearing or crossing a value — never attach an unrelated announcement to it (a level-up is watched by MapleSyrup itself; their own character is always on screen and is never a thing to learn).
 - When the player says a value you have is wrong (their level, HP, MP, EXP, map, name, job), call correct_reading.
 - When the player corrects you on anything else (a game fact, how something works, or how you talk or behave), call note_correction with the right version, then go on with it.
 - When the player asks you to remember something (\"remember…\", \"תזכור…\"), call remember_fact.
 - set_warnings when they want low HP or MP warnings at another percent, or no more of them, or back to the usual.
-- forget_thing when asked to forget something you learned; look_closer to read small text or details you can't make out.
+- forget_thing when asked to forget something you learned; look_closer with your question to read small text or details the reading doesn't give (leave the box out: MapleSyrup's eyes look for you).
 - mark_moment when the player asks you to mark or save the moment (for their video); set_muted when they ask you to be quiet, or to talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
 - set_coaching when they ask you to stop speaking up on your own (\"only talk when I ask\", \"no more tips\"), or to start again.
@@ -1439,19 +1436,11 @@ speak to him in the masculine (in Hebrew אתה, תשתה, תזוז). Reply with
 }
 
 /// The conversation as input items. With the player's last sentence goes
-/// what is on screen now (and the screen itself), so everything before it
-/// stays the same from one reply to the next and OpenAI keeps it cached.
-/// (`close`: the sentence is about the screen — the screen goes sharp and
-/// close up, [`Eyes::close_pictures`]; `note`: how to answer it, just
-/// before the player's words.)
-fn input_of(
-    turns: &[openai::Turn],
-    snapshot: &str,
-    eyes: Option<&Eyes>,
-    helps: &str,
-    close: bool,
-    note: &str,
-) -> Vec<Value> {
+/// what the vision engine reads off the game now — the model sees the game
+/// through it alone, no pictures — so everything before it stays the same
+/// from one reply to the next and OpenAI keeps it cached. (`note`: how to
+/// answer it, just before the player's words.)
+fn input_of(turns: &[openai::Turn], snapshot: &str, helps: &str, note: &str) -> Vec<Value> {
     let last_user = turns.iter().rposition(|t| t.role == "user");
     turns
         .iter()
@@ -1464,13 +1453,6 @@ fn input_of(
                 "type": "input_text",
                 "text": format!("[The game right now, read by your vision engine — not said by the player]\n{snapshot}"),
             })];
-            if let Some(eyes) = eyes {
-                if close {
-                    content.extend(eyes.close_pictures_for(&t.text));
-                } else {
-                    content.extend(eyes.pictures());
-                }
-            }
             if !helps.trim().is_empty() {
                 content.push(json!({
                     "type": "input_text",
@@ -1493,7 +1475,6 @@ struct Watch<'a> {
     reason: &'a str,
     label: String,
     snapshot: &'a str,
-    eyes: Option<&'a Eyes>,
     said: &'a [String],
     language: Option<&'a str>,
     speak: bool,
@@ -1510,7 +1491,6 @@ fn coach(chat: &OpenAi, mouth: Mouth, brain: &mut Brain, watch: Watch, tx: &Send
         reason,
         label,
         snapshot,
-        eyes,
         said,
         language,
         speak,
@@ -1544,10 +1524,7 @@ engine:\n{snapshot}\n\n{reason}"
             "\n\n(The player's language setting is {name}: speak the language of the conversation; when there is none yet, {name}.)"
         ));
     }
-    let mut content = vec![json!({"type": "input_text", "text": text})];
-    if let Some(eyes) = eyes {
-        content.extend(eyes.pictures());
-    }
+    let content = vec![json!({"type": "input_text", "text": text})];
     // The conversation so far, so it knows what was talked about (the
     // player said they're bossing; it was told to shut up about potions).
     let mut input: Vec<Value> = brain
@@ -1796,9 +1773,8 @@ fn converse<'a>(
         instructions.push('\n');
         instructions.push_str(&learned);
     }
-    // A sentence about the screen gets it sharp and close up; the language
-    // of the answer is his sentence's (or the one he asked for), to a man.
-    let close = brain::about_the_screen(&heard);
+    // The language of the answer is his sentence's (or the one he asked
+    // for), to a man.
     let note = brain::answer_note(&brain.language_for(&heard, language));
     // The voice sounds like the attitude of the moment.
     let attitude = brain.attitude();
@@ -1814,16 +1790,7 @@ fn converse<'a>(
         .as_ref()
         .map(|l| l.helps(&heard))
         .unwrap_or_default();
-    let pictured = Instant::now();
-    let mut input = input_of(&turns, snapshot, eyes, &helps, close, &note);
-    if eyes.is_some() {
-        let pictures = if close {
-            latency::PICTURES_CLOSE
-        } else {
-            latency::PICTURES_SMALL
-        };
-        latency::TRACER.span(Key::Job(id), pictures, pictured, Instant::now());
-    }
+    let mut input = input_of(&turns, snapshot, &helps, &note);
     let tools = toolbox.map(|t| t.definitions()).unwrap_or_default();
     // The brain for this reply.
     let mut chat = fast.unwrap_or(openai);

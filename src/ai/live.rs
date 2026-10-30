@@ -44,6 +44,19 @@ pub const LIVE_MODELS: &[&str] = &[
 pub const TRANSCRIBE_MODEL: &str = "gpt-4o-mini-transcribe";
 /// Where the phone sends its WebRTC offer.
 pub const CALLS_URL: &str = "https://api.openai.com/v1/realtime/calls";
+/// How long the call's model thinks before it speaks: the least, so it
+/// answers at once, like a person in a conversation. What needs real
+/// thinking goes to the thinker ([`THINK_TOOL`]) instead. (A model that
+/// takes no such setting is asked again without it.)
+pub const REASONING_EFFORT: &str = "minimal";
+/// The tool the call hands a question that needs thinking to: Claude when
+/// it is connected, else MapleSyrup's own thinking model (the PC's
+/// `Thinker`). The call says it will think a moment, and says the answer
+/// when it comes.
+pub const THINK_TOOL: &str = "think_it_through";
+/// Models in the key's list that are not for a call: writing speech down
+/// and translating it.
+const NOT_FOR_CALLS: &[&str] = &["transcri", "translat", "whisper"];
 
 /// Who MapleSyrup is on a call: the same buddy, speaking rather than
 /// writing, in any language.
@@ -62,15 +75,22 @@ game words the way players say them.
 unasked; while MapleStory isn't open, talk about whatever they say, and say it isn't open only when they ask about \
 the game. If what you heard makes no sense, say in a few words that you didn't catch it.
 - If they talk over you, stop and go with what they just said; don't repeat what you had said.
-- When they speak you may also get a message that is not from them: what your vision engine reads off the game \
-right now (level, HP, MP, EXP; values marked \"about\" are estimates) and, now and then, a small picture of the \
-screen with rulers on its edges (0 to 1000 across and down, for pointing at things). Use it like a friend looking \
-at the same screen; never ask them to read the screen to you (look_closer reads small print). If what they say \
-clearly disagrees with what you see, say what you see.
+- When they speak you also get a message that is not from them: what your vision engine reads off the game right \
+now — level, HP, MP, EXP (values marked \"about\" are estimates), the map, what moves on the screen, an open \
+dialog, the things it was taught. That is how you see the game: you get no pictures. Use it like a friend looking \
+at the same screen; never ask them to read the screen to you (look_closer reads small print for you). If what \
+they say clearly disagrees with what you see, say what you see.
+- Questions that need real thinking go to your thinker: exact numbers or calculations (EXP per hour, time to a \
+level, how many potions, mesos), a plan or a route (where to train next, a quest's steps, a build), or comparing \
+options. Like a person who needs a moment: first say in a few words, your own and in their language, that you'll \
+think about it (never the same words twice in a row), then call think_it_through with the whole question and the \
+numbers they gave. If they talk meanwhile, talk with them. When its answer comes, say it short and in your \
+words: the answer first, one reason at most. Never make up a number: anything to work out goes to the thinker. \
+Small talk, jokes and what the reading already says you answer yourself, at once.
 - Now and then a message comes from MapleSyrup's game watcher, never from the player: a line it wants said (low \
 HP or MP, a death, a level-up, something they asked you to watch for, a tip, a correction from a look-up) and \
 the game as read right then; a warning about HP or MP comes with its reading of them at that moment. That \
-reading is newer than any picture you have. Pass the line on in one short clause, in the language you're \
+reading is the newest you have. Pass the line on in one short clause, in the language you're \
 speaking with them and in your attitude: \
 when the line is about HP or MP, say the number (\"HP's at 11, pot now\"), not the watcher's words; otherwise say \
 the thing, in your words, short (\"Rebuff.\" is \"rebuff\", not \"HP's at 96, rebuff\"), and leave the numbers \
@@ -86,10 +106,11 @@ changes what you'd say.
 as a list: \"that boss again?\", not \"I remember you fought Zakum, wanted a Fafnir and play Mu Lung Dojo\".
 - You can't press keys or play for them; you watch and talk.
 
-Tools (never announce one before using it; after one, a few words at most):
+Tools (never announce one before using it — think_it_through is the one you announce; after one, a few words at \
+most):
 - Only when the player shows or tells you what something on screen is (\"this is...\", \"that's my...\") or asks \
-you to watch for something, call learn_thing with a tight box around it in the picture's 0-1000 coordinates. \
-Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the \
+you to watch for something, call learn_thing with what they call it and what it looks like (leave the box out: MapleSyrup's \
+eyes find it on the screen). Never learn things on your own. If they want a heads-up (\"tell me when a rune shows up\", \"warn me when the \
 boss is under 20%\"), set alert, threshold and say (what to say then, in their language). The alert is about that \
 thing appearing, disappearing or crossing a value — never attach an unrelated announcement to it (a level-up is \
 watched by MapleSyrup itself; their own character is always on screen and is never a thing to learn).
@@ -103,7 +124,8 @@ remember something, call remember_fact.
 up), say your best answer first, then call it with the question and what you said; you'll be told only if you \
 were wrong. Never mention it.
 - set_warnings when they want low HP or MP warnings at another percent, or no more of them, or back to the usual.
-- forget_thing when asked to forget something you learned; look_closer to read small text or details.
+- forget_thing when asked to forget something you learned; look_closer with your question to read small text or \
+make out a detail (leave the box out: MapleSyrup's eyes look for you).
 - mark_moment when they ask you to mark or save the moment; set_muted when they ask you to be quiet or to \
 talk again.
 - set_recording when they ask you to start or stop recording (a video of the screen with all the sound).
@@ -214,6 +236,27 @@ pub fn tools(definitions: Vec<Value>) -> Vec<Value> {
         .collect()
 }
 
+/// The thinker, as a tool of the call's ([`THINK_TOOL`]): the call hands it
+/// a question that needs working out, and says its answer.
+pub fn think_tool() -> Value {
+    json!({
+        "type": "function",
+        "name": THINK_TOOL,
+        "description": "Hand a question that needs real thinking to MapleSyrup's thinker (Claude, or a stronger model \
+    that works it out): exact numbers or calculations (EXP per hour, time to a level, how many potions, mesos), a plan or \
+    a route (where to train next, a quest's steps, a build), or comparing options. It sees the game as your vision \
+    engine reads it. It takes a few seconds; its answer comes back as this tool's result, for you to say.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string", "description": "The whole question, in the player's words and \
+    language, with the numbers and names they gave and what they want to know."},
+            },
+            "required": ["question"],
+        },
+    })
+}
+
 /// Makes calls: a short-lived key for the phone to talk to OpenAI with.
 pub struct Live {
     openai: Arc<OpenAi>,
@@ -244,7 +287,7 @@ impl Live {
             return LIVE_MODELS.iter().map(|m| m.to_string()).collect();
         };
         models.retain(|(id, _)| {
-            id.contains("realtime") && !id.contains("transcri") && !id.contains("translat")
+            id.contains("realtime") && !NOT_FOR_CALLS.iter().any(|not| id.contains(not))
         });
         let rank = |id: &str| {
             if id.starts_with("gpt-realtime") && !id.contains("mini") {
@@ -276,8 +319,10 @@ impl Live {
         tuning: &Tuning,
     ) -> Result<Value, AiError> {
         let mut last = AiError::Parse("no realtime model to try".into());
-        // (A model that won't take the speed is asked again without it.)
+        // (A model that won't take the speed, or how long to think, is asked
+        // again without it.)
         let mut speed = true;
+        let mut reasoning = true;
         let candidates = self.candidates();
         let mut index = 0;
         while let Some(model) = candidates.get(index).cloned() {
@@ -285,28 +330,32 @@ impl Live {
             if speed {
                 output["speed"] = json!(tuning.speed());
             }
+            let mut session = json!({
+                "type": "realtime",
+                "model": model,
+                "instructions": instructions,
+                "audio": {
+                    "input": {
+                        "noise_reduction": {"type": "near_field"},
+                        "transcription": tuning.transcription(),
+                        "turn_detection": {
+                            "type": "semantic_vad",
+                            "eagerness": tuning.eagerness(),
+                            "create_response": true,
+                            "interrupt_response": true,
+                        },
+                    },
+                    "output": output,
+                },
+                "tools": tools,
+                "tool_choice": "auto",
+            });
+            if reasoning {
+                session["reasoning"] = json!({"effort": REASONING_EFFORT});
+            }
             let body = json!({
                 "expires_after": {"anchor": "created_at", "seconds": 600},
-                "session": {
-                    "type": "realtime",
-                    "model": model,
-                    "instructions": instructions,
-                    "audio": {
-                        "input": {
-                            "noise_reduction": {"type": "near_field"},
-                            "transcription": tuning.transcription(),
-                            "turn_detection": {
-                                "type": "semantic_vad",
-                                "eagerness": tuning.eagerness(),
-                                "create_response": true,
-                                "interrupt_response": true,
-                            },
-                        },
-                        "output": output,
-                    },
-                    "tools": tools,
-                    "tool_choice": "auto",
-                },
+                "session": session,
             });
             match self
                 .openai
@@ -333,6 +382,12 @@ impl Live {
                     if speed && message.to_lowercase().contains("speed") =>
                 {
                     speed = false;
+                    continue;
+                }
+                Err(AiError::Http(400, message))
+                    if reasoning && message.to_lowercase().contains("reasoning") =>
+                {
+                    reasoning = false;
                     continue;
                 }
                 // A model this key can't use: the next one.
@@ -415,7 +470,15 @@ mod tests {
         // thing itself otherwise (never both), never argued with; late is
         // still said. Only a warning comes with the reading (a death,
         // "Rebuff." come without).
-        assert!(text.contains("newer than any picture you have"));
+        assert!(text.contains("That reading is the newest you have"));
+        // It sees the game through its vision engine only: no pictures,
+        // and what needs thinking goes to the thinker, announced first.
+        assert!(text.contains("you get no pictures"));
+        assert!(!text.contains("small picture of the screen"));
+        assert!(text.contains(&format!("call {THINK_TOOL} with the whole question")));
+        assert!(text.contains("that you'll think about it"));
+        assert!(text.contains("Never make up a number"));
+        assert!(text.contains("leave the box out: MapleSyrup's eyes find it"));
         assert!(
             text.contains("a warning about HP or MP comes with its reading of them at that moment")
         );
@@ -524,6 +587,17 @@ is fine, once"
         };
         assert_eq!(odd.speed(), 1.0);
         assert_eq!(odd.eagerness(), "high");
+    }
+
+    #[test]
+    fn the_thinker_is_a_tool_of_the_call_that_takes_the_whole_question() {
+        let tool = think_tool();
+        assert_eq!(tool["type"], "function");
+        assert_eq!(tool["name"], THINK_TOOL);
+        assert_eq!(tool["parameters"]["required"][0], "question");
+        // It passes as one of the call's tools.
+        let tools = tools(vec![tool]);
+        assert_eq!(tools.len(), 1);
     }
 
     #[test]

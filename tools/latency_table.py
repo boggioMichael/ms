@@ -55,7 +55,7 @@ ROWS = {
     "model": PHONE + [
         ("main loop -> job", "heard", "queued"),
         ("waiting for the thinking lane", "queued", "lane"),
-        ("lane -> request sent (the pictures)", "lane", "request"),
+        ("lane -> request sent (the prompt)", "lane", "request"),
         ("model: request -> first token", "request", "first_token"),
         ("model: request -> web search began", "request", "search"),
         ("model: first token -> first sentence", "first_token", "first_sentence"),

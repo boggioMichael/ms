@@ -105,8 +105,12 @@ How it talks
   its voice comes from the phone (or earbuds on the phone), and the phone
   listens while it talks. Speak any language, switch or mix languages
   mid-sentence (Hebrew and English, say) and it follows you, with no setting.
-  Talk over it and it stops and goes with what you said. It sees your screen
-  while MapleStory is in view, and says its own lines (low HP,
+  Talk over it and it stops and goes with what you said. It sees the game
+  through MapleSyrup's vision engine (no pictures of your screen are sent).
+  A question that needs working out (exact numbers, a plan, a route) it
+  hands to its thinker - Claude while Claude is connected, else a stronger
+  OpenAI model - saying first that it's thinking, and it says the answer
+  when it comes; you can keep talking meanwhile. It says its own lines (low HP,
   a level-up) on the call too, in the language you're speaking: handed to
   the call at most every 20 seconds, with the number only for HP and MP; a
   death or a level-up goes at once and is said even when it comes late. A
@@ -185,8 +189,9 @@ The dog
   the game and talks there too.
 
 It sees your screen, and learns it
-  With each thing you say, the model gets a picture of the game, so you can
-  ask about anything on screen. When MapleStory first shows up, MapleSyrup
+  With each thing you say, the model gets what MapleSyrup's vision engine
+  reads off the game (no picture of it), so you can ask about what's on
+  screen; for small print it asks MapleSyrup's eyes to look closer. When MapleStory first shows up, MapleSyrup
   asks a vision model where your level, HP, MP and EXP bars and minimap are
   (any resolution or UI layout), then measures the bars itself on every
   frame and checks them against the game's numbers every couple of minutes.
@@ -345,7 +350,11 @@ Claude, live (talk with Claude while it sees the game)
   channel" - choose "I am using this for local development". Each start
   sets the folder up again; a MapleSyrup-new.exe left beside MapleSyrup.exe
   is put in its place first.
-  Started this way, MapleSyrup leaves all the talking to Claude: none of its
+  Started this way with an OpenAI key, the live call on the phone does the
+  talking and Claude is its thinker: the call hands Claude the questions
+  that need working out and says Claude's answer (when none comes within 20
+  seconds, a stronger OpenAI model answers). Without an OpenAI key,
+  MapleSyrup leaves all the talking to Claude: none of its
   own answers, live calls or remarks, and while Claude isn't connected (its
   window waits for an answer, say), it tells you so instead. When Claude is
   connected but says nothing for 6 seconds after your words reach it (busy
@@ -365,18 +374,19 @@ Privacy
   that works for a few minutes only, made for it.
   With an OpenAI key, to answer you, OpenAI gets: what you say (on a live
   call, your voice itself), the conversation, what it reads off the game
-  (level, bars, map), pictures of your game window - only while MapleStory
-  is in view: in front, or behind another window while Windows hands it
-  the game window's own frames, which no window over it is part of - and
-  its notebook about you (memory.json,
+  (level, bars, map) and its notebook about you (memory.json,
   about-me.txt and the lessons in knowledge.json), with each reply and with
   each look the coach takes (about every minute or three while you play).
+  A picture of your game window goes only when it looks closer at something
+  on screen or finds a thing you teach it - only while MapleStory is in
+  view: in front, or behind another window while Windows hands it the game
+  window's own frames, which no window over it is part of.
   Every few minutes it also sends the notebook and the latest conversation
   (not the pictures) to update the notebook, which is kept on your PC. While
   it learns to read your HUD, it sends a picture of the game window and
   crops of the HUD.
   With an xAI key, the regular replies go to xAI (Grok) with the same: what
-  you say, a small picture of the game and the notebook. With an ElevenLabs
+  you say, what it reads off the game and the notebook. With an ElevenLabs
   key, what it says goes to ElevenLabs to be spoken.
   Outside a live call, your phone's browser turns your speech into text with
   its own speech service (Google's on Chrome and Android, Apple's on

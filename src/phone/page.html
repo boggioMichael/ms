@@ -2838,7 +2838,7 @@
   // microphone) and stops when talked over. The PC gives it the screen,
   // MapleSyrup's tools, and MapleSyrup's own lines to say.
   const liveCall = { pc: null, dc: null, audio: null, on: false, starting: false, userTalking: false, talking: false,
-    pending: [], eyesAt: 0, pictureAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false, hint: "",
+    pending: [], eyesAt: 0, talkingAt: 0, recent: [], retries: 0, retryTimer: 0, greeted: false, hint: "",
     stoppedAt: 0, firstSoundTold: true,
     // A response under way (since when; 0: none), one asked for while it
     // was, and the level it talks at and API the call was started with.
@@ -3059,50 +3059,51 @@
   }
 
   // What the vision engine reads off the screen goes with what the player is
-  // saying, and a small picture of it now and then (while the game is the
-  // window in front): fewer pictures, quicker answers.
+  // saying: that is how the call sees the game (no pictures: everything it
+  // knows of the screen comes from the vision engine).
   async function liveEyes() {
     if (Date.now() - liveCall.eyesAt < 4000) return;
     liveCall.eyesAt = Date.now();
-    const picture = Date.now() - liveCall.pictureAt >= 10000;
     try {
-      const r = await api("/api/eyes" + (picture ? "" : "?image=0"));
+      const r = await api("/api/eyes?image=0");
       if (!r.ok) return;
       const e = await r.json();
       const content = [{ type: "input_text",
         text: "[The game right now, read by your vision engine — not said by the player]\n" + (e.snapshot || "") }];
-      if (e.image) { content.push({ type: "input_image", image_url: e.image }); liveCall.pictureAt = Date.now(); }
       liveSend({ type: "conversation.item.create", item: { type: "message", role: "user", content } });
     } catch (x) {}
   }
 
-  // The tools the model asked for run on the PC; the answers go back and it
-  // carries on.
-  async function liveCalls(response, doneAt) {
+  // The tools the model asked for run on the PC; each answer goes back as
+  // it comes, and the call carries on. (The thinker takes seconds: the talk
+  // goes on meanwhile, and its answer is said when it comes, not held up
+  // by, nor holding up, the quick ones.)
+  function liveCalls(response, doneAt) {
     const calls = ((response && response.output) || []).filter((o) => o && o.type === "function_call");
-    if (!calls.length) return;
-    const outputs = await Promise.all(calls.map(async (c) => {
-      try {
-        const r = await postJson("/api/tool", { name: c.name, arguments: c.arguments || "{}" });
-        const j = await r.json().catch(() => ({}));
-        return [c.call_id, String(j.output || j.error || "done")];
-      } catch (e) {
-        return [c.call_id, "That didn't work."];
-      }
-    }));
-    for (const [id, output] of outputs) {
-      liveSend({ type: "conversation.item.create", item: { type: "function_call_output", call_id: id, output } });
+    for (const c of calls) liveTool(c, doneAt || Date.now());
+  }
+  async function liveTool(c, doneAt) {
+    let output;
+    try {
+      const r = await postJson("/api/tool", { name: c.name, arguments: c.arguments || "{}" });
+      const j = await r.json().catch(() => ({}));
+      output = String(j.output || j.error || "done");
+    } catch (e) {
+      output = "That didn't work.";
     }
+    // (A call that dropped meanwhile is not the one that asked.)
+    if (!liveCall.on) return;
+    liveSend({ type: "conversation.item.create", item: { type: "function_call_output", call_id: c.call_id, output } });
     // (The player started talking meanwhile: the answer to that will see
-    // the tools' results too, and asking for another response now would
+    // the tool's result too, and asking for another response now would
     // only fight it, and lose: the model drops the thread and never
     // answers. `respond` knows.)
     respond();
-    // The call answers again after the tools: the player waits for that too.
-    liveCall.toolsRan = { names: calls.map((c) => c.name).join("/"), from: doneAt || Date.now(), to: Date.now() };
-    liveCall.stoppedAt = doneAt || Date.now();
+    // The call answers again after the tool: the player waits for that too.
+    liveCall.toolsRan = { names: c.name, from: doneAt, to: Date.now() };
+    liveCall.stoppedAt = doneAt;
     liveCall.firstSoundTold = false;
-    liveTiming("live: " + calls.map((c) => c.name).join(", ") + " ran in " + ((Date.now() - (doneAt || Date.now())) / 1000).toFixed(1) + " s; the answer after them is timed from here" + (liveCall.userTalking ? " (the player is talking: it answers with their next words)" : ""));
+    liveTiming("live: " + c.name + " ran in " + ((Date.now() - doneAt) / 1000).toFixed(1) + " s; the answer after it is timed from here" + (liveCall.userTalking ? " (the player is talking: it answers with their next words)" : ""));
   }
 
   // A line for the PC's session log about where the time went.

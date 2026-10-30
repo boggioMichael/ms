@@ -1286,15 +1286,85 @@ impl Mouth {
 }
 
 /// Answers the phone's live calls: a short-lived key for OpenAI's realtime
-/// voice, MapleSyrup's tools, a web search.
+/// voice, MapleSyrup's tools, a web search, and the thinker
+/// ([`ai::thinker`]) for what the call hands over.
 struct LiveService {
     live: ai::live::Live,
     toolbox: Toolbox,
     /// What it learned: told to every call.
     learning: ai::Learning,
+    /// Claude's board, once made: Claude thinks through what the call hands
+    /// over while a Claude Code session listens.
+    board: std::sync::OnceLock<Arc<ms::claude::board::Board>>,
+    /// MapleSyrup's own model, which thinks it through when Claude isn't
+    /// there (or takes too long).
+    thinker: Arc<OpenAi>,
+    /// What the thinker did, for the session log (the main loop takes it).
+    notes: Mutex<Vec<String>>,
 }
 
 impl LiveService {
+    /// Think through the question the call handed over (`arguments`: its
+    /// `question`), with the game as `reading` has it: Claude while a
+    /// Claude Code session listens, MapleSyrup's own model when it doesn't
+    /// or no answer came in [`ai::thinker::CLAUDE_WAIT`]. Returns what the
+    /// call is to say.
+    fn think(&self, arguments: &str, reading: &str) -> String {
+        let args: serde_json::Value = serde_json::from_str(arguments).unwrap_or_default();
+        let question = args["question"].as_str().unwrap_or_default().trim();
+        if question.is_empty() {
+            return "No question came with it: ask them again what they want worked out.".into();
+        }
+        let began = Instant::now();
+        if let Some(board) = self.board.get().filter(|b| b.connected()) {
+            let seq = board.ask(&ai::thinker::headline(question));
+            match board.answer(seq, ai::thinker::CLAUDE_WAIT) {
+                Some(answer) if !answer.trim().is_empty() => {
+                    self.note(format!(
+                        "Claude answered in {:.1} s: \"{question}\" → {answer}",
+                        began.elapsed().as_secs_f64()
+                    ));
+                    return answer;
+                }
+                _ => self.note(format!(
+                    "no answer from Claude in {} s: MapleSyrup's own model thinks \"{question}\" through",
+                    ai::thinker::CLAUDE_WAIT.as_secs()
+                )),
+            }
+        }
+        match ai::thinker::ask_own(&self.thinker, question, reading) {
+            Ok(answer) if !answer.is_empty() => {
+                self.note(format!(
+                    "MapleSyrup's own model answered in {:.1} s: \"{question}\" → {answer}",
+                    began.elapsed().as_secs_f64()
+                ));
+                answer
+            }
+            Ok(_) => {
+                self.note(format!("no answer to \"{question}\""));
+                "The thinker had no answer: say you're not sure.".into()
+            }
+            Err(why) => {
+                self.note(format!("couldn't think \"{question}\" through: {why}"));
+                "The thinker couldn't answer just now: say you're not sure.".into()
+            }
+        }
+    }
+
+    fn note(&self, line: String) {
+        if let Ok(mut notes) = self.notes.lock() {
+            notes.push(line);
+        }
+    }
+
+    /// What the thinker did since the last call, for the session log.
+    fn take_notes(&self) -> Vec<String> {
+        self.notes
+            .lock()
+            .map(|mut notes| std::mem::take(&mut *notes))
+            .unwrap_or_default()
+    }
+
     /// The call's instructions as of now, and the level of the bar they
     /// talk at.
     fn instructions_with(
@@ -1311,7 +1381,8 @@ impl LiveService {
 impl phone::Service for LiveService {
     fn live(&self, recent: &[String], language: Option<&str>) -> Result<serde_json::Value, String> {
         let (instructions, level) = self.instructions_with(recent, language);
-        let tools = ai::live::tools(self.toolbox.definitions());
+        let mut tools = ai::live::tools(self.toolbox.definitions());
+        tools.push(ai::live::think_tool());
         // How it adapted to the player: how soon to answer, their words.
         let tuning = {
             let memory = self.learning.memory();
@@ -1341,7 +1412,11 @@ impl phone::Service for LiveService {
         name: &str,
         arguments: &str,
         frame: Option<&RgbaImage>,
+        reading: &str,
     ) -> (String, Option<ai::Effect>) {
+        if name == ai::live::THINK_TOOL {
+            return (self.think(arguments, reading), None);
+        }
         let call = ai::openai::Call {
             call_id: String::new(),
             name: name.to_string(),
@@ -4240,6 +4315,9 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                                 workshop: Some(Arc::clone(&workshop)),
                             },
                             learning: learning.clone(),
+                            board: std::sync::OnceLock::new(),
+                            thinker: Arc::clone(&chat),
+                            notes: Mutex::new(Vec::new()),
                         }));
                     }
                     let toolbox = Toolbox {
@@ -4412,6 +4490,10 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         }
         _ => None,
     };
+    // Claude thinks through what the call hands over.
+    if let (Some(service), Some(board)) = (&live_service, &claude_board) {
+        let _ = service.board.set(Arc::clone(board));
+    }
     // Whether the vision thread looks at the whole scene (Claude listens).
     // (In the background it is there for Claude only: always.)
     let claude_rich = Arc::new(AtomicBool::new(options.background));
@@ -4942,6 +5024,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
         // comes back up.
         if out.mouth.phone_ducked && Instant::now() > out.mouth.phone_until {
             out.phone_talking(false);
+        }
+
+        // What the thinker did for the call.
+        if let Some(service) = &live_service {
+            for note in service.take_notes() {
+                out.session.line("think", &note);
+            }
         }
 
         // What Claude asked to have said: in MapleSyrup's voice.
@@ -6525,9 +6614,13 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             // watches and speaks for it), the reading now, and what changed.
             if let Some(board) = &claude_board {
                 // Claude does the talking while it listens — and always when
-                // started for Claude only.
+                // started for Claude only — unless the phone's live call can
+                // be had: then the call talks with him, and Claude is its
+                // thinker, answering only what the call hands over.
                 let listening = board.connected();
-                let talking = listening || options.claude_only;
+                let thinker = out.live_ok;
+                board.set_thinker_only(thinker);
+                let talking = (listening || options.claude_only) && !thinker;
                 if talking != out.claude {
                     if talking && out.live {
                         out.call_ended(&mut companion);
@@ -6539,12 +6632,18 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                 }
                 if listening != claude_listening {
                     claude_listening = listening;
-                    let line = match (listening, options.claude_only) {
-                        (true, _) => {
+                    let line = match (listening, options.claude_only, thinker) {
+                        (true, _, true) => {
+                            "Claude is listening: it thinks through the hard questions you ask on the call."
+                        }
+                        (false, _, true) => {
+                            "Claude went away: the call's hard questions go to MapleSyrup's own model."
+                        }
+                        (true, _, false) => {
                             "Claude is listening: it talks with you now, and I watch the game and speak for it."
                         }
-                        (false, false) => "Claude went away: I'm talking myself again.",
-                        (false, true) => {
+                        (false, false, false) => "Claude went away: I'm talking myself again.",
+                        (false, true, false) => {
                             "Claude isn't connected: look at the Claude window. Till it is, I only say so."
                         }
                     };

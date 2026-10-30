@@ -209,6 +209,23 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     reload is Quiet. A player it does not know (`Learning::knows_player`)
     hears `TERMS` once a session, `TERMS_AFTER` after the clip hello, or
     from the call's own greeting (`new_player` in the status).
+  - **Talker and thinker** (`ai::live`, `ai::thinker`): with an OpenAI key
+    the live call is the voice, in every mode: OpenAI's newest realtime
+    model, asked for `REASONING_EFFORT` ("minimal") so it answers at once,
+    seeing the game only as the vision engine reads it (`/api/eyes?image=0`
+    with the player's words; no pictures anywhere in a reply or a coach's
+    look — `look_closer` and `learn_thing` take no box then, and the PC's
+    eyes look over the whole screen). A question that needs working out it
+    announces like a person and hands over through `THINK_TOOL`: the PC
+    (`LiveService::think`) posts it to Claude's board as a `question`
+    (`Board::ask`) while a Claude Code session listens and waits
+    `CLAUDE_WAIT` for its `say` with that `question_id` (`Board::answer`),
+    else asks its own model at `thinker::EFFORT`; the page sends each tool's
+    output as it comes (`liveTool`), so the talk goes on meanwhile. While a
+    call can be had (`live_ok`), Claude is the thinker only
+    (`Board::set_thinker_only`): no heard or game events reach it, and a
+    `say` that answers no question is refused, with why. Logged as
+    `[think]`.
   - **The call** (`Relay`): its own lines go to a live call at most once
     per `RELAY_GAP` (a button's answer at once, outside the relay), the
     newest of each kind waiting for the gap; an

@@ -77,11 +77,6 @@ pub mod field {
     pub const LIVE_TOOLS_TO: &str = "tools_to";
 }
 
-/// What a span of a turn is, when it is not one of Claude's tools or the
-/// model's: the screen made into pictures for the model, sharp and close
-/// up (a sentence about the screen) or small.
-pub const PICTURES_CLOSE: &str = "pictures_close";
-pub const PICTURES_SMALL: &str = "pictures_small";
 /// Which voice spoke a turn's first line.
 pub const TTS_ELEVENLABS: &str = "elevenlabs";
 pub const TTS_OPENAI: &str = "openai";
@@ -364,7 +359,7 @@ impl End {
     }
 }
 
-/// A stretch of a turn: a tool, the pictures made for the model.
+/// A stretch of a turn: a tool.
 #[derive(Debug, Clone, PartialEq)]
 struct Span {
     name: String,
@@ -787,7 +782,7 @@ impl Tracer {
         }
     }
 
-    /// A stretch of the turn `key` finds: a tool, the pictures.
+    /// A stretch of the turn `key` finds: a tool.
     pub fn span(&self, key: Key, name: &str, from: Instant, to: Instant) {
         if let Some(mut inner) = self.inner()
             && let Some(turn) = find(&mut inner.turns, key)

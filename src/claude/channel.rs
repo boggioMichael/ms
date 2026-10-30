@@ -95,7 +95,11 @@ kind=\"tone\": he moved the bar of how you talk to him on his phone: from now on
 say one short line in the new tone (heard and phone events carry the bar's rules too). \
 kind=\"death\" | \"level_up\" | \"map\" | \"hp\" | \"mp\" | \"dialog\" | \"thing\" | \"window\" | \"state\": something \
 changed. Speak up only when it helps him right now — danger, a real milestone, a quest or dialog you can help \
-with, something he asked you to watch; otherwise stay silent. kind=\"offline\": MapleSyrup stopped.";
+with, something he asked you to watch; otherwise stay silent. kind=\"offline\": MapleSyrup stopped. \
+kind=\"question\": MapleSyrup's voice — a live call that talks with him itself — hands you a question that needs \
+thinking (exact numbers, a plan, a route, a comparison): think it through and answer with say, giving its \
+question_id as answers — the answer itself, exact and short, which the call says to him in its own words. Then \
+you are its thinker: his words and the game's events don't come to you, and you don't speak on your own.";
 
 /// One poll's worth: the events, the number of the last, and the
 /// companion's run (a new `boot` is a companion started again).
@@ -481,13 +485,18 @@ fn notify_with(out: &Out, content: &str, meta: Value) {
 fn notify_event(out: &Out, event: &Value) {
     let kind = event["kind"].as_str().unwrap_or("event");
     let content = event["text"].as_str().unwrap_or_default();
-    match event["seq"].as_u64().filter(|_| kind == "heard") {
-        Some(seq) => notify_with(
-            out,
-            content,
-            json!({ "kind": kind, "heard_id": seq.to_string() }),
-        ),
-        None => notify(out, kind, content),
+    // (A question MapleSyrup's voice hands over carries its number the
+    // same way, as question_id.)
+    let id = match kind {
+        "heard" => Some("heard_id"),
+        crate::claude::board::QUESTION => Some("question_id"),
+        _ => None,
+    };
+    match (event["seq"].as_u64(), id) {
+        (Some(seq), Some(id)) => {
+            notify_with(out, content, json!({ "kind": kind, id: seq.to_string() }))
+        }
+        _ => notify(out, kind, content),
     }
 }
 
@@ -977,7 +986,7 @@ the answer says what he said instead. {}", crate::companion::fresh::guide()),
                 "type": "object",
                 "properties": {
                     "text": {"type": "string", "description": "What to say, exactly as it should be spoken. Empty, with answers, to stay quiet on purpose about those words of his (he told you to be quiet, or he was talking to someone else): nothing is said, and MapleSyrup won't answer them for you."},
-                    "answers": {"type": "integer", "description": "The heard_id of his words this answers (on their <channel kind=\"heard\"> tag). Leave it out when you speak up on your own."},
+                    "answers": {"type": "integer", "description": "The heard_id of his words this answers (on their <channel kind=\"heard\"> tag), or the question_id of a question MapleSyrup's voice handed you (<channel kind=\"question\">). Leave it out when you speak up on your own."},
                 },
                 "required": ["text"],
                 "additionalProperties": false,
@@ -1570,11 +1579,16 @@ mod tests {
         );
         fake.post("heard", "He said: כמה HP יש לי?");
         fake.post("level_up", "Level up: 16 → 17.");
-        let lines = wait_for(&sink, |l| channel_events(l).len() >= 3);
+        fake.post(
+            crate::claude::board::QUESTION,
+            "MapleSyrup's voice asks: how long to 30?",
+        );
+        let lines = wait_for(&sink, |l| channel_events(l).len() >= 4);
         let kinds: Vec<String> = channel_events(&lines).into_iter().map(|(k, _)| k).collect();
-        assert_eq!(kinds, ["hello", "heard", "level_up"]);
+        assert_eq!(kinds, ["hello", "heard", "level_up", "question"]);
         // What he said carries its number (the death before the hello was
-        // the first), for say's `answers`; nothing else does.
+        // the first), for say's `answers`, and so does a question the call
+        // hands over; nothing else does.
         let metas: Vec<Value> = lines
             .iter()
             .filter(|l| l["method"] == "notifications/claude/channel")
@@ -1582,6 +1596,7 @@ mod tests {
             .collect();
         assert_eq!(metas[1], json!({"kind": "heard", "heard_id": "2"}));
         assert_eq!(metas[2], json!({"kind": "level_up"}));
+        assert_eq!(metas[3], json!({"kind": "question", "question_id": "4"}));
         // Every line is a whole message (the reader parsed each).
         assert!(lines.iter().all(|l| l["jsonrpc"] == "2.0"));
         bridge.stop();

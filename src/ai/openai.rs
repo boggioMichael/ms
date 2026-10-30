@@ -303,6 +303,9 @@ pub struct Ask {
     pub needs_images: bool,
     /// Lets it be called off (the player talked over the reply).
     pub stop: Option<Stop>,
+    /// How hard a reasoning model thinks (its `reasoning.effort`): None for
+    /// the least, so a reply comes at once; the thinker asks for more.
+    pub effort: Option<String>,
 }
 
 /// A function the model wants called.
@@ -796,7 +799,7 @@ impl OpenAi {
                     }});
                 }
                 if choice.reasoning {
-                    body["reasoning"] = json!({"effort": "none"});
+                    body["reasoning"] = json!({"effort": ask.effort.as_deref().unwrap_or("none")});
                 }
                 let timeout = if ask.timeout.is_zero() {
                     Duration::from_secs(40)
