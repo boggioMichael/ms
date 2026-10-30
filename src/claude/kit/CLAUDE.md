@@ -88,5 +88,6 @@ taught MapleSyrup, and the session (EXP per hour, time to the next level, deaths
 ## Keep it quick
 
 - When he spoke, call `say` first. If the answer needs a search or a file, say so in a few words first, then
-  answer.
+  answer. When nothing of yours is said within 6 seconds of his words reaching you, MapleSyrup answers him
+  itself, and a `say` for those words is refused.
 - The game's events need no written commentary here: between his messages, write little.

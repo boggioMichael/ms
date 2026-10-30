@@ -2305,6 +2305,73 @@ fn claude_says(out: &mut Outputs, text: String) -> Option<u64> {
     }
 }
 
+/// How long his words wait for Claude's answer before MapleSyrup's own
+/// brain answers them ([`ms::claude::board::ANSWER_WAIT`]).
+const CLAUDE_ANSWER_WAIT: Duration = ms::claude::board::ANSWER_WAIT;
+
+/// His words waiting for Claude's answer, and the game's events held back
+/// meanwhile, so that Claude's next turn is his words and not the game's.
+#[derive(Default)]
+struct ClaudeWait {
+    /// His words posted for Claude: their number on the board, and the
+    /// words.
+    question: Option<(u64, String)>,
+    /// The game's events held while he waits: their kind and headline
+    /// (posted with the reading as it is when they go).
+    held: Vec<(&'static str, String)>,
+}
+
+/// What became of his words waiting for Claude ([`ClaudeWait::check`]).
+#[derive(Debug, PartialEq)]
+enum Waited {
+    /// Still waiting, and in time.
+    Waiting,
+    /// Answered by Claude, or newer words of his took their place.
+    Done,
+    /// Claude took too long: these words (their number on the board, and
+    /// the words) are for MapleSyrup's own brain.
+    TooLong(u64, String),
+}
+
+impl ClaudeWait {
+    fn asked(&mut self, seq: u64, words: String) {
+        self.question = Some((seq, words));
+    }
+
+    fn waiting(&self) -> bool {
+        self.question.is_some()
+    }
+
+    fn hold(&mut self, kind: &'static str, headline: String) {
+        self.held.push((kind, headline));
+    }
+
+    /// Each turn of the loop, from the board: `since`, when his words
+    /// began to wait for Claude (None: they wait no more). Past
+    /// [`CLAUDE_ANSWER_WAIT`] they are handed back, and nothing waits.
+    fn check(&mut self, since: impl FnOnce(u64) -> Option<Instant>, now: Instant) -> Waited {
+        let Some((seq, _)) = &self.question else {
+            return Waited::Done;
+        };
+        match since(*seq) {
+            None => {
+                self.question = None;
+                Waited::Done
+            }
+            Some(since) if now.saturating_duration_since(since) >= CLAUDE_ANSWER_WAIT => {
+                let (seq, words) = self.question.take().unwrap_or_default();
+                Waited::TooLong(seq, words)
+            }
+            Some(_) => Waited::Waiting,
+        }
+    }
+
+    /// The events held while he waited, to post now that he doesn't.
+    fn release(&mut self) -> Vec<(&'static str, String)> {
+        std::mem::take(&mut self.held)
+    }
+}
+
 /// Claude's lines handed to MapleSyrup's voice (its `say`, answered
 /// "Said."), until each reaches the player: one called off before then —
 /// he spoke first — is no line he heard, and Claude is told so with what
@@ -4521,6 +4588,7 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
     let mut overheard_inbox: Vec<Inbound> = Vec::new();
     // Claude's lines handed to the voice, until each reaches him.
     let mut claude_lines = ClaudeLines::default();
+    let mut claude_wait = ClaudeWait::default();
     // The coach: MapleSyrup speaking up on its own (off when the player
     // asked for that, for good).
     let mut coach = ms::coach::Coach::new(learning.memory().coach.unwrap_or(true));
@@ -4772,11 +4840,19 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     && let Some(board) = &claude_board
                 {
                     let event = claude_feed.thing(&fired.name, &fired.say);
-                    board.post(
-                        event.kind,
-                        &event.headline,
-                        format!("{}\n\n{claude_reading}", event.headline),
-                    );
+                    if claude_wait.waiting() {
+                        out.session.line(
+                            "claude",
+                            &format!("event (held, he waits for an answer): {}", event.headline),
+                        );
+                        claude_wait.hold(event.kind, event.headline);
+                    } else {
+                        board.post(
+                            event.kind,
+                            &event.headline,
+                            format!("{}\n\n{claude_reading}", event.headline),
+                        );
+                    }
                 }
                 stats.fired(fired.warning);
                 if companion.alerts_held(now) {
@@ -4832,6 +4908,47 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
             for text in board.take_refused() {
                 out.session
                     .line("claude", &format!("not said, he had moved on: {text}"));
+            }
+            // His words waiting for Claude's answer: answered (the events
+            // held meanwhile go now), or waited too long — MapleSyrup's own
+            // brain answers them, and Claude's line for them is refused.
+            let waited = claude_wait.check(|seq| board.waiting_since(seq), Instant::now());
+            if let Waited::TooLong(seq, words) = &waited {
+                match &out.mouth.ai {
+                    Some(worker) if board.connected() => {
+                        board.answered_here(*seq);
+                        out.session.line(
+                            "claude",
+                            &format!(
+                                "no answer in {} s: MapleSyrup answers \"{words}\"",
+                                CLAUDE_ANSWER_WAIT.as_secs()
+                            ),
+                        );
+                        let job = conversation_job(
+                            words.clone(),
+                            &companion,
+                            sight.as_ref(),
+                            latest_image.clone(),
+                            in_front.load(Ordering::Relaxed),
+                            player_language.clone(),
+                        );
+                        let id = worker.send(job);
+                        turns.asked(id, words);
+                    }
+                    _ => out.session.line(
+                        "claude",
+                        &format!(
+                            "no answer in {} s, and nothing here to answer \"{words}\"",
+                            CLAUDE_ANSWER_WAIT.as_secs()
+                        ),
+                    ),
+                }
+            }
+            if waited != Waited::Waiting {
+                for (kind, headline) in claude_wait.release() {
+                    out.session.line("claude", &format!("event: {headline}"));
+                    board.post(kind, &headline, format!("{headline}\n\n{claude_reading}"));
+                }
             }
             // He asked Claude to talk to him another way: the bar moves, as
             // on his phone (the phone's bar follows, and Claude hears the
@@ -4975,11 +5092,17 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                             }
                             // With how he set it to talk to him (the bar).
                             let tone = ms::claude::tone(learning.memory().level());
-                            board.post(
+                            let seq = board.post(
                                 "heard",
                                 &headline,
                                 format!("{headline}{note}\n\n{tone}\n\n{claude_reading}"),
                             );
+                            // They wait for Claude's answer: the game's
+                            // events wait meanwhile, and MapleSyrup answers
+                            // if Claude doesn't in time.
+                            if board.connected() {
+                                claude_wait.asked(seq, text.clone());
+                            }
                             // Started for Claude only, with no Claude there:
                             // nobody answers, so he hears why.
                             if !board.connected() {
@@ -6350,6 +6473,17 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
                     let in_view = scene.window == ms::claude::feed::Window::InFront;
                     board.set_frame(latest_image.clone().filter(|_| in_view));
                     for event in claude_feed.update(&scene) {
+                        if claude_wait.waiting() {
+                            out.session.line(
+                                "claude",
+                                &format!(
+                                    "event (held, he waits for an answer): {}",
+                                    event.headline
+                                ),
+                            );
+                            claude_wait.hold(event.kind, event.headline);
+                            continue;
+                        }
                         out.session
                             .line("claude", &format!("event: {}", event.headline));
                         board.post(
@@ -6472,6 +6606,36 @@ fn run(options: Options, args: Vec<String>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn his_words_wait_for_claude_and_go_to_maplesyrup_when_it_takes_too_long() {
+        let now = Instant::now();
+        let mut wait = ClaudeWait::default();
+        assert_eq!(wait.check(|_| Some(now), now), Waited::Done);
+        wait.asked(7, "where do I level".into());
+        assert!(wait.waiting());
+        wait.hold("hp", "HP low: 25%.".into());
+        // In time: still waiting, the event still held.
+        let lately = now.checked_sub(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            wait.check(|seq| (seq == 7).then_some(lately), now),
+            Waited::Waiting
+        );
+        assert!(wait.waiting());
+        // Too long: the words are handed back, and nothing waits any more.
+        let long_ago = now.checked_sub(CLAUDE_ANSWER_WAIT).unwrap();
+        assert_eq!(
+            wait.check(|_| Some(long_ago), now),
+            Waited::TooLong(7, "where do I level".into())
+        );
+        assert!(!wait.waiting());
+        assert_eq!(wait.release(), vec![("hp", "HP low: 25%.".to_string())]);
+        assert!(wait.release().is_empty());
+        // Answered (or newer words came): done.
+        wait.asked(8, "thanks".into());
+        assert_eq!(wait.check(|_| None, now), Waited::Done);
+        assert!(!wait.waiting());
+    }
 
     #[test]
     fn the_game_behind_another_window_is_in_view_when_it_comes_through_as_drawn() {

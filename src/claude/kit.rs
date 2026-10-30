@@ -384,6 +384,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_brief_tells_claude_how_long_his_words_wait_for_it() {
+        let wait = format!("{} seconds", super::super::board::ANSWER_WAIT.as_secs());
+        assert!(BRIEF.contains(&wait), "the brief must say {wait}");
+    }
+
+    #[test]
     fn the_mcp_config_starts_the_bridge_from_a_path_with_hebrew_in_it() {
         let exe = Path::new(r"C:\Users\מיכאל\Desktop\MapleSyrup\MapleSyrup.exe");
         let config: serde_json::Value = serde_json::from_str(&mcp_json(exe)).unwrap();

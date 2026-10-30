@@ -67,6 +67,13 @@ const SAY_GRACE: Duration = Duration::from_millis(1000);
 const TALKED_OVER_WAIT: Duration = Duration::from_secs(6);
 /// A picture's longest side by default: what Claude takes in whole.
 const LOOK_SIZE: u32 = 1568;
+/// How long his words wait for Claude's answer before MapleSyrup's own
+/// brain answers them (the safety net; the brief tells Claude so). On 25.10
+/// Claude answered in 2 s at the median and within 6 s nine times in ten,
+/// but a turn of its own can wait much longer — behind a game event, a
+/// permission prompt in its window, the conversation being compacted — and
+/// the player only hears silence.
+pub const ANSWER_WAIT: Duration = Duration::from_secs(6);
 
 /// One event as posted.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -112,6 +119,12 @@ struct Newest {
     headline: String,
     posted: Instant,
     taken: Option<Instant>,
+    /// A line of Claude's was said after them: he has been answered.
+    answered: bool,
+    /// Claude did not answer in time and MapleSyrup's own brain answered
+    /// them ([`Board::answered_here`]): a line of Claude's for them is not
+    /// said any more.
+    ours: bool,
 }
 
 pub struct Board {
@@ -179,6 +192,8 @@ impl Board {
                 headline: headline.to_string(),
                 posted: Instant::now(),
                 taken: None,
+                answered: false,
+                ours: false,
             });
             inner.talked_over = None;
         }
@@ -258,6 +273,26 @@ impl Board {
         std::mem::take(&mut self.lock().says)
     }
 
+    /// Since when his words number `seq` have waited for Claude's answer:
+    /// from when the bridge handed them to Claude (or were posted, when no
+    /// bridge took them). None once anything of Claude's was said after
+    /// them, once MapleSyrup answered them itself, or once newer words of
+    /// his came (those wait instead).
+    pub fn waiting_since(&self, seq: u64) -> Option<Instant> {
+        let inner = self.lock();
+        let newest = inner.newest.as_ref().filter(|n| n.seq == seq)?;
+        (!newest.answered && !newest.ours).then(|| newest.taken.unwrap_or(newest.posted))
+    }
+
+    /// Claude did not answer his words number `seq` in time, and
+    /// MapleSyrup's own brain answers them: a line of Claude's for them
+    /// is refused from now on, with why ([`Board::refusal`]).
+    pub fn answered_here(&self, seq: u64) {
+        if let Some(newest) = self.lock().newest.as_mut().filter(|n| n.seq == seq) {
+            newest.ours = true;
+        }
+    }
+
     /// Lines Claude asked to have said that were not, since the last call:
     /// he had moved on ([`Board::refusal`]).
     pub fn take_refused(&self) -> Vec<String> {
@@ -287,6 +322,13 @@ impl Board {
             );
         }
         let newest = inner.newest.as_ref()?;
+        if newest.ours && answers == Some(newest.seq) {
+            return Some(format!(
+                "you took too long, so MapleSyrup answered him itself: {} (heard_id {}) is answered — \
+don't answer it again; answer what he says next",
+                newest.headline, newest.seq
+            ));
+        }
         let older = match answers {
             Some(answers) => answers < newest.seq,
             None => {
@@ -349,6 +391,13 @@ or say nothing",
                 if let Some(why) = Self::refusal(&inner, answers, Instant::now()) {
                     inner.refused.push(text);
                     return Response::json(409, &json!({"error": why}));
+                }
+                // (Said after his newest words reached Claude: he has his
+                // answer, whatever it names.)
+                if let Some(newest) = inner.newest.as_mut()
+                    && answers.is_none_or(|answers| answers == newest.seq)
+                {
+                    newest.answered = true;
                 }
                 inner.says.push(text);
                 Response::json(200, &json!({"ok": true}))
@@ -949,6 +998,48 @@ mod tests {
             200
         );
         assert_eq!(board.take_says(), vec!["A slime."]);
+    }
+
+    #[test]
+    fn his_words_wait_for_claude_until_a_line_is_said_and_then_maplesyrup_may_answer_them() {
+        let board = Board::new(KEY.into());
+        let say = |body: Value| {
+            board.handle(&request(
+                "POST",
+                &format!("/local/say?k={KEY}"),
+                body.to_string().as_bytes(),
+                &[],
+            ))
+        };
+        // Posted: they wait, from when they were posted (no bridge took them).
+        let first = board.post("heard", "He said: \"where do I level\"", "…".into());
+        assert!(board.waiting_since(first).is_some());
+        // Claude's answer is said: they wait no more.
+        assert_eq!(
+            say(json!({"text": "Ant Tunnel.", "answers": first})).status,
+            200
+        );
+        assert_eq!(board.waiting_since(first), None);
+        // Newer words take the place of older ones.
+        let second = board.post("heard", "He said: \"how much HP\"", "…".into());
+        let third = board.post("heard", "He said: \"how much HP do I have\"", "…".into());
+        assert_eq!(board.waiting_since(second), None);
+        assert!(board.waiting_since(third).is_some());
+        // Claude took too long: MapleSyrup answers them, and Claude's line
+        // for them is refused, with why; a line of its own still goes.
+        board.answered_here(third);
+        assert_eq!(board.waiting_since(third), None);
+        let late = say(json!({"text": "62%.", "answers": third}));
+        assert_eq!(late.status, 409);
+        assert!(
+            json_of(&late)["error"]
+                .as_str()
+                .unwrap()
+                .contains("MapleSyrup answered him itself")
+        );
+        board.lock().newest.as_mut().unwrap().taken = Instant::now().checked_sub(SAY_GRACE);
+        assert_eq!(say(json!({"text": "Nice level!"})).status, 200);
+        assert_eq!(board.take_says(), vec!["Ant Tunnel.", "Nice level!"]);
     }
 
     #[test]

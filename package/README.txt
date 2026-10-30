@@ -341,7 +341,12 @@ Claude, live (talk with Claude while it sees the game)
   is put in its place first.
   Started this way, MapleSyrup leaves all the talking to Claude: none of its
   own answers, live calls or remarks, and while Claude isn't connected (its
-  window waits for an answer, say), it tells you so instead. Both can run at
+  window waits for an answer, say), it tells you so instead. When Claude is
+  connected but says nothing for 6 seconds after your words reach it (busy
+  with something else, waiting for an approval in its window, or tidying
+  up its conversation), MapleSyrup answers you itself (with an OpenAI or
+  xAI key), and Claude's late line for those words is not said; the game's
+  events wait meanwhile, so Claude's next turn is your words. Both can run at
   once - the live session and Claude in the Claude app's chats: they use
   the same MapleSyrup (the one with a window takes over from one the app
   started in the background).
