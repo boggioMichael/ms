@@ -31,6 +31,9 @@ enum State {
         frames: u64,
         slow: u32,
         warned: bool,
+        /// How many looks in a row no frame at all came: the screen was
+        /// lost.
+        still: u32,
     },
     /// Finishing the file.
     Saving(mpsc::Receiver<Result<PathBuf, String>>),
@@ -44,6 +47,24 @@ pub struct Recording {
     on_stream: bool,
     /// The last recording finished, or why the last one failed.
     last: Option<Result<PathBuf, String>>,
+    /// How the screen is taken: without Desktop Duplication once Windows
+    /// took the screen away from it this session.
+    picture: Picture,
+    /// Start again as soon as the last recording is saved (its screen was
+    /// lost, and the next one takes it another way).
+    again: bool,
+}
+
+/// Looks at the encoding (every five seconds) in a row with no new frame
+/// at all before the screen counts as lost: Windows took it away from
+/// Desktop Duplication (on 25.10 a game starting did, "AcquireNextFrame
+/// failed: 887a0026", and the rest of the recording had no picture).
+const SCREEN_LOST_LOOKS: u32 = 2;
+
+/// Whether the screen counts as lost: on Desktop Duplication, `still`
+/// looks in a row with no new frame.
+fn screen_lost(duplication: bool, still: u32) -> bool {
+    duplication && still >= SCREEN_LOST_LOOKS
 }
 
 fn name(file: &Path) -> String {
@@ -60,6 +81,8 @@ impl Recording {
             dir: dir.to_path_buf(),
             on_stream,
             last: None,
+            picture: Picture::Screen,
+            again: false,
         }
     }
 
@@ -82,13 +105,14 @@ impl Recording {
                 );
                 let (tx, rx) = mpsc::channel();
                 let settings = self.settings.clone();
+                let picture = self.picture.clone();
                 let spawned = std::thread::Builder::new()
                     .name("recorder-start".into())
                     .spawn(move || {
                         let started = recorder::find_ffmpeg(&settings)
                             .map(Ok)
                             .unwrap_or_else(|| recorder::download_ffmpeg(&settings))
-                            .and_then(|ffmpeg| Recorder::start(&ffmpeg, Picture::Screen, &file));
+                            .and_then(|ffmpeg| Recorder::start(&ffmpeg, picture, &file));
                         let _ = tx.send(started);
                     });
                 if spawned.is_ok() {
@@ -112,6 +136,27 @@ impl Recording {
     fn save(&mut self, recorder: Recorder, out: &mut Outputs, panel: Option<&mut Overlay>) {
         if let Some(hub) = &out.phone {
             hub.set_recording(None);
+        }
+        // Which sounds it had (a recording "with no sound" says which was
+        // missing): in the log, and to him when it had none.
+        let sounded = recorder.sounded();
+        let (pc, mic, voice, all) = sounded.seconds();
+        out.session.line(
+            "recording",
+            &format!(
+                "sound in it: the PC's {pc:.0} s, his voice {mic:.0} s, the phone's {voice:.0} s, of {all:.0} s{}",
+                match &recorder.pc_sound {
+                    Ok(()) => String::new(),
+                    Err(why) => format!(" (no PC sound: {why})"),
+                }
+            ),
+        );
+        if sounded.silent() && all > 0.0 {
+            out.show(
+                Kind::Info,
+                "The recording has no sound: the PC's sound couldn't be taken and nothing came from the phone \
+(is \"Send the microphone's audio to the PC\" on, on the phone?).",
+            );
         }
         if let Some(panel) = panel {
             panel.set_on_stream(self.on_stream);
@@ -152,6 +197,7 @@ impl Recording {
             frames: 0,
             slow: 0,
             warned: false,
+            still: 0,
         };
     }
 
@@ -177,6 +223,7 @@ impl Recording {
                 mut frames,
                 mut slow,
                 mut warned,
+                mut still,
             } => {
                 // The phone hears MapleSyrup's voice from the PC's speakers too.
                 recorder.set_pc_talking(out.mouth.pc_speaking());
@@ -204,6 +251,32 @@ impl Recording {
                     } else {
                         0
                     };
+                    // Not a frame since the last look, on Desktop
+                    // Duplication: Windows took the screen away from it.
+                    still = if recorder.duplication && now == frames && recorder.seconds() > 10.0 {
+                        still + 1
+                    } else {
+                        0
+                    };
+                    if screen_lost(recorder.duplication, still) {
+                        out.session.line(
+                            "recording",
+                            &format!(
+                                "the screen was lost to {} ({}): saved, and taken through GDI from here",
+                                recorder.grab,
+                                recorder.trouble()
+                            ),
+                        );
+                        out.show(
+                            Kind::Info,
+                            "Windows took the screen away from the recording (a game going full screen does that): \
+it is saved, and a new one starts.",
+                        );
+                        self.picture = Picture::ScreenWithoutDuplication;
+                        self.again = true;
+                        self.save(*recorder, out, panel);
+                        return;
+                    }
                     if slow >= 2 && !warned {
                         warned = true;
                         out.show(
@@ -220,6 +293,7 @@ impl Recording {
                     frames,
                     slow,
                     warned,
+                    still,
                 };
             }
             State::Saving(rx) => match rx.try_recv() {
@@ -231,6 +305,9 @@ impl Recording {
                     out.session
                         .line("recording", &format!("saved {}", file.display()));
                     self.last = Some(Ok(file));
+                    if std::mem::take(&mut self.again) {
+                        self.start(out);
+                    }
                 }
                 Ok(Err(why)) => {
                     out.show(
@@ -238,6 +315,9 @@ impl Recording {
                         &format!("The recording could not be saved: {why}"),
                     );
                     self.last = Some(Err(why));
+                    if std::mem::take(&mut self.again) {
+                        self.start(out);
+                    }
                 }
                 Err(TryRecvError::Empty) => self.state = State::Saving(rx),
                 Err(TryRecvError::Disconnected) => {
@@ -306,6 +386,7 @@ impl Recording {
                             frames: 0,
                             slow: 0,
                             warned: false,
+                            still: 0,
                         };
                     }
                 }
@@ -335,6 +416,18 @@ fn report(result: Result<PathBuf, String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_screen_is_lost_after_looks_with_no_frame_on_desktop_duplication_only() {
+        assert!(!screen_lost(true, SCREEN_LOST_LOOKS - 1));
+        assert!(screen_lost(true, SCREEN_LOST_LOOKS));
+        // GDI gives a frame however slow: never "lost" this way.
+        assert!(!screen_lost(false, SCREEN_LOST_LOOKS + 3));
+        // Once lost, the session records without Desktop Duplication.
+        let dir = std::env::temp_dir();
+        let recording = Recording::new(&dir, &dir, false);
+        assert_eq!(recording.picture, Picture::Screen);
+    }
 
     #[test]
     fn the_phone_hears_how_the_recording_is_going() {

@@ -236,6 +236,10 @@ pub enum Picture {
     /// The main screen (Windows: Desktop Duplication, or GDI where that
     /// isn't available; elsewhere the X display in `DISPLAY`).
     Screen,
+    /// The main screen without Desktop Duplication (Windows: GDI): for when
+    /// Windows took the screen away from it once already this session (a
+    /// game going full screen or changing the display mode does).
+    ScreenWithoutDuplication,
     /// An X display, such as `:1` (Linux).
     X11(String),
     /// A moving test picture (to check recording where there is no screen).
@@ -620,6 +624,37 @@ struct Mix {
     pc_talking: VecDeque<(u64, bool)>,
     /// The writing stops once it reaches this frame.
     last: Option<u64>,
+    /// How much of what was written had each sound in it.
+    sounded: Sounded,
+}
+
+/// How much of a recording had each sound in it, in frames: the PC's own,
+/// the player's voice from the phone (as let through), and what the phone
+/// played. Said when the recording is saved, so a recording "with no sound"
+/// says which sound was missing.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Sounded {
+    pub pc: u64,
+    pub mic: u64,
+    pub voice: u64,
+    /// Frames written in all.
+    pub written: u64,
+}
+
+/// A sample this loud or more is sound (about -50 dBFS), not silence.
+const SOUND_FLOOR: f32 = 0.003;
+
+impl Sounded {
+    /// Seconds of each, as (pc, mic, voice, in all).
+    pub fn seconds(&self) -> (f64, f64, f64, f64) {
+        let s = |frames: u64| frames as f64 / RATE as f64;
+        (s(self.pc), s(self.mic), s(self.voice), s(self.written))
+    }
+
+    /// Whether nothing at all was heard in it.
+    pub fn silent(&self) -> bool {
+        self.pc == 0 && self.mic == 0 && self.voice == 0
+    }
 }
 
 impl Mix {
@@ -635,6 +670,7 @@ impl Mix {
             gate: Gate::default(),
             pc_talking: VecDeque::new(),
             last: None,
+            sounded: Sounded::default(),
         }
     }
 
@@ -670,6 +706,10 @@ impl Mix {
         }
         bytes.clear();
         for f in 0..frames as usize {
+            let loud = |x: f32| x.abs() >= SOUND_FLOOR;
+            self.sounded.pc += u64::from(loud(pc[f * 2]) || loud(pc[f * 2 + 1]));
+            self.sounded.mic += u64::from(loud(mic[f]));
+            self.sounded.voice += u64::from(loud(voice[f]));
             let phone = mic[f] + voice[f];
             for side in 0..2 {
                 let s = soft_clip(pc[f * 2 + side] * 0.9 + phone);
@@ -677,6 +717,7 @@ impl Mix {
             }
         }
         self.written = to;
+        self.sounded.written = to;
         // The voice's history before what is written is no longer needed
         // (the latest change before it still is).
         while self.pc_talking.len() > 1 && self.pc_talking[1].0 <= to {
@@ -814,6 +855,9 @@ pub struct Recorder {
     pub started: Instant,
     /// How the screen is taken.
     pub grab: &'static str,
+    /// Whether the screen is taken through Desktop Duplication (which
+    /// Windows can take away mid-recording).
+    pub duplication: bool,
     /// Whether the PC's sound is in it (or why not).
     pub pc_sound: Result<(), String>,
 }
@@ -842,7 +886,8 @@ impl Recorder {
                     vec![Grab::Gdi]
                 }
             }
-            Picture::Screen => match std::env::var("DISPLAY") {
+            Picture::ScreenWithoutDuplication if cfg!(windows) => vec![Grab::Gdi],
+            Picture::Screen | Picture::ScreenWithoutDuplication => match std::env::var("DISPLAY") {
                 Ok(display) if !display.is_empty() => vec![Grab::X11(display)],
                 _ => return Err("there is no screen to record here".into()),
             },
@@ -912,6 +957,7 @@ impl Recorder {
             log: files.log,
             started: Instant::now(),
             grab: grab.name(),
+            duplication: *grab == Grab::Duplication,
             pc_sound,
         }
     }
@@ -935,6 +981,11 @@ impl Recorder {
 
     pub fn seconds(&self) -> f64 {
         self.started.elapsed().as_secs_f64()
+    }
+
+    /// How much of it so far had each sound in it.
+    pub fn sounded(&self) -> Sounded {
+        self.mix.lock().unwrap_or_else(|e| e.into_inner()).sounded
     }
 
     /// Whether ffmpeg is still recording.
@@ -1449,6 +1500,28 @@ mod tests {
         );
         assert_eq!(mix.mic.head, mix.voice.head);
         assert!((mix.mic.frames() as i64 - 12_000).abs() < 4);
+    }
+
+    #[test]
+    fn a_recording_says_which_sounds_were_in_it() {
+        let mut mix = Mix::new(unix_now());
+        // Half a second of the PC's sound, then the same of silence; nothing
+        // from the phone.
+        let tone: Vec<f32> = (0..RATE as usize)
+            .map(|i| (i as f32 / 7.0).sin() * 0.3)
+            .collect();
+        mix.pc.place(0, &tone, 0);
+        let mut bytes = Vec::new();
+        mix.step(RATE as u64, &mut bytes);
+        let sounded = mix.sounded;
+        assert_eq!(sounded.written, RATE as u64);
+        assert!(
+            sounded.pc.abs_diff(RATE as u64 / 2) < RATE as u64 / 50,
+            "{sounded:?}"
+        );
+        assert_eq!((sounded.mic, sounded.voice), (0, 0));
+        assert!(!sounded.silent());
+        assert!(Mix::new(unix_now()).sounded.silent());
     }
 
     #[test]
