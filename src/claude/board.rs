@@ -45,6 +45,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::phone::http::{Request, Response};
+use crate::util::latency::{self, Key, Stage};
 
 /// Events kept for a bridge that polls late.
 const KEEP: usize = 200;
@@ -74,6 +75,19 @@ const LOOK_SIZE: u32 = 1568;
 /// permission prompt in its window, the conversation being compacted — and
 /// the player only hears silence.
 pub const ANSWER_WAIT: Duration = Duration::from_secs(6);
+/// The requests that are Claude's tools (the bridge makes one for each),
+/// by method and path, with the tool's name: timed for the words of his
+/// Claude is answering ([`latency`]).
+const TOOLS: &[(&str, &str, &str)] = &[
+    ("GET", "/local/status", "game_status"),
+    ("GET", "/local/look", "look_at_screen"),
+    ("GET", "/local/picture", "save_picture"),
+    ("GET", "/local/wiki", "maple_wiki_search"),
+    ("POST", "/local/wiki", "maple_wiki_save"),
+    ("GET", "/local/player", "player_profile"),
+    ("POST", "/local/player", "player_remember"),
+    ("POST", "/local/tone", "set_tone"),
+];
 
 /// One event as posted.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -426,7 +440,8 @@ or say nothing",
         if !matches!(request.path.as_str(), "/local/hello" | "/local/quit") {
             self.lock().bridge_seen = Some(Instant::now());
         }
-        match (request.method.as_str(), request.path.as_str()) {
+        let began = Instant::now();
+        let response = match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/local/hello") => {
                 Response::json(200, &json!({"ok": true, "pid": std::process::id()}))
             }
@@ -452,6 +467,7 @@ or say nothing",
                     return match (answers, inner.newest.as_mut()) {
                         (Some(answers), Some(newest)) if answers == newest.seq => {
                             newest.answered = true;
+                            latency::TRACER.ended(Key::Heard(answers), latency::End::Silent);
                             Response::json(200, &json!({"ok": true, "quiet": true}))
                         }
                         (Some(_), _) => Response::json(200, &json!({"ok": true, "quiet": true})),
@@ -461,8 +477,14 @@ or say nothing",
                 let text: String = text.chars().take(MAX_SAY).collect();
                 let mut inner = self.lock();
                 inner.bridge_seen = Some(Instant::now());
+                // (Timed for the words it answers: those it names, else his
+                // newest.)
+                let answering = answers.or(inner.newest.as_ref().map(|n| n.seq));
                 if let Some(why) = Self::refusal(&inner, answers, Instant::now()) {
                     inner.refused.push(text);
+                    if let Some(heard) = answering {
+                        latency::TRACER.refused(heard);
+                    }
                     return Response::json(409, &json!({"error": why}));
                 }
                 // (Said after his newest words reached Claude: he has his
@@ -471,6 +493,9 @@ or say nothing",
                     && answers.is_none_or(|answers| answers == newest.seq)
                 {
                     newest.answered = true;
+                }
+                if let Some(heard) = answering {
+                    latency::TRACER.say(heard, &text);
                 }
                 inner.says.push(text);
                 Response::json(200, &json!({"ok": true}))
@@ -510,6 +535,30 @@ or say nothing",
                 }
             }
             _ => Response::json(404, &json!({"error": "not found"})),
+        };
+        if latency::TRACER.enabled() {
+            self.timed(request, began);
+        }
+        response
+    }
+
+    /// A tool of Claude's ([`TOOLS`]) ran from `began` to now: a stretch of
+    /// the turn of the words of his the bridge last took for Claude.
+    fn timed(&self, request: &Request, began: Instant) {
+        let Some((_, _, tool)) = TOOLS
+            .iter()
+            .find(|(method, path, _)| *method == request.method && *path == request.path)
+        else {
+            return;
+        };
+        let heard = self
+            .lock()
+            .newest
+            .as_ref()
+            .filter(|n| n.taken.is_some())
+            .map(|n| n.seq);
+        if let Some(heard) = heard {
+            latency::TRACER.span(Key::Heard(heard), tool, began, Instant::now());
         }
     }
 
@@ -570,6 +619,7 @@ or say nothing",
         // His newest words are on their way to Claude now.
         if handed && let Some(newest) = inner.newest.as_mut() {
             newest.taken = Some(Instant::now());
+            latency::TRACER.stamp(Key::Heard(newest.seq), Stage::Bridge);
         }
         Response::json(200, &answer)
     }

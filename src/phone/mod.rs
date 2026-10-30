@@ -64,6 +64,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::companion::Kind;
+use crate::util::latency;
 use audio::{Mic, MicSummary};
 use http::{Conn, HttpError, Request, Response};
 use image::RgbaImage;
@@ -458,6 +459,12 @@ impl Hub {
     /// (that would be a second voice, and another mind).
     pub fn pause_live(&self, paused: bool) {
         self.live_paused.store(paused, Ordering::Relaxed);
+    }
+
+    /// The moment the link had been up `uptime` seconds (the clock the page
+    /// keeps: `uptime` on its status, and its lines' `t`).
+    fn at(&self, uptime: f64) -> Instant {
+        self.started + Duration::try_from_secs_f64(uptime).unwrap_or_default()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -1006,6 +1013,14 @@ impl Hub {
             },
             ("POST", "/api/heard") => match text_field("text") {
                 Some(text) if !text.trim().is_empty() => {
+                    // (Its stamps first: the turn the sentence becomes
+                    // takes them.)
+                    if latency::TRACER.enabled() {
+                        let body = body();
+                        if let Some(stamps) = body.get(latency::STATUS_FIELD) {
+                            latency::TRACER.phone_heard(text.trim(), stamps, |t| self.at(t));
+                        }
+                    }
                     self.lock()
                         .inbox
                         .push(Inbound::Heard(text.trim().to_string()));
@@ -1189,6 +1204,12 @@ impl Hub {
                 }
                 None => Response::json(400, &json!({"error": "which voice?"})),
             },
+            // When a clip began to play, a turn of the live call: for the
+            // timing, while it is on.
+            ("POST", latency::PHONE_PATH) if latency::TRACER.enabled() => {
+                latency::TRACER.phone(&body(), |t| self.at(t));
+                Response::json(200, &json!({"ok": true}))
+            }
             ("POST", "/api/interrupt") => {
                 self.lock().inbox.push(Inbound::Interrupt);
                 Response::json(200, &json!({"ok": true}))
@@ -1982,6 +2003,57 @@ mod tests {
             200
         );
         assert_eq!(hub.handle(&request("GET", "/nothing", "")).status, 404);
+    }
+
+    #[test]
+    fn with_the_timing_off_a_sentence_with_stamps_is_only_a_sentence() {
+        // (Off unless the program turns it on: the page's stamps change
+        // nothing, and its timing call is no call.)
+        let hub = hub();
+        hub.handle(&request(
+            "POST",
+            "/api/heard?k=k1",
+            r#"{"text":" where am I ","latency":{"spoke":1.5,"sent":2.0}}"#,
+        ));
+        assert_eq!(hub.take_inbox(), vec![Inbound::Heard("where am I".into())]);
+        let path = format!("{}?k=k1", latency::PHONE_PATH);
+        let played = hub.handle(&request("POST", &path, r#"{"clip":1,"played":2.5}"#));
+        assert_eq!(played.status, 404);
+        assert!(hub.take_inbox().is_empty());
+    }
+
+    #[test]
+    fn the_page_sends_its_timing_under_the_names_the_pc_reads() {
+        use latency::field::*;
+        let names = [
+            VOICE,
+            SPOKE,
+            FINAL,
+            SENT,
+            SETTLE,
+            RTT,
+            CLIP,
+            PLAYED,
+            LIVE,
+            LIVE_START,
+            LIVE_STOP,
+            LIVE_RESPONSE,
+            LIVE_SOUND,
+            LIVE_TOOLS,
+            LIVE_TOOLS_FROM,
+            LIVE_TOOLS_TO,
+        ];
+        for name in names {
+            let sent = [
+                format!("{name}: "),
+                format!(".{name} = "),
+                format!("{{ {name} }}"),
+            ];
+            assert!(sent.iter().any(|s| PAGE.contains(s.as_str())), "{name}");
+        }
+        assert!(PAGE.contains(&format!("status.{} === true", latency::STATUS_FIELD)));
+        assert!(PAGE.contains(&format!("body.{} = ", latency::STATUS_FIELD)));
+        assert!(PAGE.contains(&format!("\"{}\"", latency::PHONE_PATH)));
     }
 
     #[test]

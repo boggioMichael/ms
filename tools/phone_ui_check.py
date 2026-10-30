@@ -39,10 +39,13 @@ that lost the call is told it is on, the page leaving tells it the call is
 off, and a call that fails to open hands its hello back; and, under the
 browser's own autoplay policy (a phone's: no clip before a tap), the hello
 clip made before the tap is kept for it, and the terms with it, but not a
-stale warning or stale news. Needs `pip install playwright &&
+stale warning or stale news; and with the PC's timing on (status.latency) a
+sentence carries when its words last changed, when the recogniser closed it
+and when it was sent, on the PC's clock, a clip that begins to play is told,
+and with it off none of that is sent. Needs `pip install playwright &&
 playwright install chromium`; run from the repository root: `python3
 tools/phone_ui_check.py` (or with some of `ui`, `recognition`, `live`,
-`loudness`, `talkover`, `pcvoice`, `hello` to run those alone; PHONE_PAGE=path checks another
+`loudness`, `talkover`, `pcvoice`, `hello`, `latency` to run those alone; PHONE_PAGE=path checks another
 copy of the page, to see a check fail against the page as it was).
 Screenshots land in `target/phone-ui/`."""
 import json, os, re, struct, sys, threading, time, http.server, socketserver
@@ -1370,13 +1373,49 @@ def hello_checks(p):
                    "six clips before the tap, the hello first")
     browser.close()
 
+def latency_checks(browser):
+    """The PC's timing on (status.latency): the sentence's stamps go with it,
+    on the PC's clock (its uptime, 100 s on every poll here, and a moment),
+    and a clip's start is told; off, nothing of the timing is sent."""
+    STATUS["latency"] = True
+    page, _ = listening_page(browser)
+    t0 = time.time()
+    page.evaluate('window.__rec.result(0, "what level am I", false)')
+    page.wait_for_timeout(50)
+    page.evaluate('window.__rec.result(0, "what level am I", true)')
+    page.wait_for_timeout(400)
+    heard = [r["body"] for r in requests_since(t0, "/api/heard")]
+    assert heard and heard[-1]["text"] == "what level am I", heard
+    stamps = heard[-1].get("latency") or {}
+    assert all(name in stamps for name in ("spoke", "final", "sent", "settle", "rtt")), stamps
+    assert stamps["spoke"] <= stamps["final"] <= stamps["sent"] and 100 <= stamps["sent"] < 200, stamps
+    with LOCK:
+        CLIP_SECONDS["1"] = 0.5
+        STATE["clip"] = 1
+        STATE["clips"][1] = ("reply", time.time())
+    told = lambda: [r["body"] for r in requests_since(t0, "/api/latency") if r["body"] and r["body"].get("clip") == 1]
+    wait_for(told, 5, "the clip's start was not told")
+    # (The stand-in's uptime stands still: only that it is on its clock.)
+    assert 100 <= told()[0]["played"] < 200, told()
+    # Off again: a sentence is only its words.
+    del STATUS["latency"]
+    wait_for(lambda: page.evaluate("window.__rec.running"), 5, "recognition never started again after the clip")
+    page.wait_for_timeout(300)
+    t1 = time.time()
+    page.evaluate('window.__rec.result(0, "where am I", true)')
+    page.wait_for_timeout(400)
+    heard = [r["body"] for r in requests_since(t1, "/api/heard")]
+    assert heard and "latency" not in heard[-1], heard
+    assert not requests_since(t1, "/api/latency")
+    page.close()
+
 def browser_args(mic_file):
     """A browser with a microphone fed from `mic_file`, and clips allowed to
     play without a tap."""
     return ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
             f"--use-file-for-fake-audio-capture={mic_file}", "--autoplay-policy=no-user-gesture-required"]
 
-chosen = set(sys.argv[1:]) or {"ui", "tone", "recognition", "live", "loudness", "talkover", "pcvoice", "hello"}
+chosen = set(sys.argv[1:]) or {"ui", "tone", "recognition", "live", "loudness", "talkover", "pcvoice", "hello", "latency"}
 with sync_playwright() as p:
     quiet = os.path.join(SHOTS, "mic-quiet.wav")
     with open(quiet, "wb") as f:
@@ -1386,6 +1425,7 @@ with sync_playwright() as p:
     if "tone" in chosen: tone_checks(browser)
     if "recognition" in chosen: recognition_checks(browser)
     if "live" in chosen: live_checks(browser)
+    if "latency" in chosen: latency_checks(browser)
     browser.close()
     if "loudness" in chosen: loudness_checks(p)
     if "talkover" in chosen: talkover_checks(p)
