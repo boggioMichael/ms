@@ -40,7 +40,11 @@ keeps what the pixels mean in MapleStory, and the orchestration.
   and `quality.rs` re-export Syrup's.
 - **`capture.rs`**: which window is the game, and a capture session on it
   (`syrup::capture::Window`; on Windows, Windows.Graphics.Capture with GDI
-  as the fallback; `GameCapture::path` says which).
+  as the fallback; `GameCapture::path` says which). On the compositor's
+  frames a covered window comes through as drawn (`draws_covered`), so the
+  game is in view behind another window too (`game_in_view` in the
+  binary); on the CPU path, whose last resort copies the screen, only in
+  front.
 - **`util/`**: `stages.rs`, per-stage timing of the path from its tracing
   spans; `pool.rs`, the vision engine's worker threads.
 
@@ -247,6 +251,28 @@ keeps what the pixels mean in MapleStory, and the orchestration.
     back after two English ones, shown beside the language picker (`#lang`,
     on the main screen) with an × to undo; `/api/state` carries a boot id,
     and a page open across a restart starts over.
+- **Lines said later than they were written.** A model writes slots, not
+  the numbers it read (`{hp}`, `{hp_now}`, `{mp}`, `{exp}`, `{level}`…;
+  `companion::fresh::SLOTS` is the one list, `guide()` what the models are
+  told); `Fresh` keeps the values of the moment (the main loop feeds it
+  every frame) and the worker fills a line just before its voice is made
+  (`Job::Say`, `Saying::take`, the coach's line; before `for_speech`, which
+  drops underscores). A line of Claude's own (no `answers`) is refused by
+  the board once the game changed since the last event (`Basis`: dead or
+  alive, the map).
+- **With Claude, his words get an answer.** The board knows whether his
+  newest words were answered (`waiting_since`: any line of Claude's said
+  after them); while they wait, game events are held in the binary
+  (`ClaudeWait`), and after `board::ANSWER_WAIT` MapleSyrup's own brain
+  answers them (`answered_here`; Claude's `say` for those words is then
+  refused, with why). Speech streams give up after `openai::VOICE_STALL`
+  with nothing coming (curl's low-speed limit), and the other voice says
+  the line.
+- **The recording** (`app/recorder.rs`, `bin/maplesyrup/recording.rs`):
+  Desktop Duplication can lose the screen mid-recording (a game going full
+  screen); two looks with no frame (`SCREEN_LOST_LOOKS`) save it and start
+  again through GDI (`Picture::ScreenWithoutDuplication`). The mixer counts
+  the frames with each sound (`Sounded`), said in the log at save.
 - **`app/`**, **`platform/`**, **`observe/`**, **`overlay/`**: the
   screen, the console and voice, the dashboard and preview, the overlay.
 
